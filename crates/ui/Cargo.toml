@@ -1,0 +1,12 @@
+[package]
+name = "coqo-ui"
+description = "Coqo UI facade over GPUI and gpui-component, plus the declarative view renderer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

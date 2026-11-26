@@ -1,0 +1,12 @@
+[package]
+name = "coqo-mod-api"
+description = "Public Coqo mod API: the only Coqo crate that mods may depend on."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
