@@ -49,6 +49,16 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+### Running CI locally
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the commands above on Linux and macOS, plus two policy checks you can run yourself:
+
+```sh
+cargo install cargo-deny --locked     # once
+cargo deny check                      # licences (GPL/AGPL/LGPL rejected), advisories, bans, sources; see deny.toml
+scripts/check-mod-boundary.sh         # crates under mods/ may depend only on coqo-mod-api; needs jq
+```
+
 ## Licence
 
 Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
