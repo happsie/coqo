@@ -37,6 +37,20 @@ docs/                  plan, ADRs, design and protocol docs
 
 You need [rustup](https://rustup.rs). The toolchain version is pinned in [`rust-toolchain.toml`](rust-toolchain.toml), and rustup installs it automatically the first time you build.
 
+The UI uses GPUI, which needs a few system libraries on Linux:
+
+```sh
+# Fedora
+sudo dnf install clang fontconfig-devel freetype-devel wayland-devel libxkbcommon-devel \
+  libxkbcommon-x11-devel libxcb-devel libX11-devel openssl-devel libzstd-devel \
+  alsa-lib-devel vulkan-loader-devel
+# Debian / Ubuntu
+sudo apt install clang libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev \
+  libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libssl-dev libzstd-dev libasound2-dev libvulkan-dev
+```
+
+On macOS, the Xcode command-line tools are enough. Run the app with `cargo run -p coqo --release`.
+
 ```sh
 cargo build --workspace
 cargo test --workspace
