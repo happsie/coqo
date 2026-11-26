@@ -1,6 +1,6 @@
 [package]
 name = "coqo-storage"
-description = "Coqo storage: SQLite database and migrations."
+description = "Coqo storage: SQLite databases, migrations and the daemon event log."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,3 +10,12 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+dirs = "6"
+# `bundled` compiles SQLite from source, so no system SQLite is needed (CI included).
+rusqlite = { version = "0.43", features = ["bundled"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
