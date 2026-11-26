@@ -11,7 +11,7 @@ Coqo is an agent-first desktop editor written in Rust: a GPUI UI plus a backgrou
 - Labels:
   - `agent-ready`: fully specified, and an agent can take it once unblocked.
   - `human-needed`: needs a human decision or action. Don't take it. Comment if you can help prepare it.
-  - `status:in-progress`, `status:blocked`, `status:needs-review`: the workflow state (see below).
+  - `status:in-progress`, `status:blocked`: the workflow state (see below). PRs are merged without review, so `status:needs-review` isn't used.
   - `area:*`: the part of the system. Use it to avoid two agents editing the same area at once.
 
 ## Picking up an issue
@@ -53,16 +53,19 @@ Coqo is an agent-first desktop editor written in Rust: a GPUI UI plus a backgrou
 - If the implementation has to differ from PLAN.md, write or update an ADR in `docs/adr/` and update PLAN.md in the same PR.
 - Spikes: answer the questions in the issue, write `docs/adr/NNNN-<topic>.md` with findings, measurements and a clear **go / fallback** decision, and keep prototype code in `spikes/<id>/`.
 
-## Opening the PR
+## Opening and merging the PR
 
 - The PR title is a conventional commit, e.g. `feat(daemon): idle shutdown policy (#42)`.
 - The PR body includes `Closes #<n>`, a short summary, how you tested it, and screenshots for UI changes.
 - Tick the issue's acceptance-criteria checkboxes as they are met, either in the issue or by listing them in the PR.
-- Swap `status:in-progress` for `status:needs-review`:
+- **Merge it yourself, straight away. No review is needed.** Wait for CI to go green if the PR has checks, then squash-merge and delete the branch. `Closes #<n>` closes the issue.
   ```sh
-  gh issue edit <n> -R happsie/coqo --remove-label status:in-progress --add-label status:needs-review
+  gh pr checks <pr> -R happsie/coqo --watch   # skip if no checks are reported
+  gh pr merge <pr> -R happsie/coqo --squash --delete-branch
+  gh issue edit <n> -R happsie/coqo --remove-label status:in-progress
   ```
-- Never merge your own PR unless a maintainer has said you may.
+- If CI fails, fix it on the branch and push again. Never merge a red PR, and never bypass branch protection.
+- If the merge conflicts with `main`, rebase onto `main`, re-run the checks locally, push, and merge.
 
 ## When you get stuck
 
@@ -75,7 +78,7 @@ Coqo is an agent-first desktop editor written in Rust: a GPUI UI plus a backgrou
 - CI is green (fmt, clippy `-D warnings`, tests, `cargo-deny`, API-boundary check).
 - New behaviour has tests, and UI work matches its design board.
 - Docs, ADR and PLAN.md are updated if the design changed.
-- The PR is linked with `Closes #<n>`.
+- The PR is linked with `Closes #<n>` and merged.
 
 ## Hard rules
 
