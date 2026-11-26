@@ -1,0 +1,8 @@
+[package]
+name = "good-mod"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+coqo-mod-api = { path = "../../crates/mod-api" }

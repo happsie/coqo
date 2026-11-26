@@ -1,0 +1,74 @@
+# cargo-deny configuration. CI runs `cargo deny check`; run it locally the same way.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+#
+# Coqo is Apache-2.0. Only permissive licences are allowed, and anything
+# copyleft (GPL, AGPL, LGPL) fails the check. That keeps Zed's GPL `editor`,
+# `project` and `language` crates out; `gpui` and `gpui-component` are Apache-2.0.
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec advisory database. Vulnerabilities and yanked crates always fail.
+# Unmaintained and unsound advisories fail only for crates the workspace
+# depends on directly, since those are the ones we can swap out.
+version = 2
+yanked = "deny"
+unmaintained = "workspace"
+unsound = "workspace"
+ignore = [
+    # { id = "RUSTSEC-0000-0000", reason = "why this is acceptable for now" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+# Anything not listed here is rejected, which includes every GPL, AGPL and
+# LGPL variant. Add a licence only if it's permissive and actually needed by
+# the dependency tree (and say which crate needs it).
+#
+# The GPUI PR will need to extend this list: its transitive tree is expected to
+# bring in licences such as MPL-2.0, BSL-1.0, CC0-1.0, OFL-1.1 / Ubuntu-font
+# (fonts), bzip2-1.0.6 and 0BSD. Review each one before adding it.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+]
+# The list above is a policy, not an inventory, so don't warn about entries
+# the current tree doesn't use yet.
+unused-allowed-license = "allow"
+exceptions = [
+    # { allow = ["MPL-2.0"], crate = "some-crate", reason = "..." },
+]
+
+[licenses.private]
+# Our own crates are `publish = false` and Apache-2.0 via the workspace; check
+# them like everything else.
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies between our own workspace crates are fine.
+allow-wildcard-paths = true
+highlight = "all"
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# The GPUI stack is expected to come from crates.io (`gpui-component`,
+# `gpui-pre`), but these two orgs are allowed in case a git pin is needed.
+# Keep this list tight. cargo-deny prints an `unmatched-organization` warning
+# while nothing comes from them; that's expected and doesn't fail the check.
+[sources.allow-org]
+github = ["zed-industries", "longbridge"]

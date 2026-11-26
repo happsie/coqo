@@ -1,0 +1,5 @@
+# Test fixture for scripts/check-mod-boundary.sh. A standalone workspace, not
+# part of the root one; nothing here is built. See README.md.
+[workspace]
+resolver = "3"
+members = ["crates/*", "mods/*"]
