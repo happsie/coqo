@@ -53,7 +53,7 @@ Teams that work 100% agentically ship faster, but over time they lose their grip
 | Layer | Choice | Notes |
 |---|---|---|
 | UI framework | **GPUI** (Zed's GPU-accelerated UI framework, Apache-2.0) | Metal on macOS, Vulkan/Blade on Linux. Built and used for exactly this kind of editor. |
-| Component library | **gpui-component** (Longbridge, Apache-2.0) | 60+ widgets: dock layout, virtualized list/table, markdown, **code editor (rope + tree-sitter, LSP diagnostics/completion/hover, stable at 200k lines)** |
+| Component library | **gpui-component** (Longbridge, Apache-2.0), consumed through the `gpui-kit` umbrella crate | 60+ widgets: dock layout, virtualized list/table, markdown, **code editor (rope + tree-sitter, LSP diagnostics/completion/hover, stable at 200k lines)**, side-by-side diff. Spike S4 chose its editor, extended by Coqo ([ADR 0002](adr/0002-ui-editor-component.md)). |
 | Async runtime | tokio (daemon), GPUI executor (UI) | |
 | Text | rope (from gpui-component or `ropey`) + **tree-sitter** (highlighting, structure, re-anchoring, probe planning) | |
 | Buffer sync UI↔daemon | Replicated buffers: operation log or CRDT (`yrs` is the candidate) | Spike S6 |
@@ -87,7 +87,7 @@ Honest notes:
 - Electron is not *slow* for editing (VS Code proves that), but it will never feel like Zed and it costs memory. JDT LS and kotlin-lsp use 1–3 GB on their own, so every saved MB counts on dev laptops running several workspaces.
 - Not having the Claude Agent SDK in Rust is **not** a problem: Claude is integrated through ACP (the Claude Agent ACP adapter is built on that SDK) or the terminal mode. Both are separate processes anyway (§7.3).
 - The **daemon protocol is the real boundary**. If the GPUI UI turns out too slow to build, an Electron or web UI can be plugged onto the same daemon later without touching agents, LSP, or trace. That makes the Rust bet reversible on the UI side.
-- GPUI is pre-1.0 and is pinned to a Zed git revision. We pin, upgrade deliberately, and keep our widgets behind our own `coqo-ui` facade.
+- GPUI is pre-1.0. We get it as the `gpui-pre` crates.io snapshots of Zed's GPUI that gpui-component builds against, pinned exactly through `gpui-kit` ([ADR 0002](adr/0002-ui-editor-component.md)). We upgrade deliberately and keep our widgets behind our own `coqo-ui` facade.
 
 ### 3.3 Alternatives rejected
 - **Fork Zed:** GPL editor crates, a WASM extension API too narrow for "everything is a mod", and permanent rebasing.
@@ -208,7 +208,7 @@ Rules:
 ## 7. Feature design
 
 ### 7.1 Editor core (Zed-level editing)
-Multi-cursor and column selection, split panes, tab groups, fuzzy file and symbol finder, project search, outline and breadcrumbs, go to definition / references / implementation, rename, code actions, format on save, inlay hints, diagnostics panel, semantic highlighting, indent and bracket guides, folding, sticky scroll, optional vim mode, terminal, tasks/run configurations, and a large-file mode. The starting point is gpui-component's code editor, extended or replaced after spike S4.
+Multi-cursor and column selection, split panes, tab groups, fuzzy file and symbol finder, project search, outline and breadcrumbs, go to definition / references / implementation, rename, code actions, format on save, inlay hints, diagnostics panel, semantic highlighting, indent and bracket guides, folding, sticky scroll, optional vim mode, terminal, tasks/run configurations, and a large-file mode. The starting point is gpui-component's code editor, extended by Coqo where it falls short (anchored popovers, inline ghost values; see [ADR 0002](adr/0002-ui-editor-component.md)).
 
 **Live agent edits:** ACP agents write files through the client (`fs/write_text_file`), which is the daemon. Their edits therefore arrive in open buffers live, as tracked changes, even in files with unsaved user edits.
 
@@ -416,7 +416,7 @@ docs/                    PLAN.md, ADRs, protocol docs
 | **S7** | WASM mod API ergonomics | WIT world for commands + MCP tool + declarative view; author one mod in Rust and one in TS via `jco` | Process mods as the primary third-party tier |
 
 Other risks:
-- **GPUI churn:** pin a revision, keep the `coqo-ui` facade.
+- **GPUI churn:** pin the exact `gpui-kit` release (which pins its `gpui-pre` snapshot), keep the `coqo-ui` facade.
 - **The UI takes longer to build in Rust:** the protocol boundary allows an interim web UI if needed.
 - **Anthropic billing/policy changes:** provider modes stay decoupled, and the billing source is shown in the UI.
 - **ACP spec churn:** pin versions behind the `acp-host` adapter.
