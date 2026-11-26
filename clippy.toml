@@ -1,0 +1,2 @@
+# Clippy configuration. CI runs `cargo clippy --workspace --all-targets -- -D warnings`.
+msrv = "1.100"

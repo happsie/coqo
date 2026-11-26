@@ -1,0 +1,12 @@
+[package]
+name = "coqo-anchors"
+description = "Anchor model and re-anchoring of code locations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

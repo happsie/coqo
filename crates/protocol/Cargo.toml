@@ -1,0 +1,12 @@
+[package]
+name = "coqo-protocol"
+description = "Coqo Protocol types and schema shared by the daemon, UI and clients."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
