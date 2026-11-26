@@ -8,5 +8,11 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[dependencies]
+coqo-ui = { path = "../ui" }
+
+[dev-dependencies]
+coqo-ui = { path = "../ui", features = ["test-support"] }
+
 [lints]
 workspace = true

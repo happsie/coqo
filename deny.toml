@@ -27,9 +27,8 @@ confidence-threshold = 0.93
 # LGPL variant. Add a licence only if it's permissive and actually needed by
 # the dependency tree (and say which crate needs it).
 #
-# The GPUI PR will need to extend this list: its transitive tree is expected to
-# bring in licences such as MPL-2.0, BSL-1.0, CC0-1.0, OFL-1.1 / Ubuntu-font
-# (fonts), bzip2-1.0.6 and 0BSD. Review each one before adding it.
+# Licences outside this list that the GPUI stack needs are granted per crate in
+# `exceptions` below (ADR 0002), so a new crate under them still needs review.
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
@@ -44,8 +43,23 @@ allow = [
 # The list above is a policy, not an inventory, so don't warn about entries
 # the current tree doesn't use yet.
 unused-allowed-license = "allow"
+# Reviewed in ADR 0002 (spike S4). MPL-2.0 is file-level copyleft: fine to depend
+# on unmodified; never vendor or patch these files without revisiting.
 exceptions = [
-    # { allow = ["MPL-2.0"], crate = "some-crate", reason = "..." },
+    # MPL-2.0: tiny helper under `dirs` (gpui-kit -> dirs -> dirs-sys).
+    { allow = ["MPL-2.0"], crate = "option-ext" },
+    # MPL-2.0: Windows DirectWrite bindings for GPUI; not built on macOS/Linux.
+    { allow = ["MPL-2.0"], crate = "dwrote" },
+    # MPL-2.0: build-time header generator in GPUI's tree; not linked into Coqo.
+    { allow = ["MPL-2.0"], crate = "cbindgen" },
+    # 0BSD (public-domain-like): used by gpui-component.
+    { allow = ["0BSD"], crate = "enum-iterator" },
+    { allow = ["0BSD"], crate = "enum-iterator-derive" },
+    # CC0-1.0 (public domain): file watching in gpui-component; hashing in gpui-pre-linux.
+    { allow = ["CC0-1.0"], crate = "notify" },
+    { allow = ["CC0-1.0"], crate = "tiny-keccak" },
+    # NCSA (BSD-style, LLVM): fuzzing support, only reached through `all-features`.
+    { allow = ["NCSA"], crate = "libfuzzer-sys" },
 ]
 
 [licenses.private]
