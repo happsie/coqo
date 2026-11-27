@@ -2,11 +2,16 @@
 
 //! `coqo`: the Coqo desktop UI and CLI.
 //!
-//! With no arguments it opens the workbench window. The daemon connection, workspaces
-//! and CLI subcommands arrive in later M1 issues (see `docs/PLAN.md` §4 and §12).
+//! `coqo` opens the workbench window and restores the last workspace;
+//! `coqo <folder>` opens that folder. Either way the window attaches to
+//! `coqod`, starting it if needed (PLAN §4.3). CLI subcommands arrive in
+//! later issues (PLAN §12).
 
+mod daemon;
+mod files;
 mod shell;
 mod welcome;
+mod workspace;
 
 use std::{path::PathBuf, process::ExitCode, rc::Rc};
 
@@ -16,20 +21,54 @@ use coqo_ui::{
     gpui::{AppContext as _, Bounds, Size, TitlebarOptions, WindowBounds, WindowOptions, px, size},
 };
 
+const USAGE: &str = "usage: coqo [<folder>] | --version";
+
 fn main() -> ExitCode {
-    match std::env::args().nth(1).as_deref() {
-        Some("--version" | "-V") => {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["--version" | "-V"] => {
             println!("coqo {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        None => {
-            run();
+        ["--help" | "-h"] => {
+            println!("{USAGE}");
             ExitCode::SUCCESS
         }
-        Some(other) => {
-            eprintln!("coqo: unknown argument `{other}` (try --version)");
+        [] => {
+            run(None);
+            ExitCode::SUCCESS
+        }
+        [path] if !path.starts_with('-') => match folder(path) {
+            Ok(folder) => {
+                run(Some(folder));
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("coqo: {err}");
+                ExitCode::FAILURE
+            }
+        },
+        _ => {
+            eprintln!("coqo: unexpected arguments `{}`\n{USAGE}", args.join(" "));
             ExitCode::FAILURE
         }
+    }
+}
+
+/// The folder to open: absolute, since the daemon has its own working
+/// directory.
+fn folder(path: &str) -> Result<PathBuf, String> {
+    let canonical =
+        std::fs::canonicalize(path).map_err(|e| format!("cannot open `{path}`: {e}"))?;
+    if canonical.is_dir() {
+        Ok(canonical)
+    } else {
+        Err(format!("`{path}` is not a folder"))
     }
 }
 
@@ -51,9 +90,16 @@ fn layout_dir() -> PathBuf {
     base.join("ui").join("layouts")
 }
 
-fn run() {
-    coqo_ui::application().run(|cx| {
+fn run(folder: Option<PathBuf>) {
+    coqo_ui::application().run(move |cx| {
         coqo_ui::init(Appearance::System, cx);
+        match daemon::DaemonConfig::from_env() {
+            Ok(config) => {
+                daemon::init(config, cx);
+            }
+            Err(err) => eprintln!("coqo: {err}"),
+        }
+        workspace::init(folder, cx);
         shell::init(cx);
         let options = WindowOptions {
             titlebar: Some(TitlebarOptions {

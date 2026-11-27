@@ -30,7 +30,12 @@ use coqo_ui::{
     },
 };
 
-use crate::welcome::{self, shortcut};
+use crate::{
+    daemon::{self, Daemon},
+    files,
+    welcome::{self, shortcut},
+    workspace::{OpenFolder, Workspaces, initials, prompt_open_folder},
+};
 
 /// The workspace key layouts are saved under until workspaces exist.
 pub const DEFAULT_WORKSPACE: &str = "default";
@@ -44,13 +49,8 @@ const SIDEBAR_MAX: Pixels = px(520.);
 pub fn init(cx: &mut App) {
     welcome::register(cx);
     register_builtin_slots(cx);
-    SidebarPanes::register(
-        cx,
-        SidebarPane::new("files", "Files", 0, |_, _, cx| {
-            cx.new(|_| NotePane::new("sidebar-files-pane", "Explorer", "No folder open"))
-                .into()
-        }),
-    );
+    daemon::register_status_slot(cx);
+    files::init(cx);
     SidebarPanes::register(
         cx,
         SidebarPane::new("git", "Git", 10, |_, _, cx| {
@@ -119,6 +119,13 @@ impl Shell {
                 async {}
             }),
         ];
+        let mut subscriptions = subscriptions;
+        if let Some(daemon) = Daemon::global(cx) {
+            subscriptions.push(cx.observe(&daemon, |_, _, cx| cx.notify()));
+        }
+        if let Some(workspaces) = Workspaces::global(cx) {
+            subscriptions.push(cx.observe(&workspaces, |_, _, cx| cx.notify()));
+        }
         let focus = dock.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         let sidebar = saved.map(|l| l.sidebar);
@@ -141,6 +148,12 @@ impl Shell {
     #[allow(dead_code)] // Used by tests now; by the file tree and chat list next.
     pub fn dock(&self) -> &Entity<Dock> {
         &self.dock
+    }
+
+    /// A sidebar pane's view, once it has been shown.
+    #[allow(dead_code)] // Used by tests.
+    pub fn sidebar_pane(&self, id: &str) -> Option<AnyView> {
+        self.pane_views.get(id).map(|(_, view)| view.clone())
     }
 
     /// The current layout, as it would be saved.
@@ -202,6 +215,7 @@ impl Render for Shell {
         let status = status_bar(window, cx);
         div()
             .id("workbench")
+            .on_action(|_: &OpenFolder, _, cx| prompt_open_folder(cx))
             .size_full()
             .flex()
             .flex_col()
@@ -328,27 +342,37 @@ fn region(id: &'static str, el: Div) -> AnyElement {
 fn top_bar(window: &mut Window, cx: &mut App) -> AnyElement {
     let start = Slots::render(Slot::TopBarStart, window, cx);
     let end = Slots::render(Slot::TopBarEnd, window, cx);
+    let workspace_name: Option<SharedString> =
+        Workspaces::global(cx).and_then(|w| w.read(cx).current().map(|c| c.name.clone().into()));
     let t = cx.tokens();
     let (p, m) = (&t.palette, &t.metrics);
 
-    let brand = div()
-        .flex()
-        .items_center()
-        .gap(px(10.))
-        .child(
+    let brand = div().flex().items_center().gap(px(10.)).child(
+        div()
+            .size(px(18.))
+            .rounded_full()
+            .border_2()
+            .border_color(p.sage.hsla()),
+    );
+    let brand = match workspace_name {
+        Some(name) => brand.child(
             div()
-                .size(px(18.))
-                .rounded_full()
-                .border_2()
-                .border_color(p.sage.hsla()),
-        )
-        .child(div().font_weight(FontWeight::SEMIBOLD).child("Coqo"))
-        .child(
-            div()
-                .text_color(p.text_subtle.hsla())
-                .child("No workspace open"),
-        )
-        .children(start);
+                .id("workspace-name")
+                .test_support()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(name),
+        ),
+        None => brand
+            .child(div().font_weight(FontWeight::SEMIBOLD).child("Coqo"))
+            .child(
+                div()
+                    .id("workspace-name")
+                    .test_support()
+                    .text_color(p.text_subtle.hsla())
+                    .child("No workspace open"),
+            ),
+    }
+    .children(start);
 
     let search = div()
         .id("command-search")
@@ -448,25 +472,6 @@ fn register_builtin_slots(cx: &mut App) {
         .child("Intellisense · off")
         .into_any_element()
     });
-    Slots::register(cx, Slot::TopBarEnd, "daemon-status", 100, |_, cx| {
-        let t = cx.tokens();
-        let (p, m) = (&t.palette, &t.metrics);
-        div()
-            .id("daemon-status")
-            .test_support()
-            .flex()
-            .items_center()
-            .gap(px(7.))
-            .px(px(12.))
-            .py(px(7.))
-            .rounded(m.radius_field)
-            .bg(p.panel_raised.hsla())
-            .text_size(px(12.))
-            .text_color(p.text_muted.hsla())
-            .child(status_dot(p.text_subtle, false))
-            .child("coqod · not connected")
-            .into_any_element()
-    });
     Slots::register(cx, Slot::StatusBarStart, "branch", 0, |_, cx| {
         let p = &cx.tokens().palette;
         div()
@@ -523,17 +528,77 @@ fn rail(cx: &App) -> AnyElement {
             .items_center()
             .gap(px(12.))
             .py(px(6.))
+            .children(workspace_buttons(cx))
             .child(
                 rail_button("add-workspace", cx)
+                    .test_support()
                     .border_1()
                     .border_dashed()
                     .border_color(p.border_strong.hsla())
-                    .child(icon(Icon::Plus, px(18.), muted)),
+                    .cursor_pointer()
+                    .child(icon(Icon::Plus, px(18.), muted))
+                    .on_click(|_, _, cx| prompt_open_folder(cx)),
             )
             .child(div().flex_1())
             .child(rail_button("alerts", cx).child(icon(Icon::Bell, px(20.), muted)))
             .child(rail_button("settings", cx).child(icon(Icon::Settings, px(20.), muted))),
     )
+}
+
+/// One rail button per open workspace, the current one lit in sage.
+fn workspace_buttons(cx: &App) -> Vec<AnyElement> {
+    let Some(workspaces) = Workspaces::global(cx) else {
+        return Vec::new();
+    };
+    let workspaces = workspaces.read(cx);
+    let current = workspaces.current().map(|w| w.id.clone());
+    let mut list: Vec<_> = workspaces.open_workspaces().to_vec();
+    if let Some(cur) = workspaces.current()
+        && !list.iter().any(|w| w.id == cur.id)
+    {
+        list.insert(0, cur.clone());
+    }
+    let t = cx.tokens();
+    let (p, m) = (&t.palette, &t.metrics);
+    list.into_iter()
+        .enumerate()
+        .map(|(ix, info)| {
+            let selected = current.as_ref() == Some(&info.id);
+            let base = div()
+                .id(("workspace", ix))
+                .test_support()
+                .size(m.rail_button)
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .rounded(m.radius_rail)
+                .text_size(m.text_md)
+                .font_weight(FontWeight::BOLD)
+                .cursor_pointer();
+            let base = if selected {
+                base.bg(p.sage.alpha(0.22))
+                    .border_1()
+                    .border_color(p.sage.alpha(0.4))
+                    .text_color(p.text.hsla())
+            } else {
+                base.bg(p.surface.hsla())
+                    .border_1()
+                    .border_color(p.border.hsla())
+                    .text_color(p.text_muted.hsla())
+                    .hover(|s| s.bg(p.surface_strong.hsla()))
+            };
+            let id = info.id.clone();
+            base.child(initials(&info.name))
+                .on_click(move |_, _, cx| {
+                    if let Some(workspaces) = Workspaces::global(cx) {
+                        let id = id.clone();
+                        workspaces.update(cx, |w, cx| w.switch_to(id, cx));
+                    }
+                })
+                .into_any_element()
+        })
+        .collect()
 }
 
 fn empty_note(text: impl Into<SharedString>, cx: &App) -> Div {
