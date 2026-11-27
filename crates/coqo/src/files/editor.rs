@@ -1238,10 +1238,13 @@ impl FileEditor {
             return;
         };
         // Wait for the question (a fresh one may not be listed yet).
-        if store.read(cx).get(pending.id).is_none() {
+        let Some(status) = store.read(cx).get(pending.id).map(|q| q.status) else {
             return;
-        }
+        };
         self.pending_question = None;
+        if status != QuestionStatus::Open {
+            return; // Answered or dismissed meanwhile: nothing to ask.
+        }
         self.sync_markers(cx);
         let reused = self
             .popover
