@@ -72,7 +72,7 @@ mod schema;
 #[cfg(test)]
 mod tests;
 
-pub use auth::{Access, AccessKind, Authenticator, Scope, Unauthorized};
+pub use auth::{Access, AccessKind, Authenticator, Revoked, Scope, Unauthorized};
 pub use client::{Client, ClientConfig, Notifications, Subscription};
 pub use encoding::{DecodeError, DecodeErrorKind, EncodeError, Encoding};
 pub use error::ProtocolError;

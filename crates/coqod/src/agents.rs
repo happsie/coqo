@@ -24,6 +24,7 @@ use coqo_protocol::Router;
 
 use crate::buffers::BufferService;
 use crate::daemon::DaemonContext;
+use crate::editor_mcp;
 use crate::lifecycle::Activity;
 
 /// Busy guards for agent work.
@@ -104,12 +105,19 @@ pub fn open(ctx: &DaemonContext) -> Result<SessionManager> {
     let store = SessionStore::open(&path)
         .with_context(|| format!("cannot open agent sessions in {}", path.display()))?;
     let providers = Arc::new(ModProviders(Arc::clone(&ctx.mods.contributions)));
+    // The `coqo-editor` MCP server (`coqod mcp`), behind a switch until #71
+    // injects it into every session.
+    let editor = if editor_mcp::enabled() {
+        Some(editor_mcp::EditorMcp::for_daemon(ctx)?.source())
+    } else {
+        None
+    };
     let options = ManagerOptions {
         keep_alive: Some(Arc::new(ActivityKeepAlive(ctx.activity.clone()))),
-        // TODO(#69): inject the `coqo-editor` MCP server (`coqod mcp`).
-        mcp_servers: None,
+        mcp_servers: editor,
     };
     let manager = SessionManager::open(store, providers, options)?;
+    editor_mcp::revoke_on_close(&manager, ctx.auth.clone(), ctx.shutdown.clone());
     let on_shutdown = manager.clone();
     let shutdown = ctx.shutdown.clone();
     tokio::spawn(async move {

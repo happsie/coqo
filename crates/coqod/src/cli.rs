@@ -9,6 +9,7 @@ use crate::lifecycle::IdlePolicy;
 
 pub const USAGE: &str = "\
 Usage: coqod [MODE] [OPTIONS]
+       coqod mcp --workspace ID --session ID
 
 Modes:
   (none)          Start the daemon in the background if it is not running,
@@ -18,6 +19,9 @@ Modes:
                   what the UI and CLI use when they spawn coqod.
   --version, -V   Print the version.
   --help, -h      Print this help.
+  mcp             The coqo-editor MCP server for one agent session, on stdin
+                  and stdout (PLAN 7.4). The daemon launches it for agents;
+                  it reads a one-time token from COQO_SESSION_TOKEN.
 
 Options:
   --idle-stop-services DUR  Idle time before services such as language
@@ -36,6 +40,8 @@ Environment:
   COQO_DATA_DIR     Data directory (default: $XDG_DATA_HOME/coqo,
                     ~/Library/Application Support/Coqo).
   COQO_LOG          Log filter, e.g. `debug` or `coqod=debug,info`.
+  COQO_EDITOR_MCP   `1` to give agent sessions the coqo-editor MCP server
+                    (`coqod mcp`). Off by default for now.
 ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +51,18 @@ pub enum Mode {
     Detached,
     Version,
     Help,
+    /// `coqod mcp`: the coqo-editor MCP server.
+    Mcp,
+}
+
+/// Arguments of `coqod mcp`. The token is not one of them: it comes from
+/// `COQO_SESSION_TOKEN`, never `argv` (ADR 0012).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpArgs {
+    /// The agent's workspace id.
+    pub workspace: String,
+    /// The agent session id.
+    pub session: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,13 +71,24 @@ pub struct Args {
     pub idle: IdlePolicy,
     /// The idle options as given, passed on when `Start` spawns the daemon.
     pub idle_args: Vec<OsString>,
+    /// For [`Mode::Mcp`].
+    pub mcp: Option<McpArgs>,
 }
 
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
     let mut mode = None;
     let mut idle = IdlePolicy::default();
     let mut idle_args = Vec::new();
-    let mut args = args.into_iter();
+    let mut args = args.into_iter().peekable();
+    if args.peek().is_some_and(|a| a == "mcp") {
+        args.next();
+        return Ok(Args {
+            mode: Mode::Mcp,
+            idle: IdlePolicy::default(),
+            idle_args: Vec::new(),
+            mcp: Some(parse_mcp(args)?),
+        });
+    }
     let mut set_mode = |m: Mode| match mode.replace(m) {
         Some(prev) if prev != m => Err("only one mode can be given".to_owned()),
         _ => Ok(()),
@@ -101,6 +130,33 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
         mode: mode.unwrap_or(Mode::Start),
         idle,
         idle_args,
+        mcp: None,
+    })
+}
+
+fn parse_mcp(args: impl Iterator<Item = OsString>) -> Result<McpArgs, String> {
+    let (mut workspace, mut session) = (None, None);
+    let mut args = args.map(|a| {
+        a.into_string()
+            .map_err(|a| format!("invalid argument: {}", a.to_string_lossy()))
+    });
+    while let Some(arg) = args.next() {
+        let arg = arg?;
+        let slot = match arg.as_str() {
+            "--workspace" => &mut workspace,
+            "--session" => &mut session,
+            other => return Err(format!("coqod mcp: unknown argument: {other}")),
+        };
+        let value = args
+            .next()
+            .transpose()?
+            .filter(|v| !v.is_empty() && !v.starts_with("--"))
+            .ok_or_else(|| format!("coqod mcp: {arg} needs a value"))?;
+        *slot = Some(value);
+    }
+    Ok(McpArgs {
+        workspace: workspace.ok_or("coqod mcp: --workspace is required")?,
+        session: session.ok_or("coqod mcp: --session is required")?,
     })
 }
 
@@ -165,5 +221,26 @@ mod tests {
         assert!(parse_strs(&["--foreground", "--detached"]).is_err());
         assert!(parse_strs(&["--idle-exit"]).is_err());
         assert!(parse_strs(&["--bogus"]).is_err());
+    }
+
+    #[test]
+    fn mcp_mode() {
+        let args = parse_strs(&["mcp", "--workspace", "ws-1", "--session", "s-1"]).unwrap();
+        assert_eq!(args.mode, Mode::Mcp);
+        assert_eq!(
+            args.mcp,
+            Some(McpArgs {
+                workspace: "ws-1".into(),
+                session: "s-1".into(),
+            })
+        );
+        assert!(parse_strs(&["mcp", "--workspace", "ws-1"]).is_err());
+        assert!(parse_strs(&["mcp", "--workspace", "--session", "s"]).is_err());
+        // There is no way to pass a token on the command line.
+        let e =
+            parse_strs(&["mcp", "--workspace", "w", "--session", "s", "--token", "t"]).unwrap_err();
+        assert!(e.contains("--token"), "{e}");
+        // `mcp` is a subcommand only in first position.
+        assert!(parse_strs(&["--foreground", "mcp"]).is_err());
     }
 }
