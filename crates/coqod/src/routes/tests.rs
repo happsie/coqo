@@ -46,6 +46,9 @@ const SESSION_ROUTES: &[(&str, AccessKind)] = &[
     ("fs/list", AccessKind::Workspace),
     ("fs/read", AccessKind::Workspace),
     ("fs/stat", AccessKind::Workspace),
+    ("mcp/call", AccessKind::Check),
+    ("mcp/tools", AccessKind::Workspace),
+    ("mcp/toolsChanged", AccessKind::Workspace),
     ("syntax/folding", AccessKind::Check),
     ("syntax/outline", AccessKind::Check),
     ("syntax/symbols", AccessKind::Check),
@@ -64,7 +67,10 @@ pub(crate) fn context(dir: &Path) -> DaemonContext {
         shutdown: CancellationToken::new(),
         started_at: SystemTime::now(),
         started: tokio::time::Instant::now(),
-        mods: Mods::load(test_builtins(&dir.join("mods"))),
+        mods: Mods::load(test_builtins(&dir.join("mods")).with(
+            crate::mcp_tools::tests::PROBE_MANIFEST,
+            crate::mcp_tools::tests::Probe,
+        )),
         auth: Auth::generate().unwrap(),
         agent_fs: coqo_acp_host::FsHandle::new(),
     }
@@ -205,6 +211,26 @@ fn probes(
             json!({ "workspace": ws.id }),
         ),
         ("editor/reveal", RouteKind::Method, path(file)),
+        (
+            "mcp/tools",
+            RouteKind::Method,
+            json!({ "workspace": ws.id }),
+        ),
+        (
+            "mcp/toolsChanged",
+            RouteKind::Topic,
+            json!({ "workspace": ws.id }),
+        ),
+        (
+            "mcp/call",
+            RouteKind::Method,
+            json!({
+                "workspace": ws.id,
+                "session": "session-1",
+                "name": crate::mcp_tools::tests::PROBE_TOOL,
+                "arguments": { "text": "probe" },
+            }),
+        ),
         (
             "buffer/close",
             RouteKind::Method,

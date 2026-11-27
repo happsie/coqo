@@ -26,11 +26,10 @@
 //!     "additionalProperties": false,
 //! });
 //! assert!(validate(&schema, &json!({ "path": "a.rs", "line": 3 })).is_ok());
-//! let err = validate(&schema, &json!({ "line": 0, "extra": true })).unwrap_err();
-//! assert_eq!(
-//!     err,
-//!     "`path` is required; `line` must be at least 1; `extra` is not a known argument"
-//! );
+//! let err = validate(&schema, &json!({ "line": 0 })).unwrap_err();
+//! assert_eq!(err, "`path` is required; `line` must be at least 1");
+//! let err = validate(&schema, &json!({ "path": "a.rs", "extra": true })).unwrap_err();
+//! assert_eq!(err, "`extra` is not a known argument");
 //! ```
 
 use serde_json::{Map, Value};

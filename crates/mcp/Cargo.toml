@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 coqo-client = { path = "../client" }
 coqo-protocol = { path = "../protocol" }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # The official Rust MCP SDK (Apache-2.0). Only the server side over an
 # async reader and writer: no HTTP, no OAuth, no chrono.
 rmcp = { version = "3.12", default-features = false, features = ["server"] }

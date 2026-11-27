@@ -230,8 +230,19 @@ async fn initialize_list_and_call() {
     let list = agent.request("tools/list", json!({})).await;
     let tools = list["result"]["tools"].as_array().unwrap();
     let names: Vec<_> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["read_file", "workspace_info"]);
-    let read = &tools[0];
+    assert_eq!(
+        names,
+        [
+            "editor_context",
+            "editor_reveal",
+            "file_outline",
+            "find_files",
+            "list_files",
+            "read_file",
+            "workspace_info"
+        ]
+    );
+    let read = tools.iter().find(|t| t["name"] == "read_file").unwrap();
     assert_eq!(read["inputSchema"]["type"], "object");
     assert_eq!(read["inputSchema"]["required"], json!(["path"]));
     assert_eq!(read["annotations"]["readOnlyHint"], true);
@@ -309,7 +320,7 @@ async fn registry_changes_and_progress_reach_the_agent() {
     registry.register(Slow).unwrap();
     agent.notification("notifications/tools/list_changed").await;
     let list = agent.request("tools/list", json!({})).await;
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 3);
+    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 8);
 
     let r = agent
         .request(

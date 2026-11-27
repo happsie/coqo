@@ -269,10 +269,11 @@ async fn reveals_reach_the_ui() {
         assert_eq!(err.rpc().map(|e| e.code), Some(code), "{params:?}: {err}");
     }
     // Following reveals takes the daemon token.
-    let err = agent
+    let Err(err) = agent
         .subscribe::<edm::Reveals>(RevealsParams::default(), None)
         .await
-        .err()
-        .expect("refused");
+    else {
+        panic!("following reveals with a session token");
+    };
     assert_eq!(err.rpc().map(|e| e.code), Some(codes::FORBIDDEN), "{err}");
 }

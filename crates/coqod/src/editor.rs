@@ -32,6 +32,9 @@ use crate::workspace::WorkspaceService;
 /// Reveals kept for slow subscribers.
 const REVEAL_LOG: usize = 64;
 
+/// A workspace's windows, by connection and window id.
+type Windows = BTreeMap<(u64, String), Window>;
+
 #[derive(Debug)]
 struct Window {
     peer: Peer,
@@ -43,7 +46,7 @@ struct Window {
 pub struct EditorService {
     workspaces: Arc<WorkspaceService>,
     /// By workspace, then by (connection, window).
-    windows: Mutex<HashMap<WorkspaceId, BTreeMap<(u64, String), Window>>>,
+    windows: Mutex<HashMap<WorkspaceId, Windows>>,
     reveals: Arc<SeqLog<RevealEvent>>,
 }
 

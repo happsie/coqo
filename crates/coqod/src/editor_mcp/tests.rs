@@ -349,7 +349,9 @@ async fn a_session_bridge_reaches_its_own_workspace_until_the_session_closes() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(names, ["read_file", "workspace_info"]);
+    for name in ["read_file", "workspace_info", "editor_context"] {
+        assert!(names.iter().any(|n| n == name), "{name} in {names:?}");
+    }
 
     let (is_error, _, info) = bridge.call("workspace_info", json!({})).await;
     assert!(!is_error, "{info}");

@@ -1287,6 +1287,7 @@ version = "0.0.0"
 dependencies = [
  "coqo-client",
  "coqo-protocol",
+ "futures-util",
  "rmcp",
  "serde",
  "serde_json",

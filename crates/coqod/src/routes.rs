@@ -23,6 +23,7 @@ use coqo_protocol::Router;
 use crate::buffers::{self, BufferConfig, BufferService};
 use crate::daemon::DaemonContext;
 use crate::editor::{self, EditorService};
+use crate::mcp_tools::{self, McpToolService};
 use crate::syntax::{self, SyntaxService};
 use crate::workspace::{self, WorkspaceService};
 use crate::{agents, methods, terminal};
@@ -32,6 +33,10 @@ use crate::{agents, methods, terminal};
 pub fn router(ctx: &DaemonContext) -> Result<Router> {
     let router = Router::new();
     let router = methods::register(router, ctx);
+    let router = mcp_tools::register(
+        router,
+        McpToolService::new(ctx.mods.clone(), ctx.shutdown.clone()),
+    );
     // Services, one line each.
     let workspaces = Arc::new(WorkspaceService::open(ctx.data.clone())?);
     let router = workspace::register(router, Arc::clone(&workspaces));
