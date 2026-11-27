@@ -14,6 +14,7 @@ use tokio::process::{Child, Command};
 use tokio::time::Instant;
 
 use crate::paths::{DAEMON_BIN_ENV, DaemonPaths, NoRuntimeDir, RUNTIME_DIR_ENV};
+use crate::runtime_dir::{RuntimeDir, RuntimeDirError, current_uid};
 
 /// The flag [`connect_or_spawn`] passes to `coqod`: start a new session
 /// (`setsid`), log to a file, and serve until idle.
@@ -30,6 +31,19 @@ pub enum ConnectError {
     /// No runtime directory could be determined.
     #[error(transparent)]
     NoRuntimeDir(#[from] NoRuntimeDir),
+    /// The runtime directory or the token file cannot be trusted: a
+    /// symlink, another user's, or open to other users.
+    #[error(transparent)]
+    RuntimeDir(#[from] RuntimeDirError),
+    /// The process listening on the socket runs as another user. Nothing
+    /// was sent to it.
+    #[error("{} is served by uid {uid}, not by you; refusing to talk to it", path.display())]
+    ForeignDaemon {
+        /// The socket.
+        path: PathBuf,
+        /// The listener's uid.
+        uid: u32,
+    },
     /// Nothing is listening on the socket (no daemon, or a stale socket
     /// left by a crashed one).
     #[error("coqod is not running (nothing listens on {})", .0.display())]
@@ -161,17 +175,44 @@ impl Connection {
 
 /// Attach to a running daemon.
 ///
-/// Returns [`ConnectError::NotRunning`] when no daemon listens on the socket.
+/// Before sending anything this checks that the runtime directory is the
+/// user's own and private ([`RuntimeDir`]) and that the process on the
+/// socket runs as the same user. Unless `config.token` is already set (a
+/// scoped token, say), it then sends the daemon's session token from
+/// `coqod.token`, read after connecting so it belongs to the daemon that
+/// accepted the connection.
+///
+/// Returns [`ConnectError::NotRunning`] when no daemon listens on the
+/// socket, and [`ProtocolError::Unauthorized`] (inside
+/// [`ConnectError::Protocol`]) when the daemon rejects the token.
 pub async fn connect(
     paths: &DaemonPaths,
-    config: ClientConfig,
+    mut config: ClientConfig,
 ) -> Result<(Client, Notifications), ConnectError> {
     let path = paths.socket();
+    let Some(dir) = RuntimeDir::open(paths.runtime_dir())? else {
+        return Err(ConnectError::NotRunning(path));
+    };
     let stream = match UnixStream::connect(&path).await {
         Ok(stream) => stream,
         Err(e) if is_not_running(&e) => return Err(ConnectError::NotRunning(path)),
         Err(source) => return Err(ConnectError::Io { path, source }),
     };
+    let uid = stream
+        .peer_cred()
+        .map_err(|source| ConnectError::Io {
+            path: path.clone(),
+            source,
+        })?
+        .uid();
+    if uid != current_uid() {
+        return Err(ConnectError::ForeignDaemon { path, uid });
+    }
+    if config.token.is_none() {
+        // `None`: an older daemon without tokens. A daemon that needs one
+        // answers with a clear `Unauthorized`.
+        config.token = dir.read_token()?;
+    }
     Ok(Client::connect(stream, config).await?)
 }
 
@@ -274,6 +315,13 @@ fn spawn(paths: &DaemonPaths, options: &SpawnOptions) -> Result<Child, ConnectEr
 mod tests {
     use super::*;
 
+    /// A private, not yet created runtime directory in a fresh temp dir.
+    fn run_dir() -> (tempfile::TempDir, DaemonPaths) {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = DaemonPaths::at(tmp.path().join("run"));
+        (tmp, paths)
+    }
+
     fn options(program: &str) -> ConnectOptions {
         let mut options = ConnectOptions::new(ClientConfig::new("test", "test"));
         options.spawn = SpawnOptions::new(program);
@@ -283,8 +331,12 @@ mod tests {
 
     #[tokio::test]
     async fn no_socket_is_not_running() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = DaemonPaths::at(dir.path());
+        let (_tmp, paths) = run_dir();
+        let err = connect(&paths, ClientConfig::new("test", "test"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ConnectError::NotRunning(_)), "{err}");
+        RuntimeDir::create(paths.runtime_dir()).unwrap();
         let err = connect(&paths, ClientConfig::new("test", "test"))
             .await
             .unwrap_err();
@@ -293,8 +345,8 @@ mod tests {
 
     #[tokio::test]
     async fn stale_socket_is_not_running() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = DaemonPaths::at(dir.path());
+        let (_tmp, paths) = run_dir();
+        RuntimeDir::create(paths.runtime_dir()).unwrap();
         drop(std::os::unix::net::UnixListener::bind(paths.socket()).unwrap());
         assert!(paths.socket().exists());
         let err = connect(&paths, ClientConfig::new("test", "test"))
@@ -305,8 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_binary_is_a_spawn_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = DaemonPaths::at(dir.path());
+        let (_tmp, paths) = run_dir();
         let err = connect_or_spawn(&paths, &options("/nonexistent/coqod"))
             .await
             .unwrap_err();
@@ -315,11 +366,101 @@ mod tests {
 
     #[tokio::test]
     async fn daemon_that_exits_is_reported() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = DaemonPaths::at(dir.path());
+        let (_tmp, paths) = run_dir();
         let err = connect_or_spawn(&paths, &options("false"))
             .await
             .unwrap_err();
         assert!(matches!(err, ConnectError::DaemonExited { .. }), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_insecure_runtime_dir_is_refused_before_connecting() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (_tmp, paths) = run_dir();
+        std::fs::create_dir(paths.runtime_dir()).unwrap();
+        std::fs::set_permissions(paths.runtime_dir(), std::fs::Permissions::from_mode(0o777))
+            .unwrap();
+        // Something listens, but the client must not talk to it.
+        let _listener = std::os::unix::net::UnixListener::bind(paths.socket()).unwrap();
+        let err = connect(&paths, ClientConfig::new("test", "test"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ConnectError::RuntimeDir(RuntimeDirError::TooOpen { .. })
+            ),
+            "{err}"
+        );
+        // connect_or_spawn does not spawn over it either.
+        let err = connect_or_spawn(&paths, &options("/nonexistent/coqod"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ConnectError::RuntimeDir(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_token_file_is_sent_in_the_hello() {
+        use coqo_protocol::{Authenticator, Router, Scope, Server, ServerConfig, Unauthorized};
+        use std::os::unix::fs::PermissionsExt as _;
+
+        #[derive(Debug)]
+        struct Expect(coqo_protocol::SessionToken);
+        impl Authenticator for Expect {
+            fn authenticate(
+                &self,
+                token: Option<&coqo_protocol::SessionToken>,
+            ) -> Result<Scope, Unauthorized> {
+                match token {
+                    Some(t) if *t == self.0 => Ok(Scope::Daemon),
+                    _ => Err(Unauthorized("bad token".into())),
+                }
+            }
+        }
+
+        let (_tmp, paths) = run_dir();
+        RuntimeDir::create(paths.runtime_dir()).unwrap();
+        let listener = tokio::net::UnixListener::bind(paths.socket()).unwrap();
+        let mut config = ServerConfig::new("test-daemon", "test");
+        config.authenticator = Some(std::sync::Arc::new(Expect(
+            coqo_protocol::SessionToken::new("right"),
+        )));
+        let server = Server::new(Router::new(), config);
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let server = server.clone();
+                tokio::spawn(async move { server.serve(stream).await });
+            }
+        });
+
+        // No token file: no token, so the server says why.
+        let err = connect(&paths, ClientConfig::new("test", "test"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ConnectError::Protocol(ProtocolError::Unauthorized(_))),
+            "{err}"
+        );
+
+        std::fs::write(paths.token_file(), "wrong\n").unwrap();
+        std::fs::set_permissions(paths.token_file(), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        let err = connect(&paths, ClientConfig::new("test", "test"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ConnectError::Protocol(ProtocolError::Unauthorized(_))),
+            "{err}"
+        );
+
+        std::fs::write(paths.token_file(), "right\n").unwrap();
+        connect(&paths, ClientConfig::new("test", "test"))
+            .await
+            .expect("the right token is accepted");
+
+        // An explicit token wins over the file.
+        let mut config = ClientConfig::new("test", "test");
+        config.token = Some(coqo_protocol::SessionToken::new("explicit"));
+        assert!(connect(&paths, config).await.is_err());
     }
 }

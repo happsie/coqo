@@ -5,7 +5,7 @@
 use std::time::UNIX_EPOCH;
 
 use coqo_protocol::daemon::{DaemonStatus, IdleStatus, Shutdown, ShutdownResult, Status};
-use coqo_protocol::{PROTOCOL_VERSION, Router};
+use coqo_protocol::{Method as _, PROTOCOL_VERSION, Router};
 
 use crate::daemon::{BUILD, DaemonContext, VERSION};
 
@@ -46,6 +46,10 @@ pub fn register(router: Router, ctx: &DaemonContext) -> Router {
             async move { Ok(status) }
         })
         .method::<Shutdown, _, _>(move |req, params| {
+            // A token scoped to one agent session cannot stop the daemon.
+            if let Err(e) = req.scope.require_daemon(Shutdown::NAME) {
+                return std::future::ready(Err(e));
+            }
             let busy = shutdown_ctx.activity.snapshot().busy;
             let stopping = params.force || busy.is_empty();
             if stopping {
@@ -61,6 +65,6 @@ pub fn register(router: Router, ctx: &DaemonContext) -> Router {
                 stopping,
                 busy: if stopping { Vec::new() } else { busy },
             };
-            async move { Ok(result) }
+            std::future::ready(Ok(result))
         })
 }

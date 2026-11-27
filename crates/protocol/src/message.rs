@@ -85,6 +85,12 @@ pub mod codes {
     pub const UNKNOWN_SUBSCRIPTION: i64 = -32004;
     /// The request was cancelled (for example, the connection is closing).
     pub const REQUEST_CANCELLED: i64 = -32005;
+    /// Handshake: the server requires a session token and the client sent
+    /// none, or a wrong one. The server closes the connection.
+    pub const UNAUTHORIZED: i64 = -32006;
+    /// The connection's token does not grant this call (for example, a
+    /// token scoped to another workspace).
+    pub const FORBIDDEN: i64 = -32007;
 }
 
 /// A JSON-RPC 2.0 error object (§5.1).

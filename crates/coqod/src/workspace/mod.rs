@@ -49,7 +49,7 @@ use coqo_protocol::methods::workspace::{
     self as wsm, AddRootParams, ListResult, OpenParams, RemoveRootParams, RenameParams, RootId,
     SetStateParams, WorkspaceEvent, WorkspaceId, WorkspaceInfo, WorkspaceParams, WorkspaceState,
 };
-use coqo_protocol::{ErrorObject, EventFeed, Router};
+use coqo_protocol::{ErrorObject, EventFeed, Method, Router, Scope, Topic};
 use coqo_storage::{DataDirs, GlobalDb, StorageError};
 
 use self::ignores::IgnoreCache;
@@ -605,38 +605,125 @@ impl WorkspaceService {
     }
 }
 
+/// Who may call a route, checked against the connection's token scope
+/// before the handler runs (ADR 0007, *Socket security*).
+///
+/// A session token (what `coqod mcp` gets) may read and use its own
+/// workspace. Opening, listing and managing workspaces (adding roots gives
+/// access to more of the disk) needs the daemon token.
+fn daemon_only<P>(name: &'static str) -> impl Fn(&Scope, &P) -> Result<(), ErrorObject> {
+    move |scope, _| scope.require_daemon(name)
+}
+
+fn in_workspace(scope: &Scope, id: &WorkspaceId) -> Result<(), ErrorObject> {
+    scope.require_workspace(&id.0)
+}
+
 macro_rules! route {
-    ($router:expr, $svc:expr, $method:ty, |$s:ident, $p:ident| $body:expr) => {{
+    ($router:expr, $svc:expr, $method:ty, $guard:expr, |$s:ident, $p:ident| $body:expr) => {{
         let svc = Arc::clone(&$svc);
-        $router.method::<$method, _, _>(move |_ctx, $p| {
+        let guard = $guard;
+        $router.method::<$method, _, _>(move |ctx, $p| {
             let $s = Arc::clone(&svc);
-            async move { $body.await }
+            let allowed = guard(&ctx.scope, &$p);
+            async move {
+                allowed?;
+                $body.await
+            }
         })
     }};
 }
 
 /// Register every `workspace/*` and `fs/*` method and topic on `router`.
 pub fn register(router: Router, svc: Arc<WorkspaceService>) -> Router {
-    let router = route!(router, svc, wsm::Open, |s, p| s.open_workspace(p));
-    let router = route!(router, svc, wsm::List, |s, _p| s.list());
-    let router = route!(router, svc, wsm::Get, |s, p| s.get(p));
-    let router = route!(router, svc, wsm::Close, |s, p| s.close(p));
-    let router = route!(router, svc, wsm::Remove, |s, p| s.remove(p));
-    let router = route!(router, svc, wsm::AddRoot, |s, p| s.add_root(p));
-    let router = route!(router, svc, wsm::RemoveRoot, |s, p| s.remove_root(p));
-    let router = route!(router, svc, wsm::Rename, |s, p| s.rename(p));
-    let router = route!(router, svc, wsm::GetState, |s, p| s.get_state(p));
-    let router = route!(router, svc, wsm::SetState, |s, p| s.set_state(p));
-    let router = route!(router, svc, fsm::ListDir, |s, p| s.list_dir(p));
-    let router = route!(router, svc, fsm::Stat, |s, p| s.stat(p));
-    let router = route!(router, svc, fsm::ReadFile, |s, p| s.read_file(p));
+    let mine = |scope: &Scope, p: &wsm::WorkspaceParams| in_workspace(scope, &p.id);
+    let router = route!(
+        router,
+        svc,
+        wsm::Open,
+        daemon_only(wsm::Open::NAME),
+        |s, p| s.open_workspace(p)
+    );
+    let router = route!(
+        router,
+        svc,
+        wsm::List,
+        daemon_only(wsm::List::NAME),
+        |s, _p| s.list()
+    );
+    let router = route!(router, svc, wsm::Get, mine, |s, p| s.get(p));
+    let router = route!(
+        router,
+        svc,
+        wsm::Close,
+        daemon_only(wsm::Close::NAME),
+        |s, p| s.close(p)
+    );
+    let router = route!(
+        router,
+        svc,
+        wsm::Remove,
+        daemon_only(wsm::Remove::NAME),
+        |s, p| s.remove(p)
+    );
+    let router = route!(
+        router,
+        svc,
+        wsm::AddRoot,
+        daemon_only(wsm::AddRoot::NAME),
+        |s, p| s.add_root(p)
+    );
+    let router = route!(
+        router,
+        svc,
+        wsm::RemoveRoot,
+        daemon_only(wsm::RemoveRoot::NAME),
+        |s, p| s.remove_root(p)
+    );
+    let router = route!(
+        router,
+        svc,
+        wsm::Rename,
+        daemon_only(wsm::Rename::NAME),
+        |s, p| s.rename(p)
+    );
+    let router = route!(router, svc, wsm::GetState, mine, |s, p| s.get_state(p));
+    let router = route!(
+        router,
+        svc,
+        wsm::SetState,
+        |scope: &Scope, p: &wsm::SetStateParams| in_workspace(scope, &p.id),
+        |s, p| s.set_state(p)
+    );
+    let on_path = |scope: &Scope, p: &fsm::PathParams| in_workspace(scope, &p.workspace);
+    let router = route!(router, svc, fsm::ListDir, on_path, |s, p| s.list_dir(p));
+    let router = route!(router, svc, fsm::Stat, on_path, |s, p| s.stat(p));
+    let router = route!(
+        router,
+        svc,
+        fsm::ReadFile,
+        |scope: &Scope, p: &fsm::ReadParams| in_workspace(scope, &p.workspace),
+        |s, p| s.read_file(p)
+    );
     let events = Arc::clone(&svc);
-    let router = router.topic::<wsm::Events, _, _>(move |_ctx, p, since| {
+    let router = router.topic::<wsm::Events, _, _>(move |ctx, p, since| {
         let s = Arc::clone(&events);
-        async move { s.events(p, since).await }
+        // Without a workspace filter the feed covers every workspace.
+        let allowed = match &p.workspace {
+            Some(id) => in_workspace(&ctx.scope, id),
+            None => ctx.scope.require_daemon(wsm::Events::NAME),
+        };
+        async move {
+            allowed?;
+            s.events(p, since).await
+        }
     });
-    router.topic::<fsm::Changes, _, _>(move |_ctx, p, since| {
+    router.topic::<fsm::Changes, _, _>(move |ctx, p, since| {
         let s = Arc::clone(&svc);
-        async move { s.fs_changes(p, since).await }
+        let allowed = in_workspace(&ctx.scope, &p.workspace);
+        async move {
+            allowed?;
+            s.fs_changes(p, since).await
+        }
     })
 }

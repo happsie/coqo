@@ -196,6 +196,8 @@ fn error_codes() -> Value {
         "NOT_A_FILE": methods::codes::NOT_A_FILE,
         "WORKSPACE_CLOSED": methods::codes::WORKSPACE_CLOSED,
         "IO_ERROR": methods::codes::IO_ERROR,
+        "UNAUTHORIZED": codes::UNAUTHORIZED,
+        "FORBIDDEN": codes::FORBIDDEN,
     })
 }
 

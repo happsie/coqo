@@ -352,6 +352,17 @@
         "protocol": {
           "$ref": "#/$defs/ProtocolVersion",
           "description": "The client's protocol version."
+        },
+        "token": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionToken"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The session token that authenticates this client (since 0.1). A\nserver that authenticates (`coqod` does) rejects a missing or wrong\none with [`codes::UNAUTHORIZED`]. Never logged; servers drop it from\nthe [`Hello`] they hand to request handlers."
         }
       },
       "required": [
@@ -682,6 +693,10 @@
       "format": "uint32",
       "minimum": 0,
       "type": "integer"
+    },
+    "SessionToken": {
+      "description": "A secret that authenticates a connection: the daemon's per-boot token,\nor a token scoped to one workspace and agent session.\n\nIt is a string on the wire. `Debug` prints `SessionToken(<redacted>)`\nand equality is constant-time, so the token neither leaks into logs nor\nthrough comparison timing. Use [`SessionToken::expose`] only to send or\nstore it.",
+      "type": "string"
     },
     "SetStateParams": {
       "description": "Params of [`SetState`].",
@@ -1079,6 +1094,7 @@
   "title": "Coqo Protocol",
   "x-error-codes": {
     "FILE_TOO_LARGE": 1005,
+    "FORBIDDEN": -32007,
     "INCOMPATIBLE_PROTOCOL": -32001,
     "INTERNAL_ERROR": -32603,
     "INVALID_PARAMS": -32602,
@@ -1093,6 +1109,7 @@
     "PATH_OUTSIDE_WORKSPACE": 1003,
     "REQUEST_CANCELLED": -32005,
     "RESUME_GAP": -32003,
+    "UNAUTHORIZED": -32006,
     "UNKNOWN_ROOT": 1002,
     "UNKNOWN_SUBSCRIPTION": -32004,
     "UNKNOWN_WORKSPACE": 1001,
@@ -1339,6 +1356,6 @@
   },
   "x-protocol-version": {
     "major": 0,
-    "minor": 0
+    "minor": 1
   }
 }

@@ -971,3 +971,148 @@ fn cpu_time() -> Option<Duration> {
     // USER_HZ is 100 on every mainstream Linux configuration.
     Some(Duration::from_millis(ticks * 10))
 }
+
+// ---- token scopes -----------------------------------------------------------
+
+async fn connect_with_token(
+    svc: &Arc<WorkspaceService>,
+    auth: &crate::auth::Auth,
+    token: coqo_protocol::SessionToken,
+) -> Client {
+    let router = register(Router::new(), Arc::clone(svc));
+    let mut config = ServerConfig::new("coqod", "test");
+    config.authenticator = Some(Arc::new(auth.clone()));
+    let server = Server::new(router, config);
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    tokio::spawn(async move { server.serve(server_io).await });
+    let mut config = ClientConfig::new("test", "test");
+    config.token = Some(token);
+    Client::connect(client_io, config).await.unwrap().0
+}
+
+fn assert_forbidden(e: &ProtocolError) {
+    assert_eq!(
+        e.rpc().map(|e| e.code),
+        Some(coqo_protocol::codes::FORBIDDEN),
+        "{e}"
+    );
+}
+
+async fn forbidden<M: Method>(client: &Client, params: M::Params)
+where
+    M::Result: std::fmt::Debug,
+{
+    match client.request::<M>(params).await {
+        Err(e) => assert_forbidden(&e),
+        Ok(r) => panic!("{} should be forbidden, got {r:?}", M::NAME),
+    }
+}
+
+/// A token scoped to workspace A cannot call into workspace B, nor manage
+/// workspaces; the daemon token can do everything.
+#[tokio::test]
+async fn a_session_token_stays_in_its_workspace() {
+    let data = tempfile::tempdir().unwrap();
+    let svc = service(data.path());
+    let auth = crate::auth::Auth::generate().unwrap();
+    let admin = connect_with_token(&svc, &auth, auth.daemon_token()).await;
+    let (dir_a, dir_b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    write(dir_a.path(), "a.txt", b"in a");
+    write(dir_b.path(), "b.txt", b"in b");
+    let open = |dir: &TempDir| OpenParams {
+        path: Some(dir.path().to_str().unwrap().to_owned()),
+        ..OpenParams::default()
+    };
+    let a = admin.request::<wsm::Open>(open(&dir_a)).await.unwrap();
+    let b = admin.request::<wsm::Open>(open(&dir_b)).await.unwrap();
+
+    let token = auth.mint_session(a.id.0.clone(), "session-1").unwrap();
+    let agent = connect_with_token(&svc, &auth, token).await;
+
+    // Its own workspace works.
+    agent
+        .request::<fsm::ReadFile>(read(&a, "a.txt", None))
+        .await
+        .unwrap();
+    agent.request::<fsm::ListDir>(at(&a, 0, "")).await.unwrap();
+    agent
+        .request::<wsm::Get>(WorkspaceParams { id: a.id.clone() })
+        .await
+        .unwrap();
+    agent
+        .subscribe::<wsm::Events>(
+            EventsParams {
+                workspace: Some(a.id.clone()),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Workspace B does not.
+    forbidden::<fsm::ReadFile>(&agent, read(&b, "b.txt", None)).await;
+    forbidden::<fsm::ListDir>(&agent, at(&b, 0, "")).await;
+    forbidden::<fsm::Stat>(&agent, at(&b, 0, "b.txt")).await;
+    forbidden::<wsm::Get>(&agent, WorkspaceParams { id: b.id.clone() }).await;
+    forbidden::<wsm::GetState>(&agent, WorkspaceParams { id: b.id.clone() }).await;
+    forbidden::<wsm::SetState>(
+        &agent,
+        SetStateParams {
+            id: b.id.clone(),
+            key: "k".into(),
+            value: json!(1),
+        },
+    )
+    .await;
+    for params in [
+        EventsParams {
+            workspace: Some(b.id.clone()),
+        },
+        EventsParams::default(),
+    ] {
+        let e = agent
+            .subscribe::<wsm::Events>(params, None)
+            .await
+            .unwrap_err();
+        assert_forbidden(&e);
+    }
+    let e = agent
+        .subscribe::<fsm::Changes>(
+            ChangesParams {
+                workspace: b.id.clone(),
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_forbidden(&e);
+
+    // Managing workspaces needs the daemon token, even for its own.
+    forbidden::<wsm::List>(&agent, ()).await;
+    forbidden::<wsm::Open>(&agent, open(&dir_b)).await;
+    forbidden::<wsm::AddRoot>(
+        &agent,
+        AddRootParams {
+            id: a.id.clone(),
+            path: dir_b.path().to_str().unwrap().to_owned(),
+            name: None,
+        },
+    )
+    .await;
+    forbidden::<wsm::Close>(&agent, WorkspaceParams { id: a.id.clone() }).await;
+
+    // The daemon token reaches both.
+    admin
+        .request::<fsm::ReadFile>(read(&b, "b.txt", None))
+        .await
+        .unwrap();
+    assert_eq!(
+        admin
+            .request::<wsm::List>(())
+            .await
+            .unwrap()
+            .workspaces
+            .len(),
+        2
+    );
+}

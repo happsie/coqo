@@ -19,10 +19,11 @@ COQO_BLESS=1 cargo test -p coqo-protocol schema
 
 ## Version
 
-This document describes protocol version **0.0** (`major.minor`).
+This document describes protocol version **0.1** (`major.minor`).
 
 - Two peers are **compatible** when their `major` versions are equal.
 - `minor` bumps only add things (new methods, new optional fields). A connection uses the lower of the two minors.
+- History: **0.1** added the optional `token` in `coqo/hello` and the `UNAUTHORIZED` / `FORBIDDEN` codes ([Authentication](#authentication-and-scopes)).
 - Builds (`build` in the handshake) may differ. A UI and a daemon from different builds keep working as long as their protocol versions are compatible (PLAN §4.3).
 
 ## Transport and framing
@@ -77,15 +78,16 @@ The first frame on every connection is a `coqo/hello` **request** from the clien
 ```jsonc
 // client → server
 {"jsonrpc": "2.0", "id": 0, "method": "coqo/hello", "params": {
-  "protocol": {"major": 0, "minor": 0},
+  "protocol": {"major": 0, "minor": 1},
   "build": "0.1.0+3f2a9c1",
   "client": "coqo-ui",
-  "encodings": ["msgpack", "json"]
+  "encodings": ["msgpack", "json"],
+  "token": "<64 hex digits>"   // since 0.1; see Authentication
 }}
 // server → client
 {"jsonrpc": "2.0", "id": 0, "result": {
-  "protocol": {"major": 0, "minor": 0},
-  "negotiated": {"major": 0, "minor": 0},
+  "protocol": {"major": 0, "minor": 1},
+  "negotiated": {"major": 0, "minor": 1},
   "build": "0.1.0+3f2a9c1",
   "server": "coqod",
   "encoding": "msgpack",
@@ -100,11 +102,25 @@ Failures are explicit. None of them hangs:
 | Incompatible `major` | The server answers error `-32001 INCOMPATIBLE_PROTOCOL` with `data: {"protocol": …, "build": …}` and closes. The client reports *"incompatible Coqo Protocol version: this side speaks X, the peer (build B) speaks Y"*. |
 | Anything other than `coqo/hello` first | Error `-32002 NOT_INITIALIZED` (for requests), then the server closes. |
 | Malformed hello params | Error `-32602 INVALID_PARAMS`, then the server closes. |
+| Missing or wrong `token` (servers that authenticate, such as `coqod`) | Error `-32006 UNAUTHORIZED` with a message saying what is wrong (never the expected token), then the server closes. The version check comes first, so an incompatible client still sees `-32001`. |
 | No answer within the timeout (default 5 s) | Either side gives up with a handshake-timeout error. |
 | Peer is not a Coqo endpoint | Its bytes almost always read as an oversized frame and fail immediately; otherwise the timeout applies. |
 | `coqo/hello` again after the handshake | Error `-32600 INVALID_REQUEST`; the connection stays open. |
 
 Unknown fields in `coqo/hello` and its result are ignored, so newer minors can add fields.
+
+## Authentication and scopes
+
+A server may require a **session token** in `coqo/hello` (`token`, a string). `coqod` does. It answers a missing or wrong token with `-32006 UNAUTHORIZED` and closes the connection. A server that does not authenticate ignores the field.
+
+`coqod` accepts two kinds of token:
+
+| Token | Where a client gets it | Scope |
+|---|---|---|
+| The **daemon token**: 256 random bits, hex, new at every daemon start | `coqod.token` (`0600`) in the runtime directory, next to the socket. `coqo-client` reads it automatically, after connecting. | Everything. |
+| A **session token**, minted by the daemon for one agent session | Passed to the process the agent launches (`coqod mcp`) in the `COQO_SESSION_TOKEN` environment variable, never in `argv`. | One agent session in one workspace. Calls outside it fail with `-32007 FORBIDDEN`; daemon-wide calls such as `daemon/shutdown` too. |
+
+Tokens are secrets. Compare them in constant time, and never log them or put them on a command line. The server takes the token out of the hello before request handlers see it. Before the handshake, `coqod` also checks that the connecting process runs as the same user (`SO_PEERCRED` / `getpeereid`), and both sides check that the runtime directory belongs to the user and is closed to everyone else ([ADR 0007](../docs/adr/0007-daemon-lifecycle.md)).
 
 ## Subscriptions
 
@@ -139,7 +155,7 @@ A **topic** is a named stream of events. Each event has a sequence number `seq` 
 | Method | Params | Result |
 |---|---|---|
 | `daemon/status` | none | `DaemonStatus`: `version`, `build`, `protocol`, `pid`, `startedAtMs`, `uptimeMs`, `connections` (including the caller), `busy` (reasons of the work keeping it alive), `idle` (`phase`: `active`, `idle` or `servicesStopped`, plus `stopServicesAfterSecs` and `exitAfterSecs`, `null` meaning never). |
-| `daemon/shutdown` | `{force?: bool}` | `{stopping, busy}`. Refused (`stopping: false`, with the busy reasons) while work is busy, unless `force` is set. When stopping, the daemon answers, closes every connection and exits. |
+| `daemon/shutdown` | `{force?: bool}` | `{stopping, busy}`. Refused (`stopping: false`, with the busy reasons) while work is busy, unless `force` is set. When stopping, the daemon answers, closes every connection and exits. Needs the daemon token (`-32007 FORBIDDEN` for a session token). |
 
 ## Error codes
 
@@ -155,6 +171,8 @@ A **topic** is a named stream of events. Each event has a sequence number `seq` 
 | -32003 | `RESUME_GAP` | Cannot resume from the requested `seq`; take a fresh snapshot. |
 | -32004 | `UNKNOWN_SUBSCRIPTION` | Unknown topic or subscription. |
 | -32005 | `REQUEST_CANCELLED` | The request was cancelled. |
+| -32006 | `UNAUTHORIZED` | Handshake: missing or wrong session token. |
+| -32007 | `FORBIDDEN` | The connection's token does not allow this call (for example, another workspace). |
 
 Application methods use codes outside `-32768..=-32000`.
 
@@ -176,6 +194,8 @@ A workspace is one or more folder roots with a stable id (`ws-…`), a name, `cr
 | `workspace/rename` | `{id, name}` → `WorkspaceInfo` |
 | `workspace/getState` | `{id}` → `{entries, seq}` |
 | `workspace/setState` | `{id, key, value}` → `null`. `value: null` removes the entry. |
+
+**Scopes.** A session token reaches only its own workspace: `workspace/get`, `workspace/getState`, `workspace/setState`, every `fs/*` method and topic, and `workspace/events` with `workspace` set to it. Everything else here (`open`, `list`, `close`, `remove`, `addRoot`, `removeRoot`, `rename`, and `workspace/events` without a filter) needs the daemon token. Out-of-scope calls fail with `-32007 FORBIDDEN`.
 
 Topic **`workspace/events`** (`{workspace?}`) carries `opened`, `closed`, `changed` (name or roots), `removed` and `stateChanged` events, tagged by `type`. It is backed by the persistent event log, so `seq`s are stable across daemon restarts and skip values that belong to other features. Reattach: `workspace/list`, then subscribe with `since` set to its `seq`.
 

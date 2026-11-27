@@ -2,6 +2,7 @@
 
 //! `coqod`: the Coqo background daemon (PLAN §4.3).
 //!
+//! - [`auth`]: peer credentials and session tokens: who may attach.
 //! - [`daemon`]: runtime directory, single-instance lock, socket, accept
 //!   loop and shutdown; [`DaemonContext`] is the state services get.
 //! - [`lifecycle`]: attached clients, busy guards and the idle policy.
@@ -15,6 +16,7 @@
 //!
 //! Clients reach the daemon through `coqo-client`, never this crate.
 
+pub mod auth;
 pub mod cli;
 pub mod daemon;
 pub mod lifecycle;

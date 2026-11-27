@@ -22,7 +22,12 @@ use crate::encoding::Encoding;
 use crate::message::{ErrorObject, codes};
 
 /// The Coqo Protocol version implemented by this crate.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 0 };
+///
+/// - 0.1: `coqo/hello` carries an optional session `token`; servers that
+///   authenticate answer a missing or wrong one with
+///   [`codes::UNAUTHORIZED`], and out-of-scope calls with
+///   [`codes::FORBIDDEN`].
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 1 };
 
 /// Default time either side waits for the other's half of the handshake.
 pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -73,6 +78,52 @@ pub struct Hello {
     /// order. JSON is always accepted, even if not listed.
     #[serde(default)]
     pub encodings: Vec<Encoding>,
+    /// The session token that authenticates this client (since 0.1). A
+    /// server that authenticates (`coqod` does) rejects a missing or wrong
+    /// one with [`codes::UNAUTHORIZED`]. Never logged; servers drop it from
+    /// the [`Hello`] they hand to request handlers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<SessionToken>,
+}
+
+/// A secret that authenticates a connection: the daemon's per-boot token,
+/// or a token scoped to one workspace and agent session.
+///
+/// It is a string on the wire. `Debug` prints `SessionToken(<redacted>)`
+/// and equality is constant-time, so the token neither leaks into logs nor
+/// through comparison timing. Use [`SessionToken::expose`] only to send or
+/// store it.
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(transparent)]
+pub struct SessionToken(String);
+
+impl SessionToken {
+    /// Wrap a token string.
+    pub fn new(token: impl Into<String>) -> Self {
+        Self(token.into())
+    }
+
+    /// The token itself. Never log it.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PartialEq for SessionToken {
+    fn eq(&self, other: &Self) -> bool {
+        use subtle::ConstantTimeEq as _;
+        // Leaks only the lengths, which are fixed for generated tokens.
+        self.0.as_bytes().ct_eq(other.0.as_bytes()).into()
+    }
+}
+
+impl Eq for SessionToken {}
+
+impl fmt::Debug for SessionToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SessionToken(<redacted>)")
+    }
 }
 
 /// Result of `coqo/hello`, sent by the server.
@@ -166,5 +217,37 @@ mod tests {
         }))
         .unwrap();
         assert!(h.encodings.is_empty());
+        assert!(h.token.is_none());
+    }
+
+    #[test]
+    fn hello_without_a_token_omits_the_field() {
+        let h = Hello {
+            protocol: PROTOCOL_VERSION,
+            build: "b".into(),
+            client: "c".into(),
+            encodings: Vec::new(),
+            token: None,
+        };
+        let v = serde_json::to_value(&h).unwrap();
+        assert!(v.get("token").is_none(), "{v}");
+    }
+
+    #[test]
+    fn tokens_are_redacted_and_compare_by_value() {
+        let t = SessionToken::new("s3cret");
+        assert_eq!(format!("{t:?}"), "SessionToken(<redacted>)");
+        let h = Hello {
+            protocol: PROTOCOL_VERSION,
+            build: "b".into(),
+            client: "c".into(),
+            encodings: Vec::new(),
+            token: Some(t.clone()),
+        };
+        assert!(!format!("{h:?}").contains("s3cret"));
+        assert_eq!(serde_json::to_value(&h).unwrap()["token"], "s3cret");
+        assert_eq!(t, SessionToken::new("s3cret"));
+        assert_ne!(t, SessionToken::new("s3cres"));
+        assert_ne!(t, SessionToken::new("s3cre"));
     }
 }

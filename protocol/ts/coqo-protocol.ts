@@ -2,11 +2,12 @@
 // Generated from crates/protocol by `COQO_BLESS=1 cargo test -p coqo-protocol schema`.
 // Do not edit. Types for the Coqo Protocol, for tooling and future clients.
 
-export const PROTOCOL_VERSION = { major: 0, minor: 0 } as const;
+export const PROTOCOL_VERSION = { major: 0, minor: 1 } as const;
 
 /** JSON-RPC 2.0 error codes used by the protocol. */
 export const ErrorCodes = {
   FILE_TOO_LARGE: 1005,
+  FORBIDDEN: -32007,
   INCOMPATIBLE_PROTOCOL: -32001,
   INTERNAL_ERROR: -32603,
   INVALID_PARAMS: -32602,
@@ -21,6 +22,7 @@ export const ErrorCodes = {
   PATH_OUTSIDE_WORKSPACE: 1003,
   REQUEST_CANCELLED: -32005,
   RESUME_GAP: -32003,
+  UNAUTHORIZED: -32006,
   UNKNOWN_ROOT: 1002,
   UNKNOWN_SUBSCRIPTION: -32004,
   UNKNOWN_WORKSPACE: 1001,
@@ -164,6 +166,8 @@ export type Hello = {
   encodings?: Array<Encoding>;
   /** The client's protocol version. */
   protocol: ProtocolVersion;
+  /** The session token that authenticates this client (since 0.1). A server that authenticates (`coqod` does) rejects a missing or wrong one with [`codes::UNAUTHORIZED`]. Never logged; servers drop it from the [`Hello`] they hand to request handlers. */
+  token?: SessionToken | null;
 };
 
 /** Where the daemon is in its idle policy. */
@@ -281,6 +285,9 @@ export type ResumeGap = {
 
 /** Identifies a root within its workspace. Stable for the root's lifetime and never reused within the workspace. */
 export type RootId = number;
+
+/** A secret that authenticates a connection: the daemon's per-boot token, or a token scoped to one workspace and agent session.  It is a string on the wire. `Debug` prints `SessionToken(<redacted>)` and equality is constant-time, so the token neither leaks into logs nor through comparison timing. Use [`SessionToken::expose`] only to send or store it. */
+export type SessionToken = string;
 
 /** Params of [`SetState`]. */
 export type SetStateParams = {
