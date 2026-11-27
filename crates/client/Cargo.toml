@@ -1,0 +1,24 @@
+[package]
+name = "coqo-client"
+description = "Find, connect to, or spawn the Coqo daemon (coqod): socket paths and connect-or-spawn for the UI and CLI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+coqo-protocol = { path = "../protocol" }
+dirs = "6"
+nix = { version = "0.30", default-features = false, features = ["user"] }
+thiserror = "2"
+tokio = { version = "1", features = ["net", "process", "rt", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "net", "rt", "time"] }
+
+[lints]
+workspace = true

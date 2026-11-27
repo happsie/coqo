@@ -1,6 +1,70 @@
 {
   "$comment": "Generated from crates/protocol by `COQO_BLESS=1 cargo test -p coqo-protocol schema`. Do not edit.",
   "$defs": {
+    "DaemonStatus": {
+      "description": "Result of `daemon/status`.",
+      "properties": {
+        "build": {
+          "description": "The daemon's build id (also in the handshake's `Welcome.build`).",
+          "type": "string"
+        },
+        "busy": {
+          "description": "What keeps the daemon busy (agent sessions, traces, …). Busy work\nkeeps the daemon alive with no clients attached.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "connections": {
+          "description": "Clients attached right now, including the one asking.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idle": {
+          "$ref": "#/$defs/IdleStatus",
+          "description": "The idle policy and where the daemon is in it."
+        },
+        "pid": {
+          "description": "The daemon's process id.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "protocol": {
+          "$ref": "#/$defs/ProtocolVersion",
+          "description": "The protocol version the daemon speaks."
+        },
+        "startedAtMs": {
+          "description": "When the daemon started, in milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "uptimeMs": {
+          "description": "How long the daemon has been running, in milliseconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "description": "The daemon's version, e.g. `0.1.0`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "build",
+        "protocol",
+        "pid",
+        "startedAtMs",
+        "uptimeMs",
+        "connections",
+        "busy",
+        "idle"
+      ],
+      "type": "object"
+    },
     "Encoding": {
       "description": "How a frame's payload is encoded.\n\nJSON is mandatory and is always used for the handshake. MessagePack is\noptional and is switched on for the rest of the connection when both\nsides list it in the handshake; it is intended for hot paths (buffer ops,\ntrace streams).",
       "oneOf": [
@@ -93,6 +157,57 @@
       ],
       "type": "object"
     },
+    "IdlePhase": {
+      "description": "Where the daemon is in its idle policy.",
+      "oneOf": [
+        {
+          "const": "active",
+          "description": "A client is attached or work is busy.",
+          "type": "string"
+        },
+        {
+          "const": "idle",
+          "description": "Nothing attached and nothing busy; timers are running.",
+          "type": "string"
+        },
+        {
+          "const": "servicesStopped",
+          "description": "Idle long enough that services released their resources (language\nservers stopped). The daemon exits next, unless it is always on.",
+          "type": "string"
+        }
+      ]
+    },
+    "IdleStatus": {
+      "description": "The idle policy (PLAN §4.3) and the daemon's current idle phase.",
+      "properties": {
+        "exitAfterSecs": {
+          "description": "Seconds with no clients and nothing busy before the daemon exits.\n`null` means never (\"always on\").",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "phase": {
+          "$ref": "#/$defs/IdlePhase",
+          "description": "The current phase."
+        },
+        "stopServicesAfterSecs": {
+          "description": "Seconds with no clients and nothing busy before idle services (such\nas language servers) stop. `null` means never.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "phase"
+      ],
+      "type": "object"
+    },
     "IncompatibleProtocol": {
       "description": "`data` of the [`codes::INCOMPATIBLE_PROTOCOL`] error.",
       "properties": {
@@ -159,6 +274,38 @@
         "needed",
         "oldest",
         "head"
+      ],
+      "type": "object"
+    },
+    "ShutdownParams": {
+      "description": "Params of `daemon/shutdown`.",
+      "properties": {
+        "force": {
+          "default": false,
+          "description": "Stop even if work is busy.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "ShutdownResult": {
+      "description": "Result of `daemon/shutdown`.",
+      "properties": {
+        "busy": {
+          "description": "When not stopping: the busy work that kept it running.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "stopping": {
+          "description": "Whether the daemon is stopping. It closes every connection and exits\nshortly after answering.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "stopping",
+        "busy"
       ],
       "type": "object"
     },
@@ -355,6 +502,28 @@
       },
       "result": {
         "type": "boolean"
+      }
+    },
+    "daemon/shutdown": {
+      "description": "Stop the daemon. Refused while work is busy unless `force` is set.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ShutdownParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ShutdownResult"
+      }
+    },
+    "daemon/status": {
+      "description": "Daemon version, pid, uptime, attached clients, busy work and idle policy.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "type": "null"
+      },
+      "result": {
+        "$ref": "#/$defs/DaemonStatus"
       }
     }
   },

@@ -1085,6 +1085,19 @@ name = "coqo-anchors"
 version = "0.0.0"
 
 [[package]]
+name = "coqo-client"
+version = "0.0.0"
+dependencies = [
+ "coqo-protocol",
+ "dirs 6.0.0",
+ "nix",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "coqo-dap-client"
 version = "0.0.0"
 
@@ -1162,6 +1175,19 @@ dependencies = [
 [[package]]
 name = "coqod"
 version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "coqo-client",
+ "coqo-kernel",
+ "coqo-protocol",
+ "coqo-storage",
+ "nix",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
 
 [[package]]
 name = "core-foundation"
