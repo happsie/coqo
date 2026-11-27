@@ -39,6 +39,26 @@ fn eventually<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
     }
 }
 
+/// Wait until a line of `term`'s screen is exactly `line`, or panic with the
+/// screen after [`TIMEOUT`].
+fn wait_line(term: &Terminal, line: &str) {
+    let start = Instant::now();
+    while !term.screen().text().lines().any(|l| l == line) {
+        assert!(
+            start.elapsed() < TIMEOUT,
+            "timed out waiting for {line:?}; screen is:\n{}",
+            term.screen().text()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Wait for the shell's first prompt. Input sent while the shell is still
+/// starting up can be discarded, so type only after this.
+fn wait_prompt(term: &Terminal) {
+    wait_line(term, "$");
+}
+
 fn wait_exit(term: &Terminal) -> Option<i32> {
     eventually("the process to exit", || match term.status() {
         TerminalStatus::Exited { code } => Some(code),
@@ -68,14 +88,9 @@ fn printf_output_lands_in_the_grid() {
 fn an_interactive_shell_echoes_input_and_reports_exit_codes() {
     let terminals = Terminals::new();
     let term = terminals.spawn(sh()).unwrap();
+    wait_prompt(&term);
     term.write("echo hi-$((1+2))\n");
-    eventually("the echo", || {
-        term.screen()
-            .text()
-            .lines()
-            .any(|l| l == "hi-3")
-            .then_some(())
-    });
+    wait_line(&term, "hi-3");
     term.write("exit 7\n");
     assert_eq!(wait_exit(&term), Some(7));
     // An exited terminal keeps its output until it is closed.
@@ -125,21 +140,11 @@ fn scrollback_is_kept_in_the_daemon() {
 fn resize_changes_the_grid_and_the_pty() {
     let terminals = Terminals::new();
     let term = terminals.spawn(sh()).unwrap();
-    eventually("the prompt", || {
-        term.screen().text().lines().any(|l| l == "$").then_some(())
-    });
+    wait_prompt(&term);
     term.resize(TermSize::new(33, 7));
     assert_eq!(term.info().size, TermSize::new(33, 7));
     term.write("stty size\n");
-    let start = Instant::now();
-    while !term.screen().text().lines().any(|l| l == "7 33") {
-        assert!(
-            start.elapsed() < TIMEOUT,
-            "stty didn't see the new size; screen is:\n{}",
-            term.screen().text()
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_line(&term, "7 33");
     terminals.close(term.id());
 }
 
@@ -256,6 +261,7 @@ async fn protocol_round_trip_streams_frames_to_a_mirror() {
         .subscribe::<proto::Output>(TerminalRef { id }, Some(snap.seq))
         .await
         .unwrap();
+    follow(&mut screen, &mut sub, |s| has_line(s, "$")).await;
 
     client
         .request::<proto::Input>(InputParams {
@@ -324,6 +330,7 @@ async fn a_terminal_outlives_its_client_and_reattaches() {
         .await
         .unwrap()
         .id;
+    wait_prompt(&terminals.get(id).unwrap());
     first
         .request::<proto::Input>(InputParams {
             id,
@@ -384,11 +391,12 @@ fn running_terminals_keep_the_daemon_busy() {
     let activity = crate::Activity::default();
     let terminals = Terminals::new();
     terminals.lock().activity = Some(activity.clone());
-    let term = terminals.spawn(script("read line")).unwrap();
+    let term = terminals.spawn(script("echo ready; read line")).unwrap();
     assert_eq!(
         activity.snapshot().busy,
         vec!["terminal 1 (/bin/sh)".to_owned()]
     );
+    wait_line(&term, "ready");
     term.write("\n");
     wait_exit(&term);
     eventually("the busy guard to drop", || {
