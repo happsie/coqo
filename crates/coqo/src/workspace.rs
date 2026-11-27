@@ -407,6 +407,23 @@ impl Workspaces {
             .and_then(|(_, w)| w.upgrade())
     }
 
+    /// Every window showing workspace `id`, in the order they opened.
+    pub fn windows_showing(id: &WorkspaceId, cx: &App) -> Vec<AnyWindowHandle> {
+        cx.try_global::<WindowWorkspaces>()
+            .map(|windows| {
+                windows
+                    .0
+                    .iter()
+                    .filter(|(_, w)| {
+                        w.upgrade()
+                            .is_some_and(|w| w.read(cx).current().map(|c| &c.id) == Some(id))
+                    })
+                    .map(|(h, _)| *h)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// The window showing workspace `id`, if one does.
     #[allow(dead_code)] // Tests use it.
     pub fn window_showing(id: &WorkspaceId, cx: &App) -> Option<AnyWindowHandle> {

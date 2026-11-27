@@ -44,6 +44,8 @@ const CODE_TEXT_SIZE: f32 = 13.;
 const CODE_LINE_HEIGHT: f32 = 23.;
 /// Space between the line numbers and the code.
 const GUTTER_GAP: f32 = 20.;
+/// How many frames [`CodeEditor::reveal`] waits for the first layout.
+const REVEAL_FRAMES: usize = 8;
 /// Opacity of the tint behind highlighted changes.
 const CHANGE_TINT: f32 = 0.16;
 
@@ -218,6 +220,46 @@ impl CodeEditor {
                 state.add_selection(range.clone(), cx);
             }
         });
+    }
+
+    /// Select `range` (a UTF-8 byte range; empty for a cursor) and scroll it
+    /// into view. Before the editor's first layout there is nothing to scroll
+    /// yet, so it scrolls again on the next frame.
+    pub fn reveal(&mut self, range: Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        self.reveal_within(range, REVEAL_FRAMES, window, cx);
+    }
+
+    fn reveal_within(
+        &mut self,
+        range: Range<usize>,
+        frames: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let laid_out = self.visible_lines(cx).is_some();
+        self.set_selections(std::slice::from_ref(&range), cx);
+        if !laid_out && frames > 0 {
+            cx.on_next_frame(window, move |editor, window, cx| {
+                editor.reveal_within(range, frames - 1, window, cx);
+            });
+        }
+    }
+
+    /// The lines on screen in the last layout (0-based, end exclusive);
+    /// `None` before the editor was first laid out.
+    pub fn visible_lines(&self, cx: &App) -> Option<Range<usize>> {
+        self.state.read(cx).visible_row_range()
+    }
+
+    /// Call `f` whenever the editor's state changes: text, selections or
+    /// scroll position (and the cursor's blink, so compare before acting).
+    pub fn observe_state<T: 'static>(
+        editor: &Entity<Self>,
+        cx: &mut Context<T>,
+        mut f: impl FnMut(&mut T, &mut Context<T>) + 'static,
+    ) -> Subscription {
+        let state = editor.read(cx).state.clone();
+        cx.observe(&state, move |this, _, cx| f(this, cx))
     }
 
     /// Whether an IME composition is in progress. Its text has not been

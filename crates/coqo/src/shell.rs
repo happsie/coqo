@@ -18,17 +18,20 @@
 
 use std::{collections::HashMap, rc::Rc, time::Duration};
 
+use coqo_protocol::methods::workspace::WorkspaceId;
+
 use coqo_ui::{
     ActiveTokens as _,
     dock::{
-        Dock, DockEvent,
+        AnyTab, Dock, DockEvent,
         store::{LAYOUT_VERSION, LayoutStore, SidebarLayout, WorkbenchLayout},
     },
     gpui::{
-        AnyElement, AnyView, App, AppContext as _, BoxShadow, Context, Div, DragMoveEvent,
-        ElementId, Empty, Entity, Focusable as _, FontWeight, InteractiveElement as _, IntoElement,
-        ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _,
-        Styled as _, Subscription, Task, Window, div, hsla, point, px,
+        AnyElement, AnyView, AnyWindowHandle, App, AppContext as _, BoxShadow, Context, Div,
+        DragMoveEvent, ElementId, Empty, Entity, Focusable as _, FontWeight,
+        InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
+        StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, hsla, point,
+        px,
     },
     slots::{PaneBuilder, SidebarPane, SidebarPanes, Slot, Slots},
     widgets::{
@@ -38,8 +41,12 @@ use coqo_ui::{
 
 use crate::{
     activity, chat,
-    daemon::{self, Daemon},
-    files,
+    daemon::{self, Daemon, DaemonEvent},
+    files::{
+        self,
+        context::{ContextPublisher, PublishContext, RevealHub, RevealRequest},
+        editor::{self as file_editor, FileEditor},
+    },
     layout::{DaemonLayoutStore, LAYOUT_KEY},
     welcome::{self, shortcut},
     workspace::{
@@ -97,6 +104,10 @@ pub struct Shell {
     /// again gets a fresh view.
     pane_views: HashMap<SharedString, (PaneBuilder, AnyView)>,
     pending_save: Option<Task<()>>,
+    /// This window.
+    window: AnyWindowHandle,
+    /// Publishes the window's editor context for agents (`editor/context`).
+    context: ContextPublisher,
     _dock_events: Subscription,
     _subscriptions: Vec<Subscription>,
 }
@@ -136,16 +147,41 @@ impl Shell {
                 this.store.flush()
             }),
             // A closed window saves its layout.
-            cx.on_release(|this, cx| this.save_to_store(cx)),
+            cx.on_release(|this, cx| {
+                this.save_to_store(cx);
+                this.context.withdraw(cx);
+            }),
+            cx.observe_window_activation(window, |this: &mut Self, window, cx| {
+                this.context.set_focused(window.is_window_active());
+                ContextPublisher::schedule(this, cx);
+            }),
             cx.observe(&workspaces, |_, _, cx| cx.notify()),
             cx.subscribe_in(&workspaces, window, |this, _, event, window, cx| {
                 if *event == WorkspacesEvent::CurrentChanged {
                     this.workspace_changed(window, cx);
+                    ContextPublisher::schedule(this, cx);
                 }
             }),
         ];
         if let Some(daemon) = Daemon::global(cx) {
             subscriptions.push(cx.observe(&daemon, |_, _, cx| cx.notify()));
+            subscriptions.push(cx.subscribe(&daemon, |this, _, event, cx| {
+                if *event == DaemonEvent::Connected {
+                    this.context.reconnected();
+                    ContextPublisher::schedule(this, cx);
+                }
+            }));
+        }
+        if let Some(hub) = RevealHub::global(cx) {
+            subscriptions.push(cx.subscribe_in(
+                &hub,
+                window,
+                |this, _, request: &RevealRequest, window, cx| {
+                    if request.window == this.window {
+                        this.reveal(request, window, cx);
+                    }
+                },
+            ));
         }
         if let Some(known) = KnownWorkspaces::global(cx) {
             subscriptions.push(cx.observe(&known, |_, _, cx| cx.notify()));
@@ -154,8 +190,10 @@ impl Shell {
         window.focus(&focus, cx);
         let sidebar = saved.map(|l| l.sidebar);
         let rail = cx.new(|cx| Rail::new(workspaces.clone(), cx));
-        Self {
-            _dock_events: cx.subscribe(&dock, |this, _, _: &DockEvent, cx| this.schedule_save(cx)),
+        let mut this = Self {
+            _dock_events: dock_events(&dock, cx),
+            window: window.window_handle(),
+            context: ContextPublisher::new(window),
             dock,
             store,
             workspaces,
@@ -170,6 +208,42 @@ impl Shell {
             pane_views: HashMap::new(),
             pending_save: None,
             _subscriptions: subscriptions,
+        };
+        ContextPublisher::schedule(&mut this, cx);
+        this
+    }
+
+    /// Open the file of an agent's `editor/reveal` (or show its tab) and
+    /// select the range.
+    fn reveal(&mut self, request: &RevealRequest, window: &mut Window, cx: &mut Context<Self>) {
+        let event = &request.event;
+        if self.workspaces.read(cx).current().map(|w| &w.id) != Some(&event.workspace) {
+            return;
+        }
+        let dock = self.dock.clone();
+        let key = file_editor::key(&event.workspace, event.root, &event.path);
+        let open = dock.read(cx).find_tab(file_editor::KIND, &key, cx);
+        let file = match open {
+            Some(id) => {
+                dock.update(cx, |dock, cx| dock.activate_tab(id, window, cx));
+                dock.read(cx)
+                    .tab(id)
+                    .and_then(AnyTab::downcast::<FileEditor>)
+            }
+            None => {
+                let (workspace, root, path) =
+                    (event.workspace.clone(), event.root, event.path.clone());
+                let tab: Entity<FileEditor> =
+                    cx.new(|cx| FileEditor::new(workspace, root, path, window, cx));
+                dock.update(cx, |dock, cx| {
+                    dock.open_tab(AnyTab::new(tab.clone()), window, cx);
+                });
+                Some(tab)
+            }
+        };
+        if let Some(file) = file {
+            let range = event.range;
+            file.update(cx, |file, cx| file.reveal(range, window, cx));
         }
     }
 
@@ -247,8 +321,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let dock = new_dock(layout.as_ref(), window, cx);
-        self._dock_events =
-            cx.subscribe(&dock, |this, _, _: &DockEvent, cx| this.schedule_save(cx));
+        self._dock_events = dock_events(&dock, cx);
         self.dock = dock;
         // Panes hold the old dock: build them again.
         self.pane_views.clear();
@@ -326,6 +399,25 @@ impl Shell {
             self.schedule_save(cx);
             cx.notify();
         }
+    }
+}
+
+/// The dock changed: save the layout and publish the editor context.
+fn dock_events(dock: &Entity<Dock>, cx: &mut Context<Shell>) -> Subscription {
+    cx.subscribe(dock, |this, _, _: &DockEvent, cx| {
+        this.schedule_save(cx);
+        ContextPublisher::schedule(this, cx);
+    })
+}
+
+impl PublishContext for Shell {
+    fn publisher(&mut self) -> &mut ContextPublisher {
+        &mut self.context
+    }
+
+    fn shown(&self, cx: &App) -> Option<(Entity<Dock>, WorkspaceId)> {
+        let workspace = self.workspaces.read(cx).current()?.id.clone();
+        Some((self.dock.clone(), workspace))
     }
 }
 

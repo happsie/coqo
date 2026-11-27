@@ -11,6 +11,7 @@
 //! (`Cmd S`) saves, `Ctrl F` finds, `Ctrl Z` / `Ctrl Y` undo and redo this
 //! tab's own edits.
 
+pub mod context;
 pub mod editor;
 pub mod glyph;
 pub mod tree;

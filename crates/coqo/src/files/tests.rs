@@ -18,6 +18,7 @@ use coqo_protocol::{
     ClientConfig,
     methods::{
         buffer::{self, EditParams, OpenParams, OpenResult, TextEdit},
+        editor as edm,
         fs::EntryKind,
         workspace::{RootId, WorkspaceId},
     },
@@ -34,6 +35,7 @@ use coqo_ui::{
 };
 
 use super::{
+    context,
     editor::{Content, FileEditor, HIGHLIGHT_FOR, KIND},
     tree::{FileTree, Row},
 };
@@ -926,6 +928,206 @@ fn reconnects_when_the_daemon_comes_back() {
     ui.wait_for("changes after the reconnect", |ui| {
         ui.names().iter().any(|n| n == "after.txt")
     });
+}
+
+/// The editor context of `ws` as an agent reads it from the daemon.
+fn editor_context(fixture: &Fixture, ws: &WorkspaceId) -> edm::EditorContext {
+    let workspace = ws.clone();
+    fixture.daemon.with_client(async move |client| {
+        client
+            .request::<edm::GetContext>(edm::GetContextParams { workspace })
+            .await
+            .unwrap()
+    })
+}
+
+/// The one window's tab of `path`, if the context has it.
+fn context_tab<'a>(cx: &'a edm::EditorContext, path: &str) -> Option<&'a edm::EditorTab> {
+    cx.windows
+        .first()?
+        .context
+        .tabs
+        .iter()
+        .find(|t| t.path == path)
+}
+
+impl Ui {
+    /// Let the publish throttle fire until the daemon's context of `ws`
+    /// satisfies `ok`.
+    fn wait_for_context(
+        &mut self,
+        fixture: &Fixture,
+        ws: &WorkspaceId,
+        what: &str,
+        ok: impl Fn(&edm::EditorContext) -> bool,
+    ) -> edm::EditorContext {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            self.advance(context::PUBLISH_EVERY);
+            self.frame(|_, _| ());
+            let cx = editor_context(fixture, ws);
+            if ok(&cx) {
+                return cx;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}: {cx:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn close_file_tab(&mut self, ws: &WorkspaceId, root: RootId, path: &str) {
+        let dock = self.cx.read(|cx| self.shell.read(cx).dock().clone());
+        let key = super::editor::key(ws, root, path);
+        self.cx.update(|cx| {
+            let id = dock.read(cx).find_tab(KIND, &key, cx).expect("the tab");
+            dock.update(cx, |dock, cx| dock.close_tab(id, cx));
+        });
+    }
+
+    /// The open tab of `path`, once it shows the file as text.
+    fn loaded_tab(&mut self, path: &str) -> Option<Entity<FileEditor>> {
+        let tab = self
+            .file_tabs()
+            .into_iter()
+            .find(|t| self.cx.read(|cx| t.read(cx).path() == path))?;
+        self.code(&tab).is_some().then_some(tab)
+    }
+}
+
+#[test]
+fn publishes_the_editor_context_for_agents() {
+    let fixture = Fixture::new();
+    let (mut ui, main) = open_main(&fixture);
+    let (ws, root) = ui.workspace_id();
+
+    // Select `main` on the first line.
+    ui.edit(&main, |editor, _, cx| editor.set_selections(&[3..7], cx));
+    let cx = ui.wait_for_context(&fixture, &ws, "the selection", |cx| {
+        context_tab(cx, "src/main.rs")
+            .and_then(|t| t.selections.first())
+            .is_some_and(|s| s.text.as_deref() == Some("main"))
+    });
+    assert_eq!(cx.windows.len(), 1, "{cx:?}");
+    let tab = context_tab(&cx, "src/main.rs").unwrap();
+    assert_eq!(tab.root, root);
+    assert!(tab.active && !tab.dirty, "{tab:?}");
+    assert_eq!(
+        tab.selections[0].range,
+        edm::Range::new(edm::Position::new(0, 3), edm::Position::new(0, 7))
+    );
+    assert_eq!(tab.visible.map(|v| v.start), Some(0), "{tab:?}");
+
+    // A cursor in the second line, after the tab and the typed `x`; typing
+    // makes it dirty.
+    ui.type_at(&main, 13, "x");
+    let cx = ui.wait_for_context(&fixture, &ws, "the cursor and the edit", |cx| {
+        context_tab(cx, "src/main.rs").is_some_and(|t| t.dirty)
+    });
+    let tab = context_tab(&cx, "src/main.rs").unwrap();
+    assert_eq!(
+        tab.selections[0].range,
+        edm::Range::new(edm::Position::new(1, 2), edm::Position::new(1, 2))
+    );
+    assert_eq!(tab.selections[0].text, None);
+
+    // Another tab becomes the active one.
+    ui.open_file("lib.rs");
+    let cx = ui.wait_for_context(&fixture, &ws, "lib.rs active", |cx| {
+        context_tab(cx, "src/lib.rs").is_some_and(|t| t.active)
+    });
+    let names: Vec<_> = cx.windows[0]
+        .context
+        .tabs
+        .iter()
+        .map(|t| t.path.as_str())
+        .collect();
+    assert_eq!(names, ["src/main.rs", "src/lib.rs"]);
+    assert!(!context_tab(&cx, "src/main.rs").unwrap().active);
+
+    // Closing it leaves main.rs.
+    ui.close_file_tab(&ws, root, "src/lib.rs");
+    let cx = ui.wait_for_context(&fixture, &ws, "lib.rs closed", |cx| {
+        context_tab(cx, "src/lib.rs").is_none()
+    });
+    assert!(context_tab(&cx, "src/main.rs").unwrap().active, "{cx:?}");
+
+    // A closed window takes its context with it.
+    let Ui {
+        mut cx,
+        window,
+        shell,
+    } = ui;
+    drop((main, shell));
+    cx.update_window(window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    let deadline = Instant::now() + TIMEOUT;
+    while !editor_context(&fixture, &ws).windows.is_empty() {
+        assert!(Instant::now() < deadline, "the context outlived its window");
+        std::thread::sleep(Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+}
+
+#[test]
+fn reveals_open_the_file_and_select_the_range() {
+    let fixture = Fixture::new();
+    let mut ui = open_ui(&fixture, Some(fixture.project.clone()));
+    ui.wait_for_tree();
+    let (ws, root) = ui.workspace_id();
+    ui.wait_for_context(&fixture, &ws, "the window", |cx| !cx.windows.is_empty());
+
+    let reveal = |range: Option<edm::Range>, path: &str| {
+        let params = edm::RevealParams {
+            workspace: ws.clone(),
+            root,
+            path: path.into(),
+            range,
+        };
+        fixture
+            .daemon
+            .with_client(async move |client| client.request::<edm::Reveal>(params).await.unwrap())
+    };
+    // `f` in `pub fn f() {}`.
+    let f = edm::Range::new(edm::Position::new(0, 7), edm::Position::new(0, 8));
+    // The UI follows reveals from when it connected: ask until it shows.
+    let deadline = Instant::now() + TIMEOUT;
+    let tab = 'shown: loop {
+        assert!(reveal(Some(f), "src/lib.rs").delivered);
+        let retry = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < retry {
+            ui.cx.run_until_parked();
+            ui.frame(|_, _| ());
+            if let Some(tab) = ui.loaded_tab("src/lib.rs") {
+                break 'shown tab;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the reveal did not open the file"
+        );
+    };
+    ui.wait_for("the range selected", |ui| ui.selections(&tab) == [7..8]);
+    let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
+    let active = ui.cx.read(|cx| {
+        let dock = dock.read(cx);
+        dock.active_tab()
+            .and_then(|id| dock.tab(id)?.downcast::<FileEditor>())
+    });
+    assert_eq!(active, Some(tab.clone()));
+
+    // Revealing it again reuses the tab; positions past the text clamp to
+    // its end, and no range is the top of the file.
+    let past = edm::Range::new(edm::Position::new(0, 4), edm::Position::new(9, 0));
+    reveal(Some(past), "src/lib.rs");
+    let end = "pub fn f() {}\n".len();
+    ui.wait_for("the clamped range", |ui| ui.selections(&tab) == [4..end]);
+    reveal(None, "src/lib.rs");
+    ui.wait_for("the top", |ui| ui.selections(&tab) == [0..0]);
+    assert_eq!(ui.file_tabs().len(), 1);
 }
 
 #[test]

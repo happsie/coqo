@@ -14,6 +14,9 @@ coqo-buffers = { path = "../buffers" }
 coqo-client = { path = "../client" }
 coqo-protocol = { path = "../protocol" }
 coqo-ui = { path = "../ui" }
+# Line and character positions of the editor context; the same rope as
+# coqo-buffers.
+ropey = { version = "=2.0.0-beta.1", default-features = false, features = ["metric_lines_lf"] }
 # The per-user data directory for saved layouts (PLAN §8).
 dirs = "6"
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
