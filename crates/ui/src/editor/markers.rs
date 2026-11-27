@@ -8,6 +8,8 @@
 //!   emits [`MarkerClicked`]. A marker with `pulse` set (an agent waits for
 //!   it) has a stronger band and a pulsing diamond. Marker ranges follow
 //!   edits like the editor's decorations ([`CodeEditor::marker_range`]).
+//!   A marker with a `label` (a walkthrough step's number, #100) shows it
+//!   on a small badge in the marker's colour instead of the diamond.
 //! - **The ask button** ([`CodeEditor::set_ask_enabled`], #229): a speech
 //!   bubble in the same gap, on the line under the mouse and on the first
 //!   line of the selection while the editor has the keyboard. A click emits
@@ -27,9 +29,9 @@ use gpui_kit::component::input::{
     GutterDecoration, GutterDecorationCollection, Rope, RopeExt as _,
 };
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, AnyView, App, Bounds, Context, ElementId, Hsla,
-    InteractiveElement as _, IntoElement as _, ParentElement as _, Pixels, Size,
-    StatefulInteractiveElement as _, Styled as _, Window, canvas, div, pulsating_between, px,
+    Animation, AnimationExt as _, AnyElement, AnyView, App, Bounds, Context, ElementId, FontWeight,
+    Hsla, InteractiveElement as _, IntoElement as _, ParentElement as _, Pixels, SharedString,
+    Size, StatefulInteractiveElement as _, Styled as _, Window, canvas, div, pulsating_between, px,
 };
 
 use super::{CODE_LINE_HEIGHT, CodeEditor, GUTTER_GAP, REVEAL_FRAMES};
@@ -44,6 +46,8 @@ const BAND: f32 = 0.13;
 const BAND_PULSE: f32 = 0.2;
 /// The diamond's size.
 const DIAMOND: f32 = 9.;
+/// The height (and least width) of a labelled marker's badge.
+const LABEL_BADGE: f32 = 16.;
 /// Space between the marked lines and the overlay, where its caret sits.
 const OVERLAY_GAP: f32 = 8.;
 /// The overlay keeps this far from the editor's edges.
@@ -66,6 +70,9 @@ pub struct CodeMarker {
     pub color: Hsla,
     /// Draw attention: a stronger band and a pulsing diamond.
     pub pulse: bool,
+    /// A short label (a step number) drawn on a badge instead of the
+    /// diamond.
+    pub label: Option<SharedString>,
 }
 
 /// A marker's diamond was clicked.
@@ -116,6 +123,8 @@ pub(super) struct Overlays {
     /// A marker to scroll near the top once laid out, and the frames left
     /// to wait for that.
     scroll_to: Option<(u64, usize)>,
+    /// The height the overlay may take, as placed in the last frame.
+    room: Cell<Option<Pixels>>,
 }
 
 /// The lines `range` touches in `text`: the line of its start up to the
@@ -222,6 +231,14 @@ impl CodeEditor {
         if self.overlays.overlay.take().is_some() {
             cx.notify();
         }
+    }
+
+    /// The height the overlay may take where it was placed in the current
+    /// frame (its content scrolls past it), so a view can keep its buttons
+    /// in sight. `None` before it was placed.
+    pub fn overlay_room(&self) -> Option<Pixels> {
+        self.overlays.overlay.as_ref()?;
+        self.overlays.room.get()
     }
 
     /// Where the overlay is, if one is shown.
@@ -393,8 +410,24 @@ impl CodeEditor {
                     .bg(marker.color.opacity(band))
                     .into_any_element(),
             );
-            let diamond = icon(Icon::MarkerDiamond, px(DIAMOND), marker.color);
-            let diamond = if marker.pulse {
+            let diamond = if let Some(label) = &marker.label {
+                // A step number: a badge in the gap.
+                div()
+                    .min_w(px(LABEL_BADGE))
+                    .h(px(LABEL_BADGE))
+                    .px(px(2.))
+                    .rounded(px(5.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(marker.color)
+                    .text_color(cx.tokens().palette.panel.hsla())
+                    .text_size(px(10.))
+                    .font_weight(FontWeight::BOLD)
+                    .child(label.clone())
+                    .into_any_element()
+            } else if marker.pulse {
+                let diamond = icon(Icon::MarkerDiamond, px(DIAMOND), marker.color);
                 diamond
                     .with_animation(
                         ElementId::NamedInteger("code-marker-pulse".into(), marker.id),
@@ -405,7 +438,7 @@ impl CodeEditor {
                     )
                     .into_any_element()
             } else {
-                diamond.into_any_element()
+                icon(Icon::MarkerDiamond, px(DIAMOND), marker.color).into_any_element()
             };
             let id = marker.id;
             elements.push(
@@ -525,6 +558,7 @@ impl CodeEditor {
                 }
                 None => (px(OVERLAY_MARGIN), full, None),
             };
+            self.overlays.room.set(Some(max_height));
             let shown = measured.min(max_height);
             let size = overlay.size.clone();
             elements.push(

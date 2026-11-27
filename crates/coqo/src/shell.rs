@@ -85,6 +85,7 @@ pub fn init(cx: &mut App) {
     crate::git::init(cx);
     alerts::init(cx);
     crate::diff::init(cx);
+    crate::walkthrough::init(cx);
 }
 
 /// The drag payload of the sidebar's resize edge.
@@ -739,6 +740,11 @@ impl Render for Shell {
                     navigate::open_question(&this.dock, &this.workspaces, id, window, cx)
                 }),
             )
+            .on_action(cx.listener(
+                |this, action: &crate::walkthrough::OpenWalkthrough, window, cx| {
+                    crate::walkthrough::open_action(&this.dock, action, window, cx)
+                },
+            ))
             .on_action(cx.listener(|this, action: &OpenQuestionChat, window, cx| {
                 let id = coqo_protocol::methods::questions::QuestionId(action.id);
                 navigate::open_chat(&this.dock, &this.workspaces, id, window, cx)

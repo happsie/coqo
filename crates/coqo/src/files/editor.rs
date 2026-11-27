@@ -29,6 +29,11 @@
 //!   it (a click on the marker, F8, the Questions pane, a chat card). After
 //!   `buffer/open` the tab lists its file's questions again, so their ranges
 //!   are of the open buffer.
+//! - **Walkthrough steps** (#100, [`crate::walkthrough`]): the player sets
+//!   numbered step markers ([`FileEditor::set_step_marks`]) and shows its
+//!   step popover at a step's lines ([`FileEditor::show_step`]). A question
+//!   popover opened meanwhile takes the overlay; closing it brings the step
+//!   back.
 //!
 //! Binary, non-UTF-8 and very large files show a message instead.
 
@@ -57,9 +62,10 @@ use coqo_ui::{
         MarkerClicked, OverlayAnchor,
     },
     gpui::{
-        AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, FontWeight,
-        InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, SharedString,
-        StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px,
+        AnyElement, AnyView, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
+        Focusable as _, FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyBinding,
+        ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+        Subscription, Task, Window, div, px,
     },
     serde_json::{Value, json},
     widgets::{Icon, TestSupportExt as _, icon, raised},
@@ -159,6 +165,39 @@ struct Session {
 /// anchor`.
 const MARKERS_PER_QUESTION: u64 = 16;
 
+/// Marker ids from here on are walkthrough steps' ([`StepMark`]); below
+/// are questions'.
+pub const STEP_MARKER_BASE: u64 = 1 << 62;
+
+/// A walkthrough step's marker (#100): a numbered badge on its lines.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepMark {
+    /// At least [`STEP_MARKER_BASE`].
+    pub id: u64,
+    /// 0-based, `end` exclusive, as the daemon resolved them.
+    pub lines: Range<u32>,
+    pub color: Hsla,
+    /// The step's number.
+    pub label: SharedString,
+}
+
+/// A step marker was clicked (its id).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StepMarkerClicked(pub u64);
+
+/// The walkthrough player's popover, shown at a step's marker.
+struct StepOverlay {
+    view: AnyView,
+    /// The marker it points at; at the top if `None` or gone.
+    marker: Option<u64>,
+    /// Scroll the marker near the top and put the cursor there once placed.
+    reveal: bool,
+    /// Put the keyboard here once placed.
+    focus: Option<FocusHandle>,
+    /// Placed in the editor.
+    placed: bool,
+}
+
 /// A question to show once the file is open.
 #[derive(Clone, Copy, Debug)]
 struct PendingQuestion {
@@ -202,6 +241,11 @@ pub struct FileEditor {
     ask: Option<(Entity<AskPopover>, Subscription)>,
     /// A question to show once the file is open (and its markers placed).
     pending_question: Option<PendingQuestion>,
+    /// Walkthrough step markers, and the lines each was placed at.
+    step_marks: Vec<StepMark>,
+    step_placed: std::collections::HashMap<u64, Range<u32>>,
+    /// The walkthrough step popover.
+    step: Option<StepOverlay>,
     _opening: Option<Task<()>>,
     _changes: Option<Task<()>>,
     _saving: Option<Task<()>>,
@@ -320,6 +364,9 @@ impl FileEditor {
             popover: None,
             ask: None,
             pending_question: None,
+            step_marks: Vec::new(),
+            step_placed: std::collections::HashMap::new(),
+            step: None,
             _opening: None,
             _changes: None,
             _saving: None,
@@ -584,6 +631,10 @@ impl FileEditor {
                     &editor,
                     window,
                     |this, _, clicked: &MarkerClicked, window, cx| {
+                        if clicked.0 >= STEP_MARKER_BASE {
+                            cx.emit(StepMarkerClicked(clicked.0));
+                            return;
+                        }
                         let id = QuestionId(clicked.0 / MARKERS_PER_QUESTION);
                         this.show_question(id, true, false, window, cx);
                     },
@@ -645,6 +696,9 @@ impl FileEditor {
             store.update(cx, |store, cx| store.relist_file(root, &path, cx));
         }
         self.show_pending_question(window, cx);
+        if self.popover.is_none() && self.ask.is_none() {
+            self.place_step(window, cx);
+        }
         cx.notify();
     }
 
@@ -1205,10 +1259,34 @@ impl FileEditor {
                         range,
                         color,
                         pulse: q.waiting,
+                        label: None,
                     });
                 }
             }
+            for mark in &self.step_marks {
+                // Kept where edits took it while the daemon's lines agree
+                // with the ones it was placed at.
+                let tracked = (self.step_placed.get(&mark.id) == Some(&mark.lines))
+                    .then(|| code.marker_range(mark.id, cx))
+                    .flatten();
+                let range = tracked.unwrap_or_else(|| {
+                    code.line_start(mark.lines.start as usize, cx)
+                        ..code.line_start(mark.lines.end.max(mark.lines.start + 1) as usize, cx)
+                });
+                markers.push(CodeMarker {
+                    id: mark.id,
+                    range,
+                    color: mark.color,
+                    pulse: false,
+                    label: Some(mark.label.clone()),
+                });
+            }
         }
+        self.step_placed = self
+            .step_marks
+            .iter()
+            .map(|m| (m.id, m.lines.clone()))
+            .collect();
         if editor.read(cx).markers() != markers {
             editor.update(cx, |editor, cx| editor.set_markers(markers, cx));
         }
@@ -1315,6 +1393,7 @@ impl FileEditor {
                 }
             });
         }
+        self.restore_step(cx);
         cx.notify();
     }
 
@@ -1382,6 +1461,7 @@ impl FileEditor {
                 }
             });
         }
+        self.restore_step(cx);
         cx.notify();
     }
 
@@ -1402,6 +1482,105 @@ impl FileEditor {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn popover(&self) -> Option<&Entity<QuestionPopover>> {
         self.popover.as_ref().map(|(popover, _)| popover)
+    }
+
+    // ---- walkthrough steps (#100) ---------------------------------------------
+
+    /// Show these step markers (replacing the previous ones).
+    pub fn set_step_marks(&mut self, marks: Vec<StepMark>, cx: &mut Context<Self>) {
+        if self.step_marks != marks {
+            self.step_marks = marks;
+            self.sync_markers(cx);
+            cx.notify();
+        }
+    }
+
+    /// Show the walkthrough's step popover `view` at step marker `marker`
+    /// (at the top without one), scrolling it near the top with `reveal`
+    /// and putting the keyboard in `focus`. Replaces a question popover.
+    /// Waits for the file to open.
+    pub fn show_step(
+        &mut self,
+        view: AnyView,
+        marker: Option<u64>,
+        reveal: bool,
+        focus: Option<FocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ask = None;
+        self.popover = None;
+        self.step = Some(StepOverlay {
+            view,
+            marker,
+            reveal,
+            focus,
+            placed: false,
+        });
+        self.place_step(window, cx);
+    }
+
+    /// Remove the step popover (the markers stay).
+    pub fn clear_step(&mut self, cx: &mut Context<Self>) {
+        if self.step.take().is_some()
+            && self.popover.is_none()
+            && self.ask.is_none()
+            && let Some(editor) = self.editor().cloned()
+        {
+            editor.update(cx, |editor, cx| editor.clear_overlay(cx));
+        }
+        cx.notify();
+    }
+
+    /// Whether the step popover is shown in the editor.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn shows_step(&self) -> bool {
+        self.step.as_ref().is_some_and(|s| s.placed) && self.popover.is_none() && self.ask.is_none()
+    }
+
+    fn place_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.editor().cloned() else {
+            return;
+        };
+        self.sync_markers(cx);
+        let Some(step) = self.step.as_mut() else {
+            return;
+        };
+        let marker = step
+            .marker
+            .filter(|id| editor.read(cx).markers().iter().any(|m| m.id == *id));
+        let anchor = marker.map_or(OverlayAnchor::Top, OverlayAnchor::Marker);
+        let view = step.view.clone();
+        let reveal = std::mem::take(&mut step.reveal);
+        let focus = step.focus.take();
+        step.placed = true;
+        editor.update(cx, |editor, cx| {
+            editor.set_overlay(anchor, view, cx);
+            if reveal
+                && let Some(marker) = marker
+                && let Some(range) = editor.marker_range(marker, cx)
+            {
+                editor.reveal(range.start..range.start, window, cx);
+                editor.scroll_marker_to_top(marker, cx);
+            }
+        });
+        if let Some(focus) = focus {
+            window.focus(&focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// Put the step popover back after a question's or the ask popover.
+    fn restore_step(&mut self, cx: &mut Context<Self>) {
+        let (Some(editor), Some(step)) = (self.editor().cloned(), self.step.as_ref()) else {
+            return;
+        };
+        let marker = step
+            .marker
+            .filter(|id| editor.read(cx).markers().iter().any(|m| m.id == *id));
+        let anchor = marker.map_or(OverlayAnchor::Top, OverlayAnchor::Marker);
+        let view = step.view.clone();
+        editor.update(cx, |editor, cx| editor.set_overlay(anchor, view, cx));
     }
 
     /// The 0-based line of the primary cursor, once open.
@@ -1571,6 +1750,8 @@ fn human_size(bytes: u64) -> String {
         format!("{size:.1} {}", UNITS[unit])
     }
 }
+
+impl EventEmitter<StepMarkerClicked> for FileEditor {}
 
 impl TabItem for FileEditor {
     fn kind(&self) -> SharedString {

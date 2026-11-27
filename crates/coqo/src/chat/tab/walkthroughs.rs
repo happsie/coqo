@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Walkthroughs in the chat (#97), until the player (#100) exists.
+//! Walkthroughs in the chat (#97, #100).
 //!
 //! When the agent publishes a walkthrough (`publish_walkthrough`), the
 //! transcript gets a `walkthrough` update: the chat shows a card
 //! "Walkthrough published: <title> · n steps", and the session panel's
 //! "Walkthroughs" card lists every one the session published. Clicking
-//! either opens the first step's code in a file tab with its lines
-//! selected. Stepping through, the what/why/risks popover and the
-//! understood/question marks are the player's (#100).
+//! either opens the walkthrough player ([`crate::walkthrough`]) at the first
+//! unread step, with its popover (what, why, risks) at the code.
 
-use coqo_protocol::methods::walkthroughs::{StorageMode, WalkthroughLocation, WalkthroughSummary};
+use coqo_protocol::methods::walkthroughs::{StorageMode, WalkthroughSummary};
 use coqo_ui::{
     ActiveTokens as _,
     gpui::{
@@ -22,8 +21,7 @@ use coqo_ui::{
 };
 
 use super::ChatTab;
-use crate::chat::OpenLocation;
-use crate::workspace::Workspaces;
+use crate::walkthrough::OpenWalkthrough;
 
 /// "n steps", "1 step".
 pub(crate) fn steps_label(n: u32) -> String {
@@ -43,36 +41,17 @@ pub(crate) fn published_label(w: &WalkthroughSummary) -> String {
     )
 }
 
-/// Open `start` (root-relative) in the window's workspace.
-fn open_start(start: &WalkthroughLocation, window: &mut Window, cx: &mut App) {
-    let workspaces = Workspaces::for_window(window, cx).or_else(|| Workspaces::global(cx));
-    let Some(root) = workspaces.as_ref().and_then(|w| {
-        w.read(cx)
-            .current()?
-            .roots
-            .iter()
-            .find(|r| r.id == start.root)
-            .map(|r| r.path.clone())
-    }) else {
-        return;
-    };
-    let action = OpenLocation {
-        path: format!("{}/{}", root.trim_end_matches('/'), start.path),
-        line: Some(start.lines.start),
-        end: Some(start.lines.end),
-    };
-    window.dispatch_action(Box::new(action), cx);
-}
-
 fn opener(
-    start: Option<WalkthroughLocation>,
+    w: &WalkthroughSummary,
     focus: FocusHandle,
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+    let action = OpenWalkthrough {
+        workspace: w.workspace.0.clone(),
+        id: w.id.0.clone(),
+    };
     move |_, window, cx| {
         window.focus(&focus, cx);
-        if let Some(start) = &start {
-            open_start(start, window, cx);
-        }
+        window.dispatch_action(Box::new(action.clone()), cx);
     }
 }
 
@@ -86,10 +65,13 @@ impl ChatTab {
     ) -> AnyElement {
         let t = cx.tokens();
         let (p, m) = (&t.palette, &t.metrics);
-        let start = w.start.clone();
-        let place = start
-            .as_ref()
-            .map(|s| format!("Starts at {}:{}", s.path, s.lines.start + 1));
+        let place = w.start.as_ref().map(|s| {
+            format!(
+                "Starts at {}:{} · Step through it",
+                s.path,
+                s.lines.start + 1
+            )
+        });
         div()
             .id(("chat-walkthrough", ix))
             .test_support()
@@ -144,7 +126,7 @@ impl ChatTab {
                     .pt(px(2.))
                     .child(icon(Icon::ChevronRight, px(13.), p.text_subtle.hsla())),
             )
-            .on_click(opener(start, self.focus.clone()))
+            .on_click(opener(w, self.focus.clone()))
             .into_any_element()
     }
 
@@ -204,7 +186,7 @@ impl ChatTab {
                             .text_color(p.text_subtle.hsla())
                             .child(steps_label(w.steps)),
                     )
-                    .on_click(opener(w.start.clone(), self.focus.clone())),
+                    .on_click(opener(w, self.focus.clone())),
             );
         }
         card.into_any_element()

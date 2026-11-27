@@ -381,6 +381,7 @@ fn beta_marker(text: &str) -> CodeMarker {
         range: start..at(text, "    let gamma"),
         color: gpui_kit::red(),
         pulse: false,
+        label: None,
     }
 }
 

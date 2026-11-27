@@ -65,5 +65,5 @@ These parts of board 4 come with the issues that give them meaning:
 
 - Comment threads and the "pending" counts in the file list (#94).
 - **Send N comments to Claude** and the pending-review note under the file list (#95).
-- The **Walkthrough overlay** button (#100).
+- The **Walkthrough overlay** button. The walkthrough player (#100, [walkthrough.md](walkthrough.md)) shows its change in a `DiffView` of its own instead, with its steps as an overlay.
 - Provenance ("made by Claude in …") in the header.
