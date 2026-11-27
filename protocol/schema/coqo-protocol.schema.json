@@ -8267,6 +8267,77 @@
       ],
       "type": "object"
     },
+    "UncoveredHunk": {
+      "description": "A changed hunk no step covers and no trivial hunk lists.",
+      "properties": {
+        "added": {
+          "description": "Lines added.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "excerpt": {
+          "description": "The first changed lines, `+` added and `-` removed, a few at most.",
+          "type": "string"
+        },
+        "newRange": {
+          "$ref": "#/$defs/LineRange",
+          "description": "Where it is in the new file, 0-based, `end` inclusive: its lines,\nor for lines only removed, the line before them (the first line\nwhen they were at the top). This is where to open it; `{0, 0}` for\na deleted file."
+        },
+        "oldRange": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The removed lines in the old file, 0-based, `end` inclusive; absent\nwhen lines were only added."
+        },
+        "path": {
+          "description": "`/`-separated path relative to the root (the new path of a rename).",
+          "type": "string"
+        },
+        "removed": {
+          "description": "Lines removed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "renamedFrom": {
+          "description": "The old path of a rename.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root."
+        },
+        "wholeFile": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WholeFile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set when the hunk is a whole file (added, deleted, binary, renamed)."
+        }
+      },
+      "required": [
+        "root",
+        "path",
+        "newRange",
+        "added",
+        "removed",
+        "excerpt"
+      ],
+      "type": "object"
+    },
     "UnsubscribeParams": {
       "description": "Params of `coqo/unsubscribe`.",
       "properties": {
@@ -8334,6 +8405,17 @@
             "$ref": "#/$defs/WalkthroughCriterion"
           },
           "type": "array"
+        },
+        "coverage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WalkthroughCoverage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How much of the scope's diff the steps cover. Computed when\npublished, and again by `get` for a worktree scope (the work tree\nchanges); absent from walkthroughs published before it existed."
         },
         "createdAt": {
           "description": "Published, Unix milliseconds.",
@@ -8457,6 +8539,49 @@
       ],
       "type": "object"
     },
+    "WalkthroughCoverage": {
+      "description": "How much of a walkthrough scope's diff its steps cover.\n\nEvery changed hunk of the scope (`git diff` without context, so each run\nof changed lines is one hunk; untracked files count for a worktree\nscope) is **covered** when a step's anchor overlaps its lines in the new\nfile (lines only removed: an anchor on the line before or after them),\nelse **trivial** when `trivial_hunks` lists it (by the same overlap, or\nthe whole file), else **uncovered**.",
+      "properties": {
+        "covered": {
+          "description": "Hunks a step's anchor covers.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total": {
+          "description": "Changed hunks in the scope.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "trivial": {
+          "description": "Hunks `trivial_hunks` lists (and no step covers).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unavailable": {
+          "description": "Why the diff could not be computed (not a git repository, git\nunavailable, no commits yet); the counts are 0 then.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uncovered": {
+          "description": "The uncovered hunks (`total - covered - trivial` of them), at most\n[`MAX_UNCOVERED`] (a summary: [`SUMMARY_UNCOVERED`]).",
+          "items": {
+            "$ref": "#/$defs/UncoveredHunk"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "total",
+        "covered",
+        "trivial"
+      ],
+      "type": "object"
+    },
     "WalkthroughCriterion": {
       "description": "An acceptance criterion a walkthrough addresses, as it was when it was\npublished. Steps refer to it by `id`; the session's live criteria (ADR\n0017) say whether it holds now.",
       "properties": {
@@ -8499,6 +8624,10 @@
             "array",
             "null"
           ]
+        },
+        "require_coverage": {
+          "description": "Refuse to publish while a changed hunk of the scope is neither in a\nstep's anchors nor in `trivial_hunks` (each is listed). Default:\npublish, and list the uncovered hunks in the result and to the\nreader.",
+          "type": "boolean"
         },
         "scope": {
           "$ref": "#/$defs/ScopeDraft",
@@ -8708,6 +8837,17 @@
     "WalkthroughSummary": {
       "description": "A walkthrough in a list, the transcript and change events.",
       "properties": {
+        "coverage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WalkthroughCoverage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How much of the diff the steps cover, with at most\n[`SUMMARY_UNCOVERED`] of the uncovered hunks listed."
+        },
         "createdAt": {
           "description": "Published, Unix milliseconds.",
           "format": "int64",
@@ -8843,6 +8983,31 @@
         "connection"
       ],
       "type": "object"
+    },
+    "WholeFile": {
+      "description": "A changed file a hunk stands for as a whole.",
+      "oneOf": [
+        {
+          "const": "added",
+          "description": "The file is new (all its lines are one hunk).",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "The file is gone: only `trivial_hunks` can cover it.",
+          "type": "string"
+        },
+        {
+          "const": "binary",
+          "description": "Either side is binary (no lines): only `trivial_hunks` can cover it.",
+          "type": "string"
+        },
+        {
+          "const": "renamed",
+          "description": "Moved, contents unchanged; `renamedFrom` has the old path.",
+          "type": "string"
+        }
+      ]
     },
     "WindowContext": {
       "description": "One window's editor context for the workspace it shows.",

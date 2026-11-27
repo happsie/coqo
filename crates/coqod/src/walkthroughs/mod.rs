@@ -22,10 +22,17 @@
 //!   as they are now (by fingerprint), so a reader lands on the code even
 //!   after edits; anchors whose code is gone are orphaned and show their
 //!   snippet.
+//! - **Coverage** ([`coverage`], issue #99). On publishing, Coqo diffs the
+//!   scope itself with the git mod and sorts every changed hunk into covered
+//!   by a step, listed as trivial, or uncovered. Uncovered hunks are kept on
+//!   the walkthrough and returned to the agent; a draft with
+//!   `require_coverage` is refused instead. `get` checks a worktree scope
+//!   again (the work tree moves on) with the anchors where they are now.
 //!
 //! **Access:** a session token may only create walkthroughs, for its own
 //! workspace and agent session; everything else takes the daemon token.
 
+mod coverage;
 mod git;
 pub(crate) mod store;
 pub(crate) mod validate;
@@ -39,16 +46,19 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use coqo_agents::SessionManager;
+use coqo_mod_git::Side;
 use coqo_protocol::methods::agents::{AcceptanceCriterion, SessionId};
 use coqo_protocol::methods::codes;
 use coqo_protocol::methods::editor::LineRange;
 use coqo_protocol::methods::fs::{MAX_READ_LIMIT, ReadParams};
+use coqo_protocol::methods::questions::AnchorSpan;
 use coqo_protocol::methods::walkthroughs::{
     self as wtm, COMMITTED_DIR, ChangeKind, ChangesParams, CreateParams, DeleteParams,
-    STORAGE_STATE_KEY, ScopeKind, SetStepStateParams, Step, StepAnchor, StepState, StorageMode,
-    TrivialHunk, Walkthrough, WalkthroughAuthor, WalkthroughChange, WalkthroughDraft,
-    WalkthroughId, WalkthroughList, WalkthroughLocation, WalkthroughParams, WalkthroughProblems,
-    WalkthroughScope, WalkthroughStorage, WalkthroughSummary,
+    STORAGE_STATE_KEY, SUMMARY_UNCOVERED, ScopeKind, SetStepStateParams, Step, StepAnchor,
+    StepState, StorageMode, TrivialHunk, Walkthrough, WalkthroughAuthor, WalkthroughChange,
+    WalkthroughCoverage, WalkthroughDraft, WalkthroughId, WalkthroughList, WalkthroughLocation,
+    WalkthroughParams, WalkthroughProblems, WalkthroughScope, WalkthroughStorage,
+    WalkthroughSummary,
 };
 use coqo_protocol::methods::workspace::{RootId, WorkspaceId, WorkspaceInfo, WorkspaceParams};
 use coqo_protocol::{Access, ErrorObject, EventFeed, Router, SeqLog};
@@ -56,10 +66,12 @@ use coqo_storage::Timestamp;
 use futures_util::StreamExt as _;
 use serde_json::Value;
 
+use self::coverage::{AnchorLines, HunksError};
 use self::git::RevError;
 use self::store::{Store, StoreError};
 use self::validate::{Problems, index, key};
 use crate::buffers::BufferService;
+use crate::git::GitService;
 use crate::questions::anchoring::{self, Job, Text};
 use crate::workspace::WorkspaceService;
 
@@ -148,7 +160,11 @@ fn root_path(ws: &WorkspaceInfo, root: RootId) -> Option<PathBuf> {
 
 /// The lines a whole-line anchor covers: 0-based, `end` inclusive.
 fn anchor_lines(a: &wtm::StepAnchor) -> LineRange {
-    let r = a.anchor.range;
+    span_lines(a.anchor.range)
+}
+
+/// The lines a span of whole lines covers.
+fn span_lines(r: AnchorSpan) -> LineRange {
     let end = if r.end.col == 0 && r.end.line > r.start.line {
         r.end.line - 1
     } else {
@@ -187,7 +203,83 @@ pub(crate) fn summary(w: &Walkthrough) -> WalkthroughSummary {
                 lines: anchor_lines(a),
             }),
         storage: w.storage.mode,
+        coverage: w.coverage.as_ref().map(|c| c.truncated(SUMMARY_UNCOVERED)),
         created_at: w.created_at,
+    }
+}
+
+/// The lines of a draft's anchors, for coverage: as the agent gave them,
+/// whether or not they check out.
+fn draft_anchor_lines(
+    ws: &WorkspaceInfo,
+    draft: &WalkthroughDraft,
+    default_root: RootId,
+) -> Vec<AnchorLines> {
+    draft
+        .steps
+        .iter()
+        .flat_map(|s| &s.anchors)
+        .filter(|a| !a.path.is_empty() && a.start_line >= 1)
+        .filter_map(|a| {
+            let (root, path) = locate(ws, &a.path, a.root, default_root).ok()?;
+            let end = a.end_line.unwrap_or(a.start_line).max(a.start_line);
+            Some((
+                root,
+                path,
+                LineRange {
+                    start: a.start_line - 1,
+                    end: end - 1,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// The lines of a stored walkthrough's anchors where they are now (their
+/// resolution); an orphaned anchor covers nothing.
+fn resolved_anchor_lines(w: &Walkthrough) -> Vec<AnchorLines> {
+    w.steps
+        .iter()
+        .flat_map(|s| &s.anchors)
+        .filter_map(|a| {
+            let lines = match &a.resolution {
+                Some(r) => span_lines(r.range?),
+                None => anchor_lines(a),
+            };
+            Some((a.anchor.root, a.anchor.path.clone(), lines))
+        })
+        .collect()
+}
+
+/// A refused `require_coverage` draft's problems: each uncovered hunk.
+fn coverage_problems(c: &WalkthroughCoverage, pr: &mut Problems) {
+    const AT: &str = "require_coverage";
+    if let Some(why) = &c.unavailable {
+        pr.add(
+            AT,
+            format!("coverage cannot be checked: {why}; leave out require_coverage to publish without it"),
+        );
+        return;
+    }
+    for h in &c.uncovered {
+        let first = h.excerpt.lines().next().unwrap_or_default();
+        let quote = if first.is_empty() {
+            String::new()
+        } else {
+            format!(", `{first}`")
+        };
+        pr.add(
+            AT,
+            format!(
+                "{} ({}{quote}) is not explained by any step and not in trivial_hunks; add it to a step's anchors, or to trivial_hunks with a reason",
+                h.location(),
+                h.change()
+            ),
+        );
+    }
+    let more = c.uncovered_count() as usize - c.uncovered.len();
+    if more > 0 {
+        pr.add(AT, format!("… and {more} more uncovered hunks"));
     }
 }
 
@@ -273,6 +365,7 @@ pub struct WalkthroughService {
     workspaces: Arc<WorkspaceService>,
     buffers: Arc<BufferService>,
     sessions: Option<SessionManager>,
+    git: Option<Arc<GitService>>,
 }
 
 /// One anchor of a draft to check and make: `(step, anchor)` indexes and
@@ -281,13 +374,15 @@ type Wanted = Vec<(usize, usize, wtm::AnchorDraft)>;
 
 impl WalkthroughService {
     /// The service over the walkthroughs in the global database at `db`,
-    /// anchoring in `workspaces`' files and `buffers`, and recording
-    /// publications in `sessions`' transcripts.
+    /// anchoring in `workspaces`' files and `buffers`, recording
+    /// publications in `sessions`' transcripts, and diffing scopes with
+    /// `git` for coverage.
     pub fn open(
         db: &Path,
         workspaces: Arc<WorkspaceService>,
         buffers: Arc<BufferService>,
         sessions: Option<SessionManager>,
+        git: Option<Arc<GitService>>,
     ) -> Result<Arc<Self>, StoreError> {
         Ok(Arc::new(Self {
             store: Mutex::new(Store::open(db)?),
@@ -295,7 +390,73 @@ impl WalkthroughService {
             workspaces,
             buffers,
             sessions,
+            git,
         }))
+    }
+
+    /// How much of `scope`'s diff `anchors` and `trivial` cover.
+    async fn coverage(
+        &self,
+        ws: &WorkspaceInfo,
+        scope: &WalkthroughScope,
+        anchors: Vec<AnchorLines>,
+        trivial: &[TrivialHunk],
+    ) -> WalkthroughCoverage {
+        let Some(service) = &self.git else {
+            return WalkthroughCoverage::unavailable("git is not available in this daemon");
+        };
+        let Some(dir) = root_path(ws, scope.root) else {
+            return WalkthroughCoverage::unavailable(format!(
+                "the workspace has no root {}",
+                scope.root.0
+            ));
+        };
+        let rev = |c: &String| Side::Rev(c.clone());
+        let (base, head, untracked) = match (scope.kind, &scope.base_commit, &scope.head_commit) {
+            (ScopeKind::Worktree, Some(base), _) => (rev(base), Side::Worktree, true),
+            (ScopeKind::Worktree, None, _) => {
+                let repo = tokio::task::spawn_blocking(move || git::is_repo(&dir)).await;
+                return WalkthroughCoverage::unavailable(match repo {
+                    Ok(Ok(true)) => {
+                        "the repository has no commits yet, so there is no diff to check".to_owned()
+                    }
+                    _ => format!(
+                        "{} is not a git repository, so there is no diff to check",
+                        root_name(ws, scope.root)
+                    ),
+                });
+            }
+            (ScopeKind::Commits, Some(base), Some(head)) => (rev(base), rev(head), false),
+            (ScopeKind::Pr, Some(base), Some(head)) => {
+                let (b, h) = (base.clone(), head.clone());
+                let merge_base = tokio::task::spawn_blocking(move || git::merge_base(&dir, &b, &h))
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| base.clone());
+                (Side::Rev(merge_base), rev(head), false)
+            }
+            _ => {
+                return WalkthroughCoverage::unavailable("the scope's revisions did not resolve");
+            }
+        };
+        let hunks = service
+            .with_repo(&ws.id, scope.root, move |repo| {
+                Ok(coverage::scope_hunks(repo, &base, &head, untracked))
+            })
+            .await;
+        match hunks {
+            Ok(Ok(changed)) => coverage::classify(scope.root, &changed, &anchors, trivial),
+            Ok(Err(HunksError::TooMany(n))) => WalkthroughCoverage::unavailable(format!(
+                "{n} files changed; more than {} are not checked",
+                coverage::MAX_FILES
+            )),
+            Ok(Err(HunksError::Git(e))) => WalkthroughCoverage::unavailable(format!(
+                "the diff could not be computed: {}",
+                e.message
+            )),
+            Err(e) => WalkthroughCoverage::unavailable(format!("git: {}", e.message)),
+        }
     }
 
     fn record(&self, id: &WalkthroughId) -> Result<Walkthrough, ErrorObject> {
@@ -604,6 +765,21 @@ impl WalkthroughService {
         let scope = self.scope(&ws, &draft, root, &mut pr).await;
         let trivial_hunks = self.trivial_hunks(&ws, &draft, root, &mut pr).await;
         let anchors = self.anchor_steps(&ws, &draft, root, &mut pr).await;
+        // Only worth the diff if it may be published, or to say what
+        // `require_coverage` refuses alongside the rest.
+        let coverage = if pr.is_empty() || draft.require_coverage {
+            let lines = draft_anchor_lines(&ws, &draft, root);
+            let c = self.coverage(&ws, &scope, lines, &trivial_hunks).await;
+            if draft.require_coverage
+                && !c.is_complete()
+                && (pr.is_empty() || c.unavailable.is_none())
+            {
+                coverage_problems(&c, &mut pr);
+            }
+            Some(c)
+        } else {
+            None
+        };
         if !pr.is_empty() {
             tracing::debug!(session = %p.session, problems = pr.0.len(), "walkthrough refused");
             return Err(rejected(pr));
@@ -635,6 +811,7 @@ impl WalkthroughService {
             acceptance_criteria: criteria,
             steps,
             trivial_hunks,
+            coverage,
             created_by: WalkthroughAuthor {
                 session: SessionId(p.session.clone()),
                 agent,
@@ -656,7 +833,13 @@ impl WalkthroughService {
         {
             tracing::debug!(session = %p.session, error = %e, "cannot record a walkthrough");
         }
-        tracing::debug!(walkthrough = %id, steps = walkthrough.steps.len(), storage = ?walkthrough.storage.mode, "walkthrough published");
+        tracing::debug!(
+            walkthrough = %id,
+            steps = walkthrough.steps.len(),
+            storage = ?walkthrough.storage.mode,
+            uncovered = walkthrough.coverage.as_ref().map(WalkthroughCoverage::uncovered_count),
+            "walkthrough published"
+        );
         Ok(walkthrough)
     }
 
@@ -736,7 +919,38 @@ impl WalkthroughService {
                 w.steps[i].anchors[k].resolution = Some(r);
             }
         }
+        if w.scope.kind == ScopeKind::Worktree {
+            self.recheck_coverage(&mut w).await;
+        }
         Ok(w)
+    }
+
+    /// Check a worktree walkthrough's coverage again, with its anchors
+    /// where they are now; keep and announce it if it changed.
+    async fn recheck_coverage(&self, w: &mut Walkthrough) {
+        let Ok(ws) = self
+            .workspaces
+            .get(WorkspaceParams {
+                id: w.workspace.clone(),
+            })
+            .await
+        else {
+            return;
+        };
+        let anchors = resolved_anchor_lines(w);
+        let c = self
+            .coverage(&ws, &w.scope, anchors, &w.trivial_hunks)
+            .await;
+        if w.coverage.as_ref() == Some(&c) {
+            return;
+        }
+        w.coverage = Some(c);
+        let stored = lock(&self.store).set_coverage(&w.id, w.coverage.as_ref());
+        match stored {
+            Ok(true) => self.publish(ChangeKind::Updated, w),
+            Ok(false) => {}
+            Err(e) => tracing::debug!(walkthrough = %w.id, error = %e, "cannot keep the coverage"),
+        }
     }
 
     /// `walkthroughs/delete`.

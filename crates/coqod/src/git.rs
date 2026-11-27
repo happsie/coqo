@@ -126,7 +126,7 @@ impl GitService {
 
     /// Open the repository of `(workspace, root)` and run `f` on it on a
     /// blocking thread.
-    async fn with_repo<T, F>(
+    pub(crate) async fn with_repo<T, F>(
         &self,
         workspace: &WorkspaceId,
         root: RootId,

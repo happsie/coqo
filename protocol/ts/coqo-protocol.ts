@@ -2640,6 +2640,28 @@ export type TrivialHunkDraft = {
   start_line?: number | null;
 };
 
+/** A changed hunk no step covers and no trivial hunk lists. */
+export type UncoveredHunk = {
+  /** Lines added. */
+  added: number;
+  /** The first changed lines, `+` added and `-` removed, a few at most. */
+  excerpt: string;
+  /** Where it is in the new file, 0-based, `end` inclusive: its lines, or for lines only removed, the line before them (the first line when they were at the top). This is where to open it; `{0, 0}` for a deleted file. */
+  newRange: LineRange;
+  /** The removed lines in the old file, 0-based, `end` inclusive; absent when lines were only added. */
+  oldRange?: LineRange | null;
+  /** `/`-separated path relative to the root (the new path of a rename). */
+  path: string;
+  /** Lines removed. */
+  removed: number;
+  /** The old path of a rename. */
+  renamedFrom?: string | null;
+  /** The root. */
+  root: RootId;
+  /** Set when the hunk is a whole file (added, deleted, binary, renamed). */
+  wholeFile?: WholeFile | null;
+};
+
 /** Params of `coqo/unsubscribe`. */
 export type UnsubscribeParams = {
   /** The subscription to stop. */
@@ -2664,6 +2686,8 @@ export type Usage = {
 export type Walkthrough = {
   /** The acceptance criteria it addresses. */
   acceptanceCriteria?: Array<WalkthroughCriterion>;
+  /** How much of the scope's diff the steps cover. Computed when published, and again by `get` for a worktree scope (the work tree changes); absent from walkthroughs published before it existed. */
+  coverage?: WalkthroughCoverage | null;
   /** Published, Unix milliseconds. */
   createdAt: number;
   /** Who published it. */
@@ -2708,6 +2732,20 @@ export type WalkthroughChange = {
   workspace: WorkspaceId;
 };
 
+/** How much of a walkthrough scope's diff its steps cover.  Every changed hunk of the scope (`git diff` without context, so each run of changed lines is one hunk; untracked files count for a worktree scope) is **covered** when a step's anchor overlaps its lines in the new file (lines only removed: an anchor on the line before or after them), else **trivial** when `trivial_hunks` lists it (by the same overlap, or the whole file), else **uncovered**. */
+export type WalkthroughCoverage = {
+  /** Hunks a step's anchor covers. */
+  covered: number;
+  /** Changed hunks in the scope. */
+  total: number;
+  /** Hunks `trivial_hunks` lists (and no step covers). */
+  trivial: number;
+  /** Why the diff could not be computed (not a git repository, git unavailable, no commits yet); the counts are 0 then. */
+  unavailable?: string | null;
+  /** The uncovered hunks (`total - covered - trivial` of them), at most [`MAX_UNCOVERED`] (a summary: [`SUMMARY_UNCOVERED`]). */
+  uncovered?: Array<UncoveredHunk>;
+};
+
 /** An acceptance criterion a walkthrough addresses, as it was when it was published. Steps refer to it by `id`; the session's live criteria (ADR 0017) say whether it holds now. */
 export type WalkthroughCriterion = {
   /** Its id, e.g. `AC1`. */
@@ -2722,6 +2760,8 @@ export type WalkthroughCriterion = {
 export type WalkthroughDraft = {
   /** The acceptance criteria the change addresses, by id. Default: every criterion of this session (`set_acceptance_criteria`). A criterion that is not the session's needs `text`. */
   acceptance_criteria?: Array<CriterionDraft> | null;
+  /** Refuse to publish while a changed hunk of the scope is neither in a step's anchors nor in `trivial_hunks` (each is listed). Default: publish, and list the uncovered hunks in the result and to the reader. */
+  require_coverage?: boolean;
   /** What the walkthrough covers. */
   scope: ScopeDraft;
   /** The steps, in reading order: 1 to 100. */
@@ -2801,6 +2841,8 @@ export type WalkthroughStorage = {
 
 /** A walkthrough in a list, the transcript and change events. */
 export type WalkthroughSummary = {
+  /** How much of the diff the steps cover, with at most [`SUMMARY_UNCOVERED`] of the uncovered hunks listed. */
+  coverage?: WalkthroughCoverage | null;
   /** Published, Unix milliseconds. */
   createdAt: number;
   /** Id. */
@@ -2850,6 +2892,9 @@ export type Welcome = {
   /** What the server is, e.g. `coqod`. */
   server: string;
 };
+
+/** A changed file a hunk stands for as a whole. */
+export type WholeFile = "added" | "deleted" | "binary" | "renamed";
 
 /** One window's editor context for the workspace it shows. */
 export type WindowContext = {

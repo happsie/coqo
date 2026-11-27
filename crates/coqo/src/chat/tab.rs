@@ -21,7 +21,7 @@ mod permission;
 mod walkthroughs;
 
 #[cfg(test)]
-pub(crate) use walkthroughs::published_label;
+pub(crate) use walkthroughs::{coverage_label, published_label};
 
 use std::collections::{HashMap, HashSet};
 

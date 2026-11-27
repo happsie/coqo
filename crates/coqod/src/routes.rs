@@ -46,10 +46,8 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     let router = editor::register(router, EditorService::new(Arc::clone(&workspaces)));
     let sessions = agents::open(ctx)?;
     let router = agents::register(router, sessions.clone());
-    let router = git::register(
-        router,
-        GitService::new(Arc::clone(&workspaces), ctx.mods.clone()),
-    );
+    let git_service = GitService::new(Arc::clone(&workspaces), ctx.mods.clone());
+    let router = git::register(router, Arc::clone(&git_service));
     let buffers = BufferService::new(
         Arc::clone(&workspaces),
         ctx.data.clone(),
@@ -73,6 +71,7 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
             workspaces,
             Arc::clone(&buffers),
             Some(sessions.clone()),
+            Some(git_service),
         )?,
     );
     let router = syntax::register(router, SyntaxService::new(Arc::clone(&buffers)));

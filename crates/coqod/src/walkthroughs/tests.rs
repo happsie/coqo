@@ -14,11 +14,12 @@ use std::time::Duration;
 use coqo_agents::model::{self as agm, CreateSessionParams, SessionParams, SessionUpdate};
 use coqo_agents::testing::ScriptedProvider;
 use coqo_protocol::methods::codes;
+use coqo_protocol::methods::editor::LineRange;
 use coqo_protocol::methods::questions::AnchorStatus;
 use coqo_protocol::methods::walkthroughs::{
     self as wtm, ChangeKind, ChangesParams, CreateParams, DeleteParams, ListParams, ScopeKind,
     SetStepStateParams, StepKind, StepState, StorageMode, Walkthrough, WalkthroughParams,
-    WalkthroughProblems,
+    WalkthroughProblems, WholeFile,
 };
 use coqo_protocol::methods::workspace::{self as wsm, SetStateParams, WorkspaceInfo};
 use coqo_protocol::{Client, ClientConfig, ProtocolError, Server, ServerConfig, SessionToken};
@@ -410,6 +411,8 @@ async fn every_problem_is_reported_at_once() {
         .await
         .unwrap();
     assert_eq!((w.scope.base, w.scope.base_commit), (None, None));
+    let why = w.coverage.unwrap().unavailable.unwrap();
+    assert!(why.contains("is not a git repository"), "{why}");
 
     // Nothing refused was stored.
     let list = ui
@@ -465,6 +468,13 @@ async fn a_committed_walkthrough_is_written_to_the_repository() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8(log.stdout).unwrap().trim(), "1");
+    // The written file is not part of the change.
+    let got = ui
+        .request::<wtm::Get>(WalkthroughParams { id: w.id.clone() })
+        .await
+        .unwrap();
+    let c = got.coverage.unwrap();
+    assert_eq!((c.total, &c.unavailable), (0, &None), "{c:#?}");
 
     // Deleting it with its file.
     assert!(
@@ -476,5 +486,389 @@ async fn a_committed_walkthrough_is_written_to_the_repository() {
         .unwrap()
     );
     assert!(!file.exists());
+    daemon.stop().await;
+}
+
+// ---- coverage (#99) ---------------------------------------------------------------
+
+/// Run git in `dir` as a test user; its stdout.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+
+fn commit_all(dir: &Path, message: &str) {
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", message]);
+}
+
+fn write(dir: &Path, path: &str, text: impl AsRef<[u8]>) {
+    let path = dir.join(path);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+const EXTRA_FN: &str = "\npub fn cap(units: u32) -> u32 {\n    units.min(500)\n}\n";
+
+/// A step over `path`'s lines `start..=end` (1-based).
+fn step(id: &str, path: &str, start: u32, end: u32) -> Value {
+    json!({
+        "id": id,
+        "title": format!("Step {id}"),
+        "kind": "logic",
+        "anchors": [{ "path": path, "start_line": start, "end_line": end }],
+        "what": "What it does.",
+        "why": "Why.",
+    })
+}
+
+fn coverage_draft(scope: Value, steps: Vec<Value>, trivial: Value) -> Value {
+    json!({
+        "title": "Volume discount",
+        "summary": "Orders of 100 units or more get 15% off.",
+        "scope": scope,
+        "steps": steps,
+        "trivial_hunks": trivial,
+    })
+}
+
+#[tokio::test]
+async fn a_worktree_scope_is_checked_for_coverage() {
+    let data = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(data.path()).await;
+    let ui = daemon.ui().await;
+    let (dir, ws) = project(&ui, true).await;
+    let session = session(&ui, &dir, &ws).await;
+    let agent = daemon.agent(&ws, &session).await;
+    let root = dir.path();
+
+    // A changed line (3), lines added at the end (8-11), a removed line
+    // (tests/discount.rs line 3) and a new, untracked file.
+    write(
+        root,
+        "src/discount.rs",
+        format!(
+            "{}{EXTRA_FN}",
+            DISCOUNT_RS.replace("        10\n", "        15\n")
+        ),
+    );
+    write(root, "tests/discount.rs", "#[test]\nfn caps() {\n}\n");
+    write(root, "src/lib.rs", "pub mod discount;\n");
+    let draft = coverage_draft(
+        json!({ "kind": "worktree" }),
+        vec![
+            step("rule", "src/discount.rs", 2, 6),
+            // Beside the removed line.
+            step("tests", "tests/discount.rs", 2, 2),
+        ],
+        json!([{ "path": "src/lib.rs", "reason": "module list" }]),
+    );
+
+    // Strict: refused, with the uncovered hunk spelled out.
+    let mut strict = draft.clone();
+    strict["require_coverage"] = json!(true);
+    let got = problems(
+        agent
+            .request::<wtm::Create>(params(&ws, &session, strict))
+            .await,
+    );
+    assert_eq!(
+        got,
+        [
+            "require_coverage: src/discount.rs:8-11 (+4, `+pub fn cap(units: u32) -> u32 {`) is not explained by any step and not in trivial_hunks; add it to a step's anchors, or to trivial_hunks with a reason"
+        ],
+    );
+
+    // By default: published, the hunk flagged.
+    let w = agent
+        .request::<wtm::Create>(params(&ws, &session, draft))
+        .await
+        .unwrap();
+    let c = w.coverage.clone().unwrap();
+    assert_eq!(c.unavailable, None);
+    assert_eq!((c.total, c.covered, c.trivial), (4, 2, 1), "{c:#?}");
+    assert_eq!(c.uncovered.len(), 1);
+    let h = &c.uncovered[0];
+    assert_eq!(
+        (
+            h.path.as_str(),
+            h.new_range,
+            h.old_range,
+            h.added,
+            h.removed
+        ),
+        (
+            "src/discount.rs",
+            LineRange { start: 7, end: 10 },
+            None,
+            4,
+            0
+        )
+    );
+    assert_eq!(
+        h.excerpt,
+        "+pub fn cap(units: u32) -> u32 {\n+    units.min(500)\n+}"
+    );
+    // The list's summaries have it.
+    let list = ui
+        .request::<wtm::List>(ListParams {
+            workspace: ws.id.clone(),
+            session: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(list.walkthroughs[0].coverage.as_ref(), Some(&c));
+
+    // The work tree moves on: `get` checks again with the anchors where
+    // they are now, keeps it and says so.
+    let mut changes = ui
+        .subscribe::<wtm::Changes>(ChangesParams::default(), None)
+        .await
+        .unwrap();
+    write(
+        root,
+        "src/discount.rs",
+        format!(
+            "// Discounts.\n{}",
+            DISCOUNT_RS.replace("        10\n", "        15\n")
+        ),
+    );
+    let got = ui
+        .request::<wtm::Get>(WalkthroughParams { id: w.id.clone() })
+        .await
+        .unwrap();
+    let c = got.coverage.unwrap();
+    // The comment above is a new hunk; the rule's anchor moved down with
+    // its code and still covers line 4.
+    assert_eq!((c.total, c.covered, c.trivial), (4, 2, 1), "{c:#?}");
+    assert_eq!(c.uncovered[0].new_range, LineRange { start: 0, end: 0 });
+    let change = tokio::time::timeout(TIMEOUT, changes.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .event;
+    assert_eq!(change.kind, ChangeKind::Updated);
+    assert_eq!(change.summary.unwrap().coverage.unwrap(), c);
+    let list = ui
+        .request::<wtm::List>(ListParams {
+            workspace: ws.id.clone(),
+            session: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(list.walkthroughs[0].coverage.as_ref(), Some(&c));
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn commits_and_pr_scopes_are_checked_against_their_revisions() {
+    let data = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(data.path()).await;
+    let ui = daemon.ui().await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let util = "pub fn half(n: u32) -> u32 {\n    n / 2\n}\n";
+    repo(
+        root,
+        &[
+            ("src/discount.rs", DISCOUNT_RS),
+            ("tests/discount.rs", TEST_RS),
+            ("src/util.rs", util),
+        ],
+    );
+    git(root, &["switch", "-q", "-c", "feature"]);
+    // A changed line, a deleted file, a move and a binary file.
+    write(
+        root,
+        "src/discount.rs",
+        DISCOUNT_RS.replace("        10\n", "        15\n"),
+    );
+    std::fs::remove_file(root.join("tests/discount.rs")).unwrap();
+    std::fs::remove_file(root.join("src/util.rs")).unwrap();
+    write(root, "src/helpers.rs", util);
+    write(root, "logo.png", b"\x89PNG\0\0\x01");
+    commit_all(root, "feature");
+    // main moves on too; a PR shows only the feature's changes.
+    git(root, &["switch", "-q", "main"]);
+    write(root, "README.md", "Shop\n");
+    commit_all(root, "readme");
+    git(root, &["switch", "-q", "feature"]);
+    let ws = ui
+        .request::<wsm::Open>(wsm::OpenParams {
+            path: Some(root.to_str().unwrap().to_owned()),
+            ..wsm::OpenParams::default()
+        })
+        .await
+        .unwrap();
+    let session = session(&ui, &dir, &ws).await;
+    let agent = daemon.agent(&ws, &session).await;
+    let steps = || {
+        vec![
+            step("rule", "src/discount.rs", 3, 3),
+            step("moved", "src/helpers.rs", 1, 1),
+        ]
+    };
+
+    let w = agent
+        .request::<wtm::Create>(params(
+            &ws,
+            &session,
+            coverage_draft(
+                json!({ "kind": "commits", "base": "HEAD~1", "head": "HEAD" }),
+                steps(),
+                json!([]),
+            ),
+        ))
+        .await
+        .unwrap();
+    let c = w.coverage.unwrap();
+    assert_eq!((c.total, c.covered, c.trivial), (4, 2, 0), "{c:#?}");
+    let flagged: Vec<_> = c
+        .uncovered
+        .iter()
+        .map(|h| (h.path.as_str(), h.whole_file, h.change()))
+        .collect();
+    assert_eq!(
+        flagged,
+        [
+            (
+                "logo.png",
+                Some(WholeFile::Binary),
+                "binary file".to_owned()
+            ),
+            (
+                "tests/discount.rs",
+                Some(WholeFile::Deleted),
+                "file deleted".to_owned()
+            ),
+        ]
+    );
+    assert_eq!(
+        c.uncovered[1].old_range,
+        Some(LineRange { start: 0, end: 3 })
+    );
+
+    // The PR against main: main's own commit is not part of it. Only
+    // trivial_hunks cover deleted and binary files; a move is covered by
+    // its old path too.
+    let w = agent
+        .request::<wtm::Create>(params(
+            &ws,
+            &session,
+            coverage_draft(
+                json!({ "kind": "pr", "base": "main", "head": "feature" }),
+                vec![step("rule", "src/discount.rs", 3, 3)],
+                json!([
+                    { "path": "tests/discount.rs", "reason": "folded into the rule's doc test" },
+                    { "path": "logo.png" },
+                    { "path": "src/util.rs", "reason": "renamed" },
+                ]),
+            ),
+        ))
+        .await
+        .unwrap();
+    let c = w.coverage.unwrap();
+    assert_eq!((c.total, c.covered, c.trivial), (4, 1, 3), "{c:#?}");
+    assert!(c.is_complete());
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn only_the_scope_root_counts() {
+    let data = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(data.path()).await;
+    let ui = daemon.ui().await;
+    // Root 0 is a plain folder with the same paths; root 1 is a folder
+    // inside a repository.
+    let (dir, ws) = project(&ui, false).await;
+    let repo_dir = tempfile::tempdir().unwrap();
+    repo(
+        repo_dir.path(),
+        &[
+            ("shop/src/discount.rs", DISCOUNT_RS),
+            ("other/notes.txt", "a\n"),
+        ],
+    );
+    write(
+        repo_dir.path(),
+        "shop/src/discount.rs",
+        DISCOUNT_RS.replace("        10\n", "        15\n"),
+    );
+    write(repo_dir.path(), "other/notes.txt", "b\n");
+    let ws = ui
+        .request::<wsm::AddRoot>(wsm::AddRootParams {
+            id: ws.id.clone(),
+            path: repo_dir.path().join("shop").to_str().unwrap().to_owned(),
+            name: None,
+        })
+        .await
+        .unwrap();
+    let shop = ws.roots[1].id;
+    let session = session(&ui, &dir, &ws).await;
+    let agent = daemon.agent(&ws, &session).await;
+    let scope = json!({ "kind": "worktree", "root": shop.0 });
+
+    // The same path in root 0 does not cover root 1's hunk, and changes
+    // outside the root's folder are not part of it.
+    let mut in_root0 = step("rule", "src/discount.rs", 3, 3);
+    in_root0["anchors"][0]["root"] = json!(ws.roots[0].id.0);
+    let w = agent
+        .request::<wtm::Create>(params(
+            &ws,
+            &session,
+            coverage_draft(scope.clone(), vec![in_root0], json!([])),
+        ))
+        .await
+        .unwrap();
+    let c = w.coverage.unwrap();
+    assert_eq!((c.total, c.covered), (1, 0), "{c:#?}");
+    assert_eq!(
+        (c.uncovered[0].root, c.uncovered[0].path.as_str()),
+        (shop, "src/discount.rs")
+    );
+    // Its own root's anchor does (relative paths default to the scope's
+    // root).
+    let w = agent
+        .request::<wtm::Create>(params(
+            &ws,
+            &session,
+            coverage_draft(
+                scope,
+                vec![step("rule", "src/discount.rs", 3, 3)],
+                json!([]),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert!(w.coverage.unwrap().is_complete());
+
+    // Root 0 is not a repository: coverage cannot be checked.
+    let w = agent
+        .request::<wtm::Create>(params(
+            &ws,
+            &session,
+            coverage_draft(
+                json!({ "kind": "worktree" }),
+                vec![step("rule", "src/discount.rs", 3, 3)],
+                json!([]),
+            ),
+        ))
+        .await
+        .unwrap();
+    let why = w.coverage.unwrap().unavailable.unwrap();
+    assert!(why.contains("is not a git repository"), "{why}");
     daemon.stop().await;
 }
