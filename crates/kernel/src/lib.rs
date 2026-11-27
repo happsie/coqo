@@ -1,18 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Coqo kernel: registry, services, supervisor and event log.
+//! Coqo kernel: the small core everything else plugs into (PLAN §5, §10).
 //!
-//! Placeholder crate: see `docs/PLAN.md` §10. Real code lands in later milestones.
+//! - [`service`]: typed, versioned service registry (`provide` / `consume`
+//!   services such as `coqo.git@1`), where a mod can replace a built-in.
+//! - [`contribution`]: contribution registry keyed by contribution point
+//!   (`commands`, `views.sidebar`, …).
+//! - [`supervisor`]: supervises child processes (language servers, agents,
+//!   process mods): process groups, restart with backoff, output capture and
+//!   RSS per child.
+//! - [`logging`]: `tracing` subscriber setup for the binaries.
+//! - [`id`]: the identifiers the registries use. They are plain value types
+//!   so they can move to `coqo-mod-api` later and be re-exported here.
 
-/// Name of this crate, used by the workspace smoke tests.
-pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
+pub mod contribution;
+pub mod id;
+pub mod logging;
+pub mod service;
+pub mod supervisor;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn crate_name_is_set() {
-        assert_eq!(CRATE_NAME, "coqo-kernel");
-    }
-}
+pub use contribution::{Contribution, ContributionError, ContributionRegistry};
+pub use id::{
+    ContributionId, ContributionPointId, IdError, ProviderId, ServiceId, ServiceRef, ServiceVersion,
+};
+pub use service::{ProviderKind, ServiceDescriptor, ServiceError, ServiceRegistry};
+pub use supervisor::{
+    Backoff, ChildEvent, ChildExit, ChildHandle, ChildId, ChildIo, ChildSnapshot, ChildSpec,
+    ChildState, ChildStatus, ChildStdio, OutputLine, OutputStream, ResourceUsage, RestartMode,
+    RestartPolicy, Supervisor,
+};
