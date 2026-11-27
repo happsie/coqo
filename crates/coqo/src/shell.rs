@@ -84,6 +84,7 @@ pub fn init(cx: &mut App) {
     activity::init(cx);
     crate::git::init(cx);
     alerts::init(cx);
+    crate::diff::init(cx);
 }
 
 /// The drag payload of the sidebar's resize edge.

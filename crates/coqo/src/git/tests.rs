@@ -31,15 +31,16 @@ use coqo_ui::{
 };
 
 use super::{
-    diff::{self, Content, DiffTab},
+    diff::{self, DiffTab},
     model::{GitModel, RootGit},
     pane::{GitPane, Group},
 };
 use crate::{
     daemon::{self, DaemonConfig},
+    diff::{DiffView, Status, source::StaticSource, viewed},
     shell::{DEFAULT_WORKSPACE, Shell},
     test_support::{TIMEOUT, TestDaemon},
-    workspace,
+    workspace::{self, Workspaces},
 };
 
 struct Ui {
@@ -183,19 +184,26 @@ fn stage_a_file_and_commit_it_from_the_git_pane() {
     ui.wait_for("the diff", |ui| {
         let tabs = ui.diff_tabs();
         tabs.len() == 1
-            && matches!(
-                ui.cx.read(|cx| tabs[0].read(cx).content().clone()),
-                Content::Diff(_)
-            )
+            && ui.cx.read(|cx| {
+                tabs[0]
+                    .read(cx)
+                    .view()
+                    .read(cx)
+                    .file_diff("README.md")
+                    .is_some()
+            })
     });
     let tab = ui.diff_tabs().remove(0);
-    let Content::Diff(d) = ui.cx.read(|cx| tab.read(cx).content().clone()) else {
-        unreachable!()
-    };
-    assert_eq!(
-        (d.path.as_str(), d.additions, d.deletions),
-        ("README.md", 2, 0)
-    );
+    let view = ui.cx.read(|cx| tab.read(cx).view().clone());
+    ui.cx.read(|cx| {
+        let v = view.read(cx);
+        assert_eq!(v.selected_file(), Some("README.md"));
+        // Untracked files are listed with the changes, as in the pane.
+        let files: Vec<_> = v.files().iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(files, ["README.md", "notes.txt"]);
+        let d = v.file_diff("README.md").unwrap();
+        assert_eq!((d.additions, d.deletions), (2, 0));
+    });
 
     // Stage README.md with its row's button.
     ui.click(("git-stage", 0usize));
@@ -210,7 +218,10 @@ fn stage_a_file_and_commit_it_from_the_git_pane() {
     );
     // The unstaged diff tab follows: nothing left unstaged in README.md.
     ui.wait_for("the diff to refresh", |ui| {
-        matches!(ui.cx.read(|cx| tab.read(cx).content().clone()), Content::Diff(d) if d.hunks.is_empty())
+        ui.cx.read(|cx| {
+            let v = view.read(cx);
+            v.files().len() == 1 && v.selected_file() == Some("notes.txt")
+        })
     });
 
     // Write a message and commit.
@@ -330,6 +341,194 @@ fn status_letters_for_the_file_tree() {
         assert_eq!(m.letter(root, "new.txt"), Some('?'));
         assert_eq!(m.letter(root, "README.md"), None);
     });
+}
+
+impl Ui {
+    fn review(&mut self) -> Entity<DiffView> {
+        let tab = self.diff_tabs().remove(0);
+        self.cx.read(|cx| tab.read(cx).view().clone())
+    }
+
+    fn workspace_state(&mut self, key: &str) -> Option<coqo_ui::serde_json::Value> {
+        let window = self.window;
+        self.cx
+            .update_window(window, |_, window, cx| {
+                Workspaces::for_window(window, cx).and_then(|w| w.read(cx).state(key).cloned())
+            })
+            .unwrap()
+    }
+}
+
+/// `n` numbered lines.
+fn numbered(n: u32) -> String {
+    (1..=n).map(|i| format!("line {i}\n")).collect()
+}
+
+#[test]
+fn review_a_diff_then_stage_a_hunk_and_a_line() {
+    let (tmp, repo) = fixture_repo();
+    repo.write("src/lib.rs", &numbered(40));
+    repo.commit_all("Forty lines");
+    // Two hunks: line 5 replaced, and line 30 replaced by two lines.
+    let changed = numbered(40)
+        .replace("line 5\n", "five\n")
+        .replace("line 30\n", "thirty\nthirty b\n");
+    repo.write("src/lib.rs", &changed);
+    let mut ui = open_ui(repo.path().to_owned(), tmp);
+    ui.click("sidebar-git");
+    ui.wait_for("the change", |ui| ui.rows(Group::Unstaged).len() == 1);
+    ui.click(("git-unstaged-row", 0usize));
+    ui.wait_for("the review", |ui| {
+        ui.diff_tabs().len() == 1 && {
+            let view = ui.review();
+            ui.cx.read(|cx| view.read(cx).hunks().len() == 2)
+        }
+    });
+    let view = ui.review();
+    let path = "src/lib.rs";
+    ui.cx.read(|cx| {
+        let v = view.read(cx);
+        assert_eq!(v.status(), &Status::Ready);
+        assert_eq!(v.selected_file(), Some(path));
+        assert_eq!(v.mode(cx), coqo_ui::diff::DiffMode::Split);
+        assert_eq!(v.viewed_count(), (0, 1));
+    });
+
+    // Unified, by the toggle; back to side by side with `m`. Remembered
+    // in the workspace.
+    ui.click("diff-mode-unified");
+    assert_eq!(
+        ui.cx.read(|cx| view.read(cx).mode(cx)),
+        coqo_ui::diff::DiffMode::Unified
+    );
+    ui.wait_for("the mode saved", |ui| {
+        ui.workspace_state(viewed::MODE_KEY)
+            .as_ref()
+            .and_then(|v| v.as_str())
+            == Some("unified")
+    });
+    let focus = ui.cx.read(|cx| view.read(cx).viewer().focus_handle(cx));
+    ui.frame(|window, cx| window.focus(&focus, cx));
+    ui.frame(|window, cx| window.press("m", cx));
+    assert_eq!(
+        ui.cx.read(|cx| view.read(cx).mode(cx)),
+        coqo_ui::diff::DiffMode::Split
+    );
+
+    // A collapsed unchanged region opens.
+    let folds = |ui: &mut Ui| -> Vec<usize> {
+        ui.frame(|window, _| {
+            (0..60usize)
+                .filter(|i| window.try_find(("expand", *i)).is_some())
+                .collect()
+        })
+    };
+    let before = folds(&mut ui);
+    assert!(!before.is_empty(), "the unchanged lines between hunks fold");
+    ui.click(("expand", before[0]));
+    let after = folds(&mut ui);
+    assert!(!after.contains(&before[0]), "{before:?} → {after:?}");
+
+    // Mark it viewed (the checkbox), and find it viewed in a new view.
+    ui.click(("diff-viewed", 0usize));
+    assert_eq!(ui.cx.read(|cx| view.read(cx).viewed_count()), (1, 1));
+    let identity = ui.cx.read(|cx| view.read(cx).source().identity());
+    assert!(identity.ends_with(":index..worktree"), "{identity}");
+    let key = viewed::viewed_key(&identity);
+    ui.wait_for("the mark saved", |ui| {
+        ui.workspace_state(&key)
+            .is_some_and(|v| v.get(path).is_some())
+    });
+    let window = ui.window;
+    let source = ui.cx.read(|cx| view.read(cx).source().clone());
+    let again = ui
+        .cx
+        .update_window(window, |_, window, cx| {
+            cx.new(|cx| DiffView::new(source, None, window, cx))
+        })
+        .unwrap();
+    ui.wait_for("the second view", |ui| {
+        ui.cx.read(|cx| again.read(cx).status() == &Status::Ready)
+    });
+    assert!(ui.cx.read(|cx| again.read(cx).is_viewed(path)));
+    drop(again);
+
+    // Stage the first hunk with its gutter button.
+    ui.click(("diff-stage-hunk", 0usize));
+    ui.wait_for("the hunk staged", |ui| {
+        let v = ui.review();
+        ui.cx
+            .read(|cx| v.read(cx).hunks().len() == 1 && !v.read(cx).is_staging())
+    });
+    let cached = repo.git(&["diff", "--cached", "-U0"]);
+    assert!(cached.contains("-line 5\n+five\n"), "{cached}");
+    assert!(!cached.contains("thirty"), "{cached}");
+    // The file's change moved on, so it is no longer viewed.
+    assert_eq!(ui.cx.read(|cx| view.read(cx).viewed_count()), (0, 1));
+
+    // Select one added line (`thirty b`, new line 31) and stage just it.
+    let range = coqo_ui::diff::LineRange::lines(path, coqo_ui::diff::Side::New, 31, 31);
+    view.update(&mut ui.cx, |v, cx| v.select_lines(Some(&range), cx));
+    assert_eq!(
+        ui.cx.read(|cx| view.read(cx).selection().cloned()),
+        Some(range)
+    );
+    ui.click("diff-stage-lines");
+    ui.wait_for("the line staged", |_| {
+        repo.git(&["diff", "--cached", "-U0"]).contains("thirty b")
+    });
+    let cached = repo.git(&["diff", "--cached", "-U0"]);
+    assert!(cached.contains("+thirty b\n"), "{cached}");
+    assert!(
+        !cached.contains("-line 30"),
+        "only the chosen line: {cached}"
+    );
+    assert!(
+        !cached.contains("+thirty\n"),
+        "only the chosen line: {cached}"
+    );
+    // What is left unstaged is the rest of that hunk.
+    let unstaged = repo.git(&["diff", "-U0"]);
+    assert!(unstaged.contains("-line 30\n+thirty\n"), "{unstaged}");
+    assert!(ui.cx.read(|cx| view.read(cx).error().is_none()));
+}
+
+#[test]
+fn a_saved_diff_tab_restores_as_its_sides_tab() {
+    use coqo_ui::{dock::TabItem as _, serde_json::json};
+    let mut cx = TestAppContext::single();
+    let (window, _) = cx.update(|cx| {
+        coqo_ui::init(Appearance::Dark, cx);
+        coqo_ui::open_window(WindowOptions::default(), cx, |_, cx| {
+            cx.new(|_| coqo_ui::gpui::Empty)
+        })
+        .unwrap()
+    });
+    // A per-file tab saved before #93, and one saved since.
+    for (state, path) in [
+        (
+            json!({"workspace": "ws", "root": 0, "path": "src/lib.rs", "staged": true}),
+            Some("src/lib.rs"),
+        ),
+        (
+            json!({"workspace": "ws", "root": 0, "path": null, "staged": false}),
+            None,
+        ),
+    ] {
+        cx.update_window(window, |_, window, cx| {
+            let tab = diff::restore(&state, window, cx).expect("restores");
+            let staged = state["staged"].as_bool().unwrap();
+            assert_eq!(
+                tab.key(cx).as_deref(),
+                Some(diff::key(&WorkspaceId("ws".into()), RootId(0), staged).as_str())
+            );
+            let tab = tab.downcast::<DiffTab>().unwrap();
+            let view = tab.read(cx).view().clone();
+            assert_eq!(view.read(cx).selected_file(), path);
+            assert_eq!(tab.read(cx).save(cx), state);
+        })
+        .unwrap();
+    }
 }
 
 fn sample_status() -> StatusResult {
@@ -525,21 +724,20 @@ fn git_screenshots() {
             });
             cx.new(|cx| {
                 let shell = Shell::new(store, DEFAULT_WORKSPACE, window, cx);
-                let tab = cx.new(|cx| {
-                    DiffTab::with_diff(
-                        workspace.id.clone(),
-                        RootId(0),
-                        sample_diff(),
-                        true,
-                        window,
-                        cx,
-                    )
-                });
+                let source = StaticSource {
+                    identity: "screenshot".into(),
+                    base: "HEAD".into(),
+                    head: "index".into(),
+                    files: vec![sample_diff()],
+                };
+                let view = cx.new(|cx| DiffView::new(Rc::new(source), None, window, cx));
+                let tab =
+                    cx.new(|_| DiffTab::with_view(workspace.id.clone(), RootId(0), true, view));
                 shell.dock().update(cx, |dock, cx| {
                     dock.open_tab(AnyTab::new(tab), window, cx);
                 });
-                // The diff tab holds the model, so the pane finds it.
-                drop(model);
+                // Keep the model alive for the frame, so the pane finds it.
+                std::mem::forget(model);
                 shell
             })
         })

@@ -321,7 +321,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 
 ### 7.7 Git and native diff
 - **Git mod:** status, hunk/line staging, commit (with an agent-drafted message), branches, worktrees, stash, blame, log/graph.
-- **Diff view** (shared with PR review): side-by-side and unified, word-level highlights, collapsed unchanged regions, a file tree with a "viewed" checkbox per file, keyboard navigation, and walkthrough overlay mode.
+- **Diff view** (shared with PR review): side-by-side and unified, word-level highlights, collapsed unchanged regions, a file tree with a "viewed" checkbox per file, keyboard navigation, and walkthrough overlay mode. Any diff source can feed it, and other views add gutter markers, line slots and tints to it ([ADR 0021](adr/0021-diff-view.md)).
 - **Comment threads → agent:** select lines and comment. Comments build up as a *pending review*, and "Send to agent" sends the batch as one structured message (comments plus anchors plus diff context) to the session that made the change. Agent replies land in the threads, and threads can be resolved. The thread model is shared with GitHub (§7.8); only the backend differs.
 
 ### 7.8 PR Inbox (GitHub)
