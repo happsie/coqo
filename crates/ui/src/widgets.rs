@@ -210,6 +210,39 @@ pub fn raised(div: Div, cx: &App) -> Div {
     ])
 }
 
+/// The primary ("go") control: a sage gradient with dark text in the dark
+/// appearance and light text in the light one, as on the Send button.
+pub fn primary(div: Div, cx: &App) -> Div {
+    let t = cx.tokens();
+    let p = &t.palette;
+    let sage = p.sage.hsla();
+    let top = gpui_kit::Hsla {
+        l: (sage.l + 0.06).min(1.),
+        ..sage
+    };
+    let (text, highlight, drop) = if is_light(cx) {
+        (p.panel_raised.hsla(), 0.2, 0.12)
+    } else {
+        (p.ground.hsla(), 0.35, 0.4)
+    };
+    div.bg(linear_gradient(
+        180.,
+        linear_color_stop(top, 0.),
+        linear_color_stop(sage, 1.),
+    ))
+    .border_1()
+    .border_color(gpui_kit::Hsla {
+        l: (sage.l - 0.08).max(0.),
+        ..sage
+    })
+    .text_color(text)
+    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+    .shadow(vec![
+        top_highlight(highlight),
+        shadow(hsla(0., 0., 0., drop), 2., 6.),
+    ])
+}
+
 /// A tab in a tab strip. The selected tab is raised; the others are flat.
 pub fn tab(
     id: impl Into<ElementId>,

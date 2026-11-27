@@ -30,7 +30,7 @@
 use std::{future::Future, sync::Arc, time::Duration};
 
 use coqo_client::{ConnectError, ConnectOptions, DaemonPaths, connect, connect_or_spawn};
-use coqo_protocol::{Client, ClientConfig, ErrorObject, Method, ProtocolError, Topic};
+use coqo_protocol::{Client, ClientConfig, ErrorObject, Method, ProtocolError, Sequenced, Topic};
 use coqo_ui::{
     ActiveTokens as _,
     gpui::{
@@ -164,6 +164,12 @@ impl<E> EventStream<E> {
     /// The next event; `None` once the stream has ended.
     pub async fn next(&mut self) -> Option<Result<E, DaemonError>> {
         self.rx.recv().await
+    }
+
+    /// An event that has already arrived, without waiting: for draining a
+    /// burst (a replay) into one batch.
+    pub fn try_next(&mut self) -> Option<Result<E, DaemonError>> {
+        self.rx.try_recv().ok()
     }
 }
 
@@ -387,16 +393,41 @@ impl Daemon {
         params: T::Params,
     ) -> impl Future<Output = Result<EventStream<T::Event>, DaemonError>> + Send + 'static + use<T>
     {
+        self.subscribe_with::<T, _>(params, None, |e| e.event)
+    }
+
+    /// Subscribe to topic `T`, replaying the events after `since` first,
+    /// with their seqs (to resume later from the last one seen). A
+    /// `since` the source can no longer replay ends the stream with
+    /// [`DaemonError::Rpc`] carrying `RESUME_GAP`.
+    pub fn subscribe_since<T: Topic>(
+        &self,
+        params: T::Params,
+        since: u64,
+    ) -> impl Future<Output = Result<EventStream<Sequenced<T::Event>>, DaemonError>>
+    + Send
+    + 'static
+    + use<T> {
+        self.subscribe_with::<T, _>(params, Some(since), |e| e)
+    }
+
+    fn subscribe_with<T: Topic, E: Send + 'static>(
+        &self,
+        params: T::Params,
+        since: Option<u64>,
+        map: fn(Sequenced<T::Event>) -> E,
+    ) -> impl Future<Output = Result<EventStream<E>, DaemonError>> + Send + 'static + use<T, E>
+    {
         let call = self.client.clone().map(|client| {
             self.runtime().spawn(async move {
-                let mut subscription = client.subscribe::<T>(params, None).await?;
+                let mut subscription = client.subscribe::<T>(params, since).await?;
                 let (tx, rx) = mpsc::unbounded_channel();
                 tokio::spawn(async move {
                     loop {
                         tokio::select! {
                             item = subscription.next() => {
                                 let Some(item) = item else { break };
-                                let item = item.map(|e| e.event).map_err(DaemonError::from);
+                                let item = item.map(map).map_err(DaemonError::from);
                                 if tx.send(item).is_err() {
                                     break;
                                 }
