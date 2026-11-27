@@ -12,6 +12,8 @@
 //!   definitions, used by the [`Client`] and the server [`Router`].
 //! - [`subscription`]: sequenced event streams with resume-from-seq, and
 //!   [`SeqLog`], an in-memory source.
+//! - [`daemon`]: `daemon/status` and `daemon/shutdown`, the daemon's own
+//!   lifecycle methods.
 //!
 //! The client and server work over any `AsyncRead + AsyncWrite` byte stream;
 //! [`unix`] has Unix socket helpers.
@@ -43,6 +45,7 @@
 //! ```
 
 pub mod client;
+pub mod daemon;
 pub mod encoding;
 pub mod error;
 pub mod frame;

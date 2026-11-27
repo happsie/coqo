@@ -17,6 +17,7 @@ use schemars::generate::SchemaSettings;
 use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::{Map, Value, json};
 
+use crate::daemon;
 use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, builtin};
@@ -86,6 +87,16 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             g,
             "server→client",
             "The server ended a subscription, with an error if abnormal.",
+        ),
+        request::<daemon::Status>(
+            g,
+            "client→server",
+            "Daemon version, pid, uptime, attached clients, busy work and idle policy.",
+        ),
+        request::<daemon::Shutdown>(
+            g,
+            "client→server",
+            "Stop the daemon. Refused while work is busy unless `force` is set.",
         ),
     ]
 }
@@ -359,6 +370,8 @@ fn schema_covers_every_builtin_method() {
         builtin::Unsubscribe::NAME,
         builtin::Event::NAME,
         builtin::SubscriptionEnded::NAME,
+        daemon::Status::NAME,
+        daemon::Shutdown::NAME,
     ] {
         assert!(methods.contains_key(name), "{name} missing from the schema");
     }

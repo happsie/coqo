@@ -10,3 +10,4 @@ Architecture decisions for Coqo, one file per decision. See [ADR 0001](0001-reco
 | [0004](0004-workbench-layout.md) | Workbench layout: an own split tree, saved through a layout store | Accepted |
 | [0005](0005-claude-integration.md) | Claude integration: the Claude Agent ACP adapter on the user's own `claude`, with terminal mode beside it | Accepted |
 | [0006](0006-buffer-replication.md) | Buffer replication: daemon-authoritative op-log with optimistic local apply | Accepted |
+| [0007](0007-daemon-lifecycle.md) | Daemon lifecycle: socket, single-instance lock, spawn-on-demand and idle policy | Accepted |

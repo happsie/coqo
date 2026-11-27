@@ -132,6 +132,15 @@ A **topic** is a named stream of events. Each event has a sequence number `seq` 
 
 **Reattach (PLAN §4.3):** fetch a snapshot that includes the `seq` it reflects, then `coqo/subscribe` with `since` set to that `seq`. On `RESUME_GAP`, fetch a new snapshot and repeat.
 
+## Daemon methods
+
+`coqod` serves these besides the `coqo/` methods. Socket location, spawning and the idle policy are in [ADR 0007](../docs/adr/0007-daemon-lifecycle.md).
+
+| Method | Params | Result |
+|---|---|---|
+| `daemon/status` | none | `DaemonStatus`: `version`, `build`, `protocol`, `pid`, `startedAtMs`, `uptimeMs`, `connections` (including the caller), `busy` (reasons of the work keeping it alive), `idle` (`phase`: `active`, `idle` or `servicesStopped`, plus `stopServicesAfterSecs` and `exitAfterSecs`, `null` meaning never). |
+| `daemon/shutdown` | `{force?: bool}` | `{stopping, busy}`. Refused (`stopping: false`, with the busy reasons) while work is busy, unless `force` is set. When stopping, the daemon answers, closes every connection and exits. |
+
 ## Error codes
 
 | Code | Name | Meaning |

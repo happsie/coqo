@@ -27,6 +27,28 @@ export type Response<R = unknown> =
   | { jsonrpc: "2.0"; id: Id | null; error: ErrorObject };
 export type Message = Request | Notification | Response;
 
+/** Result of `daemon/status`. */
+export type DaemonStatus = {
+  /** The daemon's build id (also in the handshake's `Welcome.build`). */
+  build: string;
+  /** What keeps the daemon busy (agent sessions, traces, …). Busy work keeps the daemon alive with no clients attached. */
+  busy: Array<string>;
+  /** Clients attached right now, including the one asking. */
+  connections: number;
+  /** The idle policy and where the daemon is in it. */
+  idle: IdleStatus;
+  /** The daemon's process id. */
+  pid: number;
+  /** The protocol version the daemon speaks. */
+  protocol: ProtocolVersion;
+  /** When the daemon started, in milliseconds since the Unix epoch. */
+  startedAtMs: number;
+  /** How long the daemon has been running, in milliseconds. */
+  uptimeMs: number;
+  /** The daemon's version, e.g. `0.1.0`. */
+  version: string;
+};
+
 /** How a frame's payload is encoded.  JSON is mandatory and is always used for the handshake. MessagePack is optional and is switched on for the rest of the connection when both sides list it in the handshake; it is intended for hot paths (buffer ops, trace streams). */
 export type Encoding = "json" | "msgpack";
 
@@ -62,6 +84,19 @@ export type Hello = {
   protocol: ProtocolVersion;
 };
 
+/** Where the daemon is in its idle policy. */
+export type IdlePhase = "active" | "idle" | "servicesStopped";
+
+/** The idle policy (PLAN §4.3) and the daemon's current idle phase. */
+export type IdleStatus = {
+  /** Seconds with no clients and nothing busy before the daemon exits. `null` means never ("always on"). */
+  exitAfterSecs?: number | null;
+  /** The current phase. */
+  phase: IdlePhase;
+  /** Seconds with no clients and nothing busy before idle services (such as language servers) stop. `null` means never. */
+  stopServicesAfterSecs?: number | null;
+};
+
 /** `data` of the [`codes::INCOMPATIBLE_PROTOCOL`] error. */
 export type IncompatibleProtocol = {
   /** The server's build id. */
@@ -86,6 +121,20 @@ export type ResumeGap = {
   needed: number;
   /** The oldest sequence number still available (`head + 1` if none). */
   oldest: number;
+};
+
+/** Params of `daemon/shutdown`. */
+export type ShutdownParams = {
+  /** Stop even if work is busy. */
+  force?: boolean;
+};
+
+/** Result of `daemon/shutdown`. */
+export type ShutdownResult = {
+  /** When not stopping: the busy work that kept it running. */
+  busy: Array<string>;
+  /** Whether the daemon is stopping. It closes every connection and exits shortly after answering. */
+  stopping: boolean;
 };
 
 /** Params of `coqo/subscribe`. */
@@ -147,6 +196,10 @@ export interface Requests {
   "coqo/subscribe": { params: SubscribeParams; result: SubscribeResult };
   /** Stop a subscription. Result is true if it existed. (client→server) */
   "coqo/unsubscribe": { params: UnsubscribeParams; result: boolean };
+  /** Daemon version, pid, uptime, attached clients, busy work and idle policy. (client→server) */
+  "daemon/status": { params: null; result: DaemonStatus };
+  /** Stop the daemon. Refused while work is busy unless `force` is set. (client→server) */
+  "daemon/shutdown": { params: ShutdownParams; result: ShutdownResult };
 }
 
 /** Notifications: method name → params. */

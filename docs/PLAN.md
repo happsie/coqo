@@ -137,7 +137,7 @@ Honest notes:
 - **UI closed:** agents keep running. Blocking questions, permission prompts, and "agent finished" become **OS notifications sent by the daemon**. Clicking one launches the UI straight to that question. On macOS the daemon ships as a helper inside the `.app` bundle so notifications work.
 - **Reattach:** the UI asks for a snapshot (workspaces, sessions, open questions, alerts, buffer state), then subscribes to the **event log** from the last sequence number it saw. Unsaved edits and chat history are all there.
 - **Several clients:** more than one window, plus the `coqo` CLI (`coqo status`, `coqo agents`, `coqo open <ws>`), can attach at the same time.
-- **Idle policy:** with no UI attached and no busy agent or trace, language servers shut down after N minutes (default 30) and the daemon exits after M minutes. There is an "always on" setting.
+- **Idle policy:** with no UI attached and no busy agent or trace, language servers shut down after N minutes (default 30) and the daemon exits after M minutes (default 60). There is an "always on" setting. Socket, lock, spawn and idle details are in [ADR 0007](adr/0007-daemon-lifecycle.md).
 - **Updates:** a new UI with an older daemon keeps working if the protocol is compatible. Otherwise it offers to restart the daemon once agents are idle. Sessions resume after a restart through ACP `session/load` or Claude Code session resume, where supported.
 - **Crash safety:** agents run in their own process groups, and the event log and transcripts are persisted to SQLite. After a daemon crash the supervisor restarts it and resumes sessions where the agent supports that.
 
@@ -389,6 +389,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 ```
 crates/coqod/            daemon binary (incl. `coqod mcp` mode)
 crates/coqo/             UI binary (GPUI) + `coqo` CLI subcommands
+crates/client/           coqo-client: daemon socket paths + connect-or-spawn (UI, CLI, `coqod mcp`)
 crates/kernel/           registry, services, supervisor, event log
 crates/protocol/         Coqo Protocol types + schema (generates TS client)
 crates/mod-api/          public mod API (coqo-mod-api) — only dependency allowed for mods
