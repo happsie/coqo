@@ -1,0 +1,198 @@
+# A complete coqo.mod.toml, using every field and every v1 contribution point.
+# The format is documented in docs/mods/manifest.md, and the mod-api tests
+# parse this file, so it always matches the code.
+
+# --- Identity -----------------------------------------------------------------
+id = "acme.maven-tools"            # mod id: dot-separated [a-z0-9][a-z0-9_-]* segments
+name = "Maven tools"               # display name (optional, defaults to the id)
+version = "1.4.0"                  # the mod's own version (semver)
+description = "Run Maven goals, browse modules and let agents run tests."
+authors = ["Acme Tools <tools@example.com>"]
+license = "Apache-2.0"
+repository = "https://example.com/acme/maven-tools"
+
+# Mod API versions this mod works with (semver requirement), checked against
+# coqo_mod_api::API_VERSION.
+engine = "^0.0"
+
+# --- How it runs --------------------------------------------------------------
+# core: a Rust crate linked into Coqo (no entry).
+# wasm: entry is the component path, ending in .wasm.
+# process: entry is the program to run, args its arguments.
+tier = "process"
+entry = "bin/maven-tools"
+args = ["--stdio"]
+
+# When to activate the mod.
+activation = [
+  "workspace_contains:**/pom.xml",
+  "command:maven.run-goal",
+  "view:maven.modules",
+  "mcp_tool:maven_test",
+]
+
+# Services: provides at exact versions, consumes at minimum versions.
+provides = ["acme.maven@1.2"]
+consumes = [
+  "coqo.workspace@1",
+  { service = "coqo.git@1", optional = true },
+]
+
+# --- Permissions --------------------------------------------------------------
+[permissions]
+fs.read = ["$workspace", "$home/.m2"]
+fs.write = ["$workspace/target", "$cache"]
+network = ["repo.maven.apache.org", "*.example.com:443"]
+process = ["mvn", "java"]
+secrets = ["acme.repo-token"]
+
+# --- Contributions ------------------------------------------------------------
+[[contributes.commands]]
+id = "maven.run-goal"
+title = "Run Maven goal…"
+category = "Maven"
+icon = "play"
+
+[[contributes.commands]]
+id = "maven.reload"
+title = "Reload Maven project"
+category = "Maven"
+when = "workspace.maven"
+
+[[contributes.keybindings]]
+command = "maven.run-goal"
+key = "ctrl+alt+m"
+mac = "cmd+alt+m"
+when = "workspace.maven"
+args = { goal = "verify" }
+
+[[contributes.menus]]
+menu = "explorer.context"
+command = "maven.reload"
+group = "maven"
+order = 1
+when = "resource.filename == 'pom.xml'"
+
+[[contributes.settings]]
+key = "maven.executable"
+title = "Maven executable"
+description = "Program used to run Maven."
+type = "string"
+default = "mvn"
+
+[[contributes.settings]]
+key = "maven.offline"
+description = "Run Maven with --offline."
+type = "boolean"
+default = false
+
+[[contributes.settings]]
+key = "maven.threads"
+description = "Parallel build threads (-T)."
+type = "integer"
+default = 1
+minimum = 1
+maximum = 64
+
+[[contributes.settings]]
+key = "maven.log-level"
+description = "How much Maven output to show."
+type = "enum"
+values = ["quiet", "normal", "debug"]
+default = "normal"
+
+[[contributes.settings]]
+key = "maven.profiles"
+description = "Profiles to activate (-P)."
+type = "string_list"
+default = []
+
+[[contributes.views.sidebar]]
+id = "maven.modules"
+title = "Maven"
+icon = "package"
+order = 30
+
+[[contributes.views.panel]]
+id = "maven.output"
+title = "Maven output"
+
+[[contributes.views.tab]]
+id = "maven.dependency-tree"
+title = "Dependency tree"
+
+[[contributes.views.rail]]
+id = "maven.builds"
+title = "Builds"
+icon = "hammer"
+
+[[contributes.views.status]]
+id = "maven.status"
+text = "Maven: idle"
+tooltip = "Last Maven build"
+command = "maven.run-goal"
+alignment = "right"
+priority = 10
+
+[[contributes.languages]]
+id = "maven-pom"
+name = "Maven POM"
+filenames = ["pom.xml"]
+grammar = "grammars/xml.wasm"
+
+[[contributes.languages]]
+id = "mvn-config"
+name = "Maven config"
+extensions = [".mvn"]
+line_comment = "#"
+
+[[contributes.lsp_servers]]
+id = "lemminx-maven"
+name = "LemMinX Maven"
+languages = ["maven-pom"]
+command = "bin/lemminx"
+args = ["--stdio"]
+root_markers = ["pom.xml"]
+initialization_options = { maven = { offline = false } }
+
+[[contributes.debug_adapters]]
+id = "maven-surefire"
+name = "Surefire tests"
+languages = ["java"]
+
+[[contributes.mcp_tools]]
+name = "maven_test"
+description = "Runs Maven tests and returns the failures."
+
+[contributes.mcp_tools.input_schema]
+type = "object"
+required = ["module"]
+properties.module = { type = "string", description = "Module to test, e.g. core" }
+properties.test = { type = "string", description = "Optional test filter (-Dtest)" }
+
+[[contributes.agent_providers]]
+id = "acme-build-bot"
+name = "Build bot"
+kind = "native"
+description = "An agent that only fixes failing builds."
+
+[[contributes.slash_commands]]
+name = "maven-test"
+description = "Run the tests of the current module."
+argument_hint = "<module>"
+
+[[contributes.context_providers]]
+id = "maven-module"
+name = "Maven module"
+description = "Adds a module's pom.xml and dependency tree."
+
+[[contributes.alert_sources]]
+id = "maven.build-failed"
+name = "Build failures"
+description = "Alerts when a Maven build fails."
+
+[[contributes.themes]]
+id = "acme.night"
+name = "Acme Night"
+appearance = "dark"
+path = "themes/night.toml"

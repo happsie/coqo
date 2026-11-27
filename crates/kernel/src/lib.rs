@@ -10,8 +10,8 @@
 //!   process mods): process groups, restart with backoff, output capture and
 //!   RSS per child.
 //! - [`logging`]: `tracing` subscriber setup for the binaries.
-//! - [`id`]: the identifiers the registries use. They are plain value types
-//!   so they can move to `coqo-mod-api` later and be re-exported here.
+//! - [`id`]: the identifiers the registries use, re-exported from
+//!   `coqo-mod-api` so mods and the kernel share them.
 
 pub mod contribution;
 pub mod id;
