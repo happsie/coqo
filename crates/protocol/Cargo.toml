@@ -1,12 +1,28 @@
 [package]
 name = "coqo-protocol"
-description = "Coqo Protocol types and schema shared by the daemon, UI and clients."
+description = "Coqo Protocol: framing, JSON-RPC 2.0 messages, handshake, subscriptions, and client/server helpers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+
+[dependencies]
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+rmp-serde = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
+
+[dev-dependencies]
+proptest = "1"
+schemars = "1"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
 
 [lints]
 workspace = true
