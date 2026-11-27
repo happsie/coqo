@@ -8,20 +8,21 @@
 //! `sessions/updates` from seq 0, so a restored tab replays the whole
 //! transcript and then follows the live stream. After a daemon reconnect it
 //! resubscribes from the last seq it applied; a `RESUME_GAP` starts over.
+//!
+//! The composer (mentions, slash commands, the provider and mode dropdowns,
+//! prompt history) is in [`composer`].
 
-use std::collections::HashSet;
+mod composer;
+
+use std::collections::{HashMap, HashSet};
 
 use coqo_protocol::{
     Sequenced, codes,
-    methods::{
-        agents::{
-            AgentState, AuthKind, Cancel, ContentBlock, Get, PermissionOptionKind,
-            PermissionOutcome, PermissionRequest, PermissionRequestId, PlanEntryStatus, Prompt,
-            PromptParams, Providers, RespondPermission, RespondPermissionParams, SessionId,
-            SessionInfo, SessionParams, SessionSnapshot, SessionUpdate, SetMode, SetModeParams,
-            ToolCallContent, ToolCallStatus, ToolKind, Updates,
-        },
-        codes as app_codes,
+    methods::agents::{
+        AgentState, AuthKind, Cancel, ContentBlock, Get, PermissionOptionKind, PermissionOutcome,
+        PermissionRequest, PermissionRequestId, PlanEntryStatus, ProviderInfo, Providers,
+        RespondPermission, RespondPermissionParams, SessionId, SessionInfo, SessionParams,
+        SessionSnapshot, SessionUpdate, ToolCallContent, ToolCallStatus, ToolKind, Updates,
     },
 };
 use coqo_ui::{
@@ -65,7 +66,24 @@ pub struct ChatTab {
     /// The last failed request, shown above the composer.
     error: Option<String>,
     focus: FocusHandle,
+    /// `agents/providers`, for the provider dropdown and capabilities.
+    providers: Vec<ProviderInfo>,
+    /// The composer's completion popover or open dropdown.
+    popover: Option<composer::Popover>,
+    /// Where the `@` or `/` word that was dismissed with Esc starts.
+    dismissed: Option<usize>,
+    /// Where the click that closed a dropdown was, so it doesn't reopen it.
+    closed_by: Option<coqo_ui::gpui::Point<coqo_ui::gpui::Pixels>>,
+    /// The workspace's files, for @-mentions.
+    files: composer::FileIndex,
+    /// Mentioned files by URI, for embedding their contents.
+    targets: HashMap<String, composer::Target>,
+    /// Which earlier prompt the composer shows (index among the prompts).
+    history: Option<usize>,
+    /// A provider switch is creating the new session.
+    switching: bool,
     _updates: Option<Task<()>>,
+    _index: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -88,7 +106,7 @@ impl ChatTab {
     pub fn new(session: SessionId, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let composer = cx.new(|cx| {
             PromptInput::new(
-                "Message the agent. Enter to send, Shift+Enter for a new line",
+                "Message the agent. @ to mention, / for commands and skills",
                 2,
                 8,
                 window,
@@ -102,8 +120,9 @@ impl ChatTab {
             window,
             |this, _, event: &PromptInputEvent, window, cx| match event {
                 PromptInputEvent::Submit => this.send(window, cx),
-                PromptInputEvent::Cancel => this.cancel(cx),
-                PromptInputEvent::Changed => {}
+                PromptInputEvent::Cancel => this.on_composer_cancel(cx),
+                PromptInputEvent::Changed => this.refresh_completion(cx),
+                PromptInputEvent::Key(key) => this.on_composer_key(*key, window, cx),
             },
         )];
         let mut connected = false;
@@ -127,7 +146,16 @@ impl ChatTab {
             expanded: HashSet::new(),
             error: None,
             focus: cx.focus_handle(),
+            providers: Vec::new(),
+            popover: None,
+            dismissed: None,
+            closed_by: None,
+            files: composer::FileIndex::default(),
+            targets: HashMap::new(),
+            history: None,
+            switching: false,
             _updates: None,
+            _index: None,
             _subscriptions: subscriptions,
         };
         if connected {
@@ -148,7 +176,7 @@ impl ChatTab {
         &self.transcript
     }
 
-    /// The composer, for tests and for the composer work in #64.
+    /// The composer.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn composer(&self) -> &Entity<PromptInput> {
         &self.composer
@@ -160,6 +188,12 @@ impl ChatTab {
         self.info = Some(info);
         self.provider_name = Some(provider.to_owned());
         cx.notify();
+    }
+
+    /// The providers the daemon offers.
+    #[cfg(test)]
+    pub fn providers(&self) -> &[ProviderInfo] {
+        &self.providers
     }
 
     fn daemon(cx: &App) -> Option<Entity<Daemon>> {
@@ -201,9 +235,10 @@ impl ChatTab {
                 this.update(cx, |this, cx| {
                     let id = this.info.as_ref().map(|i| i.provider.clone());
                     this.provider_name = providers
-                        .into_iter()
+                        .iter()
                         .find(|p| Some(&p.id) == id.as_ref())
-                        .map(|p| p.name);
+                        .map(|p| p.name.clone());
+                    this.providers = providers;
                     cx.notify();
                 })
                 .ok();
@@ -280,45 +315,6 @@ impl ChatTab {
         cx.notify();
     }
 
-    fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.composer.read(cx).text(cx);
-        let prompt = text.trim().to_owned();
-        if prompt.is_empty() || self.transcript.running || self.is_closed() {
-            return;
-        }
-        let Some(daemon) = Self::daemon(cx) else {
-            self.error = Some("coqod isn't connected; the message wasn't sent".into());
-            cx.notify();
-            return;
-        };
-        self.composer.update(cx, |c, cx| c.set_text("", window, cx));
-        self.error = None;
-        let request = daemon.read(cx).request::<Prompt>(PromptParams {
-            session: self.session.clone(),
-            content: vec![ContentBlock::text(prompt)],
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            if let Err(e) = request.await {
-                this.update_in(cx, |this, window, cx| {
-                    if e.code() == Some(app_codes::AUTH_REQUIRED) {
-                        this.transcript.sign_in = Some(e.to_string());
-                    } else {
-                        this.error = Some(format!("The message wasn't sent: {e}"));
-                    }
-                    // Give the text back so nothing is lost.
-                    if this.composer.read(cx).text(cx).is_empty() {
-                        this.composer
-                            .update(cx, |c, cx| c.set_text(text, window, cx));
-                    }
-                    cx.notify();
-                })
-                .ok();
-            }
-        })
-        .detach();
-        cx.notify();
-    }
-
     fn cancel(&mut self, cx: &mut Context<Self>) {
         if !self.transcript.running {
             return;
@@ -345,31 +341,6 @@ impl ChatTab {
                     outcome: PermissionOutcome::Selected { option_id: option },
                 });
             self.spawn_request(call, "Couldn't answer the permission request", cx);
-        }
-    }
-
-    /// Switch to the next of the session's modes.
-    fn next_mode(&mut self, cx: &mut Context<Self>) {
-        let Some(modes) = &self.transcript.modes else {
-            return;
-        };
-        let ix = modes
-            .available_modes
-            .iter()
-            .position(|m| m.id == modes.current_mode_id)
-            .map_or(0, |ix| ix + 1);
-        let Some(next) = modes
-            .available_modes
-            .get(ix % modes.available_modes.len().max(1))
-        else {
-            return;
-        };
-        if let Some(daemon) = Self::daemon(cx) {
-            let call = daemon.read(cx).request::<SetMode>(SetModeParams {
-                session: self.session.clone(),
-                mode_id: next.id.clone(),
-            });
-            self.spawn_request(call, "Couldn't switch the mode", cx);
         }
     }
 
@@ -1164,114 +1135,6 @@ impl ChatTab {
             );
         }
         banners
-    }
-
-    fn render_composer(&self, cx: &mut Context<Self>) -> AnyElement {
-        let t = cx.tokens();
-        let (p, m) = (t.palette.clone(), t.metrics.clone());
-        if self.is_closed() {
-            return div()
-                .id("chat-closed")
-                .test_support()
-                .text_size(m.text_sm)
-                .text_color(p.text_subtle.hsla())
-                .child("This chat is closed. Its transcript stays here to read.")
-                .into_any_element();
-        }
-        let tr = &self.transcript;
-        let chip = |id: &'static str, label: String| {
-            raised(
-                div()
-                    .px(px(10.))
-                    .py(px(5.))
-                    .rounded(m.radius_control)
-                    .text_size(m.text_sm)
-                    .text_color(p.text.hsla()),
-                cx,
-            )
-            .id(id)
-            .test_support()
-            .child(label)
-        };
-        let mut row = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(8.))
-            .text_size(m.text_sm)
-            .text_color(p.text_muted.hsla())
-            .child(chip("chat-provider", self.provider_label()));
-        if let Some(mode) = tr.mode_name() {
-            row = row.child(
-                chip("chat-mode", format!("Mode: {mode}"))
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| this.next_mode(cx))),
-            );
-        }
-        if let Some(model) = tr.usage.as_ref().and_then(|u| u.model.clone()) {
-            row = row.child(div().id("chat-model").child(model));
-        }
-        if let Some(billing) = billing_label(tr) {
-            row = row.child(
-                div()
-                    .id("chat-billing")
-                    .test_support()
-                    .text_color(p.text_subtle.hsla())
-                    .child(billing),
-            );
-        }
-        if let Some(usage) = usage_label(tr) {
-            row = row.child(
-                div()
-                    .id("chat-usage")
-                    .test_support()
-                    .text_color(p.text_subtle.hsla())
-                    .child(usage),
-            );
-        }
-        row = row.child(div().flex_1());
-        let button = div()
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .px(px(18.))
-            .py(px(7.))
-            .rounded(m.radius_control)
-            .text_size(m.text_sm)
-            .cursor_pointer();
-        row = if tr.running {
-            row.child(
-                raised(button, cx)
-                    .text_color(p.text.hsla())
-                    .id("chat-stop")
-                    .test_support()
-                    .child(icon(Icon::Square, px(11.), p.text.hsla()))
-                    .child("Stop")
-                    .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
-            )
-        } else {
-            row.child(
-                primary(button, cx)
-                    .id("chat-send")
-                    .test_support()
-                    .child("Send")
-                    .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
-            )
-        };
-        div()
-            .id("chat-composer")
-            .test_support()
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .px(px(14.))
-            .py(px(12.))
-            .rounded(px(18.))
-            .bg(p.surface.hsla())
-            .text_size(px(13.5))
-            .child(self.composer.clone())
-            .child(row)
-            .into_any_element()
     }
 
     fn render_panel(&self, cx: &mut Context<Self>) -> AnyElement {

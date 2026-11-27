@@ -15,11 +15,12 @@ use coqo_agents::{
     AgentUpdate, ManagerOptions, PermissionAsk, ProviderError, SessionManager, SessionStore,
     StaticProviders,
     model::{
-        AgentState, AuthKind, AuthStatus, ContentBlock, PermissionOption, PermissionOptionKind,
-        PermissionOutcome, PlanEntry, PlanEntryStatus, SessionInfo, StopReason, ToolCall,
-        ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
+        AgentState, AuthKind, AuthStatus, AvailableCommand, ContentBlock, PermissionOption,
+        PermissionOptionKind, PermissionOutcome, PlanEntry, PlanEntryStatus, ProviderCapabilities,
+        SessionInfo, StopReason, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation,
+        ToolCallStatus, ToolCallUpdate, ToolKind,
     },
-    testing::{Call, ScriptedProvider, Step},
+    testing::{Call, ScriptedProvider, Step, test_modes},
 };
 use coqo_client::{DaemonPaths, RuntimeDir};
 use coqo_mod_api::contrib::{AgentProviderInfo, AgentProviderKind};
@@ -60,7 +61,8 @@ struct TestDaemon {
 }
 
 impl TestDaemon {
-    fn start(dir: &Path, provider: &ScriptedProvider) -> Self {
+    /// Serve `providers` as `(id, name, agent)`.
+    fn start(dir: &Path, providers: &[(&str, &str, &ScriptedProvider)]) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -70,13 +72,17 @@ impl TestDaemon {
         let data = DataDirs::at(dir.join("data"));
         std::fs::create_dir_all(data.root()).unwrap();
         let _entered = runtime.enter();
-        let info = AgentProviderInfo {
-            id: "fake".parse().unwrap(),
-            name: "Fake agent".into(),
-            kind: AgentProviderKind::Acp,
-            description: None,
-        };
-        let providers = StaticProviders::new().with(info, Arc::new(provider.clone()));
+        let mut registry = StaticProviders::new();
+        for (id, name, provider) in providers {
+            let info = AgentProviderInfo {
+                id: id.parse().unwrap(),
+                name: (*name).into(),
+                kind: AgentProviderKind::Acp,
+                description: None,
+            };
+            registry = registry.with(info, Arc::new((*provider).clone()));
+        }
+        let providers = registry;
         let store = SessionStore::open(&data.global_db()).unwrap();
         let manager =
             SessionManager::open(store, Arc::new(providers), ManagerOptions::default()).unwrap();
@@ -105,12 +111,21 @@ struct Fixture {
 
 impl Fixture {
     fn new(provider: ScriptedProvider) -> Self {
+        Self::with_other(provider, None)
+    }
+
+    /// `provider` as "fake", and `other` as a second provider, "other".
+    fn with_other(provider: ScriptedProvider, other: Option<&ScriptedProvider>) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("demo-project");
         std::fs::create_dir_all(project.join("src")).unwrap();
         std::fs::write(project.join("src/main.rs"), "fn main() {}\n").unwrap();
         let project = project.canonicalize().unwrap();
-        let daemon = TestDaemon::start(tmp.path(), &provider);
+        let mut providers = vec![("fake", "Fake agent", &provider)];
+        if let Some(other) = other {
+            providers.push(("other", "Other agent", other));
+        }
+        let daemon = TestDaemon::start(tmp.path(), &providers);
         Self {
             _tmp: tmp,
             project,
@@ -241,6 +256,27 @@ impl Ui {
             window.focus(&focus, cx);
         });
         self.press("enter");
+    }
+
+    /// Focus the composer and type `text` at the cursor, as keystrokes do.
+    fn type_text(&mut self, chat: &Entity<ChatTab>, text: &str) {
+        let composer = self.cx.read(|cx| chat.read(cx).composer().clone());
+        self.frame(|window, cx| {
+            let focus = composer.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            window.input(text, cx);
+        });
+        self.cx.run_until_parked();
+    }
+
+    fn composer_text(&mut self, chat: &Entity<ChatTab>) -> String {
+        let composer = self.cx.read(|cx| chat.read(cx).composer().clone());
+        self.cx.read(|cx| composer.read(cx).text(cx))
+    }
+
+    fn shows(&mut self, id: &str) -> bool {
+        let id = name(id);
+        self.frame(|window, _| window.try_find(id).is_some())
     }
 
     fn agent_text(&mut self, chat: &Entity<ChatTab>) -> String {
@@ -599,10 +635,268 @@ fn a_provider_that_needs_a_login_says_how_to_sign_in() {
     ui.frame(|window, _| assert!(window.try_find("chat-list-error").is_some()));
 }
 
+// ---- composer (#64) -----------------------------------------------------------
+
+/// Every prompt the agent received, in order.
+fn prompts(provider: &ScriptedProvider) -> Vec<Vec<ContentBlock>> {
+    provider
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Prompt(content) => Some(content),
+            _ => None,
+        })
+        .collect()
+}
+
+fn no_embedding() -> ProviderCapabilities {
+    ProviderCapabilities {
+        resume: true,
+        modes: true,
+        images: false,
+        embedded_context: false,
+    }
+}
+
+#[test]
+fn an_at_mention_is_sent_as_a_resource_link() {
+    let fixture = Fixture::new(ScriptedProvider::new().capabilities(no_embedding()));
+    std::fs::write(fixture.project.join("src/lib.rs"), "pub fn lib() {}\n").unwrap();
+    std::fs::create_dir_all(fixture.project.join("target")).unwrap();
+    std::fs::write(fixture.project.join(".gitignore"), "target/\n").unwrap();
+    std::fs::write(fixture.project.join("target/main.o"), "").unwrap();
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+
+    ui.type_text(&chat, "Look at @mai");
+    ui.wait_for("the file matches", |ui| ui.shows("chat-mention-option-0"));
+    // Only src/main.rs matches: target/ is ignored.
+    assert!(!ui.shows("chat-mention-option-1"));
+    // Arrow keys wrap around the one match; Enter picks it.
+    ui.press("down");
+    ui.press("up");
+    ui.press("enter");
+    assert_eq!(ui.composer_text(&chat), "Look at @src/main.rs ");
+    assert!(!ui.shows("chat-completion"), "the popover closed");
+    let composer = ui.cx.read(|cx| chat.read(cx).composer().clone());
+    let mentions = ui.cx.read(|cx| composer.read(cx).mentions(cx));
+    assert_eq!(mentions.len(), 1, "the mention is a chip");
+
+    ui.type_text(&chat, "please");
+    ui.press("enter");
+    ui.wait_for("the prompt", |_| !prompts(&fixture.provider).is_empty());
+    let main = fixture.path("src/main.rs");
+    assert_eq!(
+        prompts(&fixture.provider)[0],
+        [
+            ContentBlock::text("Look at @src/main.rs please"),
+            ContentBlock::ResourceLink {
+                uri: format!("file://{main}"),
+                name: "main.rs".into(),
+                mime_type: None,
+                size: Some(13),
+            },
+        ]
+    );
+    // The transcript shows the mention as a chip on the prompt.
+    ui.wait_for("the prompt in the transcript", |ui| {
+        ui.entries(&chat)
+            .iter()
+            .any(|e| matches!(e, Entry::User { content } if content.len() == 2))
+    });
+}
+
+#[test]
+fn a_small_mentioned_file_is_embedded_when_the_provider_takes_context() {
+    let fixture = Fixture::new(ScriptedProvider::new());
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.type_text(&chat, "@main");
+    ui.wait_for("the file matches", |ui| ui.shows("chat-mention-option-0"));
+    ui.press("tab");
+    ui.press("enter");
+    ui.wait_for("the prompt", |_| !prompts(&fixture.provider).is_empty());
+    assert_eq!(
+        prompts(&fixture.provider)[0],
+        [
+            ContentBlock::text("@src/main.rs"),
+            ContentBlock::Resource {
+                uri: format!("file://{}", fixture.path("src/main.rs")),
+                mime_type: None,
+                text: "fn main() {}\n".into(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn slash_commands_complete_from_the_sessions_commands() {
+    let command = |name: &str, description: &str| AvailableCommand {
+        name: name.into(),
+        description: description.into(),
+        input_hint: None,
+    };
+    let provider = ScriptedProvider::new().on_start([
+        AgentUpdate::Modes(test_modes()),
+        AgentUpdate::AvailableCommands(vec![
+            command("compact", "Summarise the conversation"),
+            command("review", "Review a pull request"),
+            command("release-notes", "A skill: draft release notes"),
+        ]),
+    ]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.wait_for("the commands", |ui| {
+        ui.cx
+            .read(|cx| chat.read(cx).transcript().commands.len() == 3)
+    });
+
+    // Esc closes the popover without stopping anything.
+    ui.type_text(&chat, "/");
+    ui.wait_for("the command list", |ui| ui.shows("chat-command-option-2"));
+    ui.press("escape");
+    assert!(!ui.shows("chat-completion"));
+    assert!(!fixture.provider.calls().contains(&Call::Cancel));
+    // It stays closed for this word: typing on doesn't reopen it.
+    ui.type_text(&chat, "x");
+    assert!(!ui.shows("chat-completion"));
+
+    // A new `/` word opens it again.
+    ui.press("backspace");
+    ui.press("backspace");
+    ui.type_text(&chat, "/re");
+    ui.wait_for("the filtered list", |ui| {
+        ui.shows("chat-command-option-1") && !ui.shows("chat-command-option-2")
+    });
+    // `review` and `release-notes` both start with "re", the shorter first.
+    ui.press("down");
+    ui.press("up");
+    ui.press("tab");
+    assert_eq!(ui.composer_text(&chat), "/review ");
+    ui.type_text(&chat, "#42");
+    ui.press("enter");
+    ui.wait_for("the prompt", |_| !prompts(&fixture.provider).is_empty());
+    assert_eq!(
+        prompts(&fixture.provider)[0],
+        [ContentBlock::text("/review #42")]
+    );
+}
+
+#[test]
+fn the_provider_dropdown_starts_the_chat_on_the_chosen_provider() {
+    let other = ScriptedProvider::new().turn([
+        chunk("From the other agent"),
+        Step::Stop(StopReason::EndTurn),
+    ]);
+    let fixture = Fixture::with_other(ScriptedProvider::new(), Some(&other));
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    let first = ui.cx.read(|cx| chat.read(cx).session().clone());
+    assert_eq!(ui.listed()[0].provider, "fake");
+    ui.wait_for("the providers", |ui| {
+        ui.cx.read(|cx| chat.read(cx).providers().len() == 2)
+    });
+
+    ui.frame(|window, cx| window.click("chat-provider", cx));
+    assert!(ui.shows("chat-menu"));
+    ui.frame(|window, cx| window.click(name("chat-provider-option-other"), cx));
+    ui.wait_for("the new session", |ui| {
+        let session = ui.cx.read(|cx| chat.read(cx).session().clone());
+        session != first
+            && ui
+                .listed()
+                .iter()
+                .any(|s| s.id == session && s.provider == "other")
+    });
+    ui.wait_for("the empty session to close", |ui| {
+        ui.listed().len() == 1 && fixture.provider.calls().contains(&Call::Close)
+    });
+    assert!(!ui.shows("chat-menu"));
+
+    ui.send(&chat, "Hello");
+    ui.wait_for("the other agent's answer", |ui| {
+        ui.agent_text(&chat) == "From the other agent"
+    });
+    assert_eq!(prompts(&other), [vec![ContentBlock::text("Hello")]]);
+    assert!(prompts(&fixture.provider).is_empty());
+    // After the first prompt the provider is fixed.
+    ui.frame(|window, cx| window.click("chat-provider", cx));
+    assert!(!ui.shows("chat-menu"));
+}
+
+#[test]
+fn the_mode_dropdown_switches_the_mode() {
+    let fixture = Fixture::new(ScriptedProvider::new());
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.wait_for("the modes", |ui| ui.shows("chat-mode"));
+    ui.frame(|window, cx| window.click("chat-mode", cx));
+    assert!(ui.shows("chat-mode-option-default"));
+    // A second click on the chip closes it again.
+    ui.frame(|window, cx| window.click("chat-mode", cx));
+    assert!(!ui.shows("chat-menu"));
+    ui.frame(|window, cx| window.click("chat-mode", cx));
+    ui.frame(|window, cx| window.click(name("chat-mode-option-plan"), cx));
+    ui.wait_for("setMode", |ui| {
+        fixture
+            .provider
+            .calls()
+            .contains(&Call::SetMode("plan".into()))
+            && ui.cx.read(|cx| {
+                chat.read(cx)
+                    .transcript()
+                    .modes
+                    .as_ref()
+                    .is_some_and(|m| m.current_mode_id == "plan")
+            })
+    });
+    assert!(!ui.shows("chat-menu"));
+    // The keyboard works in the dropdown too: back to Manual.
+    ui.frame(|window, cx| window.click("chat-mode", cx));
+    ui.press("up");
+    ui.press("enter");
+    ui.wait_for("setMode default", |_| {
+        fixture
+            .provider
+            .calls()
+            .contains(&Call::SetMode("default".into()))
+    });
+}
+
+#[test]
+fn up_in_an_empty_composer_recalls_earlier_prompts() {
+    let fixture = Fixture::new(ScriptedProvider::new());
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    for (n, text) in ["First", "Second"].into_iter().enumerate() {
+        ui.send(&chat, text);
+        ui.wait_for("the answer", |ui| {
+            !running(ui, &chat)
+                && ui
+                    .entries(&chat)
+                    .iter()
+                    .filter(|e| matches!(e, Entry::User { .. }))
+                    .count()
+                    == n + 1
+        });
+    }
+    ui.press("up");
+    assert_eq!(ui.composer_text(&chat), "Second");
+    ui.press("up");
+    assert_eq!(ui.composer_text(&chat), "First");
+    ui.press("up");
+    assert_eq!(ui.composer_text(&chat), "First", "stays at the oldest");
+    ui.press("down");
+    assert_eq!(ui.composer_text(&chat), "Second");
+    ui.press("down");
+    assert_eq!(ui.composer_text(&chat), "");
+}
+
 /// Renders a chat tab offscreen to PNGs for visual review against board 1.
 /// Needs a GPU: `cargo test -p coqo -- --ignored chat_screenshots`.
-/// Writes `coqo-chat-<appearance>.png` to `$COQO_SHOT_DIR` (default: the
-/// system temp dir).
+/// Writes `coqo-chat-<appearance>.png` and `coqo-composer-<appearance>.png`
+/// (an @-mention popover) to `$COQO_SHOT_DIR` (default: the system temp dir).
 #[test]
 #[ignore = "needs a GPU; run manually"]
 fn chat_screenshots() {
@@ -669,6 +963,7 @@ fn chat_screenshots() {
             label: None,
             plan: Some("Claude plan".into()),
         }),
+        SessionUpdate::Modes(test_modes()),
         SessionUpdate::AgentThoughtChunk {
             content: ContentBlock::text("The totals are computed in cart.rs."),
         },
@@ -727,7 +1022,13 @@ fn chat_screenshots() {
             reason: None,
         },
     ];
-    for (name, appearance) in [("dark", Appearance::Dark), ("light", Appearance::Light)] {
+    let shots = [
+        ("chat-dark", Appearance::Dark, false),
+        ("chat-light", Appearance::Light, false),
+        ("composer-dark", Appearance::Dark, true),
+        ("composer-light", Appearance::Light, true),
+    ];
+    for (name, appearance, composing) in shots {
         let updates = updates.clone();
         let image = render_offscreen(appearance, size(1440., 900.), move |window, cx| {
             crate::shell::init(cx);
@@ -764,6 +1065,32 @@ fn chat_screenshots() {
                         cx,
                     );
                     chat.apply((1..).zip(updates).collect(), cx);
+                    if composing {
+                        // An @-mention chip, and the popover for `@ship`.
+                        chat.set_preview_files(
+                            "/work/shop",
+                            &[
+                                "Cargo.toml",
+                                "src/cart.rs",
+                                "src/shipping.rs",
+                                "src/ship_rates.rs",
+                                "tests/shipping.rs",
+                                "docs/shipping-policy.md",
+                            ],
+                        );
+                        let text = "Compare @src/cart.rs with @ship";
+                        let chip = coqo_ui::input::MentionSpan {
+                            range: 8..20,
+                            mention: coqo_ui::input::Mention {
+                                id: "file:///work/shop/src/cart.rs".into(),
+                                text: "@src/cart.rs".into(),
+                                label: "@cart.rs".into(),
+                            },
+                        };
+                        chat.composer()
+                            .clone()
+                            .update(cx, |c, cx| c.set_content(text, vec![chip], window, cx));
+                    }
                     chat
                 });
                 shell.dock().update(cx, |dock, cx| {
@@ -773,7 +1100,7 @@ fn chat_screenshots() {
             })
         })
         .expect("offscreen render");
-        let path = dir.join(format!("coqo-chat-{name}.png"));
+        let path = dir.join(format!("coqo-{name}.png"));
         image.save(&path).expect("save png");
         println!("wrote {}", path.display());
     }

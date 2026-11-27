@@ -187,6 +187,24 @@ pub fn panel(fill: Rgb, cx: &App) -> Div {
         .overflow_hidden()
 }
 
+/// A popover card (menus, completions): `surface` fill, a `border_strong`
+/// hairline, a 14 px radius and a deep drop shadow, as the bolt popover on
+/// board 1.
+pub fn popover(cx: &App) -> Div {
+    let t = cx.tokens();
+    let p = &t.palette;
+    let shadow_alpha = if is_light(cx) { 0.16 } else { 0.55 };
+    div()
+        .flex()
+        .flex_col()
+        .bg(p.surface.hsla())
+        .border_1()
+        .border_color(p.border_strong.hsla())
+        .rounded(px(14.))
+        .shadow(vec![shadow(hsla(0., 0., 0., shadow_alpha), 18., 48.)])
+        .overflow_hidden()
+}
+
 /// The raised ("tactile") control surface: a top-lit gradient, a hairline border,
 /// an inner top highlight and a small drop shadow.
 pub fn raised(div: Div, cx: &App) -> Div {
