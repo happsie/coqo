@@ -35,11 +35,28 @@ pub enum Icon {
     Image,
     FolderOpen,
     RotateCw,
+    Check,
+    Circle,
+    CircleDot,
+    LoaderCircle,
+    Square,
+    FilePen,
+    Terminal,
+    Brain,
+    Globe,
+    Trash,
+    Eye,
+    ShieldAlert,
+    Wrench,
+    ArrowRightLeft,
+    CircleX,
+    LogIn,
+    ArrowUp,
 }
 
 impl Icon {
     /// Every variant, for tests that check the bundle.
-    pub const ALL: [Icon; 21] = [
+    pub const ALL: [Icon; 38] = [
         Icon::Search,
         Icon::Zap,
         Icon::Bell,
@@ -61,6 +78,23 @@ impl Icon {
         Icon::Image,
         Icon::FolderOpen,
         Icon::RotateCw,
+        Icon::Check,
+        Icon::Circle,
+        Icon::CircleDot,
+        Icon::LoaderCircle,
+        Icon::Square,
+        Icon::FilePen,
+        Icon::Terminal,
+        Icon::Brain,
+        Icon::Globe,
+        Icon::Trash,
+        Icon::Eye,
+        Icon::ShieldAlert,
+        Icon::Wrench,
+        Icon::ArrowRightLeft,
+        Icon::CircleX,
+        Icon::LogIn,
+        Icon::ArrowUp,
     ];
 
     pub(crate) fn path(self) -> &'static str {
@@ -86,6 +120,23 @@ impl Icon {
             Icon::Image => "icons/image.svg",
             Icon::FolderOpen => "icons/folder-open.svg",
             Icon::RotateCw => "icons/rotate-cw.svg",
+            Icon::Check => "icons/check.svg",
+            Icon::Circle => "icons/circle.svg",
+            Icon::CircleDot => "icons/circle-dot.svg",
+            Icon::LoaderCircle => "icons/loader-circle.svg",
+            Icon::Square => "icons/square.svg",
+            Icon::FilePen => "icons/file-pen.svg",
+            Icon::Terminal => "icons/terminal.svg",
+            Icon::Brain => "icons/brain.svg",
+            Icon::Globe => "icons/globe.svg",
+            Icon::Trash => "icons/trash.svg",
+            Icon::Eye => "icons/eye.svg",
+            Icon::ShieldAlert => "icons/shield-alert.svg",
+            Icon::Wrench => "icons/wrench.svg",
+            Icon::ArrowRightLeft => "icons/arrow-right-left.svg",
+            Icon::CircleX => "icons/circle-x.svg",
+            Icon::LogIn => "icons/log-in.svg",
+            Icon::ArrowUp => "icons/arrow-up.svg",
         }
     }
 }
