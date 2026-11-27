@@ -51,10 +51,17 @@ Tools that mods contribute (#70) run in the daemon, where the mods are. The brid
 
 **Lifecycle.** The bridge exits with status 0 when stdin closes, and with status 1 when the daemon connection closes (the daemon stopped, or the session was closed and its scope revoked). It does not reconnect. A restarted daemon would not know the token (tokens are per daemon start, and this one is spent), and the agent process that launched the bridge is a child of the daemon's ACP host, so it goes away with the daemon. When the next daemon resumes the session, the provider starts a fresh bridge with a fresh token. The bridge never starts a daemon either. It logs to stderr (stdout is MCP), at `warn` unless `COQO_LOG` says otherwise, and never logs the token.
 
-**Injection.** `ManagerOptions::mcp_servers` takes `EditorMcp::source()`. The session manager calls it for each start and resume, and again for a start after a failed resume, so each process gets its own token. It is on only with `COQO_EDITOR_MCP=1` for now. #71 turns it on for every session and handles terminal mode and the native loop.
+**Injection.** `ManagerOptions::mcp_servers` takes `EditorMcp::source()`. The session manager calls it for each start and resume, and again for a start after a failed resume, so each process gets its own token. Terminal mode (#57) and the native loop (#55) inject the same spec when they land.
+
+*As built (#71).* Every session with a workspace gets the server; `COQO_EDITOR_MCP=0` (or `false`, `off`, `no`) leaves it out, for debugging an agent without it. Sessions without a workspace get none, since a token is scoped to one.
+
+- **Binary.** `command` is `current_exe`, canonicalized (it can be a symlink on macOS), so it is absolute wherever the daemon runs from, `target/release` included. If the binary was replaced while the daemon runs (a rebuild), Linux reports `<path> (deleted)`; the daemon then names `<path>`, the new binary, and logs a warning.
+- **The user's own MCP servers stay.** The Claude adapter (`@agentclientprotocol/claude-agent-acp` 0.113) loads Claude Code's `settingSources` `user`, `project` and `local` and adds the ACP `mcpServers` to them; it sets `strictMcpConfig` only for its internal options probe. In the manual run below, Claude had `coqo-editor` alongside the user's own `claude.ai Claude Docs` server. The adapter reports client servers that **fail** to start (a notice with `_meta.claudeCode.kind: "mcpServerStatus"`), but not ones that connect, so there is no "connected" signal to show yet.
+- **Ticket TTL, measured.** `coqod::auth` logs each redeemed ticket's age at `debug` (`one-time token redeemed age=…`): issue (just before the provider starts the agent) to the bridge's `coqo/hello`. With the real adapter and Claude Code 2.1.332, release `coqod`, a folder Claude Code had never seen: **519 ms** for a new session (adapter spawn included) and **893 ms** for a resume after a daemon restart. No trust dialog runs in SDK mode. 60 s leaves ample room, so `TICKET_TTL` stays.
 
 ## Consequences
 
+- Every agent session gets the editor tools by default; nothing to switch on.
 - Agents get editor tools through the route policy, scoped to their own workspace and session, with no lasting credential on any command line or in any file.
 - If an agent restarts its MCP server within a session (Claude Code's `/mcp` reconnect, say), the new bridge's token is already spent and it fails to attach. The session's next start or resume gets a working one. A refresh path is a follow-up (#199).
 - A same-uid process that reads the token off the command line first can take the bridge's place for one connection. The real bridge then fails visibly. Same-uid processes can read `coqod.token` anyway (ADR 0007), so this adds no new access.
