@@ -19,8 +19,9 @@ use coqo_protocol::methods::buffer::{
 };
 use coqo_protocol::methods::workspace::{self as wsm, WorkspaceInfo};
 use coqo_protocol::{
-    AccessKind, Client, ClientConfig, Method as _, NotificationMethod as _, ProtocolError,
-    RouteInfo, RouteKind, Server, ServerConfig, SessionToken, Topic as _, builtin, codes,
+    AccessKind, Client, ClientConfig, Method as _, NotificationMethod as _, Notifications,
+    ProtocolError, RouteInfo, RouteKind, Server, ServerConfig, SessionToken, Topic as _, builtin,
+    codes,
 };
 use coqo_storage::DataDirs;
 use futures_util::StreamExt as _;
@@ -175,12 +176,16 @@ impl Daemon {
     }
 
     async fn connect(&self, token: SessionToken) -> Client {
+        self.connect_with_notes(token).await.0
+    }
+
+    async fn connect_with_notes(&self, token: SessionToken) -> (Client, Notifications) {
         let (client_io, server_io) = tokio::io::duplex(1 << 20);
         let server = self.server.clone();
         tokio::spawn(async move { server.serve(server_io).await });
         let mut config = ClientConfig::new("test", "test");
         config.token = Some(token);
-        Client::connect(client_io, config).await.unwrap().0
+        Client::connect(client_io, config).await.unwrap()
     }
 }
 
@@ -222,15 +227,23 @@ async fn workspace(admin: &Client, file: &str) -> (TempDir, WorkspaceInfo) {
 }
 
 async fn open_buffer(client: &Client, ws: &WorkspaceInfo, file: &str) -> OpenResult {
+    reopen_buffer(client, ws, file, None).await.unwrap()
+}
+
+async fn reopen_buffer(
+    client: &Client,
+    ws: &WorkspaceInfo,
+    file: &str,
+    replica: Option<&ReplicaId>,
+) -> Result<OpenResult, ProtocolError> {
     client
         .request::<bufm::Open>(bufm::OpenParams {
             workspace: ws.id.clone(),
             root: ws.roots[0].id,
             path: file.to_owned(),
-            replica: None,
+            replica: replica.cloned(),
         })
         .await
-        .unwrap()
 }
 
 /// One call to every session route but `buffer/edit` (a notification,
@@ -470,4 +483,184 @@ async fn a_session_token_reaches_only_its_own_workspace() {
         .request::<coqo_protocol::daemon::Status>(())
         .await
         .unwrap();
+}
+
+fn insert(buffer: &OpenResult, replica: &ReplicaId, client_seq: u64, text: &str) -> EditParams {
+    EditParams {
+        buffer: buffer.buffer,
+        replica: replica.clone(),
+        base_rev: buffer.rev,
+        client_seq,
+        edits: vec![TextEdit::insert(0, text)],
+    }
+}
+
+/// In its own workspace, a session token edits, closes and reopens only
+/// the replicas its connection opened (#198). The UI's replica of the same
+/// buffer is `FORBIDDEN`; the daemon token is not restricted.
+#[tokio::test]
+async fn a_session_token_manages_only_the_replicas_it_opened() {
+    let daemon = Daemon::start();
+    let admin = daemon.connect(daemon.ctx.auth.daemon_token()).await;
+    let (_dir, a) = workspace(&admin, "a.txt").await;
+    let token = daemon
+        .ctx
+        .auth
+        .mint_session(a.id.0.clone(), "session-1")
+        .unwrap();
+    let (agent, mut notes) = daemon.connect_with_notes(token.clone()).await;
+    let ui = open_buffer(&admin, &a, "a.txt").await;
+    let mine = open_buffer(&agent, &a, "a.txt").await;
+    assert_eq!(ui.buffer, mine.buffer, "one buffer, two replicas");
+    let mut changes = admin
+        .subscribe::<bufm::Changes>(ChangesParams { buffer: ui.buffer }, Some(ui.rev))
+        .await
+        .unwrap();
+
+    // The UI's replica: closing it, reopening it by id and editing as it
+    // are refused. So is a replica id nobody handed out.
+    let close = |replica: &ReplicaId| bufm::CloseParams {
+        buffer: ui.buffer,
+        replica: replica.clone(),
+    };
+    let result = agent.request::<bufm::Close>(close(&ui.replica)).await;
+    assert_eq!(code(&result), Some(codes::FORBIDDEN), "{result:?}");
+    let result = reopen_buffer(&agent, &a, "a.txt", Some(&ui.replica)).await;
+    assert_eq!(code(&result), Some(codes::FORBIDDEN), "{result:?}");
+    let made_up = ReplicaId("r-made-up".into());
+    let result = reopen_buffer(&agent, &a, "a.txt", Some(&made_up)).await;
+    assert_eq!(code(&result), Some(codes::FORBIDDEN), "{result:?}");
+    agent
+        .notify::<bufm::Edit>(insert(&ui, &ui.replica, 1, "forged "))
+        .await
+        .unwrap();
+    let note = tokio::time::timeout(Duration::from_secs(5), notes.recv())
+        .await
+        .expect("buffer/editRejected in time")
+        .unwrap();
+    assert_eq!(note.method, bufm::EditRejected::NAME);
+    let rejected: bufm::EditRejectedParams = serde_json::from_value(note.params.unwrap()).unwrap();
+    assert_eq!(rejected.error.code, codes::FORBIDDEN);
+    assert_eq!(rejected.replica, ui.replica);
+
+    // Its own replica: edits are committed, reopening by id and closing work.
+    agent
+        .notify::<bufm::Edit>(insert(&mine, &mine.replica, 1, "agent: "))
+        .await
+        .unwrap();
+    let change = tokio::time::timeout(Duration::from_secs(5), changes.next())
+        .await
+        .expect("the agent's edit in time")
+        .expect("open")
+        .expect("ok")
+        .event;
+    assert_eq!(
+        change.origin.id.as_ref(),
+        Some(&mine.replica.0),
+        "not the forged one"
+    );
+    assert_eq!(change.edits, [TextEdit::insert(0, "agent: ")]);
+    let again = reopen_buffer(&agent, &a, "a.txt", Some(&mine.replica))
+        .await
+        .unwrap();
+    assert_eq!(again.last_seq, 1);
+    agent
+        .request::<bufm::Close>(close(&mine.replica))
+        .await
+        .unwrap();
+    // Closed: it no longer acts as that replica in this buffer.
+    let result = agent.request::<bufm::Close>(close(&mine.replica)).await;
+    assert_eq!(code(&result), Some(codes::FORBIDDEN), "{result:?}");
+
+    // Another connection of the same session does not own them either.
+    let other = daemon.connect(token).await;
+    let result = reopen_buffer(&other, &a, "a.txt", Some(&mine.replica)).await;
+    assert_eq!(code(&result), Some(codes::FORBIDDEN), "{result:?}");
+
+    // The daemon token is unrestricted.
+    let theirs = open_buffer(&agent, &a, "a.txt").await;
+    admin
+        .request::<bufm::Close>(close(&theirs.replica))
+        .await
+        .unwrap();
+    admin
+        .request::<bufm::Close>(close(&ui.replica))
+        .await
+        .unwrap();
+}
+
+/// Whether `replica` has left `ws`'s buffer of `file`: reopening it (with
+/// the daemon token) no longer finds its last seq.
+async fn has_left(admin: &Client, ws: &WorkspaceInfo, file: &str, replica: &ReplicaId) -> bool {
+    let r = reopen_buffer(admin, ws, file, Some(replica)).await.unwrap();
+    if r.last_seq == 0 {
+        // The reopen joined it again; leave again so later checks are clean.
+        admin
+            .request::<bufm::Close>(bufm::CloseParams {
+                buffer: r.buffer,
+                replica: replica.clone(),
+            })
+            .await
+            .unwrap();
+        return true;
+    }
+    false
+}
+
+async fn eventually_left(admin: &Client, ws: &WorkspaceInfo, file: &str, replica: &ReplicaId) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !has_left(admin, ws, file, replica).await {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "replica {replica} was not released"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A session connection's replicas are released when it closes, and when
+/// its session's scope is revoked (which closes it).
+#[tokio::test]
+async fn a_session_connections_replicas_are_released_when_it_closes() {
+    let daemon = Daemon::start();
+    let admin = daemon.connect(daemon.ctx.auth.daemon_token()).await;
+    let (_dir, a) = workspace(&admin, "a.txt").await;
+    let ui = open_buffer(&admin, &a, "a.txt").await;
+    let mut changes = admin
+        .subscribe::<bufm::Changes>(ChangesParams { buffer: ui.buffer }, Some(ui.rev))
+        .await
+        .unwrap();
+    let mut next_change = async || {
+        tokio::time::timeout(Duration::from_secs(5), changes.next())
+            .await
+            .expect("the edit in time")
+            .expect("open")
+            .expect("ok")
+    };
+    // The UI's replica has a committed edit, so has_left can see it stay.
+    admin
+        .notify::<bufm::Edit>(insert(&ui, &ui.replica, 1, "ui "))
+        .await
+        .unwrap();
+    next_change().await;
+    let auth = &daemon.ctx.auth;
+    for (session, revoke) in [("session-1", false), ("session-2", true)] {
+        let token = auth.mint_session(a.id.0.clone(), session).unwrap();
+        let agent = daemon.connect(token).await;
+        let mine = open_buffer(&agent, &a, "a.txt").await;
+        agent
+            .notify::<bufm::Edit>(insert(&mine, &mine.replica, 1, "x"))
+            .await
+            .unwrap();
+        next_change().await;
+        assert!(!has_left(&admin, &a, "a.txt", &mine.replica).await);
+        if revoke {
+            assert!(auth.revoke_session(&a.id.0, session) > 0);
+        } else {
+            drop(agent);
+        }
+        eventually_left(&admin, &a, "a.txt", &mine.replica).await;
+    }
+    // The UI's replica stays.
+    assert!(!has_left(&admin, &a, "a.txt", &ui.replica).await);
 }

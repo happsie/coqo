@@ -134,10 +134,13 @@ In `coqod`, session tokens may call only these, and only for their own workspace
 | `workspace/get`, `workspace/getState` | `id` |
 | `workspace/events` (topic) | `workspace`; an unfiltered feed needs the daemon token |
 | `fs/list`, `fs/stat`, `fs/read`, `fs/changes` (topic) | `workspace` |
-| `buffer/open` | `workspace` |
-| `buffer/edit` (notification), `buffer/close`, `buffer/changes` (topic) | the workspace the `buffer` is open in |
+| `buffer/open` | `workspace`; `replica`, if given, must be one this connection opened |
+| `buffer/edit` (notification), `buffer/close` | the `replica`: only replicas this connection opened, in that `buffer` |
+| `buffer/changes` (topic) | the workspace the `buffer` is open in |
 | `syntax/symbols`, `syntax/outline`, `syntax/folding` | the workspace the `buffer` is open in |
 | `sessions/setStatus` | `session`: its own agent session only |
+
+**Replicas belong to the connection that opened them.** A session token can edit and close only the replicas its own connection got from `buffer/open`, and can name only those in a later `buffer/open`. Any other replica (the UI's, another agent's, or an id it made up) gets `-32007 FORBIDDEN`; for `buffer/edit` that comes as `buffer/editRejected`. Replica ids appear in every change's `origin`, so knowing one proves nothing. When the connection closes (or the session's scope is revoked, which closes it), its replicas leave their buffers. `buffer/changes` and `syntax/*` stay bound to the workspace: anything they show, the token could read with `buffer/open` anyway. The daemon token may act as any replica.
 
 Everything else, including `daemon/*`, the rest of `workspace/*`, `buffer/save`, `buffer/revertChange`, `terminal/*`, `agents/*` and the rest of `sessions/*`, needs the daemon token.
 
@@ -272,7 +275,7 @@ Replicated text buffers ([ADR 0006](../docs/adr/0006-buffer-replication.md), det
 |---|---|---|
 | `buffer/open` | request | `{workspace, root, path, replica?}` → `{buffer, replica, rev, text, lineEnding, encoding, savedRev, dirty, lastSeq}`. Pass `replica` again when reopening so `lastSeq` says which of its changes are in `text`. Only UTF-8 files (with or without BOM) open. |
 | `buffer/edit` | notification, client → server | `{buffer, replica, baseRev, clientSeq, edits}`. At most one unacknowledged change per replica; `clientSeq` increases from 1 and a resend keeps it (the daemon drops seqs it has committed). |
-| `buffer/editRejected` | notification, server → client | `{buffer, replica, clientSeq, error}`: the edit could not be applied (`REVISION_GONE`, `INVALID_EDIT`, `UNKNOWN_BUFFER`). Reopen and resync. |
+| `buffer/editRejected` | notification, server → client | `{buffer, replica, clientSeq, error}`: the edit could not be applied (`REVISION_GONE`, `INVALID_EDIT`, `UNKNOWN_BUFFER`; reopen and resync), or a session token edited as a replica it did not open (`FORBIDDEN`). |
 | `buffer/revertChange` | request | `{buffer, rev}` → `{rev}`: commit the inverse of one change (typically an agent's), transformed past every later change. |
 | `buffer/save` | request | `{buffer, force?}` → `{savedRev}`. Atomic write (temp file + rename, permissions kept, BOM kept). If the file changed on disk since it was read, the change is merged in first and the save fails with `SAVE_CONFLICT` unless `force`. |
 | `buffer/close` | request | `{buffer, replica}` → `null`. |

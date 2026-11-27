@@ -67,4 +67,4 @@ Tools that mods contribute (#70) run in the daemon, where the mods are. The brid
 - A same-uid process that reads the token off the command line first can take the bridge's place for one connection. The real bridge then fails visibly. Same-uid processes can read `coqod.token` anyway (ADR 0007), so this adds no new access.
 - Session closes now cut live connections. Daemon-token connections are never cut.
 - `coqod` grows a subcommand and `rmcp` joins the dependency tree of `coqod` (and only `coqod`).
-- `buffer/close` still lets a session close any replica in its workspace (from #153). The bridge does not use buffers yet; tying replicas to the connection that opened them is a follow-up (#198).
+- A session can edit and close only the replicas its connection opened, and they are released when the connection closes (#198, ADR 0010 *Session replicas*). Before that, `buffer/close` let a session close any replica in its workspace (from #153).
