@@ -425,7 +425,6 @@ impl Workspaces {
     }
 
     /// The window showing workspace `id`, if one does.
-    #[allow(dead_code)] // Tests use it.
     pub fn window_showing(id: &WorkspaceId, cx: &App) -> Option<AnyWindowHandle> {
         Self::window_showing_except(id, None, cx)
     }

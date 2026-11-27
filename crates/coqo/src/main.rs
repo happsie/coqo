@@ -8,6 +8,7 @@
 //! connection (`windows`). CLI subcommands arrive in later issues (PLAN §12).
 
 mod activity;
+mod agents;
 mod alerts;
 mod chat;
 mod daemon;
@@ -84,11 +85,10 @@ fn folder(path: &str) -> Result<PathBuf, String> {
     }
 }
 
-/// Where layouts are kept while `coqod` is unreachable (and where they lived
-/// before the daemon kept them): `$COQO_DATA_DIR/ui/layouts` if set,
-/// otherwise under the per-user data directory (PLAN §8):
-/// `$XDG_DATA_HOME/coqo` on Linux, `~/Library/Application Support/Coqo` on macOS.
-fn layout_dir() -> PathBuf {
+/// The UI's own files: `$COQO_DATA_DIR/ui` if set, otherwise under the
+/// per-user data directory (PLAN §8): `$XDG_DATA_HOME/coqo/ui` on Linux,
+/// `~/Library/Application Support/Coqo/ui` on macOS.
+fn ui_dir() -> PathBuf {
     let base = std::env::var_os("COQO_DATA_DIR")
         .map(PathBuf::from)
         .or_else(|| {
@@ -100,7 +100,13 @@ fn layout_dir() -> PathBuf {
             dirs::data_dir().map(|d| d.join(name))
         })
         .unwrap_or_else(|| std::env::temp_dir().join("coqo"));
-    base.join("ui").join("layouts")
+    base.join("ui")
+}
+
+/// Where layouts are kept while `coqod` is unreachable (and where they lived
+/// before the daemon kept them).
+fn layout_dir() -> PathBuf {
+    ui_dir().join("layouts")
 }
 
 fn run(folder: Option<PathBuf>) {
@@ -114,6 +120,9 @@ fn run(folder: Option<PathBuf>) {
                 None
             }
         };
+        // Before the first connection is up: it decides on "welcome back".
+        let last_seen = agents::away::FileLastSeen::new(ui_dir().join("presence.json"));
+        agents::away::init(Rc::new(last_seen), cx);
         workspace::init(folder, cx);
         shell::init(cx);
         if let Some(daemon) = daemon {

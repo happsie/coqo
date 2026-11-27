@@ -178,7 +178,13 @@ impl WorkspaceService {
         ) -> Result<(T, Vec<(WorkspaceId, WorkspaceEvent)>), ErrorObject>,
     ) -> Result<T, ErrorObject> {
         let mut db = self.db();
-        let tx = db.connection_mut().transaction().map_err(error::storage)?;
+        // Immediate: `f` reads before it writes, and a deferred transaction
+        // that another connection wrote under fails at once with "database
+        // is locked" (SQLite can't wait out an upgrade).
+        let tx = db
+            .connection_mut()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(error::storage)?;
         let (out, evs) = f(&tx)?;
         let mut last = None;
         for (id, ev) in &evs {

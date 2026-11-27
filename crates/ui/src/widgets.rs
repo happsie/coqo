@@ -52,6 +52,10 @@ pub enum Icon {
     CircleX,
     LogIn,
     ArrowUp,
+    /// Four squares: the agents overview.
+    LayoutGrid,
+    /// A clock with a return arrow: "while you were away".
+    History,
     /// A filled diamond: a question marker in the gutter.
     MarkerDiamond,
     /// A filled triangle pointing up: a popover's caret.
@@ -62,7 +66,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every variant, for tests that check the bundle.
-    pub const ALL: [Icon; 41] = [
+    pub const ALL: [Icon; 43] = [
         Icon::Search,
         Icon::Zap,
         Icon::Bell,
@@ -101,6 +105,8 @@ impl Icon {
         Icon::CircleX,
         Icon::LogIn,
         Icon::ArrowUp,
+        Icon::LayoutGrid,
+        Icon::History,
         Icon::MarkerDiamond,
         Icon::CaretUp,
         Icon::CaretDown,
@@ -146,6 +152,8 @@ impl Icon {
             Icon::CircleX => "icons/circle-x.svg",
             Icon::LogIn => "icons/log-in.svg",
             Icon::ArrowUp => "icons/arrow-up.svg",
+            Icon::LayoutGrid => "icons/layout-grid.svg",
+            Icon::History => "icons/history.svg",
             Icon::MarkerDiamond => "icons/marker-diamond.svg",
             Icon::CaretUp => "icons/caret-up.svg",
             Icon::CaretDown => "icons/caret-down.svg",
