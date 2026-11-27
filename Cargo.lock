@@ -1227,6 +1227,13 @@ dependencies = [
 [[package]]
 name = "coqo-anchors"
 version = "0.0.0"
+dependencies = [
+ "coqo-syntax",
+ "proptest",
+ "serde",
+ "serde_json",
+ "similar",
+]
 
 [[package]]
 name = "coqo-buffers"
