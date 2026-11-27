@@ -812,9 +812,17 @@ async fn watcher_reports_debounced_changes() {
     let seen = changes_until(&mut sub, "src/new.rs").await;
     let all: Vec<&String> = seen.iter().flat_map(|b| &b.paths).collect();
     assert!(seen.iter().all(|b| b.root == ws.roots[0].id));
+    // Match whole path components: `.gitignore` is not inside `.git`, and
+    // late setup events (FSEvents may deliver them after we subscribe) can
+    // legitimately mention `.gitignore`, `src/main.rs` or the `target` dir
+    // itself (an ignored entry appearing in a visible directory).
+    let inside = |p: &str, dir: &str| {
+        p.strip_prefix(dir)
+            .is_some_and(|rest| rest.starts_with('/'))
+    };
     assert!(
         !all.iter()
-            .any(|p| p.starts_with("target/") || p.starts_with(".git")),
+            .any(|p| inside(p, "target") || inside(p, ".git") || *p == ".git"),
         "{all:?}"
     );
 
