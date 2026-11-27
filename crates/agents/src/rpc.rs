@@ -4,15 +4,17 @@
 //! the workspaces' permission rules (`agents/permissionRules`,
 //! `agents/deletePermissionRule`).
 
-use coqo_protocol::Router;
 use coqo_protocol::methods::agents::{
     Cancel, Changes, Close, Create, DeletePermissionRule, Get, List, PermissionRules, Prompt,
     Providers, RespondPermission, RunAction, SetMode, Updates,
 };
+use coqo_protocol::{Access, Router};
 
 use crate::manager::SessionManager;
 
-/// Adds the agent methods and topics, served by `manager`.
+/// Adds the agent methods and topics, served by `manager`. All of them
+/// need the daemon token: they reach every session and workspace, and run
+/// provider actions. A session token (`coqod mcp`) gets `FORBIDDEN`.
 pub fn register(router: Router, manager: SessionManager) -> Router {
     let m = manager;
     let providers = m.clone();
@@ -30,11 +32,11 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
     let updates = m.clone();
     let changes = m;
     router
-        .method::<Providers, _, _>(move |_, ()| {
+        .method_with::<Providers, _, _>(Access::daemon(), move |_, ()| {
             let r = providers.providers();
             async move { Ok(r) }
         })
-        .method::<RunAction, _, _>(move |_, p| {
+        .method_with::<RunAction, _, _>(Access::daemon(), move |_, p| {
             let m = run_action.clone();
             async move {
                 m.run_action(&p.provider, p.action)
@@ -42,53 +44,53 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
                     .map_err(Into::into)
             }
         })
-        .method::<List, _, _>(move |_, p| {
+        .method_with::<List, _, _>(Access::daemon(), move |_, p| {
             let r = list.list(&p).map_err(Into::into);
             async move { r }
         })
-        .method::<Get, _, _>(move |_, p| {
+        .method_with::<Get, _, _>(Access::daemon(), move |_, p| {
             let r = get.snapshot(&p.session).map_err(Into::into);
             async move { r }
         })
-        .method::<Create, _, _>(move |_, p| {
+        .method_with::<Create, _, _>(Access::daemon(), move |_, p| {
             let m = create.clone();
             async move { m.create(p).await.map_err(Into::into) }
         })
-        .method::<Prompt, _, _>(move |_, p| {
+        .method_with::<Prompt, _, _>(Access::daemon(), move |_, p| {
             let m = prompt.clone();
             async move { m.prompt(&p.session, p.content).await.map_err(Into::into) }
         })
-        .method::<Cancel, _, _>(move |_, p| {
+        .method_with::<Cancel, _, _>(Access::daemon(), move |_, p| {
             let m = cancel.clone();
             async move { m.cancel(&p.session).await.map_err(Into::into) }
         })
-        .method::<RespondPermission, _, _>(move |_, p| {
+        .method_with::<RespondPermission, _, _>(Access::daemon(), move |_, p| {
             let r = respond
                 .answer_permission(&p.session, p.request_id, p.outcome, p.remember)
                 .map_err(Into::into);
             async move { r }
         })
-        .method::<SetMode, _, _>(move |_, p| {
+        .method_with::<SetMode, _, _>(Access::daemon(), move |_, p| {
             let m = set_mode.clone();
             async move { m.set_mode(&p.session, p.mode_id).await.map_err(Into::into) }
         })
-        .method::<Close, _, _>(move |_, p| {
+        .method_with::<Close, _, _>(Access::daemon(), move |_, p| {
             let m = close.clone();
             async move { m.close(&p.session).await.map_err(Into::into) }
         })
-        .method::<PermissionRules, _, _>(move |_, p| {
+        .method_with::<PermissionRules, _, _>(Access::daemon(), move |_, p| {
             let r = rules.rules(&p.workspace).map_err(Into::into);
             async move { r }
         })
-        .method::<DeletePermissionRule, _, _>(move |_, p| {
+        .method_with::<DeletePermissionRule, _, _>(Access::daemon(), move |_, p| {
             let r = delete_rule.delete_rule(p.id).map_err(Into::into);
             async move { r }
         })
-        .topic::<Updates, _, _>(move |_, p, since| {
+        .topic_with::<Updates, _, _>(Access::daemon(), move |_, p, since| {
             let r = updates.updates(&p.session, since);
             async move { r }
         })
-        .topic::<Changes, _, _>(move |_, p, since| {
+        .topic_with::<Changes, _, _>(Access::daemon(), move |_, p, since| {
             let r = changes.changes(p.workspace, since);
             async move { r }
         })

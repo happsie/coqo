@@ -5,7 +5,7 @@
 use std::time::UNIX_EPOCH;
 
 use coqo_protocol::daemon::{DaemonStatus, IdleStatus, Shutdown, ShutdownResult, Status};
-use coqo_protocol::{Method as _, PROTOCOL_VERSION, Router};
+use coqo_protocol::{Access, PROTOCOL_VERSION, Router};
 
 use crate::daemon::{BUILD, DaemonContext, VERSION};
 
@@ -36,20 +36,18 @@ pub fn status(ctx: &DaemonContext) -> DaemonStatus {
     }
 }
 
-/// Register the daemon's own methods.
+/// Register the daemon's own methods. Both need the daemon token: the
+/// status lists every busy session, and a session token must not stop the
+/// daemon.
 pub fn register(router: Router, ctx: &DaemonContext) -> Router {
     let status_ctx = ctx.clone();
     let shutdown_ctx = ctx.clone();
     router
-        .method::<Status, _, _>(move |_, ()| {
+        .method_with::<Status, _, _>(Access::daemon(), move |_, ()| {
             let status = status(&status_ctx);
             async move { Ok(status) }
         })
-        .method::<Shutdown, _, _>(move |req, params| {
-            // A token scoped to one agent session cannot stop the daemon.
-            if let Err(e) = req.scope.require_daemon(Shutdown::NAME) {
-                return std::future::ready(Err(e));
-            }
+        .method_with::<Shutdown, _, _>(Access::daemon(), move |req, params| {
             let busy = shutdown_ctx.activity.snapshot().busy;
             let stopping = params.force || busy.is_empty();
             if stopping {

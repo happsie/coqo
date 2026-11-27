@@ -19,7 +19,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 
-use crate::auth::{Authenticator, Scope, Unauthorized};
+use crate::auth::{Access, AccessKind, Authenticator, Scope, Unauthorized};
 use crate::encoding::Encoding;
 use crate::error::ProtocolError;
 use crate::frame::{DEFAULT_MAX_FRAME_LEN, HANDSHAKE_MAX_FRAME_LEN};
@@ -60,26 +60,76 @@ fn parse_params<P: serde::de::DeserializeOwned>(
         .map_err(|e| ErrorObject::invalid_params(format!("invalid params for {method}: {e}")))
 }
 
-/// Typed handlers for methods, notifications and topics.
+/// A registered route: its handler and the [`Access`] it declared.
+struct Route<H> {
+    handler: H,
+    access: Option<AccessKind>,
+}
+
+/// Which table a route is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum RouteKind {
+    /// A request/response [`Method`].
+    Method,
+    /// A [`NotificationMethod`] from the client.
+    Notification,
+    /// A subscription [`Topic`].
+    Topic,
+}
+
+/// One registered route, as [`Router::routes`] lists it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RouteInfo {
+    /// Method, notification or topic.
+    pub kind: RouteKind,
+    /// Its wire name.
+    pub name: &'static str,
+    /// What session tokens may do with it, or `None` if it was registered
+    /// without an [`Access`] (so they may do nothing).
+    pub access: Option<AccessKind>,
+}
+
+impl RouteInfo {
+    /// Whether some session token may call it.
+    pub fn opens_to_sessions(&self) -> bool {
+        self.access.is_some_and(AccessKind::opens_to_sessions)
+    }
+}
+
+/// Typed handlers for methods, notifications and topics, each with who may
+/// call it.
+///
+/// Every route answers [`Scope::Daemon`] connections. Other scopes (session
+/// tokens) are **denied by default**: [`Router::method`],
+/// [`notification`](Router::notification) and [`topic`](Router::topic)
+/// register a route that answers them with [`codes::FORBIDDEN`] before the
+/// handler runs. The `*_with` variants take an [`Access`] that declares who
+/// else may call the route; the router checks it, so handlers need not.
 #[derive(Default)]
 pub struct Router {
-    methods: HashMap<&'static str, MethodHandler>,
-    notifications: HashMap<&'static str, NotificationHandler>,
-    topics: HashMap<&'static str, TopicHandler>,
+    methods: HashMap<&'static str, Route<MethodHandler>>,
+    notifications: HashMap<&'static str, Route<NotificationHandler>>,
+    topics: HashMap<&'static str, Route<TopicHandler>>,
 }
 
 impl fmt::Debug for Router {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut methods: Vec<_> = self.methods.keys().collect();
-        let mut notifications: Vec<_> = self.notifications.keys().collect();
-        let mut topics: Vec<_> = self.topics.keys().collect();
-        methods.sort();
-        notifications.sort();
-        topics.sort();
+        let routes = self.routes();
+        let names = |pick: &dyn Fn(&RouteInfo) -> bool| {
+            routes
+                .iter()
+                .filter(|r| pick(r))
+                .map(|r| r.name)
+                .collect::<Vec<_>>()
+        };
         f.debug_struct("Router")
-            .field("methods", &methods)
-            .field("notifications", &notifications)
-            .field("topics", &topics)
+            .field("methods", &names(&|r| r.kind == RouteKind::Method))
+            .field(
+                "notifications",
+                &names(&|r| r.kind == RouteKind::Notification),
+            )
+            .field("topics", &names(&|r| r.kind == RouteKind::Topic))
+            .field("open_to_sessions", &names(&RouteInfo::opens_to_sessions))
             .finish()
     }
 }
@@ -95,75 +145,171 @@ impl Router {
         Self::default()
     }
 
-    /// Handle requests for `M`.
+    /// Every registered route with its declared access, sorted by kind and
+    /// name. For tests that every route made a decision, and for listing
+    /// what session tokens can reach.
+    pub fn routes(&self) -> Vec<RouteInfo> {
+        fn list<'a, H>(
+            kind: RouteKind,
+            table: &'a HashMap<&'static str, Route<H>>,
+        ) -> impl Iterator<Item = RouteInfo> + 'a {
+            table.iter().map(move |(name, route)| RouteInfo {
+                kind,
+                name,
+                access: route.access,
+            })
+        }
+        let mut routes: Vec<RouteInfo> = list(RouteKind::Method, &self.methods)
+            .chain(list(RouteKind::Notification, &self.notifications))
+            .chain(list(RouteKind::Topic, &self.topics))
+            .collect();
+        routes.sort_by_key(|r| (r.kind, r.name));
+        routes
+    }
+
+    /// Handle requests for `M` from the daemon scope only: like
+    /// [`method_with`](Self::method_with) with [`Access::daemon`], except
+    /// that [`Router::routes`] reports it as undeclared. Session tokens get
+    /// [`codes::FORBIDDEN`] and the handler does not run.
     ///
     /// # Panics
     /// If `M::NAME` is reserved (`coqo/…`, `rpc.…`) or already registered.
-    pub fn method<M, F, Fut>(mut self, handler: F) -> Self
+    pub fn method<M, F, Fut>(self, handler: F) -> Self
+    where
+        M: Method,
+        F: Fn(RequestContext, M::Params) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<M::Result, ErrorObject>> + Send + 'static,
+    {
+        self.method_with::<M, F, Fut>(Access::undeclared(), handler)
+    }
+
+    /// Handle requests for `M` from the daemon scope and whoever `access`
+    /// lets in. The router checks `access` before `handler` runs.
+    ///
+    /// # Panics
+    /// If `M::NAME` is reserved (`coqo/…`, `rpc.…`) or already registered.
+    pub fn method_with<M, F, Fut>(mut self, access: Access<M::Params>, handler: F) -> Self
     where
         M: Method,
         F: Fn(RequestContext, M::Params) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<M::Result, ErrorObject>> + Send + 'static,
     {
         check_name(M::NAME, self.methods.contains_key(M::NAME));
+        let kind = access.kind();
         let handler = Arc::new(handler);
+        let access = Arc::new(access);
         let erased: MethodHandler = Arc::new(move |ctx, params| {
             let handler = Arc::clone(&handler);
+            let access = Arc::clone(&access);
             Box::pin(async move {
+                access.admit(&ctx.scope, M::NAME)?;
                 let params = parse_params::<M::Params>(M::NAME, params)?;
+                access.allow(&ctx.scope, &params, M::NAME)?;
                 let result = handler(ctx, params).await?;
                 serde_json::to_value(result).map_err(|e| {
                     ErrorObject::internal(format!("cannot serialize result of {}: {e}", M::NAME))
                 })
             })
         });
-        self.methods.insert(M::NAME, erased);
+        let route = Route {
+            handler: erased,
+            access: kind,
+        };
+        self.methods.insert(M::NAME, route);
         self
     }
 
-    /// Handle notifications for `N`. Malformed params are logged and dropped.
+    /// Handle notifications for `N` from the daemon scope only (see
+    /// [`method`](Self::method)).
     ///
     /// # Panics
     /// If `N::NAME` is reserved or already registered.
-    pub fn notification<N, F, Fut>(mut self, handler: F) -> Self
+    pub fn notification<N, F, Fut>(self, handler: F) -> Self
+    where
+        N: NotificationMethod,
+        F: Fn(RequestContext, N::Params) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.notification_with::<N, F, Fut>(Access::undeclared(), handler)
+    }
+
+    /// Handle notifications for `N` from the daemon scope and whoever
+    /// `access` lets in. Malformed or refused notifications are logged and
+    /// dropped: there is no response to carry an error.
+    ///
+    /// # Panics
+    /// If `N::NAME` is reserved or already registered.
+    pub fn notification_with<N, F, Fut>(mut self, access: Access<N::Params>, handler: F) -> Self
     where
         N: NotificationMethod,
         F: Fn(RequestContext, N::Params) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         check_name(N::NAME, self.notifications.contains_key(N::NAME));
+        let kind = access.kind();
         let handler = Arc::new(handler);
+        let access = Arc::new(access);
         let erased: NotificationHandler = Arc::new(move |ctx, params| {
             let handler = Arc::clone(&handler);
+            let access = Arc::clone(&access);
             Box::pin(async move {
-                match parse_params::<N::Params>(N::NAME, params) {
+                let checked = access.admit(&ctx.scope, N::NAME).and_then(|()| {
+                    let params = parse_params::<N::Params>(N::NAME, params)?;
+                    access.allow(&ctx.scope, &params, N::NAME)?;
+                    Ok(params)
+                });
+                match checked {
                     Ok(params) => handler(ctx, params).await,
                     Err(e) => tracing::warn!(error = %e, "dropping notification"),
                 }
             })
         });
-        self.notifications.insert(N::NAME, erased);
+        let route = Route {
+            handler: erased,
+            access: kind,
+        };
+        self.notifications.insert(N::NAME, route);
         self
     }
 
-    /// Serve subscriptions to `T`. The handler gets the topic params and the
-    /// client's `since`, and returns the feed (for example from
+    /// Serve subscriptions to `T` to the daemon scope only (see
+    /// [`method`](Self::method)).
+    ///
+    /// # Panics
+    /// If `T::NAME` is reserved or already registered.
+    pub fn topic<T, F, Fut>(self, handler: F) -> Self
+    where
+        T: Topic,
+        F: Fn(RequestContext, T::Params, Option<u64>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<EventFeed<T::Event>, ErrorObject>> + Send + 'static,
+    {
+        self.topic_with::<T, F, Fut>(Access::undeclared(), handler)
+    }
+
+    /// Serve subscriptions to `T` to the daemon scope and whoever `access`
+    /// lets in. The handler gets the topic params and the client's `since`,
+    /// and returns the feed (for example from
     /// [`SeqLog::subscribe`](crate::SeqLog::subscribe)).
     ///
     /// # Panics
     /// If `T::NAME` is reserved or already registered.
-    pub fn topic<T, F, Fut>(mut self, handler: F) -> Self
+    pub fn topic_with<T, F, Fut>(mut self, access: Access<T::Params>, handler: F) -> Self
     where
         T: Topic,
         F: Fn(RequestContext, T::Params, Option<u64>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<EventFeed<T::Event>, ErrorObject>> + Send + 'static,
     {
         check_name(T::NAME, self.topics.contains_key(T::NAME));
+        let kind = access.kind();
         let handler = Arc::new(handler);
+        let access = Arc::new(access);
         let erased: TopicHandler = Arc::new(move |ctx, params, since| {
             let handler = Arc::clone(&handler);
+            let access = Arc::clone(&access);
             Box::pin(async move {
+                access.admit(&ctx.scope, T::NAME)?;
                 let params = parse_params::<T::Params>(T::NAME, Some(params))?;
+                access.allow(&ctx.scope, &params, T::NAME)?;
                 let feed = handler(ctx, params, since).await?;
                 Ok(feed.map(|event| {
                     serde_json::to_value(event).unwrap_or_else(|e| {
@@ -173,7 +319,11 @@ impl Router {
                 }))
             })
         });
-        self.topics.insert(T::NAME, erased);
+        let route = Route {
+            handler: erased,
+            access: kind,
+        };
+        self.topics.insert(T::NAME, route);
         self
     }
 }
@@ -264,8 +414,8 @@ pub struct RequestContext {
     pub peer: Peer,
     /// The client's handshake, without its token.
     pub hello: Arc<Hello>,
-    /// What this connection's token allows. Check it with
-    /// [`Scope::require_daemon`] / [`Scope::require_workspace`].
+    /// What this connection's token allows. The router has already checked
+    /// it against the route's [`Access`], so handlers need not.
     pub scope: Arc<Scope>,
 }
 
@@ -445,8 +595,8 @@ impl Server {
                     self.dispatch_request(r, &ctx, &subs, &next_sub, &mut tasks);
                 }
                 Message::Notification(n) => {
-                    if let Some(handler) = self.router.notifications.get(n.method.as_str()) {
-                        tasks.spawn(handler(ctx.clone(), n.params));
+                    if let Some(route) = self.router.notifications.get(n.method.as_str()) {
+                        tasks.spawn((route.handler)(ctx.clone(), n.params));
                     } else {
                         tracing::debug!(method = %n.method, "ignoring unknown notification");
                     }
@@ -503,8 +653,8 @@ impl Server {
                 });
             }
             _ => match self.router.methods.get(method.as_str()) {
-                Some(handler) => {
-                    let fut = handler(ctx.clone(), params);
+                Some(route) => {
+                    let fut = (route.handler)(ctx.clone(), params);
                     tasks.spawn(async move {
                         let outcome = fut.await;
                         let _ = peer
@@ -542,7 +692,11 @@ async fn subscribe(
             return;
         }
     };
-    let Some(handler) = router.topics.get(params.topic.as_str()).cloned() else {
+    let Some(handler) = router
+        .topics
+        .get(params.topic.as_str())
+        .map(|r| Arc::clone(&r.handler))
+    else {
         let error = ErrorObject::new(
             codes::UNKNOWN_SUBSCRIPTION,
             format!("unknown topic: {}", params.topic),
