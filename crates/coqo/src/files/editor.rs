@@ -163,6 +163,8 @@ pub struct FileEditor {
     resync_pending: bool,
     /// Another open was asked for while one was in flight.
     open_queued: bool,
+    /// A reveal waiting for the file to open.
+    pending_reveal: Option<Option<coqo_protocol::methods::editor::Range>>,
     _opening: Option<Task<()>>,
     _changes: Option<Task<()>>,
     _saving: Option<Task<()>>,
@@ -264,6 +266,7 @@ impl FileEditor {
             notice: None,
             resync_pending: false,
             open_queued: false,
+            pending_reveal: None,
             _opening: None,
             _changes: None,
             _saving: None,
@@ -303,6 +306,47 @@ impl FileEditor {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn notice(&self) -> Option<&Notice> {
         self.notice.as_ref()
+    }
+
+    /// The workspace of the file.
+    pub fn workspace(&self) -> &WorkspaceId {
+        &self.workspace
+    }
+
+    /// The root the path is relative to.
+    pub fn root(&self) -> RootId {
+        self.root
+    }
+
+    /// The file's path, relative to its root.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// The buffer text and the editor, once the file is open as text.
+    pub fn text_and_editor(&self) -> Option<(&Rope, &Entity<CodeEditor>)> {
+        self.session.as_ref().map(|s| (s.replica.text(), &s.editor))
+    }
+
+    /// Select `range` and scroll it into view (an agent's `editor/reveal`).
+    /// `None` puts the cursor at the top. Waits for the file to open.
+    pub fn reveal(
+        &mut self,
+        range: Option<coqo_protocol::methods::editor::Range>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session.as_ref() else {
+            self.pending_reveal = Some(range);
+            return;
+        };
+        let bytes = range.map_or(0..0, |r| {
+            super::context::byte_range(session.replica.text(), &r)
+        });
+        session
+            .editor
+            .update(cx, |editor, cx| editor.reveal(bytes, window, cx));
+        cx.notify();
     }
 
     fn file_name(&self) -> &str {
@@ -517,6 +561,9 @@ impl FileEditor {
         }
         self.subscribe(rev, window, cx);
         self.maybe_save(cx);
+        if let Some(range) = self.pending_reveal.take() {
+            self.reveal(range, window, cx);
+        }
         cx.notify();
     }
 

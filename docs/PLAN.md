@@ -272,10 +272,12 @@ Hard rules, documented in `agent-claude` and in CONTRIBUTING: no claude.ai OAuth
 
 ### 7.4 Editor MCP
 - An agent launches `coqod mcp --workspace <id> --session <id>` (the same binary in a stdio MCP server mode). It connects to the daemon socket with a one-time session token from its environment, and that token's scope routes calls to the right workspace and agent session ([ADR 0012](adr/0012-editor-mcp-bridge.md)). **This works whether or not a UI is open.**
-- **Tools are contributed by mods** through the registry, so a new mod automatically gives agents new editor powers.
+- **Tools are contributed by mods** through the registry, so a new mod automatically gives agents new editor powers. Mods register them in the daemon (`ModContext::register_mcp_tool`); the bridge lists them over `mcp/*`, names an installed mod's tools `<mod id>_<tool>`, and checks every call's arguments against the tool's schema. The UI publishes each window's editor context to the daemon, and reveals reach it over a daemon topic ([ADR 0014](adr/0014-editor-tools-and-mod-tools.md)).
 
 | Tool | Purpose |
 |---|---|
+| `workspace_info` / `read_file` / `list_files` / `find_files` | The workspace's roots and files (ignores respected) |
+| `file_outline` | A file's symbols as a tree, from tree-sitter (always on, no language server) |
 | `editor_context` | Open files, selection, cursors, visible ranges (when the UI is attached) |
 | `editor_reveal` | Open or reveal a location for the user |
 | `lsp_diagnostics` / `lsp_references` / `lsp_symbols` / `lsp_definition` | Real IDE intelligence for agents (Java/Kotlin especially) |

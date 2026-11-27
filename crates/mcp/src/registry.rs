@@ -324,6 +324,44 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Remove the tools called `remove`, then add `add`, as one change (one
+    /// `list_changed`). Returns why tools could not be added; the others
+    /// are added anyway.
+    pub fn update(&self, remove: &[String], add: Vec<Arc<dyn Tool>>) -> Vec<RegistryError> {
+        let mut errors = Vec::new();
+        let mut changed = false;
+        {
+            let mut tools = self
+                .inner
+                .tools
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
+            for name in remove {
+                changed |= tools.remove(name).is_some();
+            }
+            for tool in add {
+                let name = tool.definition().name;
+                if !valid_name(&name) {
+                    errors.push(RegistryError::InvalidName(name));
+                    continue;
+                }
+                match tools.entry(name) {
+                    std::collections::btree_map::Entry::Occupied(e) => {
+                        errors.push(RegistryError::Duplicate(e.key().clone()));
+                    }
+                    std::collections::btree_map::Entry::Vacant(e) => {
+                        e.insert(tool);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            self.bump();
+        }
+        errors
+    }
+
     /// Remove the tool called `name`. Returns whether it was there.
     pub fn remove(&self, name: &str) -> bool {
         let removed = self

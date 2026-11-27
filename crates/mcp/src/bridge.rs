@@ -5,7 +5,8 @@
 //! [`run_stdio`] is `coqod mcp`. It reads the one-time session credential
 //! from [`SESSION_TOKEN_ENV`] (never `argv`; ADR 0012), connects to the
 //! running daemon (it never starts one: the credential comes from a running
-//! daemon), and serves MCP on stdin and stdout with the core tools.
+//! daemon), and serves MCP on stdin and stdout with the core tools and the
+//! tools mods contribute in the daemon.
 //!
 //! It exits when stdin closes (the agent stopped it), or when the daemon
 //! connection closes: the daemon stopped, or the agent session was closed and
@@ -78,6 +79,11 @@ where
     R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + 'static,
 {
+    // The tools mods contribute in the daemon: listed before the agent's
+    // first `tools/list`, then kept up to date.
+    let follow =
+        tools::daemon::sync(daemon.clone(), options.workspace.clone(), registry.clone()).await;
+    let follow = AbortOnDrop(tokio::spawn(follow));
     let server = EditorServer::new(
         registry,
         daemon.clone(),
@@ -96,9 +102,20 @@ where
             Err(e) => Err(BridgeError::Mcp(e.to_string())),
         }
     };
-    tokio::select! {
+    let exit = tokio::select! {
         exit = mcp => exit,
         () = daemon.closed() => Ok(Exit::DaemonGone),
+    };
+    drop(follow);
+    exit
+}
+
+/// Aborts the task when dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 

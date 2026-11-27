@@ -21,7 +21,7 @@ use crate::daemon;
 use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
-use crate::methods::{self, agents, buffer, fs, syntax, terminal, workspace};
+use crate::methods::{self, agents, buffer, editor, fs, mcp, syntax, terminal, workspace};
 use crate::subscription::ResumeGap;
 
 struct Entry {
@@ -316,6 +316,36 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             g,
             "A terminal's changed rows (batched at ~60 Hz), title, cwd and exit.",
         ),
+        notification::<editor::PublishContext>(
+            g,
+            "client→server",
+            "A UI window's editor context (tabs, selections, visible lines) for its workspace.",
+        ),
+        request::<editor::GetContext>(
+            g,
+            "client→server",
+            "What the windows showing a workspace have open, focused window first.",
+        ),
+        request::<editor::Reveal>(
+            g,
+            "client→server",
+            "Ask the UI to open a file and select a range.",
+        ),
+        topic::<editor::Reveals>(g, "Reveal requests for UIs to act on (live only)."),
+        request::<mcp::Tools>(
+            g,
+            "client→server",
+            "The MCP tools mods contribute, as the coqo-editor bridge offers them.",
+        ),
+        request::<mcp::Call>(
+            g,
+            "client→server",
+            "Call a mod-contributed MCP tool for an agent session.",
+        ),
+        topic::<mcp::ToolsChanged>(
+            g,
+            "The mod-contributed MCP tools changed; list them again (live only).",
+        ),
     ]
 }
 
@@ -358,6 +388,7 @@ fn error_codes() -> Value {
         "SAVE_CONFLICT": methods::codes::SAVE_CONFLICT,
         "NO_SUCH_TERMINAL": methods::codes::NO_SUCH_TERMINAL,
         "SPAWN_FAILED": methods::codes::SPAWN_FAILED,
+        "UNKNOWN_TOOL": methods::codes::UNKNOWN_TOOL,
     })
 }
 

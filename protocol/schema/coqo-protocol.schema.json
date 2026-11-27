@@ -225,6 +225,55 @@
       ],
       "type": "object"
     },
+    "CallParams": {
+      "description": "Params of [`Call`].",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Its arguments.",
+          "type": "object"
+        },
+        "name": {
+          "description": "The tool, as [`Tools`] names it.",
+          "type": "string"
+        },
+        "session": {
+          "description": "The calling agent session.",
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The calling session's workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "session",
+        "name"
+      ],
+      "type": "object"
+    },
+    "CallResult": {
+      "description": "Result of [`Call`]: what the agent gets back.",
+      "properties": {
+        "isError": {
+          "description": "Whether the tool failed (invalid arguments, or the mod's error). The\nmodel sees `text` and can correct itself.",
+          "type": "boolean"
+        },
+        "structured": {
+          "description": "The result as JSON, if it has one."
+        },
+        "text": {
+          "description": "Text for the model: the result, or what went wrong.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
     "ChangesParams": {
       "description": "Params of the [`Changes`] topic.",
       "properties": {
@@ -735,6 +784,71 @@
       ],
       "type": "object"
     },
+    "EditorContext": {
+      "description": "Result of [`GetContext`].",
+      "properties": {
+        "windows": {
+          "description": "The windows that show it: the focused one first, then the most\nrecently updated. Empty when no UI shows the workspace.",
+          "items": {
+            "$ref": "#/$defs/WindowState"
+          },
+          "type": "array"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "windows"
+      ],
+      "type": "object"
+    },
+    "EditorTab": {
+      "description": "A file tab open in a window.",
+      "properties": {
+        "active": {
+          "description": "Whether this is the tab the user works in: the active tab of the\nfocused pane. At most one per window.",
+          "type": "boolean"
+        },
+        "dirty": {
+          "description": "Whether it has unsaved edits.",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "`/`-separated path relative to the root.",
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root the path is relative to."
+        },
+        "selections": {
+          "description": "Its selections and cursors, the primary one first. Empty if the tab\nshows no editor (not loaded yet, or a binary file).",
+          "items": {
+            "$ref": "#/$defs/Selection"
+          },
+          "type": "array"
+        },
+        "visible": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The lines on screen, if the tab is visible."
+        }
+      },
+      "required": [
+        "root",
+        "path"
+      ],
+      "type": "object"
+    },
     "Encoding": {
       "description": "How a frame's payload is encoded.\n\nJSON is mandatory and is always used for the handshake. MessagePack is\noptional and is switched on for the rest of the connection when both\nsides list it in the handshake; it is intended for hot paths (buffer ops,\ntrace streams).",
       "oneOf": [
@@ -1045,6 +1159,19 @@
       ],
       "type": "object"
     },
+    "GetContextParams": {
+      "description": "Params of [`GetContext`].",
+      "properties": {
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace"
+      ],
+      "type": "object"
+    },
     "Hello": {
       "description": "Params of `coqo/hello`, sent by the client.",
       "properties": {
@@ -1187,6 +1314,28 @@
           "type": "string"
         }
       ]
+    },
+    "LineRange": {
+      "description": "Lines shown in a tab's viewport: 0-based, `end` inclusive.",
+      "properties": {
+        "end": {
+          "description": "Last visible line.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "description": "First visible line.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "type": "object"
     },
     "ListDirResult": {
       "description": "Result of [`ListDir`].",
@@ -1816,6 +1965,28 @@
         }
       ]
     },
+    "Position": {
+      "description": "A place in a text: 0-based line and character (Unicode scalar values).",
+      "properties": {
+        "character": {
+          "description": "0-based character within the line.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line": {
+          "description": "0-based line.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "line",
+        "character"
+      ],
+      "type": "object"
+    },
     "PromptParams": {
       "description": "Params of `sessions/prompt`.",
       "properties": {
@@ -2088,6 +2259,53 @@
       ],
       "type": "object"
     },
+    "PublishContextParams": {
+      "description": "Params of [`PublishContext`].",
+      "properties": {
+        "context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WindowContext"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its context; `null` when the window closes or stops showing the\nworkspace."
+        },
+        "window": {
+          "description": "The window, unique within the publishing connection.",
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace the window shows."
+        }
+      },
+      "required": [
+        "workspace",
+        "window"
+      ],
+      "type": "object"
+    },
+    "Range": {
+      "description": "A range of a text. `start` is not after `end`; equal is an empty range.",
+      "properties": {
+        "end": {
+          "$ref": "#/$defs/Position",
+          "description": "Where it ends (exclusive)."
+        },
+        "start": {
+          "$ref": "#/$defs/Position",
+          "description": "Where it starts."
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
     "ReadParams": {
       "description": "Params of [`ReadFile`].",
       "properties": {
@@ -2265,6 +2483,111 @@
         "oldest",
         "head"
       ],
+      "type": "object"
+    },
+    "RevealEvent": {
+      "description": "One event of the [`Reveals`] topic: open `path` and select `range`.",
+      "properties": {
+        "path": {
+          "description": "`/`-separated path relative to the root.",
+          "type": "string"
+        },
+        "range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Range"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What to show and select; the top of the file if omitted."
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root the path is relative to."
+        },
+        "session": {
+          "description": "The agent session that asked, if an agent did.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root",
+        "path"
+      ],
+      "type": "object"
+    },
+    "RevealParams": {
+      "description": "Params of [`Reveal`].",
+      "properties": {
+        "path": {
+          "description": "`/`-separated path of a file relative to the root.",
+          "type": "string"
+        },
+        "range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Range"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What to show and select; the top of the file if omitted."
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root the path is relative to."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root",
+        "path"
+      ],
+      "type": "object"
+    },
+    "RevealResult": {
+      "description": "Result of [`Reveal`].",
+      "properties": {
+        "delivered": {
+          "description": "Whether a UI window shows the workspace, so someone will see it.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "delivered"
+      ],
+      "type": "object"
+    },
+    "RevealsParams": {
+      "description": "Params of the [`Reveals`] topic.",
+      "properties": {
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only reveals in this workspace; omit for every workspace."
+        }
+      },
       "type": "object"
     },
     "RevertParams": {
@@ -2512,6 +2835,30 @@
           "type": "object"
         }
       ]
+    },
+    "Selection": {
+      "description": "A selection or cursor in a tab.",
+      "properties": {
+        "range": {
+          "$ref": "#/$defs/Range",
+          "description": "The selected range; empty for a cursor."
+        },
+        "text": {
+          "description": "The selected text, for a non-empty selection, at most\n[`MAX_SELECTION_TEXT`] bytes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "truncated": {
+          "description": "Whether `text` was cut short.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "range"
+      ],
+      "type": "object"
     },
     "SessionId": {
       "description": "Identifies an agent session. Generated by the daemon; stable forever.",
@@ -4151,6 +4498,46 @@
       ],
       "type": "object"
     },
+    "ToolInfo": {
+      "description": "A mod-contributed tool.",
+      "properties": {
+        "description": {
+          "description": "What it does, for the agent.",
+          "type": "string"
+        },
+        "inputSchema": {
+          "additionalProperties": true,
+          "description": "JSON Schema of the arguments (an object schema).",
+          "type": "object"
+        },
+        "mod": {
+          "description": "The mod that contributes it.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The name agents see: 1 to 64 of `A-Z a-z 0-9 _ -`.",
+          "type": "string"
+        },
+        "readOnly": {
+          "description": "Whether it only reads.",
+          "type": "boolean"
+        },
+        "title": {
+          "description": "Display name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "inputSchema",
+        "mod"
+      ],
+      "type": "object"
+    },
     "ToolKind": {
       "description": "What kind of tool a call is, for icons and grouping (ACP `ToolKind`).",
       "oneOf": [
@@ -4205,6 +4592,50 @@
           "type": "string"
         }
       ]
+    },
+    "ToolsChangedEvent": {
+      "description": "One event of [`ToolsChanged`]: the set of tools changed; list again.",
+      "properties": {
+        "generation": {
+          "description": "How many times the set changed since the daemon started.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "generation"
+      ],
+      "type": "object"
+    },
+    "ToolsParams": {
+      "description": "Params of [`Tools`] and the [`ToolsChanged`] topic.",
+      "properties": {
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace the tools are for."
+        }
+      },
+      "required": [
+        "workspace"
+      ],
+      "type": "object"
+    },
+    "ToolsResult": {
+      "description": "Result of [`Tools`].",
+      "properties": {
+        "tools": {
+          "description": "The tools, by name.",
+          "items": {
+            "$ref": "#/$defs/ToolInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "tools"
+      ],
+      "type": "object"
     },
     "UnsubscribeParams": {
       "description": "Params of `coqo/unsubscribe`.",
@@ -4301,6 +4732,58 @@
         "server",
         "encoding",
         "connection"
+      ],
+      "type": "object"
+    },
+    "WindowContext": {
+      "description": "One window's editor context for the workspace it shows.",
+      "properties": {
+        "focused": {
+          "description": "Whether the window has the keyboard focus.",
+          "type": "boolean"
+        },
+        "tabs": {
+          "description": "Its file tabs, in tab order.",
+          "items": {
+            "$ref": "#/$defs/EditorTab"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "tabs"
+      ],
+      "type": "object"
+    },
+    "WindowState": {
+      "description": "A window's context as the daemon keeps it.",
+      "properties": {
+        "focused": {
+          "description": "Whether the window has the keyboard focus.",
+          "type": "boolean"
+        },
+        "tabs": {
+          "description": "Its file tabs, in tab order.",
+          "items": {
+            "$ref": "#/$defs/EditorTab"
+          },
+          "type": "array"
+        },
+        "updatedAtMs": {
+          "description": "When it last published, in milliseconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "window": {
+          "description": "The window, as its UI named it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "window",
+        "updatedAtMs",
+        "tabs"
       ],
       "type": "object"
     },
@@ -4562,6 +5045,7 @@
     "UNKNOWN_ROOT": 1002,
     "UNKNOWN_SESSION": 1101,
     "UNKNOWN_SUBSCRIPTION": -32004,
+    "UNKNOWN_TOOL": 1401,
     "UNKNOWN_WORKSPACE": 1001,
     "UNSUPPORTED": 1106,
     "UNSUPPORTED_ENCODING": 1202,
@@ -4761,6 +5245,47 @@
         "$ref": "#/$defs/DaemonStatus"
       }
     },
+    "editor/context": {
+      "description": "A UI window's editor context (tabs, selections, visible lines) for its workspace.",
+      "direction": "client→server",
+      "kind": "notification",
+      "params": {
+        "$ref": "#/$defs/PublishContextParams"
+      }
+    },
+    "editor/getContext": {
+      "description": "What the windows showing a workspace have open, focused window first.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/GetContextParams"
+      },
+      "result": {
+        "$ref": "#/$defs/EditorContext"
+      }
+    },
+    "editor/reveal": {
+      "description": "Ask the UI to open a file and select a range.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/RevealParams"
+      },
+      "result": {
+        "$ref": "#/$defs/RevealResult"
+      }
+    },
+    "editor/reveals": {
+      "description": "Reveal requests for UIs to act on (live only).",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/RevealEvent"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/RevealsParams"
+      }
+    },
     "fs/changes": {
       "description": "Debounced file-system changes in an open workspace (live only).",
       "direction": "server→client",
@@ -4803,6 +5328,39 @@
       },
       "result": {
         "$ref": "#/$defs/FileStat"
+      }
+    },
+    "mcp/call": {
+      "description": "Call a mod-contributed MCP tool for an agent session.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/CallParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CallResult"
+      }
+    },
+    "mcp/tools": {
+      "description": "The MCP tools mods contribute, as the coqo-editor bridge offers them.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ToolsParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ToolsResult"
+      }
+    },
+    "mcp/toolsChanged": {
+      "description": "The mod-contributed MCP tools changed; list them again (live only).",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/ToolsChangedEvent"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/ToolsParams"
       }
     },
     "sessions/cancel": {

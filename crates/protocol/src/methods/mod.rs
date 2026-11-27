@@ -17,10 +17,15 @@
 //! - [`terminal`]: `terminal/*`, daemon-owned PTYs.
 //! - [`syntax`]: `syntax/*`, symbols, outline and folding of open buffers
 //!   (tree-sitter, always on).
+//! - [`editor`]: `editor/*`, what the user's editor windows show (open tabs,
+//!   selections, visible lines) and reveal requests, for agents.
+//! - [`mcp`]: `mcp/*`, the MCP tools mods contribute, for `coqod mcp`.
 
 pub mod agents;
 pub mod buffer;
+pub mod editor;
 pub mod fs;
+pub mod mcp;
 pub mod syntax;
 pub mod terminal;
 pub mod workspace;
@@ -91,4 +96,8 @@ pub mod codes {
     pub const NO_SUCH_TERMINAL: i64 = 1301;
     /// The PTY or the process could not be started.
     pub const SPAWN_FAILED: i64 = 1302;
+
+    /// No MCP tool has the given name (its mod was disabled, say): list the
+    /// tools again.
+    pub const UNKNOWN_TOOL: i64 = 1401;
 }

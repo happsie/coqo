@@ -1161,6 +1161,7 @@ dependencies = [
  "coqo-agents",
  "coqo-buffers",
  "coqo-client",
+ "coqo-mcp",
  "coqo-mod-api",
  "coqo-protocol",
  "coqo-storage",
@@ -1169,6 +1170,7 @@ dependencies = [
  "dirs 6.0.0",
  "futures",
  "futures-util",
+ "ropey",
  "similar",
  "tempfile",
  "tokio",
@@ -1287,6 +1289,7 @@ version = "0.0.0"
 dependencies = [
  "coqo-client",
  "coqo-protocol",
+ "futures-util",
  "rmcp",
  "serde",
  "serde_json",

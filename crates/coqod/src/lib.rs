@@ -11,8 +11,12 @@
 //! - [`mods`]: **where built-in mods are listed**; loaded and activated at
 //!   startup, deactivated at shutdown.
 //! - [`agents`]: daemon-owned agent sessions (`agents/*`, `sessions/*`).
+//! - [`editor`]: what the user's editor windows show (`editor/*`): the
+//!   context UI windows publish, and reveal requests for them.
 //! - [`editor_mcp`]: the `coqo-editor` MCP server agents get (`coqod mcp`):
 //!   its launch spec, one-time tokens and revocation on session close.
+//! - [`mcp_tools`]: the MCP tools mods contribute (`mcp/*`), which the
+//!   `coqod mcp` bridge offers next to its core tools.
 //! - [`terminal`]: daemon-owned PTYs (`terminal/*`).
 //! - [`cli`]: command-line arguments.
 //! - [`buffers`]: replicated text buffers (`buffer/*`): open, edit, save,
@@ -29,8 +33,10 @@ pub mod auth;
 pub mod buffers;
 pub mod cli;
 pub mod daemon;
+pub mod editor;
 pub mod editor_mcp;
 pub mod lifecycle;
+pub mod mcp_tools;
 pub mod methods;
 pub mod mods;
 pub mod routes;

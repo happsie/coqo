@@ -163,6 +163,7 @@ languages = ["java"]
 [[contributes.mcp_tools]]
 name = "maven_test"
 description = "Runs Maven tests and returns the failures."
+title = "Maven test"
 
 [contributes.mcp_tools.input_schema]
 type = "object"

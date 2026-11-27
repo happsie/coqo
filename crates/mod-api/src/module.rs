@@ -7,13 +7,13 @@ use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
-use crate::contrib::{Command, Keyed};
+use crate::contrib::{Command, Keyed, McpTool};
 use crate::erased::{AnyArc, BoxFuture};
 use crate::error::ModError;
 use crate::id::{ContributionId, ContributionPointId, ProviderId, ServiceId, ServiceRef};
-use crate::points::{CommandHandlers, Commands, ContributionPoint};
+use crate::points::{CommandHandlers, Commands, ContributionPoint, McpToolHandlers, McpTools};
 use crate::service::Service;
 
 /// A mod's code.
@@ -63,6 +63,65 @@ where
 {
     fn run(&self, args: Value) -> BoxFuture<'static, Result<Value, ModError>> {
         Box::pin(self(args))
+    }
+}
+
+/// One call of an MCP tool, as an agent made it (point `mcp_tool_handlers`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpToolCall {
+    /// The Coqo workspace of the calling agent session. A tool acts on this
+    /// workspace only.
+    pub workspace: String,
+    /// The calling agent session (Coqo's id).
+    pub session: String,
+    /// The arguments, already checked against the tool's `input_schema`.
+    pub arguments: Map<String, Value>,
+}
+
+/// What an MCP tool returns to the agent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpToolOutput {
+    /// Text for the model.
+    pub text: String,
+    /// The same result as JSON (MCP `structuredContent`), if it has one.
+    pub structured: Option<Value>,
+}
+
+impl McpToolOutput {
+    /// A plain-text result.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            structured: None,
+        }
+    }
+
+    /// A JSON result, also sent to the model as pretty-printed text.
+    pub fn json(value: Value) -> Self {
+        Self {
+            text: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+            structured: Some(value),
+        }
+    }
+}
+
+/// Runs an MCP tool (point `mcp_tool_handlers`). An error is shown to the
+/// agent as a failed tool result, so it can correct itself.
+///
+/// Any `Fn(McpToolCall) -> impl Future<Output = Result<McpToolOutput,
+/// ModError>>` is a handler.
+pub trait McpToolHandler: Send + Sync + 'static {
+    /// Runs the tool.
+    fn call(&self, call: McpToolCall) -> BoxFuture<'static, Result<McpToolOutput, ModError>>;
+}
+
+impl<F, Fut> McpToolHandler for F
+where
+    F: Fn(McpToolCall) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<McpToolOutput, ModError>> + Send + 'static,
+{
+    fn call(&self, call: McpToolCall) -> BoxFuture<'static, Result<McpToolOutput, ModError>> {
+        Box::pin(self(call))
     }
 }
 
@@ -224,6 +283,24 @@ impl ModContext {
         P: ContributionPoint,
     {
         self.host.withdraw_contribution(&self.mod_id, &P::id(), id)
+    }
+
+    /// Registers MCP tool `tool` together with the `handler` that runs it.
+    /// Agents get it through `coqod mcp` (PLAN §7.4).
+    pub fn register_mcp_tool(
+        &self,
+        tool: McpTool,
+        handler: impl McpToolHandler,
+    ) -> Result<(), ModError> {
+        let id = tool.name.clone();
+        let handler: Arc<dyn McpToolHandler> = Arc::new(handler);
+        self.contribute_as::<McpToolHandlers>(id.clone(), handler)?;
+        if let Err(e) = self.contribute::<McpTools>(tool) {
+            // Best effort: don't leave a handler without its tool.
+            let _ = self.withdraw::<McpToolHandlers>(&id);
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Registers `command` together with the `handler` that runs it.

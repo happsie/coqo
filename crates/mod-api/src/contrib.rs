@@ -455,16 +455,63 @@ pub struct DebugAdapter {
 }
 
 /// A tool agents can call through `coqod mcp` (point `mcp_tools`).
+///
+/// Core mods pair it with an [`McpToolHandler`](crate::McpToolHandler)
+/// through [`ModContext::register_mcp_tool`](crate::ModContext::register_mcp_tool).
+/// A tool declared only in the manifest activates its mod on the first call
+/// (activation event `mcp_tool:<name>`), which then registers the handler.
+///
+/// Agents see a built-in mod's tool under its own name and an installed
+/// mod's prefixed with the mod id (dots as `_`): `acme.maven`'s
+/// `maven_test` is `acme_maven_maven_test`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpTool {
     /// Tool name, such as `maven_test`: lowercase letters, digits, `_` and
     /// `-`, at most 64 characters, no dots.
     pub name: ContributionId,
+    /// Display name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// What the tool does, written for the agent.
     pub description: String,
-    /// JSON Schema of the tool's arguments; an object schema.
+    /// JSON Schema of the tool's arguments; an object schema. Calls are
+    /// checked against it before the handler runs.
     pub input_schema: Value,
+    /// Whether the tool only reads (MCP `readOnlyHint`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
+}
+
+impl McpTool {
+    /// A tool without arguments.
+    pub fn new(name: ContributionId, description: impl Into<String>) -> Self {
+        Self {
+            name,
+            title: None,
+            description: description.into(),
+            input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+            read_only: false,
+        }
+    }
+
+    /// Sets the arguments' JSON Schema (an object schema).
+    pub fn with_schema(mut self, schema: Value) -> Self {
+        self.input_schema = schema;
+        self
+    }
+
+    /// Sets the display name.
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    /// Marks it as read-only.
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self
+    }
 }
 
 /// How an agent provider runs the agent (PLAN §7.3).
