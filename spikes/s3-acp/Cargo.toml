@@ -1,0 +1,16 @@
+[package]
+name = "spike-s3-acp"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Throwaway prototype for spike S3 (issue #10): a Rust ACP client driving the Claude Agent ACP adapter."
+
+# Standalone: not a member of the Coqo workspace, so CI does not build it.
+[workspace]
+
+[dependencies]
+agent-client-protocol = { version = "=5.6.1", features = ["process"] }
+portable-pty = "0.9"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
