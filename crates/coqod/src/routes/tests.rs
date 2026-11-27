@@ -55,6 +55,8 @@ const SESSION_ROUTES: &[(&str, AccessKind)] = &[
     ("mcp/call", AccessKind::Check),
     ("mcp/tools", AccessKind::Workspace),
     ("mcp/toolsChanged", AccessKind::Workspace),
+    ("questions/create", AccessKind::Check),
+    ("questions/watch", AccessKind::Check),
     ("sessions/setStatus", AccessKind::Session),
     ("syntax/folding", AccessKind::Check),
     ("syntax/outline", AccessKind::Check),
@@ -254,6 +256,7 @@ fn probes(
     buffer: BufferId,
     replica: &ReplicaId,
     session: &SessionId,
+    question: u64,
 ) -> Vec<(&'static str, RouteKind, Value)> {
     let id = json!({ "id": ws.id });
     let path = |p: &str| json!({ "workspace": ws.id, "root": ws.roots[0].id, "path": p });
@@ -289,6 +292,23 @@ fn probes(
                 "name": crate::mcp_tools::tests::PROBE_TOOL,
                 "arguments": { "text": "probe" },
             }),
+        ),
+        // The question `questions/watch` follows is the one this creates.
+        (
+            "questions/create",
+            RouteKind::Method,
+            json!({
+                "workspace": ws.id,
+                "session": session,
+                "kind": "clarification",
+                "body": "probe?",
+                "anchors": [{ "root": ws.roots[0].id, "path": file, "lines": { "start": 0, "end": 0 } }],
+            }),
+        ),
+        (
+            "questions/watch",
+            RouteKind::Topic,
+            json!({ "workspace": ws.id, "session": session, "id": question }),
         ),
         (
             agm::SetStatus::NAME,
@@ -404,7 +424,15 @@ async fn a_session_token_reaches_only_its_own_workspace() {
     // Session routes aimed at workspace B: refused.
     let b_buffer = open_buffer(&admin, &b, "b.txt").await;
     let a_buffer = open_buffer(&agent, &a, "a.txt").await;
-    let b_probes = probes(&b, "b.txt", b_buffer.buffer, &b_buffer.replica, &b_session);
+    // Questions: the agent's own in A is 1; the daemon token's in B is 2.
+    let b_probes = probes(
+        &b,
+        "b.txt",
+        b_buffer.buffer,
+        &b_buffer.replica,
+        &b_session,
+        2,
+    );
     let mut covered: Vec<_> = b_probes.iter().map(|(name, ..)| *name).collect();
     covered.push(bufm::Edit::NAME);
     covered.sort_unstable();
@@ -464,8 +492,14 @@ async fn a_session_token_reaches_only_its_own_workspace() {
     assert_eq!((b_now.rev, b_now.text.as_str()), (b_buffer.rev, "text\n"));
 
     // The same session routes aimed at its own workspace A: allowed.
-    for (name, kind, params) in probes(&a, "a.txt", a_buffer.buffer, &a_buffer.replica, &a_session)
-    {
+    for (name, kind, params) in probes(
+        &a,
+        "a.txt",
+        a_buffer.buffer,
+        &a_buffer.replica,
+        &a_session,
+        1,
+    ) {
         let result = call(&agent, kind, name, params).await;
         assert!(result.is_ok(), "{name} on A: {result:?}");
     }

@@ -24,6 +24,7 @@ use crate::buffers::{self, BufferConfig, BufferService};
 use crate::daemon::DaemonContext;
 use crate::editor::{self, EditorService};
 use crate::mcp_tools::{self, McpToolService};
+use crate::questions::{self, QuestionService};
 use crate::syntax::{self, SyntaxService};
 use crate::workspace::{self, WorkspaceService};
 use crate::{agents, methods, terminal};
@@ -43,10 +44,23 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     let router = editor::register(router, EditorService::new(Arc::clone(&workspaces)));
     let sessions = agents::open(ctx)?;
     let router = agents::register(router, sessions.clone());
-    let buffers = BufferService::new(workspaces, ctx.data.clone(), BufferConfig::default());
+    let buffers = BufferService::new(
+        Arc::clone(&workspaces),
+        ctx.data.clone(),
+        BufferConfig::default(),
+    );
     ctx.agent_fs
         .set(Arc::new(agents::BufferFs(Arc::clone(&buffers))));
     buffers::flush_on_shutdown(&buffers, ctx.shutdown.clone());
+    let router = questions::register(
+        router,
+        QuestionService::open(
+            &ctx.data.global_db(),
+            workspaces,
+            Arc::clone(&buffers),
+            Some(sessions.clone()),
+        )?,
+    );
     let router = syntax::register(router, SyntaxService::new(Arc::clone(&buffers)));
     let router = buffers::register(router, buffers);
     // One set of terminals: the `terminal/*` routes and ACP agents' commands

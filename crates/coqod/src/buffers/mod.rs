@@ -1085,6 +1085,53 @@ impl BufferService {
         })
     }
 
+    /// The open buffer of file `real` (canonical) in `workspace`, if any.
+    pub fn buffer_at(&self, workspace: &WorkspaceId, real: &Path) -> Option<BufferId> {
+        self.registry()
+            .by_path
+            .get(&(workspace.clone(), real.to_path_buf()))
+            .copied()
+    }
+
+    /// What anchors need of an open buffer: its text and revision and, if
+    /// `since` is given and the log still has them, the changes after
+    /// `since`, taken together under the buffer's lock.
+    pub fn anchor_view(
+        &self,
+        buffer: BufferId,
+        since: Option<u64>,
+    ) -> Result<AnchorView, ErrorObject> {
+        let b = self.get(buffer)?;
+        let st = b.lock();
+        let rev = st.buf.rev();
+        let changes = since.filter(|&s| s <= rev).and_then(|since| {
+            (since + 1..=rev)
+                .map(|r| st.buf.entry(r).map(|e| e.op.to_edits()))
+                .collect::<Option<Vec<_>>>()
+        });
+        Ok(AnchorView {
+            rev,
+            text: st.buf.text().to_string(),
+            since: since.filter(|_| changes.is_some()),
+            changes,
+        })
+    }
+
+    /// The live changes of an open buffer, until it is unloaded. Unlike a
+    /// `buffer/changes` subscription this does not keep the buffer loaded.
+    pub fn follow_changes(
+        &self,
+        buffer: BufferId,
+    ) -> Result<coqo_protocol::EventStream<BufferChange>, ErrorObject> {
+        let b = self.get(buffer)?;
+        let feed = b.log.subscribe(None)?;
+        let mut closed = b.closed.subscribe();
+        let until = async move {
+            let _ = closed.wait_for(|c| *c).await;
+        };
+        Ok(feed.events.take_until(until).boxed())
+    }
+
     /// An agent edit at the head of an open buffer (edits against its
     /// current text).
     pub fn agent_edit(
@@ -1133,6 +1180,21 @@ async fn reject_edit(peer: &Peer, p: &EditParams, error: ErrorObject) {
     if let Err(e) = peer.notify::<bufm::EditRejected>(note).await {
         tracing::debug!(error = %e, "cannot send buffer/editRejected");
     }
+}
+
+/// An open buffer as [`BufferService::anchor_view`] sees it.
+#[derive(Debug)]
+pub struct AnchorView {
+    /// The current revision.
+    pub rev: u64,
+    /// The text at `rev`.
+    pub text: String,
+    /// The changes after `since`, oldest first, each a list of edits in the
+    /// coordinates before it; `None` if none was asked for or the log no
+    /// longer has them all.
+    pub changes: Option<Vec<Vec<bufm::TextEdit>>>,
+    /// The revision `changes` start after, when they are known.
+    pub since: Option<u64>,
 }
 
 /// Rebuild a buffer from its journal: the buffer, the replayed changes (for

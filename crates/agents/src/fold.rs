@@ -72,6 +72,7 @@ impl Fold {
             | SessionUpdate::AgentMessageChunk { .. }
             | SessionUpdate::AgentThoughtChunk { .. }
             | SessionUpdate::State { .. }
+            | SessionUpdate::Question(_)
             | SessionUpdate::Closed => {}
         }
     }

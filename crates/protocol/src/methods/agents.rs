@@ -897,6 +897,10 @@ pub enum SessionUpdate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// A question or note the agent pinned to code (`questions/*`), as
+    /// asked, and again when it is answered or dismissed: the chat shows
+    /// it with links to its code.
+    Question(Box<super::questions::Question>),
     /// The session was closed. Nothing follows.
     Closed,
 }

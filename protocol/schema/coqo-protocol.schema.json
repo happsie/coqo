@@ -116,6 +116,215 @@
       ],
       "type": "object"
     },
+    "AnchorPoint": {
+      "description": "A spot in a text: 0-based line, byte column within the line and byte\noffset from the start (UTF-8, as in `buffer/*`).",
+      "properties": {
+        "col": {
+          "description": "Byte column within the line.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line": {
+          "description": "0-based line.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Byte offset from the start of the text.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "line",
+        "col",
+        "offset"
+      ],
+      "type": "object"
+    },
+    "AnchorResolution": {
+      "description": "Where an anchor is now.",
+      "properties": {
+        "buffer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BufferId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The open buffer `range` is in, if the file is open; else `range` is\nin the file on disk."
+        },
+        "range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnchorSpan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its range in the current text; absent when orphaned."
+        },
+        "rev": {
+          "description": "That buffer's revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/AnchorStatus",
+          "description": "How well it was found."
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "AnchorSpan": {
+      "description": "A range of a text, `end` exclusive.",
+      "properties": {
+        "end": {
+          "$ref": "#/$defs/AnchorPoint",
+          "description": "Where it ends (exclusive)."
+        },
+        "start": {
+          "$ref": "#/$defs/AnchorPoint",
+          "description": "Where it starts."
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
+    "AnchorStatus": {
+      "description": "How well an anchor was found in the current text.",
+      "oneOf": [
+        {
+          "description": "The anchored text, unchanged, in the same place.",
+          "properties": {
+            "kind": {
+              "const": "exact",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The anchored text, unchanged, somewhere else (lines added above, or\nthe code moved).",
+          "properties": {
+            "kind": {
+              "const": "moved",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Probably the anchored code after an edit; `confidence` in\n`0.6..1`.",
+          "properties": {
+            "confidence": {
+              "description": "How sure the match is.",
+              "format": "float",
+              "type": "number"
+            },
+            "kind": {
+              "const": "fuzzy",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "confidence"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The code is gone, or no match was good enough. Show the anchor's\nown `text`.",
+          "properties": {
+            "kind": {
+              "const": "orphaned",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AnchorSymbol": {
+      "description": "The innermost symbol an anchor was in (tree-sitter, `coqo-syntax`).",
+      "properties": {
+        "kind": {
+          "description": "Its kind, as `syntax/*` names kinds (`method`, `function`, …).",
+          "type": "string"
+        },
+        "lineOffset": {
+          "default": 0,
+          "description": "How many lines below the symbol's first line the anchor started.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Its containers and name, outermost first: `[\"shapes\", \"Circle\",\n\"area\"]`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "path",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "AnswerParams": {
+      "description": "Params of [`Answer`].",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/QuestionId",
+          "description": "The question."
+        },
+        "option": {
+          "description": "The chosen option's id. Required for a confirmation and info; a\ndecision takes an option, `text`, or both.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "A free-text reply (markdown). Required for a clarification.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
     "AuthKind": {
       "description": "Where the agent's usage is billed (from ACP `auth/status`).",
       "oneOf": [
@@ -363,6 +572,23 @@
       ],
       "type": "object"
     },
+    "ChangesParams4": {
+      "description": "Params of the [`Changes`] topic.",
+      "properties": {
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only this workspace's questions."
+        }
+      },
+      "type": "object"
+    },
     "CloseParams": {
       "description": "Params of [`Close`].",
       "properties": {
@@ -378,6 +604,81 @@
       "required": [
         "buffer",
         "replica"
+      ],
+      "type": "object"
+    },
+    "CodeAnchor": {
+      "description": "Code a question is pinned to, as it was when the agent asked: where,\nand a fingerprint to find it again (ADR 0013).",
+      "properties": {
+        "contextAfter": {
+          "description": "Up to 3 lines after.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "contextBefore": {
+          "description": "Up to 3 lines before.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "path": {
+          "description": "`/`-separated path relative to the root.",
+          "type": "string"
+        },
+        "prefix": {
+          "description": "The start of the first line, up to the range.",
+          "type": "string"
+        },
+        "range": {
+          "$ref": "#/$defs/AnchorSpan",
+          "description": "Where the anchored text was."
+        },
+        "rev": {
+          "description": "The buffer revision `range` was taken at; absent for a file read\nfrom disk.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root `path` is relative to."
+        },
+        "suffix": {
+          "description": "The rest of the last line after the range.",
+          "type": "string"
+        },
+        "symbol": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnchorSymbol"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The enclosing symbol, if the file's language is known."
+        },
+        "text": {
+          "description": "The anchored text as it was: what to show when it is orphaned.",
+          "type": "string"
+        },
+        "textHash": {
+          "description": "FNV-1a 64 hash of `text`, in hex.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "root",
+        "path",
+        "range",
+        "textHash",
+        "text"
       ],
       "type": "object"
     },
@@ -580,6 +881,60 @@
       "required": [
         "amount",
         "currency"
+      ],
+      "type": "object"
+    },
+    "CreateParams": {
+      "description": "Params of [`Create`].",
+      "properties": {
+        "anchors": {
+          "description": "The code it is about: 1 to [`MAX_ANCHORS`] locations, the files\nas they are now (open buffers with their unsaved edits).",
+          "items": {
+            "$ref": "#/$defs/NewAnchor"
+          },
+          "type": "array"
+        },
+        "body": {
+          "description": "The question or note, in markdown.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/QuestionKind",
+          "description": "What kind of answer it wants; `annotation` for a note."
+        },
+        "options": {
+          "description": "A decision's options (at least 2). Confirmation and info get theirs\nfrom the daemon; the other kinds take none.",
+          "items": {
+            "$ref": "#/$defs/NewOption"
+          },
+          "type": "array"
+        },
+        "session": {
+          "description": "The asking agent session.",
+          "type": "string"
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Severity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A note's severity (default `info`)."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The asking session's workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "session",
+        "kind",
+        "body",
+        "anchors"
       ],
       "type": "object"
     },
@@ -1403,6 +1758,52 @@
       ],
       "type": "object"
     },
+    "ListParams": {
+      "description": "Params of [`List`].",
+      "properties": {
+        "includeClosed": {
+          "description": "Answered and dismissed ones too (most recent first, up to 200).",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "…and this file (`/`-separated, relative to `root`; in any root if\n`root` is omitted).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RootId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only questions with an anchor in this root…"
+        },
+        "session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only this session's."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace"
+      ],
+      "type": "object"
+    },
     "ListResult": {
       "description": "Result of [`List`]: a snapshot of every known workspace.",
       "properties": {
@@ -1468,6 +1869,49 @@
           "type": "boolean"
         }
       },
+      "type": "object"
+    },
+    "NewAnchor": {
+      "description": "A code location to pin a question to: whole lines of a file.",
+      "properties": {
+        "lines": {
+          "$ref": "#/$defs/LineRange",
+          "description": "The lines, 0-based, `end` inclusive."
+        },
+        "path": {
+          "description": "`/`-separated path of a file relative to the root.",
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root `path` is relative to."
+        }
+      },
+      "required": [
+        "root",
+        "path",
+        "lines"
+      ],
+      "type": "object"
+    },
+    "NewOption": {
+      "description": "An option as the agent offers it; the daemon numbers them.",
+      "properties": {
+        "description": {
+          "description": "More detail, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "description": "The button text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
       "type": "object"
     },
     "OpenParams": {
@@ -2337,6 +2781,261 @@
         "window"
       ],
       "type": "object"
+    },
+    "Question": {
+      "description": "A question or note, as the daemon keeps it.",
+      "properties": {
+        "anchors": {
+          "description": "The code it is about, at least one.",
+          "items": {
+            "$ref": "#/$defs/QuestionAnchor"
+          },
+          "type": "array"
+        },
+        "answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuestionAnswer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The answer, once answered."
+        },
+        "body": {
+          "description": "The question or note, in markdown.",
+          "type": "string"
+        },
+        "closedAt": {
+          "description": "Answered or dismissed, Unix milliseconds.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "description": "Asked, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "id": {
+          "$ref": "#/$defs/QuestionId",
+          "description": "Id."
+        },
+        "kind": {
+          "$ref": "#/$defs/QuestionKind",
+          "description": "What kind of answer it wants."
+        },
+        "options": {
+          "description": "The answers it offers, in order (empty for a clarification or a\nnote).",
+          "items": {
+            "$ref": "#/$defs/QuestionOption"
+          },
+          "type": "array"
+        },
+        "seq": {
+          "description": "The `questions/changes` seq of this state.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The agent session that asked."
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Severity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How important a note is (annotations only)."
+        },
+        "status": {
+          "$ref": "#/$defs/QuestionStatus",
+          "description": "Open, answered or dismissed."
+        },
+        "waiting": {
+          "description": "Whether the agent is blocked on it right now (a waiting\n`ask_question` or `await_answer`).",
+          "type": "boolean"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "id",
+        "workspace",
+        "session",
+        "kind",
+        "body",
+        "anchors",
+        "status",
+        "createdAt",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "QuestionAnchor": {
+      "description": "One code location of a question.",
+      "properties": {
+        "anchor": {
+          "$ref": "#/$defs/CodeAnchor",
+          "description": "The code as it was asked about."
+        },
+        "resolution": {
+          "$ref": "#/$defs/AnchorResolution",
+          "description": "Where it is now."
+        }
+      },
+      "required": [
+        "anchor",
+        "resolution"
+      ],
+      "type": "object"
+    },
+    "QuestionAnswer": {
+      "description": "The user's answer.",
+      "properties": {
+        "option": {
+          "description": "The chosen option's id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "A free-text reply or comment (markdown).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "QuestionId": {
+      "description": "Identifies a question or note. Assigned by the daemon, never reused.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "QuestionKind": {
+      "description": "What kind of answer a question wants (PLAN §7.5), or a note.",
+      "oneOf": [
+        {
+          "const": "decision",
+          "description": "Pick one of the options (or reply in free text).",
+          "type": "string"
+        },
+        {
+          "const": "clarification",
+          "description": "A free-text reply.",
+          "type": "string"
+        },
+        {
+          "const": "confirmation",
+          "description": "Yes or no (options `yes` and `no`), with an optional comment.",
+          "type": "string"
+        },
+        {
+          "const": "info",
+          "description": "Something the agent wants the user to see; acknowledge it (option\n`ok`).",
+          "type": "string"
+        },
+        {
+          "const": "annotation",
+          "description": "A non-blocking note pinned to code (`annotate`). Nobody waits for\nit; dismiss it when done.",
+          "type": "string"
+        }
+      ]
+    },
+    "QuestionList": {
+      "description": "Result of [`List`].",
+      "properties": {
+        "questions": {
+          "description": "Open questions oldest first, then (with `includeClosed`) closed\nones, most recently closed first.",
+          "items": {
+            "$ref": "#/$defs/Question"
+          },
+          "type": "array"
+        },
+        "seq": {
+          "description": "The `questions/changes` seq this list reflects; subscribe with\n`since: seq` to keep it current.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "questions",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "QuestionOption": {
+      "description": "One answer a question offers.",
+      "properties": {
+        "description": {
+          "description": "More detail, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "What [`AnswerParams::option`] names: `1`, `2`, … for a decision,\n`yes` / `no` for a confirmation, `ok` for info.",
+          "type": "string"
+        },
+        "label": {
+          "description": "The button text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "QuestionParams": {
+      "description": "Params of [`Get`] and [`Dismiss`].",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/QuestionId",
+          "description": "The question."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "QuestionStatus": {
+      "description": "Where a question is in its life.",
+      "oneOf": [
+        {
+          "const": "open",
+          "description": "Waiting for the user (a note: shown until dismissed).",
+          "type": "string"
+        },
+        {
+          "const": "answered",
+          "description": "The user answered.",
+          "type": "string"
+        },
+        {
+          "const": "dismissed",
+          "description": "The user dismissed it without an answer.",
+          "type": "string"
+        }
+      ]
     },
     "Range": {
       "description": "A range of a text. `start` is not after `end`; equal is an empty range.",
@@ -3526,6 +4225,20 @@
           "type": "object"
         },
         {
+          "$ref": "#/$defs/Question",
+          "description": "A question or note the agent pinned to code (`questions/*`), as\nasked, and again when it is answered or dismissed: the chat shows\nit with links to its code.",
+          "properties": {
+            "update": {
+              "const": "question",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The session was closed. Nothing follows.",
           "properties": {
             "update": {
@@ -3619,6 +4332,21 @@
         "status"
       ],
       "type": "object"
+    },
+    "Severity": {
+      "description": "How important a note is.",
+      "oneOf": [
+        {
+          "const": "info",
+          "description": "Worth knowing.",
+          "type": "string"
+        },
+        {
+          "const": "warning",
+          "description": "Probably a problem.",
+          "type": "string"
+        }
+      ]
     },
     "ShutdownParams": {
       "description": "Params of `daemon/shutdown`.",
@@ -4846,6 +5574,29 @@
       },
       "type": "object"
     },
+    "WatchParams": {
+      "description": "Params of the [`Watch`] topic.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/QuestionId",
+          "description": "The question."
+        },
+        "session": {
+          "description": "The watching agent session: the one that asked.",
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The watching session's workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "session",
+        "id"
+      ],
+      "type": "object"
+    },
     "Welcome": {
       "description": "Result of `coqo/hello`, sent by the server.",
       "properties": {
@@ -5512,6 +6263,83 @@
       "kind": "topic",
       "params": {
         "$ref": "#/$defs/ToolsParams"
+      }
+    },
+    "questions/answer": {
+      "description": "Answer an open question.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/AnswerParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Question"
+      }
+    },
+    "questions/changes": {
+      "description": "Questions whose state changed, as their latest state (resumable).",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/Question"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/ChangesParams4"
+      }
+    },
+    "questions/create": {
+      "description": "An agent asks a question or adds a note pinned to code.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/CreateParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Question"
+      }
+    },
+    "questions/dismiss": {
+      "description": "Close a question without an answer, or a note.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/QuestionParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Question"
+      }
+    },
+    "questions/get": {
+      "description": "One question, anchors resolved now.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/QuestionParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Question"
+      }
+    },
+    "questions/list": {
+      "description": "A workspace's questions and notes, anchors resolved now, with the changes seq.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/QuestionList"
+      }
+    },
+    "questions/watch": {
+      "description": "One question for the agent that asked: its state now, then every change.",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/Question"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/WatchParams"
       }
     },
     "sessions/cancel": {

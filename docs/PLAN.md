@@ -281,9 +281,9 @@ Hard rules, documented in `agent-claude` and in CONTRIBUTING: no claude.ai OAuth
 | `editor_context` | Open files, selection, cursors, visible ranges (when the UI is attached) |
 | `editor_reveal` | Open or reveal a location for the user |
 | `lsp_diagnostics` / `lsp_references` / `lsp_symbols` / `lsp_definition` | Real IDE intelligence for agents (Java/Kotlin especially) |
-| `ask_question` | **Anchored question** (§7.5). Blocks until answered, or returns an id when `async: true` |
+| `ask_question` | **Anchored question** (§7.5). Blocks until answered (with progress), or returns an id when `wait: false` |
 | `await_answer` | Waits for an async question |
-| `annotate` | Non-blocking anchored info or warning note |
+| `annotate` | Non-blocking anchored info or warning note ([ADR 0016](adr/0016-anchored-questions.md)) |
 | `set_status` | A short status line, optional progress, and `working \| blocked \| done`, which feeds alerts (`needs_input` comes from questions; [ADR 0015](adr/0015-agent-state-and-status.md)) |
 | `set_acceptance_criteria` | Registers the criteria for the current task |
 | `publish_walkthrough` | Publishes a walkthrough (§7.6) |
@@ -291,7 +291,7 @@ Hard rules, documented in `agent-claude` and in CONTRIBUTING: no claude.ai OAuth
 | `trace_launch` / `trace_plan` / `scenario_begin` / `scenario_end` / `trace_query` | Live trace (§7.10) |
 | `maven_run` / `maven_test` | Build and test |
 
-Blocking calls send MCP progress notifications so they don't time out. Agents with hard tool timeouts can use async mode instead. Questions asked while the UI is closed are queued and trigger an OS notification.
+Blocking calls send MCP progress notifications so they don't time out. Agents with hard tool timeouts can use async mode instead (`wait: false`, then `await_answer`). Questions asked while the UI is closed are queued and trigger an OS notification.
 
 ### 7.5 Anchored questions
 - **Anchor model** (`coqo-anchors` crate, shared by questions, walkthroughs, comments, and trace):
@@ -300,6 +300,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 - **UI:** a gutter marker plus range highlight and a **popover** anchored to the code, with the question (markdown), quick-answer option buttons, a free-text reply, an "open in chat" link, and the asking agent and session. One question can have several anchors ("these two places disagree"). A questions panel lists everything open in the workspace. `F8` / `Shift+F8` jump to the next/previous question.
 - **Kinds:** `decision` (options), `clarification` (free text), `confirmation` (yes/no), `info` (acknowledge).
 - **Answer flow:** the answer returns as the MCP tool result *and* appears in the chat transcript as a structured message linked to the anchor. Unanswered blocking questions raise alerts.
+- **Store and anchors service:** questions and notes live in `coqo.db` with their anchors (as asked, and as last rebased); the daemon resolves them against the open buffer through its changes, or by fingerprint after a gap, and publishes moves on `questions/changes`. While a session has an open question its state is `needs_input` ([ADR 0016](adr/0016-anchored-questions.md)).
 
 ### 7.6 Code walkthrough
 - **Schema** (`walkthrough.schema.json`, also exposed to agents as an MCP resource):
@@ -372,7 +373,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 
 | Location | Contents |
 |---|---|
-| Daemon data (`~/Library/Application Support/Coqo`, `$XDG_DATA_HOME/coqo`) | `coqo.db` (workspaces, sessions, transcripts, **event log**, alerts), per-workspace: annotations, walkthroughs (local), `traces.db`, PR worktrees; installed mods |
+| Daemon data (`~/Library/Application Support/Coqo`, `$XDG_DATA_HOME/coqo`) | `coqo.db` (workspaces, sessions, transcripts, **event log**, alerts, anchored questions and notes), per-workspace: walkthroughs (local), `traces.db`, PR worktrees; installed mods |
 | UI data (`<data dir>/ui/`) | Workbench layouts saved while `coqod` was unreachable, and a window's no-workspace layout; the daemon keeps each workspace's layout in its state (`ui.layout`, [ADR 0004](adr/0004-workbench-layout.md)) |
 | Config (`~/.config/coqo`, macOS equivalent) | `settings.toml`, keymaps, themes |
 | OS keychain | API keys, GitHub token |

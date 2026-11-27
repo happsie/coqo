@@ -21,7 +21,9 @@ use crate::daemon;
 use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
-use crate::methods::{self, agents, buffer, editor, fs, mcp, syntax, terminal, workspace};
+use crate::methods::{
+    self, agents, buffer, editor, fs, mcp, questions, syntax, terminal, workspace,
+};
 use crate::subscription::ResumeGap;
 
 struct Entry {
@@ -350,6 +352,31 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
         topic::<mcp::ToolsChanged>(
             g,
             "The mod-contributed MCP tools changed; list them again (live only).",
+        ),
+        request::<questions::List>(
+            g,
+            "client→server",
+            "A workspace's questions and notes, anchors resolved now, with the changes seq.",
+        ),
+        request::<questions::Get>(g, "client→server", "One question, anchors resolved now."),
+        request::<questions::Answer>(g, "client→server", "Answer an open question."),
+        request::<questions::Dismiss>(
+            g,
+            "client→server",
+            "Close a question without an answer, or a note.",
+        ),
+        request::<questions::Create>(
+            g,
+            "client→server",
+            "An agent asks a question or adds a note pinned to code.",
+        ),
+        topic::<questions::Changes>(
+            g,
+            "Questions whose state changed, as their latest state (resumable).",
+        ),
+        topic::<questions::Watch>(
+            g,
+            "One question for the agent that asked: its state now, then every change.",
         ),
     ]
 }

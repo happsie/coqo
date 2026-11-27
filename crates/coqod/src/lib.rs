@@ -17,6 +17,8 @@
 //!   its launch spec, one-time tokens and revocation on session close.
 //! - [`mcp_tools`]: the MCP tools mods contribute (`mcp/*`), which the
 //!   `coqod mcp` bridge offers next to its core tools.
+//! - [`questions`]: questions and notes agents pin to code
+//!   (`questions/*`), their anchors kept on the code, and the answers.
 //! - [`terminal`]: daemon-owned PTYs (`terminal/*`).
 //! - [`cli`]: command-line arguments.
 //! - [`buffers`]: replicated text buffers (`buffer/*`): open, edit, save,
@@ -39,6 +41,7 @@ pub mod lifecycle;
 pub mod mcp_tools;
 pub mod methods;
 pub mod mods;
+pub mod questions;
 pub mod routes;
 pub mod syntax;
 pub mod terminal;
