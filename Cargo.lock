@@ -1072,8 +1072,15 @@ dependencies = [
 name = "coqo"
 version = "0.0.0"
 dependencies = [
+ "coqo-client",
+ "coqo-protocol",
+ "coqo-storage",
  "coqo-ui",
+ "coqod",
  "dirs 6.0.0",
+ "futures-util",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

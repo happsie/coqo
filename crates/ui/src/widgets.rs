@@ -27,11 +27,19 @@ pub enum Icon {
     Rows,
     Sparkles,
     CircleAlert,
+    ChevronRight,
+    ChevronDown,
+    File,
+    FileText,
+    FileCode,
+    Image,
+    FolderOpen,
+    RotateCw,
 }
 
 impl Icon {
     /// Every variant, for tests that check the bundle.
-    pub const ALL: [Icon; 13] = [
+    pub const ALL: [Icon; 21] = [
         Icon::Search,
         Icon::Zap,
         Icon::Bell,
@@ -45,6 +53,14 @@ impl Icon {
         Icon::Rows,
         Icon::Sparkles,
         Icon::CircleAlert,
+        Icon::ChevronRight,
+        Icon::ChevronDown,
+        Icon::File,
+        Icon::FileText,
+        Icon::FileCode,
+        Icon::Image,
+        Icon::FolderOpen,
+        Icon::RotateCw,
     ];
 
     pub(crate) fn path(self) -> &'static str {
@@ -62,6 +78,14 @@ impl Icon {
             Icon::Rows => "icons/rows-2.svg",
             Icon::Sparkles => "icons/sparkles.svg",
             Icon::CircleAlert => "icons/circle-alert.svg",
+            Icon::ChevronRight => "icons/chevron-right.svg",
+            Icon::ChevronDown => "icons/chevron-down.svg",
+            Icon::File => "icons/file.svg",
+            Icon::FileText => "icons/file-text.svg",
+            Icon::FileCode => "icons/file-code.svg",
+            Icon::Image => "icons/image.svg",
+            Icon::FolderOpen => "icons/folder-open.svg",
+            Icon::RotateCw => "icons/rotate-cw.svg",
         }
     }
 }

@@ -6,8 +6,8 @@ How the workbench window (design board 1) is arranged and how code adds to it. T
 
 ## Regions
 
-- **Top bar:** brand, then the `TopBarStart` slot, the command search, and the `TopBarEnd` slot (the bolt and the `coqod` pill today).
-- **Workspace rail:** 52 px, unchanged from #23.
+- **Top bar:** the brand ring and the current workspace's name ("Coqo · No workspace open" without one), then the `TopBarStart` slot, the command search, and the `TopBarEnd` slot (the bolt and the `coqod` pill: a grey dot while connecting, a sage dot with a halo when connected, a rose dot with **Retry** when not connected).
+- **Workspace rail:** 52 px. One button per open workspace with its initials (the current one lit in sage), then the dashed **+** that opens a folder.
 - **Sidebar panel:** `panel_raised`, 250 px by default, 180 to 520 px by dragging the gap to its right. A tab strip switches between registered panes; the Chats section stays at the bottom.
 - **Main tab area (the dock):** tab groups in splits. Each group is its own floating `panel` with a tab strip and a split button; groups are 10 px (`gap`) apart.
 - **Status bar:** the `StatusBarStart` and `StatusBarEnd` slots.
@@ -21,6 +21,10 @@ How the workbench window (design board 1) is arranged and how code adds to it. T
 - **Restore:** the layout (sidebar width and pane, splits, sizes, tabs and their saved state) is saved 300 ms after a change and on quit, and restored on start. Until #140 it lives in `$XDG_DATA_HOME/coqo/ui/layouts/default.json` (`~/Library/Application Support/Coqo/ui/layouts/` on macOS; `COQO_DATA_DIR` overrides the base).
 
 On macOS, `Cmd` replaces `Ctrl`.
+
+## Workspaces and the daemon
+
+The window attaches to `coqod` on start (`crates/coqo/src/daemon.rs`), spawning it if needed, and reconnects once by itself when the connection drops. `coqo <folder>`, the rail's **+** and `Ctrl O` open a folder with `workspace/open`; `coqo` alone reopens the most recently opened workspace (`crates/coqo/src/workspace.rs`). The Files pane and file tabs are described in [files.md](files.md).
 
 ## Adding to the workbench
 

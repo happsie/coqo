@@ -30,6 +30,14 @@ icons!(
     "rows-2",
     "sparkles",
     "circle-alert",
+    "chevron-right",
+    "chevron-down",
+    "file",
+    "file-text",
+    "file-code",
+    "image",
+    "folder-open",
+    "rotate-cw",
 );
 
 /// Serves Coqo's bundled icons, then gpui-kit's defaults.
