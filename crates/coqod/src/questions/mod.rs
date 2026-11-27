@@ -136,6 +136,17 @@ pub struct QuestionService {
     live: Mutex<Live>,
 }
 
+/// An open question, for alerts ([`QuestionService::open_questions_of`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenQuestion {
+    /// Its id.
+    pub id: QuestionId,
+    /// The question, markdown.
+    pub body: String,
+    /// Its first code location: root, path and 0-based line.
+    pub location: Option<(RootId, String, u32)>,
+}
+
 /// The lines asked about in one file: `(anchor index, lines)`.
 type Lines = Vec<(usize, RangeInclusive<usize>)>;
 
@@ -592,6 +603,31 @@ impl QuestionService {
         };
         if let Err(e) = reported {
             tracing::debug!(session = %q.session, error = %e, "cannot report the session's state");
+        }
+    }
+
+    /// The open questions (not notes) of `session`, oldest first, with
+    /// where each was first pinned (its first anchor, where it was last
+    /// found). Cheap: no anchor is resolved. For alerts.
+    pub fn open_questions_of(&self, session: &SessionId) -> Vec<OpenQuestion> {
+        let open = lock(&self.inner).store.open_questions_of(session);
+        match open {
+            Ok(records) => records
+                .into_iter()
+                .map(|r| OpenQuestion {
+                    id: r.id,
+                    body: r.body,
+                    location: r.anchors.first().map(|a| {
+                        let at =
+                            anchoring::code_anchor(a.root, a.current.as_ref().unwrap_or(&a.anchor));
+                        (a.root, at.path, at.range.start.line)
+                    }),
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!(%session, error = %e, "cannot list open questions");
+                Vec::new()
+            }
         }
     }
 

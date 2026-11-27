@@ -28,7 +28,7 @@ use crate::mcp_tools::{self, McpToolService};
 use crate::questions::{self, QuestionService};
 use crate::syntax::{self, SyntaxService};
 use crate::workspace::{self, WorkspaceService};
-use crate::{agents, methods, terminal};
+use crate::{agents, alerts, methods, terminal};
 
 /// Build the daemon's router. Called once at startup, inside the runtime;
 /// an error stops the daemon before it accepts clients.
@@ -57,15 +57,14 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     ctx.agent_fs
         .set(Arc::new(agents::BufferFs(Arc::clone(&buffers))));
     buffers::flush_on_shutdown(&buffers, ctx.shutdown.clone());
-    let router = questions::register(
-        router,
-        QuestionService::open(
-            &ctx.data.global_db(),
-            workspaces,
-            Arc::clone(&buffers),
-            Some(sessions.clone()),
-        )?,
-    );
+    let questions = QuestionService::open(
+        &ctx.data.global_db(),
+        workspaces,
+        Arc::clone(&buffers),
+        Some(sessions.clone()),
+    )?;
+    let router = questions::register(router, Arc::clone(&questions));
+    let router = alerts::register(router, alerts::open(ctx, sessions.clone(), questions)?);
     let router = syntax::register(router, SyntaxService::new(Arc::clone(&buffers)));
     let router = buffers::register(router, buffers);
     // One set of terminals: the `terminal/*` routes and ACP agents' commands

@@ -18,7 +18,12 @@
 
 use std::{collections::HashMap, rc::Rc, time::Duration};
 
-use coqo_protocol::methods::workspace::WorkspaceId;
+use coqo_protocol::methods::{
+    agents::SessionId,
+    alerts::{Alert, AlertTarget, FileLocation},
+    editor::{Position, Range},
+    workspace::{RootId, WorkspaceId},
+};
 
 use coqo_ui::{
     ActiveTokens as _,
@@ -28,17 +33,19 @@ use coqo_ui::{
     },
     gpui::{
         AnyElement, AnyView, AnyWindowHandle, App, AppContext as _, BoxShadow, Context, Div,
-        DragMoveEvent, ElementId, Empty, Entity, Focusable as _, FontWeight,
+        DragMoveEvent, ElementId, Empty, Entity, Focusable as _, FontWeight, Global,
         InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
-        StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, hsla, point,
-        px,
+        StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window,
+        deferred, div, hsla, point, px,
     },
     slots::{PaneBuilder, SidebarPanes, Slot, Slots},
     widgets::{Icon, TestSupportExt as _, icon, kbd, panel, raised, status_dot, tab},
 };
 
 use crate::{
-    activity, chat,
+    activity,
+    alerts::{self, AlertCenter, Raised, TOAST_FOR},
+    chat,
     daemon::{self, Daemon, DaemonEvent},
     files::{
         self,
@@ -55,7 +62,7 @@ use crate::{
 
 pub mod rail;
 
-use rail::Rail;
+use rail::{Rail, RailEvent};
 
 /// The key a window's layout is saved under while no workspace is open.
 pub const DEFAULT_WORKSPACE: &str = "default";
@@ -74,6 +81,7 @@ pub fn init(cx: &mut App) {
     chat::init(cx);
     activity::init(cx);
     crate::git::init(cx);
+    alerts::init(cx);
 }
 
 /// The drag payload of the sidebar's resize edge.
@@ -100,6 +108,11 @@ pub struct Shell {
     window: AnyWindowHandle,
     /// Publishes the window's editor context for agents (`editor/context`).
     context: ContextPublisher,
+    /// The alert shown as a toast, if any.
+    toast: Option<Alert>,
+    _toast_timer: Option<Task<()>>,
+    /// An alert to open once the window shows its workspace.
+    pending_alert: Option<Alert>,
     _dock_events: Subscription,
     _subscriptions: Vec<Subscription>,
 }
@@ -152,6 +165,7 @@ impl Shell {
                 if *event == WorkspacesEvent::CurrentChanged {
                     this.workspace_changed(window, cx);
                     ContextPublisher::schedule(this, cx);
+                    this.open_pending_alert(window, cx);
                 }
             }),
         ];
@@ -178,10 +192,26 @@ impl Shell {
         if let Some(known) = KnownWorkspaces::global(cx) {
             subscriptions.push(cx.observe(&known, |_, _, cx| cx.notify()));
         }
+        if let Some(center) = AlertCenter::global(cx) {
+            subscriptions.push(cx.observe(&center, |_, _, cx| cx.notify()));
+            subscriptions.push(cx.subscribe_in(
+                &center,
+                window,
+                |this, _, Raised(alert), window, cx| this.maybe_toast(alert, window, cx),
+            ));
+        }
         let focus = dock.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         let sidebar = saved.map(|l| l.sidebar);
         let rail = cx.new(|cx| Rail::new(workspaces.clone(), cx));
+        subscriptions.push(cx.subscribe_in(
+            &rail,
+            window,
+            |this, _, event: &RailEvent, window, cx| match event {
+                RailEvent::OpenAlert(alert) => this.open_alert(alert.clone(), window, cx),
+            },
+        ));
+        ShellWindows::add(window.window_handle(), cx.entity().downgrade(), cx);
         let mut this = Self {
             _dock_events: dock_events(&dock, cx),
             window: window.window_handle(),
@@ -199,6 +229,9 @@ impl Shell {
             sidebar_pane: sidebar.and_then(|s| s.pane).map(Into::into),
             pane_views: HashMap::new(),
             pending_save: None,
+            toast: None,
+            _toast_timer: None,
+            pending_alert: None,
             _subscriptions: subscriptions,
         };
         ContextPublisher::schedule(&mut this, cx);
@@ -212,8 +245,29 @@ impl Shell {
         if self.workspaces.read(cx).current().map(|w| &w.id) != Some(&event.workspace) {
             return;
         }
+        self.open_file_at(
+            event.workspace.clone(),
+            event.root,
+            event.path.clone(),
+            event.range,
+            window,
+            cx,
+        );
+    }
+
+    /// Open a file of the window's workspace (or show its tab) and select
+    /// `range` (the top if `None`).
+    fn open_file_at(
+        &mut self,
+        workspace: WorkspaceId,
+        root: RootId,
+        path: String,
+        range: Option<Range>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let dock = self.dock.clone();
-        let key = file_editor::key(&event.workspace, event.root, &event.path);
+        let key = file_editor::key(&workspace, root, &path);
         let open = dock.read(cx).find_tab(file_editor::KIND, &key, cx);
         let file = match open {
             Some(id) => {
@@ -223,8 +277,6 @@ impl Shell {
                     .and_then(AnyTab::downcast::<FileEditor>)
             }
             None => {
-                let (workspace, root, path) =
-                    (event.workspace.clone(), event.root, event.path.clone());
                 let tab: Entity<FileEditor> =
                     cx.new(|cx| FileEditor::new(workspace, root, path, window, cx));
                 dock.update(cx, |dock, cx| {
@@ -234,9 +286,182 @@ impl Shell {
             }
         };
         if let Some(file) = file {
-            let range = event.range;
             file.update(cx, |file, cx| file.reveal(range, window, cx));
         }
+    }
+
+    // ---- alerts ------------------------------------------------------------
+
+    /// The agent sessions whose chats are on screen: the shown tab of each
+    /// tab group.
+    pub fn visible_sessions(&self, cx: &App) -> Vec<SessionId> {
+        let dock = self.dock.read(cx);
+        dock.tree()
+            .groups()
+            .into_iter()
+            .filter_map(|g| g.active_tab())
+            .filter_map(|id| dock.tab(id))
+            .filter(|tab| tab.kind(cx) == chat::KIND)
+            .filter_map(|tab| tab.key(cx))
+            .map(|key| SessionId(key.to_string()))
+            .collect()
+    }
+
+    /// The toast shown now, if any.
+    #[allow(dead_code)] // Tests use it.
+    pub fn toast(&self) -> Option<&Alert> {
+        self.toast.as_ref()
+    }
+
+    /// Show `alert` as the toast, for screenshots.
+    #[cfg(test)]
+    pub fn show_toast_for_tests(&mut self, alert: Alert) {
+        self.toast = Some(alert);
+    }
+
+    /// Show a new alert that needs you as a toast, in the app's active
+    /// window only, unless this window shows its session's chat or
+    /// do-not-disturb is on.
+    fn maybe_toast(&mut self, alert: &Alert, window: &mut Window, cx: &mut Context<Self>) {
+        let quiet = AlertCenter::global(cx).is_none_or(|c| c.read(cx).do_not_disturb());
+        let active = Workspaces::global(cx).map(|w| w.entity_id());
+        let shown = alert
+            .session
+            .as_ref()
+            .is_some_and(|s| self.visible_sessions(cx).contains(s));
+        if !alert.kind.needs_you() || quiet || shown || active != Some(self.workspaces.entity_id())
+        {
+            return;
+        }
+        self.toast = Some(alert.clone());
+        let id = alert.id;
+        self._toast_timer = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(TOAST_FOR).await;
+            this.update(cx, |this, cx| {
+                if this.toast.as_ref().is_some_and(|t| t.id == id) {
+                    this.toast = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn hide_toast(&mut self, cx: &mut Context<Self>) {
+        if self.toast.take().is_some() {
+            self._toast_timer = None;
+            cx.notify();
+        }
+    }
+
+    /// Open where `alert` points (the chat tab, the question's code, a
+    /// file) and mark it read. An alert of another workspace switches this
+    /// window to it first, or focuses the window that shows it.
+    pub fn open_alert(&mut self, alert: Alert, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(center) = AlertCenter::global(cx) {
+            center.update(cx, |c, cx| c.mark_read(vec![alert.id], cx));
+        }
+        self.hide_toast(cx);
+        let current = self.workspaces.read(cx).current().map(|w| w.id.clone());
+        let Some(workspace) = alert
+            .workspace
+            .clone()
+            .filter(|w| Some(w) != current.as_ref())
+        else {
+            self.follow_alert(&alert, window, cx);
+            return;
+        };
+        if let Some((handle, shell)) = ShellWindows::showing(&workspace, cx) {
+            handle
+                .update(cx, |_, window, cx| {
+                    window.activate_window();
+                    shell.update(cx, |shell, cx| shell.follow_alert(&alert, window, cx));
+                })
+                .ok();
+            return;
+        }
+        self.pending_alert = Some(alert);
+        self.workspaces
+            .update(cx, |w, cx| w.switch_to(workspace, cx));
+    }
+
+    fn open_pending_alert(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.workspaces.read(cx).current().map(|w| w.id.clone());
+        if self
+            .pending_alert
+            .as_ref()
+            .is_some_and(|a| a.workspace.is_some() && a.workspace == current)
+            && let Some(alert) = self.pending_alert.take()
+        {
+            self.follow_alert(&alert, window, cx);
+        }
+    }
+
+    /// Open where `alert` points, in this window's workspace.
+    fn follow_alert(&mut self, alert: &Alert, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace = alert
+            .workspace
+            .clone()
+            .or_else(|| self.workspaces.read(cx).current().map(|w| w.id.clone()));
+        let chat_of = |session: &SessionId, this: &Self, window: &mut Window, cx: &mut App| {
+            chat::open_session(this.dock.downgrade(), session.clone(), window, cx);
+        };
+        match &alert.target {
+            Some(AlertTarget::Session { session })
+            | Some(AlertTarget::Question {
+                session,
+                location: None,
+                ..
+            }) => chat_of(session, self, window, cx),
+            // The question's code: #74's popover shows there.
+            Some(
+                AlertTarget::Question {
+                    location: Some(location),
+                    ..
+                }
+                | AlertTarget::File { location },
+            ) => {
+                if let Some(workspace) = workspace {
+                    let (root, path, range) = file_target(location);
+                    self.open_file_at(workspace, root, path, range, window, cx);
+                }
+            }
+            None => {
+                if let Some(session) = &alert.session {
+                    chat_of(session, self, window, cx);
+                }
+            }
+        }
+    }
+
+    fn render_toast(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // Gone once it is read, resolved or dismissed (here or elsewhere).
+        let center = AlertCenter::global(cx)?;
+        let id = self.toast.as_ref()?.id;
+        let Some(alert) = center.read(cx).get(id).filter(|a| a.is_unread()).cloned() else {
+            self.toast = None;
+            self._toast_timer = None;
+            return None;
+        };
+        let (open, later) = (cx.entity().downgrade(), cx.entity().downgrade());
+        let card = alerts::view::toast(
+            &alert,
+            Rc::new(move |alert, window, cx| {
+                let alert = alert.clone();
+                open.update(cx, |shell, cx| shell.open_alert(alert, window, cx))
+                    .ok();
+            }),
+            Rc::new(move |_, cx| {
+                later.update(cx, |shell, cx| shell.hide_toast(cx)).ok();
+            }),
+            cx,
+        );
+        Some(
+            deferred(div().absolute().right(px(18.)).bottom(px(40.)).child(card))
+                .with_priority(4)
+                .into_any_element(),
+        )
     }
 
     /// The window's workspace.
@@ -427,8 +652,19 @@ impl Render for Shell {
         let status = status_bar(window, cx);
         let rail = self.rail.clone();
         let workspaces = self.workspaces.downgrade();
+        // Chats on screen in a focused window: their alerts are read.
+        if window.is_window_active()
+            && let Some(center) = AlertCenter::global(cx)
+        {
+            let visible = self.visible_sessions(cx);
+            if !visible.is_empty() {
+                cx.defer(move |cx| center.update(cx, |c, cx| c.seen(&visible, cx)));
+            }
+        }
+        let toast = self.render_toast(cx);
         div()
             .id("workbench")
+            .relative()
             .on_action(move |_: &OpenFolder, _, cx| prompt_open_folder_in(workspaces.clone(), cx))
             .on_action(cx.listener(|this, action: &SwitchToWorkspace, _, cx| {
                 this.rail
@@ -503,6 +739,42 @@ impl Render for Shell {
                     ),
             )
             .child(status)
+            .children(toast)
+    }
+}
+
+/// Where a file target opens: root, path and the line as a range.
+fn file_target(location: &FileLocation) -> (RootId, String, Option<Range>) {
+    let range = location.line.map(|line| {
+        let at = Position { line, character: 0 };
+        Range::new(at, at)
+    });
+    (location.root, location.path.clone(), range)
+}
+
+/// Every workbench window, to open an alert in the one that shows its
+/// workspace.
+#[derive(Default)]
+struct ShellWindows(Vec<(AnyWindowHandle, WeakEntity<Shell>)>);
+
+impl Global for ShellWindows {}
+
+impl ShellWindows {
+    fn add(handle: AnyWindowHandle, shell: WeakEntity<Shell>, cx: &mut App) {
+        let windows = cx.default_global::<ShellWindows>();
+        windows.0.retain(|(_, s)| s.upgrade().is_some());
+        windows.0.push((handle, shell));
+    }
+
+    /// The window showing `workspace`, and its shell.
+    fn showing(workspace: &WorkspaceId, cx: &App) -> Option<(AnyWindowHandle, Entity<Shell>)> {
+        cx.try_global::<ShellWindows>()?
+            .0
+            .iter()
+            .filter_map(|(h, s)| Some((*h, s.upgrade()?)))
+            .find(|(_, s)| {
+                s.read(cx).workspaces.read(cx).current().map(|w| &w.id) == Some(workspace)
+            })
     }
 }
 

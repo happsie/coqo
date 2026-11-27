@@ -1184,6 +1184,7 @@ dependencies = [
  "similar",
  "tempfile",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

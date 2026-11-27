@@ -3,7 +3,7 @@
 This page covers the Git sidebar pane (board 1's "Git" tab) and the minimal `git-diff` tab kind (with board 4's diff colours), from PLAN §7.7 and #91.
 
 - **Code:** `crates/coqo/src/git/`. It moves into the git mod once the mod API carries UI contributions (#147).
-- **Data:** the daemon's `git/*` methods and `git/changes` (ADR 0018).
+- **Data:** the daemon's `git/*` methods and `git/changes` (ADR 0019).
 - **Screenshots:** offscreen renders from `git_screenshots`.
 
 ![The Git pane with a staged diff open](screenshots/git-dark.png)
