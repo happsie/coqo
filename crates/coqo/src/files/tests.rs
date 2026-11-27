@@ -482,6 +482,12 @@ fn opens_a_folder_from_the_picker() {
     });
     ui.cx.run_until_parked();
     assert_eq!(current_name(&mut ui), None, "nothing to restore");
+    // The empty state appears once the pane's restore check (a daemon
+    // request on the connection's own threads) has finished, which
+    // `run_until_parked` doesn't wait for (#173).
+    ui.wait_for("the open-folder button", |ui| {
+        ui.frame(|window, _| window.try_find("files-open-folder").is_some())
+    });
     ui.frame(|window, _| assert!(window.find("files-open-folder").visible()));
 
     ui.press(OPEN_FOLDER);
