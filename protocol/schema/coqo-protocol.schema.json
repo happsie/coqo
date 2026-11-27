@@ -26,6 +26,133 @@
       ],
       "type": "object"
     },
+    "AgentState": {
+      "description": "What an agent session is doing.",
+      "oneOf": [
+        {
+          "const": "idle",
+          "description": "Nothing running; ready for a prompt.",
+          "type": "string"
+        },
+        {
+          "const": "working",
+          "description": "A turn is running.",
+          "type": "string"
+        },
+        {
+          "const": "needs_input",
+          "description": "The agent waits for the user's answer to a question.",
+          "type": "string"
+        },
+        {
+          "const": "needs_permission",
+          "description": "A permission request waits for the user.",
+          "type": "string"
+        },
+        {
+          "const": "blocked",
+          "description": "The agent reports it cannot continue without help.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "The last turn or the provider failed.",
+          "type": "string"
+        },
+        {
+          "const": "done",
+          "description": "The last turn ended normally.",
+          "type": "string"
+        }
+      ]
+    },
+    "AuthKind": {
+      "description": "Where the agent's usage is billed (from ACP `auth/status`).",
+      "oneOf": [
+        {
+          "const": "account",
+          "description": "A claude.ai (or other) plan login, held by the agent's own CLI.",
+          "type": "string"
+        },
+        {
+          "const": "api_key",
+          "description": "An API key (Console billing or plan API credits).",
+          "type": "string"
+        },
+        {
+          "const": "gateway",
+          "description": "An LLM gateway.",
+          "type": "string"
+        },
+        {
+          "const": "external",
+          "description": "A cloud provider (Bedrock, Vertex, Foundry).",
+          "type": "string"
+        },
+        {
+          "const": "none",
+          "description": "Signed out.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Not reported.",
+          "type": "string"
+        }
+      ]
+    },
+    "AuthStatus": {
+      "description": "The billing source, for the usage indicator. Carries no identity: Coqo\ndrops account emails and organizations.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/AuthKind",
+          "description": "What kind of credential is in use."
+        },
+        "label": {
+          "description": "Display label, such as `Claude Max`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plan": {
+          "description": "Plan name, if a plan login.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "AvailableCommand": {
+      "description": "A slash command or skill the agent offers (ACP `available_commands`).",
+      "properties": {
+        "description": {
+          "default": "",
+          "description": "What it does.",
+          "type": "string"
+        },
+        "inputHint": {
+          "description": "Placeholder for its argument, if it takes one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Name without the slash.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "ChangesParams": {
       "description": "Params of the [`Changes`] topic.",
       "properties": {
@@ -36,6 +163,199 @@
       },
       "required": [
         "workspace"
+      ],
+      "type": "object"
+    },
+    "ChangesParams2": {
+      "description": "Params of `sessions/changes`.",
+      "properties": {
+        "workspace": {
+          "description": "Only this workspace's sessions.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ContentBlock": {
+      "description": "A piece of message content (ACP `ContentBlock`).",
+      "oneOf": [
+        {
+          "description": "Text (Markdown in agent messages).",
+          "properties": {
+            "text": {
+              "description": "The text.",
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An image, base64-encoded.",
+          "properties": {
+            "data": {
+              "description": "Base64 data.",
+              "type": "string"
+            },
+            "mimeType": {
+              "description": "MIME type, such as `image/png`.",
+              "type": "string"
+            },
+            "type": {
+              "const": "image",
+              "type": "string"
+            },
+            "uri": {
+              "description": "Where it came from, if anywhere.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "mimeType",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A link to a resource the agent can read itself (an `@`-mentioned\nfile, say).",
+          "properties": {
+            "mimeType": {
+              "description": "MIME type.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "Display name.",
+              "type": "string"
+            },
+            "size": {
+              "description": "Size in bytes.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "resource_link",
+              "type": "string"
+            },
+            "uri": {
+              "description": "The resource's URI, such as `file:///src/app/main.rs`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "uri",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A resource with its contents embedded (a selection, say).",
+          "properties": {
+            "mimeType": {
+              "description": "MIME type.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "description": "Its text.",
+              "type": "string"
+            },
+            "type": {
+              "const": "resource",
+              "type": "string"
+            },
+            "uri": {
+              "description": "The resource's URI.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "uri",
+            "text"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Cost": {
+      "description": "A cost figure.",
+      "properties": {
+        "amount": {
+          "description": "Amount.",
+          "format": "double",
+          "type": "number"
+        },
+        "currency": {
+          "description": "ISO currency code, such as `USD`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "type": "object"
+    },
+    "CreateSessionParams": {
+      "description": "Params of `sessions/create`.",
+      "properties": {
+        "cwd": {
+          "description": "The agent's working directory (absolute; the workspace root).",
+          "type": "string"
+        },
+        "mode": {
+          "description": "Initial mode id, if the provider has modes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "description": "Provider id, from `agents/providers`.",
+          "type": "string"
+        },
+        "title": {
+          "description": "Title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspace": {
+          "description": "The workspace it belongs to.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider",
+        "cwd"
       ],
       "type": "object"
     },
@@ -480,6 +800,24 @@
       ],
       "type": "object"
     },
+    "ListSessionsParams": {
+      "description": "Params of `sessions/list`.",
+      "properties": {
+        "includeClosed": {
+          "default": false,
+          "description": "Include closed sessions.",
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "Only this workspace's sessions.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "OpenParams": {
       "description": "Params of [`Open`]. Give exactly one of `path` and `id`.",
       "properties": {
@@ -534,6 +872,239 @@
       ],
       "type": "object"
     },
+    "PermissionOption": {
+      "description": "One answer to a permission request.",
+      "properties": {
+        "id": {
+          "description": "Option id, passed back in the outcome.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PermissionOptionKind",
+          "description": "What it means."
+        },
+        "name": {
+          "description": "Label.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "PermissionOptionKind": {
+      "description": "What choosing a permission option means (ACP `PermissionOptionKind`).\nAuto-approve rules select options by kind, never by label.",
+      "oneOf": [
+        {
+          "const": "allow_once",
+          "description": "Allow this once.",
+          "type": "string"
+        },
+        {
+          "const": "allow_always",
+          "description": "Allow and remember.",
+          "type": "string"
+        },
+        {
+          "const": "reject_once",
+          "description": "Reject this once.",
+          "type": "string"
+        },
+        {
+          "const": "reject_always",
+          "description": "Reject and remember.",
+          "type": "string"
+        }
+      ]
+    },
+    "PermissionOutcome": {
+      "description": "The answer to a permission request.",
+      "oneOf": [
+        {
+          "description": "The user picked an option.",
+          "properties": {
+            "optionId": {
+              "description": "The option's id.",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "selected",
+              "type": "string"
+            }
+          },
+          "required": [
+            "outcome",
+            "optionId"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The turn was cancelled (or the session closed) before an answer.",
+          "properties": {
+            "outcome": {
+              "const": "cancelled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "outcome"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PermissionRequest": {
+      "description": "The agent asks the user to allow something, usually a tool call.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/PermissionRequestId",
+          "description": "Id within the session, for `sessions/respondPermission`."
+        },
+        "options": {
+          "description": "The possible answers.",
+          "items": {
+            "$ref": "#/$defs/PermissionOption"
+          },
+          "type": "array"
+        },
+        "title": {
+          "description": "What is asked, such as `Write pong.txt`.",
+          "type": "string"
+        },
+        "toolCall": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolCallUpdate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The tool call it is about, with its diff if it edits a file."
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "options"
+      ],
+      "type": "object"
+    },
+    "PermissionRequestId": {
+      "description": "Identifies a permission request within a session.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "PlanEntry": {
+      "description": "One entry of the agent's plan (todo list).",
+      "properties": {
+        "content": {
+          "description": "What the step is.",
+          "type": "string"
+        },
+        "priority": {
+          "$ref": "#/$defs/PlanPriority",
+          "default": "medium",
+          "description": "Priority."
+        },
+        "status": {
+          "$ref": "#/$defs/PlanEntryStatus",
+          "default": "pending",
+          "description": "Status."
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "type": "object"
+    },
+    "PlanEntryStatus": {
+      "description": "Status of a plan entry.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Not started.",
+          "type": "string"
+        },
+        {
+          "const": "in_progress",
+          "description": "Being worked on.",
+          "type": "string"
+        },
+        {
+          "const": "completed",
+          "description": "Done.",
+          "type": "string"
+        }
+      ]
+    },
+    "PlanPriority": {
+      "description": "Priority of a plan entry.",
+      "oneOf": [
+        {
+          "const": "high",
+          "description": "High.",
+          "type": "string"
+        },
+        {
+          "const": "medium",
+          "description": "Medium.",
+          "type": "string"
+        },
+        {
+          "const": "low",
+          "description": "Low.",
+          "type": "string"
+        }
+      ]
+    },
+    "PromptParams": {
+      "description": "Params of `sessions/prompt`.",
+      "properties": {
+        "content": {
+          "description": "The prompt: text, `@`-mentions as resource links, embedded selections.",
+          "items": {
+            "$ref": "#/$defs/ContentBlock"
+          },
+          "type": "array"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The session."
+        }
+      },
+      "required": [
+        "session",
+        "content"
+      ],
+      "type": "object"
+    },
+    "PromptResult": {
+      "description": "Result of `sessions/prompt`.",
+      "properties": {
+        "seq": {
+          "description": "Seq of the turn's `user_message` update.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "turn": {
+          "description": "The turn number.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "turn",
+        "seq"
+      ],
+      "type": "object"
+    },
     "ProtocolVersion": {
       "description": "A protocol version: `major.minor`.",
       "properties": {
@@ -555,6 +1126,98 @@
         "minor"
       ],
       "type": "object"
+    },
+    "ProviderCapabilities": {
+      "description": "What a provider supports.",
+      "properties": {
+        "embeddedContext": {
+          "default": false,
+          "description": "Prompts may contain embedded resources (file contents).",
+          "type": "boolean"
+        },
+        "images": {
+          "default": false,
+          "description": "Prompts may contain images.",
+          "type": "boolean"
+        },
+        "modes": {
+          "default": false,
+          "description": "Sessions have modes (`sessions/setMode`).",
+          "type": "boolean"
+        },
+        "resume": {
+          "default": false,
+          "description": "Sessions can be reattached after the daemon restarts (ACP\n`session/resume` or `session/load`).",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "ProviderInfo": {
+      "description": "An agent provider, for the chat's provider picker.",
+      "properties": {
+        "available": {
+          "description": "Whether sessions can be created now (the providing mod is active).",
+          "type": "boolean"
+        },
+        "capabilities": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderCapabilities"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What it supports; `null` when not available."
+        },
+        "description": {
+          "description": "Short description for the picker.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Provider id, such as `claude-acp`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ProviderKind",
+          "description": "How the agent runs."
+        },
+        "name": {
+          "description": "Display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "available"
+      ],
+      "type": "object"
+    },
+    "ProviderKind": {
+      "description": "How an agent provider runs (mirrors the mod API's `AgentProviderKind`).",
+      "oneOf": [
+        {
+          "const": "acp",
+          "description": "An ACP agent the daemon runs as a child process.",
+          "type": "string"
+        },
+        {
+          "const": "terminal",
+          "description": "An unmodified CLI agent in a daemon-owned terminal.",
+          "type": "string"
+        },
+        {
+          "const": "native",
+          "description": "Coqo's own agent loop over a provider's HTTP API.",
+          "type": "string"
+        }
+      ]
     },
     "ReadParams": {
       "description": "Params of [`ReadFile`].",
@@ -659,6 +1322,29 @@
       ],
       "type": "object"
     },
+    "RespondPermissionParams": {
+      "description": "Params of `sessions/respondPermission`.",
+      "properties": {
+        "outcome": {
+          "$ref": "#/$defs/PermissionOutcome",
+          "description": "The answer."
+        },
+        "requestId": {
+          "$ref": "#/$defs/PermissionRequestId",
+          "description": "The request."
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The session."
+        }
+      },
+      "required": [
+        "session",
+        "requestId",
+        "outcome"
+      ],
+      "type": "object"
+    },
     "ResumeGap": {
       "description": "`data` of a [`RESUME_GAP`](codes::RESUME_GAP) error.",
       "properties": {
@@ -694,9 +1380,612 @@
       "minimum": 0,
       "type": "integer"
     },
+    "SessionId": {
+      "description": "Identifies an agent session. Generated by the daemon; stable forever.",
+      "type": "string"
+    },
+    "SessionInfo": {
+      "description": "A session, as listed.",
+      "properties": {
+        "closed": {
+          "description": "Whether it was closed.",
+          "type": "boolean"
+        },
+        "createdAt": {
+          "description": "Created, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "cwd": {
+          "description": "The agent's working directory (the workspace root).",
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/SessionId",
+          "description": "Id."
+        },
+        "mode": {
+          "description": "Current mode id, if the provider has modes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "description": "Provider id.",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/AgentState",
+          "description": "What it is doing."
+        },
+        "stateReason": {
+          "description": "Why, for `error`, `blocked` and `needs_input`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Title for tabs and the sidebar.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "description": "Last change to this info, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "workspace": {
+          "description": "The workspace it belongs to, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "provider",
+        "cwd",
+        "state",
+        "closed",
+        "createdAt",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "SessionList": {
+      "description": "Result of `sessions/list`.",
+      "properties": {
+        "seq": {
+          "description": "The `sessions/changes` seq this list reflects; subscribe with\n`since: seq` to keep it current.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessions": {
+          "description": "Most recently updated first.",
+          "items": {
+            "$ref": "#/$defs/SessionInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sessions",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "SessionMode": {
+      "description": "A session mode, such as Claude Code's `default` (\"Manual\"),\n`acceptEdits` or `plan`.",
+      "properties": {
+        "description": {
+          "description": "Description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Mode id, passed to `sessions/setMode`.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "SessionModes": {
+      "description": "The session's modes. Whether a permission prompt appears depends on the\nmode, so the UI always shows it.",
+      "properties": {
+        "availableModes": {
+          "description": "Every mode.",
+          "items": {
+            "$ref": "#/$defs/SessionMode"
+          },
+          "type": "array"
+        },
+        "currentModeId": {
+          "description": "The current mode's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "currentModeId",
+        "availableModes"
+      ],
+      "type": "object"
+    },
+    "SessionParams": {
+      "description": "Params naming one session.",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The session."
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "type": "object"
+    },
+    "SessionSnapshot": {
+      "description": "One session's folded state: what a chat tab shows before replaying the\ntranscript.",
+      "properties": {
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AuthStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The billing source."
+        },
+        "availableCommands": {
+          "description": "The latest slash commands.",
+          "items": {
+            "$ref": "#/$defs/AvailableCommand"
+          },
+          "type": "array"
+        },
+        "head": {
+          "description": "Seq of its last update (0 if none). Subscribe to `sessions/updates`\nwith `since: head` to continue from here.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "info": {
+          "$ref": "#/$defs/SessionInfo",
+          "description": "The session."
+        },
+        "modes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionModes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The session's modes."
+        },
+        "pendingPermissions": {
+          "description": "Permission requests waiting for an answer.",
+          "items": {
+            "$ref": "#/$defs/PermissionRequest"
+          },
+          "type": "array"
+        },
+        "plan": {
+          "description": "The latest plan.",
+          "items": {
+            "$ref": "#/$defs/PlanEntry"
+          },
+          "type": "array"
+        },
+        "running": {
+          "description": "Whether a turn is running.",
+          "type": "boolean"
+        },
+        "turns": {
+          "description": "Number of turns started.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The latest usage."
+        }
+      },
+      "required": [
+        "info",
+        "head",
+        "turns",
+        "running",
+        "pendingPermissions",
+        "plan",
+        "availableCommands"
+      ],
+      "type": "object"
+    },
     "SessionToken": {
       "description": "A secret that authenticates a connection: the daemon's per-boot token,\nor a token scoped to one workspace and agent session.\n\nIt is a string on the wire. `Debug` prints `SessionToken(<redacted>)`\nand equality is constant-time, so the token neither leaks into logs nor\nthrough comparison timing. Use [`SessionToken::expose`] only to send or\nstore it.",
       "type": "string"
+    },
+    "SessionUpdate": {
+      "description": "One entry of a session's transcript: an event of `sessions/updates`.\n\nUpdates from the agent mirror ACP `session/update`; the rest are written\nby the daemon (prompts, turns, permissions, state).",
+      "oneOf": [
+        {
+          "description": "The user's prompt.",
+          "properties": {
+            "content": {
+              "description": "The prompt.",
+              "items": {
+                "$ref": "#/$defs/ContentBlock"
+              },
+              "type": "array"
+            },
+            "update": {
+              "const": "user_message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Part of a user message replayed by the agent (when Coqo rebuilds a\ntranscript it lost from the agent's own history).",
+          "properties": {
+            "content": {
+              "$ref": "#/$defs/ContentBlock",
+              "description": "The chunk."
+            },
+            "update": {
+              "const": "user_message_chunk",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Streaming agent output; consecutive chunks form one message.",
+          "properties": {
+            "content": {
+              "$ref": "#/$defs/ContentBlock",
+              "description": "The chunk."
+            },
+            "update": {
+              "const": "agent_message_chunk",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Streaming agent reasoning.",
+          "properties": {
+            "content": {
+              "$ref": "#/$defs/ContentBlock",
+              "description": "The chunk."
+            },
+            "update": {
+              "const": "agent_thought_chunk",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/ToolCall",
+          "description": "A new tool call.",
+          "properties": {
+            "update": {
+              "const": "tool_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/ToolCallUpdate",
+          "description": "A change to a tool call.",
+          "properties": {
+            "update": {
+              "const": "tool_call_update",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The agent's plan; replaces the earlier plan.",
+          "properties": {
+            "entries": {
+              "description": "Every entry.",
+              "items": {
+                "$ref": "#/$defs/PlanEntry"
+              },
+              "type": "array"
+            },
+            "update": {
+              "const": "plan",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update",
+            "entries"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The agent's slash commands and skills; replaces the earlier list.",
+          "properties": {
+            "commands": {
+              "description": "Every command.",
+              "items": {
+                "$ref": "#/$defs/AvailableCommand"
+              },
+              "type": "array"
+            },
+            "update": {
+              "const": "available_commands",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update",
+            "commands"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/SessionModes",
+          "description": "The session's modes.",
+          "properties": {
+            "update": {
+              "const": "modes",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The current mode changed.",
+          "properties": {
+            "modeId": {
+              "description": "The new mode's id.",
+              "type": "string"
+            },
+            "update": {
+              "const": "current_mode",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update",
+            "modeId"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/Usage",
+          "description": "Context and cost usage.",
+          "properties": {
+            "update": {
+              "const": "usage",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/AuthStatus",
+          "description": "The billing source.",
+          "properties": {
+            "update": {
+              "const": "auth_status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/PermissionRequest",
+          "description": "The agent asks for permission; answer with `sessions/respondPermission`.",
+          "properties": {
+            "update": {
+              "const": "permission_requested",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A permission request was answered or cancelled.",
+          "properties": {
+            "outcome": {
+              "$ref": "#/$defs/PermissionOutcome",
+              "description": "The answer."
+            },
+            "requestId": {
+              "$ref": "#/$defs/PermissionRequestId",
+              "description": "The request."
+            },
+            "update": {
+              "const": "permission_resolved",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update",
+            "requestId",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The session's state changed.",
+          "properties": {
+            "reason": {
+              "description": "Why, for `error`, `blocked` and `needs_input`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/$defs/AgentState",
+              "description": "The new state."
+            },
+            "update": {
+              "const": "state",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A turn started (right after its `user_message`).",
+          "properties": {
+            "turn": {
+              "description": "Turn number, from 1.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "update": {
+              "const": "turn_started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update",
+            "turn"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A turn ended.",
+          "properties": {
+            "error": {
+              "description": "The error, for `stop_reason: error`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stopReason": {
+              "$ref": "#/$defs/StopReason",
+              "description": "Why."
+            },
+            "turn": {
+              "description": "Turn number.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "update": {
+              "const": "turn_ended",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update",
+            "turn",
+            "stopReason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The session was closed. Nothing follows.",
+          "properties": {
+            "update": {
+              "const": "closed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SetModeParams": {
+      "description": "Params of `sessions/setMode`.",
+      "properties": {
+        "modeId": {
+          "description": "The mode id, from the session's modes.",
+          "type": "string"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The session."
+        }
+      },
+      "required": [
+        "session",
+        "modeId"
+      ],
+      "type": "object"
     },
     "SetStateParams": {
       "description": "Params of [`SetState`].",
@@ -751,6 +2040,46 @@
         "busy"
       ],
       "type": "object"
+    },
+    "StopReason": {
+      "description": "Why a turn ended (ACP `StopReason`, plus Coqo's own).",
+      "oneOf": [
+        {
+          "const": "end_turn",
+          "description": "The agent finished.",
+          "type": "string"
+        },
+        {
+          "const": "max_tokens",
+          "description": "The token limit was reached.",
+          "type": "string"
+        },
+        {
+          "const": "max_turn_requests",
+          "description": "The per-turn request limit was reached.",
+          "type": "string"
+        },
+        {
+          "const": "refusal",
+          "description": "The agent refused.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "`sessions/cancel`.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "The provider failed; see the turn's `error`.",
+          "type": "string"
+        },
+        {
+          "const": "interrupted",
+          "description": "The daemon stopped during the turn.",
+          "type": "string"
+        }
+      ]
     },
     "SubscribeParams": {
       "description": "Params of `coqo/subscribe`.",
@@ -828,6 +2157,299 @@
       "minimum": 0,
       "type": "integer"
     },
+    "ToolCall": {
+      "description": "A tool call, as first reported.",
+      "properties": {
+        "content": {
+          "description": "Output or proposed changes.",
+          "items": {
+            "$ref": "#/$defs/ToolCallContent"
+          },
+          "type": "array"
+        },
+        "id": {
+          "$ref": "#/$defs/ToolCallId",
+          "description": "Id, unique within the session."
+        },
+        "kind": {
+          "$ref": "#/$defs/ToolKind",
+          "default": "other",
+          "description": "Tool kind."
+        },
+        "locations": {
+          "description": "Files it touches.",
+          "items": {
+            "$ref": "#/$defs/ToolCallLocation"
+          },
+          "type": "array"
+        },
+        "rawInput": {
+          "description": "The tool's raw input, provider-specific."
+        },
+        "rawOutput": {
+          "description": "The tool's raw output, provider-specific."
+        },
+        "status": {
+          "$ref": "#/$defs/ToolCallStatus",
+          "default": "pending",
+          "description": "Status."
+        },
+        "title": {
+          "description": "Human-readable title, such as `Write pong.txt`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ],
+      "type": "object"
+    },
+    "ToolCallContent": {
+      "description": "What a tool call produced or proposes.",
+      "oneOf": [
+        {
+          "description": "Regular content.",
+          "properties": {
+            "content": {
+              "$ref": "#/$defs/ContentBlock",
+              "description": "The content."
+            },
+            "type": {
+              "const": "content",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A file edit. For ACP agents it arrives *before* the write (and before\nthe permission request), which is what inline accept/reject uses.",
+          "properties": {
+            "newText": {
+              "description": "The text after.",
+              "type": "string"
+            },
+            "oldText": {
+              "description": "The text before; `null` for a new file.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "description": "Absolute path of the file.",
+              "type": "string"
+            },
+            "type": {
+              "const": "diff",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path",
+            "newText"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A daemon terminal the tool runs in.",
+          "properties": {
+            "terminalId": {
+              "description": "The terminal's id.",
+              "type": "string"
+            },
+            "type": {
+              "const": "terminal",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "terminalId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ToolCallId": {
+      "description": "Identifies a tool call within a session.",
+      "type": "string"
+    },
+    "ToolCallLocation": {
+      "description": "A file location a tool call touches, for follow-along.",
+      "properties": {
+        "line": {
+          "description": "1-based line, if known.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Absolute path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "ToolCallStatus": {
+      "description": "Where a tool call is in its lifecycle.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Not started (input still streaming, or waiting for permission).",
+          "type": "string"
+        },
+        {
+          "const": "in_progress",
+          "description": "Running.",
+          "type": "string"
+        },
+        {
+          "const": "completed",
+          "description": "Finished successfully.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Failed.",
+          "type": "string"
+        }
+      ]
+    },
+    "ToolCallUpdate": {
+      "description": "A change to a tool call. Fields left out are unchanged; `content` and\n`locations` replace the earlier lists when present.",
+      "properties": {
+        "content": {
+          "description": "New content (replaces).",
+          "items": {
+            "$ref": "#/$defs/ToolCallContent"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/ToolCallId",
+          "description": "The call to update."
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New kind."
+        },
+        "locations": {
+          "description": "New locations (replace).",
+          "items": {
+            "$ref": "#/$defs/ToolCallLocation"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "rawInput": {
+          "description": "Raw input."
+        },
+        "rawOutput": {
+          "description": "Raw output."
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolCallStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New status."
+        },
+        "title": {
+          "description": "New title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "ToolKind": {
+      "description": "What kind of tool a call is, for icons and grouping (ACP `ToolKind`).",
+      "oneOf": [
+        {
+          "const": "read",
+          "description": "Reads files or data.",
+          "type": "string"
+        },
+        {
+          "const": "edit",
+          "description": "Edits files.",
+          "type": "string"
+        },
+        {
+          "const": "delete",
+          "description": "Deletes files.",
+          "type": "string"
+        },
+        {
+          "const": "move",
+          "description": "Moves or renames files.",
+          "type": "string"
+        },
+        {
+          "const": "search",
+          "description": "Searches.",
+          "type": "string"
+        },
+        {
+          "const": "execute",
+          "description": "Runs a command.",
+          "type": "string"
+        },
+        {
+          "const": "think",
+          "description": "Internal reasoning or planning.",
+          "type": "string"
+        },
+        {
+          "const": "fetch",
+          "description": "Fetches from the network.",
+          "type": "string"
+        },
+        {
+          "const": "switch_mode",
+          "description": "Switches the session mode.",
+          "type": "string"
+        },
+        {
+          "const": "other",
+          "description": "Anything else.",
+          "type": "string"
+        }
+      ]
+    },
     "UnsubscribeParams": {
       "description": "Params of `coqo/unsubscribe`.",
       "properties": {
@@ -839,6 +2461,51 @@
       "required": [
         "subscription"
       ],
+      "type": "object"
+    },
+    "Usage": {
+      "description": "Context and cost usage (ACP `usage_update`).",
+      "properties": {
+        "contextSize": {
+          "description": "The model's context size in tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cost"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Cost reported by the agent. On a subscription plan this is the SDK's\nnotional figure, **not** a charge; show it only with\n[`AuthStatus::kind`] `api_key` / `external`."
+        },
+        "meta": {
+          "description": "Provider-specific extras (rate-limit windows, …)."
+        },
+        "model": {
+          "description": "Model in use.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usedTokens": {
+          "description": "Tokens of context in use.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "Welcome": {
@@ -1093,6 +2760,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Coqo Protocol",
   "x-error-codes": {
+    "AUTH_REQUIRED": 1107,
     "FILE_TOO_LARGE": 1005,
     "FORBIDDEN": -32007,
     "INCOMPATIBLE_PROTOCOL": -32001,
@@ -1107,16 +2775,38 @@
     "NOT_INITIALIZED": -32002,
     "PARSE_ERROR": -32700,
     "PATH_OUTSIDE_WORKSPACE": 1003,
+    "PROVIDER_ERROR": 1108,
     "REQUEST_CANCELLED": -32005,
     "RESUME_GAP": -32003,
+    "SESSION_BUSY": 1103,
+    "SESSION_CLOSED": 1104,
+    "STORAGE_ERROR": 1109,
     "UNAUTHORIZED": -32006,
+    "UNKNOWN_PERMISSION_REQUEST": 1105,
+    "UNKNOWN_PROVIDER": 1102,
     "UNKNOWN_ROOT": 1002,
+    "UNKNOWN_SESSION": 1101,
     "UNKNOWN_SUBSCRIPTION": -32004,
     "UNKNOWN_WORKSPACE": 1001,
+    "UNSUPPORTED": 1106,
     "WORKSPACE_CLOSED": 1008
   },
   "x-framing": "u32 big-endian payload length, then one JSON-RPC 2.0 message (JSON, or MessagePack if negotiated)",
   "x-methods": {
+    "agents/providers": {
+      "description": "Every agent provider, with whether it is available.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "type": "null"
+      },
+      "result": {
+        "items": {
+          "$ref": "#/$defs/ProviderInfo"
+        },
+        "type": "array"
+      }
+    },
     "coqo/event": {
       "description": "One event of a subscription.",
       "direction": "server→client",
@@ -1230,6 +2920,116 @@
       },
       "result": {
         "$ref": "#/$defs/FileStat"
+      }
+    },
+    "sessions/cancel": {
+      "description": "Cancel the running turn. Result is true if one was running.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionParams"
+      },
+      "result": {
+        "type": "boolean"
+      }
+    },
+    "sessions/changes": {
+      "description": "The latest info of each session whose state, title or mode changed (resumable).",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/SessionInfo"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/ChangesParams2"
+      }
+    },
+    "sessions/close": {
+      "description": "End a session; its transcript stays readable. Result is true if it was open.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionParams"
+      },
+      "result": {
+        "type": "boolean"
+      }
+    },
+    "sessions/create": {
+      "description": "Start an agent session with a provider.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/CreateSessionParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionInfo"
+      }
+    },
+    "sessions/get": {
+      "description": "One session's folded state and the seq of its last update.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionSnapshot"
+      }
+    },
+    "sessions/list": {
+      "description": "Agent sessions, with the sessions/changes seq the list reflects.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ListSessionsParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionList"
+      }
+    },
+    "sessions/prompt": {
+      "description": "Start a turn; it runs in the daemon and streams on sessions/updates.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/PromptParams"
+      },
+      "result": {
+        "$ref": "#/$defs/PromptResult"
+      }
+    },
+    "sessions/respondPermission": {
+      "description": "Answer a pending permission request.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/RespondPermissionParams"
+      },
+      "result": {
+        "type": "null"
+      }
+    },
+    "sessions/setMode": {
+      "description": "Switch a session's mode.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SetModeParams"
+      },
+      "result": {
+        "type": "null"
+      }
+    },
+    "sessions/updates": {
+      "description": "One session's persisted transcript (resumable with since; seqs per session).",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/SessionUpdate"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/SessionParams"
       }
     },
     "workspace/addRoot": {

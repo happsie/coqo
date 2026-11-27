@@ -211,6 +211,31 @@ Read-only access for the file tree. Paths are `{workspace, root, path}` with a `
 
 Topic **`fs/changes`** (`{workspace}`, which must be open) carries `{root, paths, rescan}` batches, debounced (about 100 ms), with paths sorted and deduplicated. Changes inside `.git` and inside ignored directories are left out, but an ignored entry appearing directly in a visible directory is reported. `rescan: true` means too much changed (or the watcher lost events): re-list what you show. The stream is live only; after a reconnect, re-list and subscribe again. Closing the workspace ends it.
 
+### Agent sessions (`agents/*`, `sessions/*`)
+
+Service `coqo.agents@1` (PLAN §7.3; types in `coqo_protocol::methods::agents`, implemented by `crates/agents`). Sessions live in the daemon: a turn keeps running when the client that started it disconnects, a running turn keeps the daemon busy, and every session update is persisted in `coqo.db`.
+
+| Method | Params | Result |
+|---|---|---|
+| `agents/providers` | none | `ProviderInfo[]`: `id`, `name`, `kind` (`acp`, `terminal`, `native`), `available`, `capabilities` (`resume`, `modes`, `images`, `embeddedContext`). |
+| `sessions/list` | `{workspace?, includeClosed?}` | `{sessions: SessionInfo[], seq}`, most recently updated first; `seq` is the `sessions/changes` seq the list reflects. |
+| `sessions/get` | `{session}` | `SessionSnapshot`: `info`, `head` (seq of the last update), `turns`, `running`, `pendingPermissions`, `plan`, `modes`, `availableCommands`, `usage`, `auth`. |
+| `sessions/create` | `{provider, cwd, workspace?, title?, mode?}` | `SessionInfo`. The provider session starts right away, so modes and slash commands arrive before the first prompt. |
+| `sessions/prompt` | `{session, content: ContentBlock[]}` | `{turn, seq}` once the turn has started; `SESSION_BUSY` while one runs. |
+| `sessions/cancel` | `{session}` | `true` if a turn was running. Pending permission requests resolve as `cancelled`. |
+| `sessions/respondPermission` | `{session, requestId, outcome}` | `null`. `outcome` is `{"outcome": "selected", "optionId"}` or `{"outcome": "cancelled"}`. |
+| `sessions/setMode` | `{session, modeId}` | `null`. |
+| `sessions/close` | `{session}` | `true` if it was open. Cancels a running turn; the transcript stays readable. |
+
+| Topic | Params | Events |
+|---|---|---|
+| `sessions/updates` | `{session}` | `SessionUpdate`, tagged by `update`: `user_message`, `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update` (with `diff` content and `locations`), `plan`, `available_commands`, `modes`, `current_mode`, `usage`, `auth_status`, `permission_requested`, `permission_resolved`, `state`, `turn_started`, `turn_ended`, `closed`. Seqs are per session, from 1, stable across restarts. |
+| `sessions/changes` | `{workspace?}` | `SessionInfo` whenever a session's state, title, mode or closed flag changes. Resuming replays only each session's latest info, so seqs skip values. |
+
+**States** (`SessionInfo.state`): `idle` → `working` → (`needs_permission` → `working`) → `done`, or `idle` after a cancel, or `error` (with `stateReason`). Providers may also report `needs_input` and `blocked`. A turn cut off by a daemon stop or crash ends with `stopReason: interrupted` and leaves the session in `error`; the next prompt resumes the provider session.
+
+**Reattach** (chat tab): `sessions/get`, then `coqo/subscribe` to `sessions/updates` with `since: 0` for the whole transcript or `since: <last seq seen>`; on `RESUME_GAP`, take a fresh snapshot.
+
 | Code | Name | Meaning |
 |---|---|---|
 | 1001 | `UNKNOWN_WORKSPACE` | No workspace has that id. |
@@ -222,3 +247,12 @@ Topic **`fs/changes`** (`{workspace}`, which must be open) carries `{root, paths
 | 1007 | `NOT_A_FILE` | A regular file was expected. |
 | 1008 | `WORKSPACE_CLOSED` | The operation needs an open workspace. |
 | 1009 | `IO_ERROR` | Permissions or another I/O error. |
+| 1101 | `UNKNOWN_SESSION` | No agent session has that id. |
+| 1102 | `UNKNOWN_PROVIDER` | No such agent provider, or it is not available. |
+| 1103 | `SESSION_BUSY` | The session is already running a turn. |
+| 1104 | `SESSION_CLOSED` | The session was closed. |
+| 1105 | `UNKNOWN_PERMISSION_REQUEST` | No such pending permission request, or not one of its options. |
+| 1106 | `UNSUPPORTED` | The provider does not support this. |
+| 1107 | `AUTH_REQUIRED` | The agent needs the user to sign in, in the agent's own tool. Coqo never handles the login. |
+| 1108 | `PROVIDER_ERROR` | The provider failed. |
+| 1109 | `STORAGE_ERROR` | The session store failed. |

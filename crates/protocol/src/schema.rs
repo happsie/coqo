@@ -21,7 +21,7 @@ use crate::daemon;
 use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
-use crate::methods::{self, fs, workspace};
+use crate::methods::{self, agents, fs, workspace};
 use crate::subscription::ResumeGap;
 
 struct Entry {
@@ -172,6 +172,55 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             g,
             "Debounced file-system changes in an open workspace (live only).",
         ),
+        request::<agents::Providers>(
+            g,
+            "client→server",
+            "Every agent provider, with whether it is available.",
+        ),
+        request::<agents::List>(
+            g,
+            "client→server",
+            "Agent sessions, with the sessions/changes seq the list reflects.",
+        ),
+        request::<agents::Get>(
+            g,
+            "client→server",
+            "One session's folded state and the seq of its last update.",
+        ),
+        request::<agents::Create>(
+            g,
+            "client→server",
+            "Start an agent session with a provider.",
+        ),
+        request::<agents::Prompt>(
+            g,
+            "client→server",
+            "Start a turn; it runs in the daemon and streams on sessions/updates.",
+        ),
+        request::<agents::Cancel>(
+            g,
+            "client→server",
+            "Cancel the running turn. Result is true if one was running.",
+        ),
+        request::<agents::RespondPermission>(
+            g,
+            "client→server",
+            "Answer a pending permission request.",
+        ),
+        request::<agents::SetMode>(g, "client→server", "Switch a session's mode."),
+        request::<agents::Close>(
+            g,
+            "client→server",
+            "End a session; its transcript stays readable. Result is true if it was open.",
+        ),
+        topic::<agents::Updates>(
+            g,
+            "One session's persisted transcript (resumable with since; seqs per session).",
+        ),
+        topic::<agents::Changes>(
+            g,
+            "The latest info of each session whose state, title or mode changed (resumable).",
+        ),
     ]
 }
 
@@ -198,6 +247,15 @@ fn error_codes() -> Value {
         "IO_ERROR": methods::codes::IO_ERROR,
         "UNAUTHORIZED": codes::UNAUTHORIZED,
         "FORBIDDEN": codes::FORBIDDEN,
+        "UNKNOWN_SESSION": methods::codes::UNKNOWN_SESSION,
+        "UNKNOWN_PROVIDER": methods::codes::UNKNOWN_PROVIDER,
+        "SESSION_BUSY": methods::codes::SESSION_BUSY,
+        "SESSION_CLOSED": methods::codes::SESSION_CLOSED,
+        "UNKNOWN_PERMISSION_REQUEST": methods::codes::UNKNOWN_PERMISSION_REQUEST,
+        "UNSUPPORTED": methods::codes::UNSUPPORTED,
+        "AUTH_REQUIRED": methods::codes::AUTH_REQUIRED,
+        "PROVIDER_ERROR": methods::codes::PROVIDER_ERROR,
+        "STORAGE_ERROR": methods::codes::STORAGE_ERROR,
     })
 }
 
@@ -471,6 +529,11 @@ fn schema_covers_every_builtin_method() {
         builtin::SubscriptionEnded::NAME,
         daemon::Status::NAME,
         daemon::Shutdown::NAME,
+        agents::Providers::NAME,
+        agents::Create::NAME,
+        agents::Prompt::NAME,
+        agents::Updates::NAME,
+        agents::Changes::NAME,
     ] {
         assert!(methods.contains_key(name), "{name} missing from the schema");
     }

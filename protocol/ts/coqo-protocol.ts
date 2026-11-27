@@ -6,6 +6,7 @@ export const PROTOCOL_VERSION = { major: 0, minor: 1 } as const;
 
 /** JSON-RPC 2.0 error codes used by the protocol. */
 export const ErrorCodes = {
+  AUTH_REQUIRED: 1107,
   FILE_TOO_LARGE: 1005,
   FORBIDDEN: -32007,
   INCOMPATIBLE_PROTOCOL: -32001,
@@ -20,12 +21,20 @@ export const ErrorCodes = {
   NOT_INITIALIZED: -32002,
   PARSE_ERROR: -32700,
   PATH_OUTSIDE_WORKSPACE: 1003,
+  PROVIDER_ERROR: 1108,
   REQUEST_CANCELLED: -32005,
   RESUME_GAP: -32003,
+  SESSION_BUSY: 1103,
+  SESSION_CLOSED: 1104,
+  STORAGE_ERROR: 1109,
   UNAUTHORIZED: -32006,
+  UNKNOWN_PERMISSION_REQUEST: 1105,
+  UNKNOWN_PROVIDER: 1102,
   UNKNOWN_ROOT: 1002,
+  UNKNOWN_SESSION: 1101,
   UNKNOWN_SUBSCRIPTION: -32004,
   UNKNOWN_WORKSPACE: 1001,
+  UNSUPPORTED: 1106,
   WORKSPACE_CLOSED: 1008,
 } as const;
 
@@ -48,10 +57,97 @@ export type AddRootParams = {
   path: string;
 };
 
+/** What an agent session is doing. */
+export type AgentState = "idle" | "working" | "needs_input" | "needs_permission" | "blocked" | "error" | "done";
+
+/** Where the agent's usage is billed (from ACP `auth/status`). */
+export type AuthKind = "account" | "api_key" | "gateway" | "external" | "none" | "unknown";
+
+/** The billing source, for the usage indicator. Carries no identity: Coqo drops account emails and organizations. */
+export type AuthStatus = {
+  /** What kind of credential is in use. */
+  kind: AuthKind;
+  /** Display label, such as `Claude Max`. */
+  label?: string | null;
+  /** Plan name, if a plan login. */
+  plan?: string | null;
+};
+
+/** A slash command or skill the agent offers (ACP `available_commands`). */
+export type AvailableCommand = {
+  /** What it does. */
+  description?: string;
+  /** Placeholder for its argument, if it takes one. */
+  inputHint?: string | null;
+  /** Name without the slash. */
+  name: string;
+};
+
 /** Params of the [`Changes`] topic. */
 export type ChangesParams = {
   /** The workspace to watch. It must be open. */
   workspace: WorkspaceId;
+};
+
+/** Params of `sessions/changes`. */
+export type ChangesParams2 = {
+  /** Only this workspace's sessions. */
+  workspace?: string | null;
+};
+
+/** A piece of message content (ACP `ContentBlock`). */
+export type ContentBlock = {
+  /** The text. */
+  text: string;
+  type: "text";
+} | {
+  /** Base64 data. */
+  data: string;
+  /** MIME type, such as `image/png`. */
+  mimeType: string;
+  type: "image";
+  /** Where it came from, if anywhere. */
+  uri?: string | null;
+} | {
+  /** MIME type. */
+  mimeType?: string | null;
+  /** Display name. */
+  name: string;
+  /** Size in bytes. */
+  size?: number | null;
+  type: "resource_link";
+  /** The resource's URI, such as `file:///src/app/main.rs`. */
+  uri: string;
+} | {
+  /** MIME type. */
+  mimeType?: string | null;
+  /** Its text. */
+  text: string;
+  type: "resource";
+  /** The resource's URI. */
+  uri: string;
+};
+
+/** A cost figure. */
+export type Cost = {
+  /** Amount. */
+  amount: number;
+  /** ISO currency code, such as `USD`. */
+  currency: string;
+};
+
+/** Params of `sessions/create`. */
+export type CreateSessionParams = {
+  /** The agent's working directory (absolute; the workspace root). */
+  cwd: string;
+  /** Initial mode id, if the provider has modes. */
+  mode?: string | null;
+  /** Provider id, from `agents/providers`. */
+  provider: string;
+  /** Title. */
+  title?: string | null;
+  /** The workspace it belongs to. */
+  workspace?: string | null;
 };
 
 /** Result of `daemon/status`. */
@@ -205,6 +301,14 @@ export type ListResult = {
   workspaces: Array<WorkspaceInfo>;
 };
 
+/** Params of `sessions/list`. */
+export type ListSessionsParams = {
+  /** Include closed sessions. */
+  includeClosed?: boolean;
+  /** Only this workspace's sessions. */
+  workspace?: string | null;
+};
+
 /** Params of [`Open`]. Give exactly one of `path` and `id`. */
 export type OpenParams = {
   /** Reopen a known workspace. */
@@ -225,6 +329,75 @@ export type PathParams = {
   workspace: WorkspaceId;
 };
 
+/** One answer to a permission request. */
+export type PermissionOption = {
+  /** Option id, passed back in the outcome. */
+  id: string;
+  /** What it means. */
+  kind: PermissionOptionKind;
+  /** Label. */
+  name: string;
+};
+
+/** What choosing a permission option means (ACP `PermissionOptionKind`). Auto-approve rules select options by kind, never by label. */
+export type PermissionOptionKind = "allow_once" | "allow_always" | "reject_once" | "reject_always";
+
+/** The answer to a permission request. */
+export type PermissionOutcome = {
+  /** The option's id. */
+  optionId: string;
+  outcome: "selected";
+} | {
+  outcome: "cancelled";
+};
+
+/** The agent asks the user to allow something, usually a tool call. */
+export type PermissionRequest = {
+  /** Id within the session, for `sessions/respondPermission`. */
+  id: PermissionRequestId;
+  /** The possible answers. */
+  options: Array<PermissionOption>;
+  /** What is asked, such as `Write pong.txt`. */
+  title: string;
+  /** The tool call it is about, with its diff if it edits a file. */
+  toolCall?: ToolCallUpdate | null;
+};
+
+/** Identifies a permission request within a session. */
+export type PermissionRequestId = number;
+
+/** One entry of the agent's plan (todo list). */
+export type PlanEntry = {
+  /** What the step is. */
+  content: string;
+  /** Priority. */
+  priority?: PlanPriority;
+  /** Status. */
+  status?: PlanEntryStatus;
+};
+
+/** Status of a plan entry. */
+export type PlanEntryStatus = "pending" | "in_progress" | "completed";
+
+/** Priority of a plan entry. */
+export type PlanPriority = "high" | "medium" | "low";
+
+/** Params of `sessions/prompt`. */
+export type PromptParams = {
+  /** The prompt: text, `@`-mentions as resource links, embedded selections. */
+  content: Array<ContentBlock>;
+  /** The session. */
+  session: SessionId;
+};
+
+/** Result of `sessions/prompt`. */
+export type PromptResult = {
+  /** Seq of the turn's `user_message` update. */
+  seq: number;
+  /** The turn number. */
+  turn: number;
+};
+
 /** A protocol version: `major.minor`. */
 export type ProtocolVersion = {
   /** Incremented for breaking changes. */
@@ -232,6 +405,37 @@ export type ProtocolVersion = {
   /** Incremented for additive changes. */
   minor: number;
 };
+
+/** What a provider supports. */
+export type ProviderCapabilities = {
+  /** Prompts may contain embedded resources (file contents). */
+  embeddedContext?: boolean;
+  /** Prompts may contain images. */
+  images?: boolean;
+  /** Sessions have modes (`sessions/setMode`). */
+  modes?: boolean;
+  /** Sessions can be reattached after the daemon restarts (ACP `session/resume` or `session/load`). */
+  resume?: boolean;
+};
+
+/** An agent provider, for the chat's provider picker. */
+export type ProviderInfo = {
+  /** Whether sessions can be created now (the providing mod is active). */
+  available: boolean;
+  /** What it supports; `null` when not available. */
+  capabilities?: ProviderCapabilities | null;
+  /** Short description for the picker. */
+  description?: string | null;
+  /** Provider id, such as `claude-acp`. */
+  id: string;
+  /** How the agent runs. */
+  kind: ProviderKind;
+  /** Display name. */
+  name: string;
+};
+
+/** How an agent provider runs (mirrors the mod API's `AgentProviderKind`). */
+export type ProviderKind = "acp" | "terminal" | "native";
 
 /** Params of [`ReadFile`]. */
 export type ReadParams = {
@@ -273,6 +477,16 @@ export type RenameParams = {
   name: string;
 };
 
+/** Params of `sessions/respondPermission`. */
+export type RespondPermissionParams = {
+  /** The answer. */
+  outcome: PermissionOutcome;
+  /** The request. */
+  requestId: PermissionRequestId;
+  /** The session. */
+  session: SessionId;
+};
+
 /** `data` of a [`RESUME_GAP`](codes::RESUME_GAP) error. */
 export type ResumeGap = {
   /** The source's latest sequence number. */
@@ -286,8 +500,158 @@ export type ResumeGap = {
 /** Identifies a root within its workspace. Stable for the root's lifetime and never reused within the workspace. */
 export type RootId = number;
 
+/** Identifies an agent session. Generated by the daemon; stable forever. */
+export type SessionId = string;
+
+/** A session, as listed. */
+export type SessionInfo = {
+  /** Whether it was closed. */
+  closed: boolean;
+  /** Created, Unix milliseconds. */
+  createdAt: number;
+  /** The agent's working directory (the workspace root). */
+  cwd: string;
+  /** Id. */
+  id: SessionId;
+  /** Current mode id, if the provider has modes. */
+  mode?: string | null;
+  /** Provider id. */
+  provider: string;
+  /** What it is doing. */
+  state: AgentState;
+  /** Why, for `error`, `blocked` and `needs_input`. */
+  stateReason?: string | null;
+  /** Title for tabs and the sidebar. */
+  title?: string | null;
+  /** Last change to this info, Unix milliseconds. */
+  updatedAt: number;
+  /** The workspace it belongs to, if any. */
+  workspace?: string | null;
+};
+
+/** Result of `sessions/list`. */
+export type SessionList = {
+  /** The `sessions/changes` seq this list reflects; subscribe with `since: seq` to keep it current. */
+  seq: number;
+  /** Most recently updated first. */
+  sessions: Array<SessionInfo>;
+};
+
+/** A session mode, such as Claude Code's `default` ("Manual"), `acceptEdits` or `plan`. */
+export type SessionMode = {
+  /** Description. */
+  description?: string | null;
+  /** Mode id, passed to `sessions/setMode`. */
+  id: string;
+  /** Display name. */
+  name: string;
+};
+
+/** The session's modes. Whether a permission prompt appears depends on the mode, so the UI always shows it. */
+export type SessionModes = {
+  /** Every mode. */
+  availableModes: Array<SessionMode>;
+  /** The current mode's id. */
+  currentModeId: string;
+};
+
+/** Params naming one session. */
+export type SessionParams = {
+  /** The session. */
+  session: SessionId;
+};
+
+/** One session's folded state: what a chat tab shows before replaying the transcript. */
+export type SessionSnapshot = {
+  /** The billing source. */
+  auth?: AuthStatus | null;
+  /** The latest slash commands. */
+  availableCommands: Array<AvailableCommand>;
+  /** Seq of its last update (0 if none). Subscribe to `sessions/updates` with `since: head` to continue from here. */
+  head: number;
+  /** The session. */
+  info: SessionInfo;
+  /** The session's modes. */
+  modes?: SessionModes | null;
+  /** Permission requests waiting for an answer. */
+  pendingPermissions: Array<PermissionRequest>;
+  /** The latest plan. */
+  plan: Array<PlanEntry>;
+  /** Whether a turn is running. */
+  running: boolean;
+  /** Number of turns started. */
+  turns: number;
+  /** The latest usage. */
+  usage?: Usage | null;
+};
+
 /** A secret that authenticates a connection: the daemon's per-boot token, or a token scoped to one workspace and agent session.  It is a string on the wire. `Debug` prints `SessionToken(<redacted>)` and equality is constant-time, so the token neither leaks into logs nor through comparison timing. Use [`SessionToken::expose`] only to send or store it. */
 export type SessionToken = string;
+
+/** One entry of a session's transcript: an event of `sessions/updates`.  Updates from the agent mirror ACP `session/update`; the rest are written by the daemon (prompts, turns, permissions, state). */
+export type SessionUpdate = {
+  /** The prompt. */
+  content: Array<ContentBlock>;
+  update: "user_message";
+} | {
+  /** The chunk. */
+  content: ContentBlock;
+  update: "user_message_chunk";
+} | {
+  /** The chunk. */
+  content: ContentBlock;
+  update: "agent_message_chunk";
+} | {
+  /** The chunk. */
+  content: ContentBlock;
+  update: "agent_thought_chunk";
+} | ToolCall | ToolCallUpdate | {
+  /** Every entry. */
+  entries: Array<PlanEntry>;
+  update: "plan";
+} | {
+  /** Every command. */
+  commands: Array<AvailableCommand>;
+  update: "available_commands";
+} | SessionModes | {
+  /** The new mode's id. */
+  modeId: string;
+  update: "current_mode";
+} | Usage | AuthStatus | PermissionRequest | {
+  /** The answer. */
+  outcome: PermissionOutcome;
+  /** The request. */
+  requestId: PermissionRequestId;
+  update: "permission_resolved";
+} | {
+  /** Why, for `error`, `blocked` and `needs_input`. */
+  reason?: string | null;
+  /** The new state. */
+  state: AgentState;
+  update: "state";
+} | {
+  /** Turn number, from 1. */
+  turn: number;
+  update: "turn_started";
+} | {
+  /** The error, for `stop_reason: error`. */
+  error?: string | null;
+  /** Why. */
+  stopReason: StopReason;
+  /** Turn number. */
+  turn: number;
+  update: "turn_ended";
+} | {
+  update: "closed";
+};
+
+/** Params of `sessions/setMode`. */
+export type SetModeParams = {
+  /** The mode id, from the session's modes. */
+  modeId: string;
+  /** The session. */
+  session: SessionId;
+};
 
 /** Params of [`SetState`]. */
 export type SetStateParams = {
@@ -312,6 +676,9 @@ export type ShutdownResult = {
   /** Whether the daemon is stopping. It closes every connection and exits shortly after answering. */
   stopping: boolean;
 };
+
+/** Why a turn ended (ACP `StopReason`, plus Coqo's own). */
+export type StopReason = "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled" | "error" | "interrupted";
 
 /** Params of `coqo/subscribe`. */
 export type SubscribeParams = {
@@ -342,10 +709,100 @@ export type SubscriptionEndedParams = {
 /** Identifies a subscription on one connection. */
 export type SubscriptionId = number;
 
+/** A tool call, as first reported. */
+export type ToolCall = {
+  /** Output or proposed changes. */
+  content?: Array<ToolCallContent>;
+  /** Id, unique within the session. */
+  id: ToolCallId;
+  /** Tool kind. */
+  kind?: ToolKind;
+  /** Files it touches. */
+  locations?: Array<ToolCallLocation>;
+  /** The tool's raw input, provider-specific. */
+  rawInput?: unknown;
+  /** The tool's raw output, provider-specific. */
+  rawOutput?: unknown;
+  /** Status. */
+  status?: ToolCallStatus;
+  /** Human-readable title, such as `Write pong.txt`. */
+  title: string;
+};
+
+/** What a tool call produced or proposes. */
+export type ToolCallContent = {
+  /** The content. */
+  content: ContentBlock;
+  type: "content";
+} | {
+  /** The text after. */
+  newText: string;
+  /** The text before; `null` for a new file. */
+  oldText?: string | null;
+  /** Absolute path of the file. */
+  path: string;
+  type: "diff";
+} | {
+  /** The terminal's id. */
+  terminalId: string;
+  type: "terminal";
+};
+
+/** Identifies a tool call within a session. */
+export type ToolCallId = string;
+
+/** A file location a tool call touches, for follow-along. */
+export type ToolCallLocation = {
+  /** 1-based line, if known. */
+  line?: number | null;
+  /** Absolute path. */
+  path: string;
+};
+
+/** Where a tool call is in its lifecycle. */
+export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
+
+/** A change to a tool call. Fields left out are unchanged; `content` and `locations` replace the earlier lists when present. */
+export type ToolCallUpdate = {
+  /** New content (replaces). */
+  content?: Array<ToolCallContent> | null;
+  /** The call to update. */
+  id: ToolCallId;
+  /** New kind. */
+  kind?: ToolKind | null;
+  /** New locations (replace). */
+  locations?: Array<ToolCallLocation> | null;
+  /** Raw input. */
+  rawInput?: unknown;
+  /** Raw output. */
+  rawOutput?: unknown;
+  /** New status. */
+  status?: ToolCallStatus | null;
+  /** New title. */
+  title?: string | null;
+};
+
+/** What kind of tool a call is, for icons and grouping (ACP `ToolKind`). */
+export type ToolKind = "read" | "edit" | "delete" | "move" | "search" | "execute" | "think" | "fetch" | "switch_mode" | "other";
+
 /** Params of `coqo/unsubscribe`. */
 export type UnsubscribeParams = {
   /** The subscription to stop. */
   subscription: SubscriptionId;
+};
+
+/** Context and cost usage (ACP `usage_update`). */
+export type Usage = {
+  /** The model's context size in tokens. */
+  contextSize?: number | null;
+  /** Cost reported by the agent. On a subscription plan this is the SDK's notional figure, **not** a charge; show it only with [`AuthStatus::kind`] `api_key` / `external`. */
+  cost?: Cost | null;
+  /** Provider-specific extras (rate-limit windows, …). */
+  meta?: unknown;
+  /** Model in use. */
+  model?: string | null;
+  /** Tokens of context in use. */
+  usedTokens?: number | null;
 };
 
 /** Result of `coqo/hello`, sent by the server. */
@@ -472,6 +929,24 @@ export interface Requests {
   "fs/stat": { params: PathParams; result: FileStat };
   /** Read a file in a workspace root, up to a size limit. (client→server) */
   "fs/read": { params: ReadParams; result: ReadResult };
+  /** Every agent provider, with whether it is available. (client→server) */
+  "agents/providers": { params: null; result: Array<ProviderInfo> };
+  /** Agent sessions, with the sessions/changes seq the list reflects. (client→server) */
+  "sessions/list": { params: ListSessionsParams; result: SessionList };
+  /** One session's folded state and the seq of its last update. (client→server) */
+  "sessions/get": { params: SessionParams; result: SessionSnapshot };
+  /** Start an agent session with a provider. (client→server) */
+  "sessions/create": { params: CreateSessionParams; result: SessionInfo };
+  /** Start a turn; it runs in the daemon and streams on sessions/updates. (client→server) */
+  "sessions/prompt": { params: PromptParams; result: PromptResult };
+  /** Cancel the running turn. Result is true if one was running. (client→server) */
+  "sessions/cancel": { params: SessionParams; result: boolean };
+  /** Answer a pending permission request. (client→server) */
+  "sessions/respondPermission": { params: RespondPermissionParams; result: null };
+  /** Switch a session's mode. (client→server) */
+  "sessions/setMode": { params: SetModeParams; result: null };
+  /** End a session; its transcript stays readable. Result is true if it was open. (client→server) */
+  "sessions/close": { params: SessionParams; result: boolean };
 }
 
 /** Notifications: method name → params. */
@@ -488,6 +963,10 @@ export interface Topics {
   "workspace/events": { params: EventsParams; event: WorkspaceEvent };
   /** Debounced file-system changes in an open workspace (live only). */
   "fs/changes": { params: ChangesParams; event: FsChanges };
+  /** One session's persisted transcript (resumable with since; seqs per session). */
+  "sessions/updates": { params: SessionParams; event: SessionUpdate };
+  /** The latest info of each session whose state, title or mode changed (resumable). */
+  "sessions/changes": { params: ChangesParams2; event: SessionInfo };
 }
 
 /** Encode one frame: u32 big-endian length, then the JSON payload. */

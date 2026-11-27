@@ -23,7 +23,9 @@ const LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// The core mods linked into the daemon, and the contribution points their
 /// crates own.
 pub fn builtins() -> BuiltinMods {
-    BuiltinMods::new().with(coqo_mod_hello::MANIFEST, coqo_mod_hello::Hello::new())
+    BuiltinMods::new()
+        .with_point::<coqo_agents::AgentProviderImpls>()
+        .with(coqo_mod_hello::MANIFEST, coqo_mod_hello::Hello::new())
 }
 
 /// The kernel registries and the mods running on them. Cheap to clone.

@@ -19,8 +19,10 @@ doc = false
 
 [dependencies]
 anyhow = "1"
+coqo-agents = { path = "../agents" }
 coqo-client = { path = "../client" }
 coqo-kernel = { path = "../kernel" }
+coqo-mod-api = { path = "../mod-api" }
 # Built-in core mods (see src/mods.rs).
 coqo-mod-hello = { path = "../../mods/hello" }
 coqo-protocol = { path = "../protocol" }
@@ -38,7 +40,6 @@ tokio-util = "0.7"
 tracing = "0.1"
 
 [dev-dependencies]
-coqo-mod-api = { path = "../mod-api" }
 nix = { version = "0.30", default-features = false, features = ["fs", "process", "signal"] }
 tempfile = "3"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
