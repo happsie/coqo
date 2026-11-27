@@ -40,7 +40,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use coqo_protocol::methods::terminal::{
     self as proto, NO_SUCH_TERMINAL, SPAWN_FAILED, SpawnParams, TermSize, TerminalId, TerminalInfo,
 };
-use coqo_protocol::{ErrorObject, Router};
+use coqo_protocol::{Access, ErrorObject, Router};
 
 use crate::{Activity, DaemonContext};
 
@@ -239,59 +239,61 @@ impl Terminals {
 }
 
 /// Add the `terminal/*` methods and the `terminal/output` topic to `router`.
+/// All of them need the daemon token: terminals are not tied to a
+/// workspace, so a session token (`coqod mcp`) gets `FORBIDDEN`.
 pub fn register(router: Router, terminals: Terminals) -> Router {
     let t = terminals;
     router
-        .method::<proto::Spawn, _, _>({
+        .method_with::<proto::Spawn, _, _>(Access::daemon(), {
             let t = t.clone();
             move |_, params| {
                 let result = t.spawn(params.into()).map(|term| term.info());
                 async move { result.map_err(Into::into) }
             }
         })
-        .method::<proto::List, _, _>({
+        .method_with::<proto::List, _, _>(Access::daemon(), {
             let t = t.clone();
             move |_, ()| {
                 let list = t.list();
                 async move { Ok(list) }
             }
         })
-        .method::<proto::Snapshot, _, _>({
+        .method_with::<proto::Snapshot, _, _>(Access::daemon(), {
             let t = t.clone();
             move |_, p| {
                 let result = t.require(p.id).map(|term| term.snapshot());
                 async move { result.map_err(Into::into) }
             }
         })
-        .method::<proto::Input, _, _>({
+        .method_with::<proto::Input, _, _>(Access::daemon(), {
             let t = t.clone();
             move |_, p| {
                 let result = t.require(p.id).map(|term| term.write(p.data));
                 async move { result.map_err(Into::into) }
             }
         })
-        .method::<proto::Resize, _, _>({
+        .method_with::<proto::Resize, _, _>(Access::daemon(), {
             let t = t.clone();
             move |_, p| {
                 let result = t.require(p.id).map(|term| term.resize(p.size));
                 async move { result.map_err(Into::into) }
             }
         })
-        .method::<proto::Scroll, _, _>({
+        .method_with::<proto::Scroll, _, _>(Access::daemon(), {
             let t = t.clone();
             move |_, p| {
                 let result = t.require(p.id).map(|term| term.scroll(p.scroll));
                 async move { result.map_err(Into::into) }
             }
         })
-        .method::<proto::Close, _, _>({
+        .method_with::<proto::Close, _, _>(Access::daemon(), {
             let t = t.clone();
             move |_, p| {
                 let closed = t.close(p.id);
                 async move { Ok(closed) }
             }
         })
-        .topic::<proto::Output, _, _>(move |_, p, since| {
+        .topic_with::<proto::Output, _, _>(Access::daemon(), move |_, p, since| {
             let result = t
                 .require(p.id)
                 .map_err(ErrorObject::from)

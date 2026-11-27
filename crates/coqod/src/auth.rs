@@ -90,8 +90,9 @@ impl Auth {
     /// Mint a token for one agent session in one workspace: what the agents
     /// service hands `coqod mcp` (in its environment, never its `argv`; see
     /// `coqo_client::SESSION_TOKEN_ENV`). Calls through it get
-    /// [`Scope::Session`], so handlers that check
-    /// [`Scope::require_workspace`] keep it to that workspace.
+    /// [`Scope::Session`]: the router refuses them on every route that does
+    /// not open to session tokens, and keeps the rest to that workspace
+    /// ([`coqo_protocol::Access`]).
     pub fn mint_session(
         &self,
         workspace: impl Into<String>,

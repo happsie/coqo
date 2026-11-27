@@ -52,7 +52,7 @@ use coqo_protocol::methods::buffer::{
 use coqo_protocol::methods::codes;
 use coqo_protocol::methods::fs::{FileTooLarge, MAX_READ_LIMIT};
 use coqo_protocol::methods::workspace::{RootId, WorkspaceId};
-use coqo_protocol::{ErrorObject, EventFeed, Peer, Router, SeqLog};
+use coqo_protocol::{Access, ErrorObject, EventFeed, Peer, Router, Scope, SeqLog};
 use coqo_storage::DataDirs;
 use futures_util::StreamExt;
 use tokio::sync::watch;
@@ -238,6 +238,21 @@ impl BufferService {
             .get(&id)
             .cloned()
             .ok_or_else(|| unknown_buffer(id))
+    }
+
+    /// The router's check for buffer-id routes: a session token may use only
+    /// buffers of its own workspace. An unknown id passes, since the handler
+    /// can do nothing with it but report it unknown (ids are never reused).
+    fn require_buffer_access(&self, scope: &Scope, id: BufferId) -> Result<(), ErrorObject> {
+        let workspace = self
+            .registry()
+            .buffers
+            .get(&id)
+            .map(|b| b.workspace.clone());
+        match workspace {
+            Some(workspace) => scope.require_workspace(&workspace.0),
+            None => Ok(()),
+        }
     }
 
     fn find(&self, path: &Path) -> Option<Arc<OpenBuffer>> {
@@ -887,36 +902,56 @@ pub fn flush_on_shutdown(svc: &Arc<BufferService>, shutdown: tokio_util::sync::C
     });
 }
 
+/// Session tokens, for buffers open in their own workspace.
+fn own_buffer<P: 'static>(svc: &Arc<BufferService>, buffer: fn(&P) -> BufferId) -> Access<P> {
+    let svc = Arc::clone(svc);
+    Access::check(move |scope, p| svc.require_buffer_access(scope, buffer(p)))
+}
+
 /// Register every `buffer/*` method and topic on `router`.
+///
+/// A session token (`coqod mcp`) may open, edit, follow and close buffers
+/// of its own workspace. Saving and reverting a change are the user's
+/// review actions and need the daemon token.
 pub fn register(router: Router, svc: Arc<BufferService>) -> Router {
     let open = Arc::clone(&svc);
     let edit = Arc::clone(&svc);
     let revert = Arc::clone(&svc);
     let save = Arc::clone(&svc);
     let close = Arc::clone(&svc);
+    let changes = Arc::clone(&svc);
     router
-        .method::<bufm::Open, _, _>(move |_ctx, p| {
+        .method_with::<bufm::Open, _, _>(Access::workspace(|p| &p.workspace.0), move |_ctx, p| {
             let s = Arc::clone(&open);
             async move { s.open(p).await }
         })
-        .notification::<bufm::Edit, _, _>(move |ctx, p| {
-            let s = Arc::clone(&edit);
-            async move { s.edit(&ctx.peer, p).await }
-        })
-        .method::<bufm::RevertChange, _, _>(move |_ctx, p| {
+        .notification_with::<bufm::Edit, _, _>(
+            own_buffer(&svc, |p: &EditParams| p.buffer),
+            move |ctx, p| {
+                let s = Arc::clone(&edit);
+                async move { s.edit(&ctx.peer, p).await }
+            },
+        )
+        .method_with::<bufm::RevertChange, _, _>(Access::daemon(), move |_ctx, p| {
             let s = Arc::clone(&revert);
             async move { s.revert(p).await }
         })
-        .method::<bufm::Save, _, _>(move |_ctx, p| {
+        .method_with::<bufm::Save, _, _>(Access::daemon(), move |_ctx, p| {
             let s = Arc::clone(&save);
             async move { s.save(p).await }
         })
-        .method::<bufm::Close, _, _>(move |_ctx, p| {
-            let s = Arc::clone(&close);
-            async move { s.close(p).await }
-        })
-        .topic::<bufm::Changes, _, _>(move |_ctx, p, since| {
-            let s = Arc::clone(&svc);
-            async move { s.changes(p, since) }
-        })
+        .method_with::<bufm::Close, _, _>(
+            own_buffer(&svc, |p: &CloseParams| p.buffer),
+            move |_ctx, p| {
+                let s = Arc::clone(&close);
+                async move { s.close(p).await }
+            },
+        )
+        .topic_with::<bufm::Changes, _, _>(
+            own_buffer(&svc, |p: &ChangesParams| p.buffer),
+            move |_ctx, p, since| {
+                let s = Arc::clone(&changes);
+                async move { s.changes(p, since) }
+            },
+        )
 }

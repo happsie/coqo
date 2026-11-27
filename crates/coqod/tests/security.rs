@@ -245,8 +245,10 @@ async fn a_session_token_is_held_to_its_scope() {
     let mut config = config();
     config.token = Some(scoped.clone());
     let (client, _) = connect(&paths, config.clone()).await.unwrap();
-    // Read-only daemon status is fine; stopping the daemon is not.
-    client.request::<Status>(()).await.unwrap();
+    // Daemon-wide methods are not open to session tokens, not even the
+    // read-only status (it lists every busy session).
+    let e = client.request::<Status>(()).await.unwrap_err();
+    assert_eq!(e.rpc().map(|e| e.code), Some(codes::FORBIDDEN), "{e}");
     let e = client
         .request::<Shutdown>(ShutdownParams { force: true })
         .await

@@ -117,10 +117,12 @@ fn router(f: &Fixture) -> Router {
     Router::new()
         .method::<Add, _, _>(|_, p| async move { Ok(p.a + p.b) })
         .method::<Ping, _, _>(|_, ()| async { Ok(()) })
-        .method::<WhoAmI, _, _>(|ctx, workspace| async move {
-            ctx.scope.require_workspace(&workspace)?;
-            Ok(format!("{} token:{}", ctx.scope, ctx.hello.token.is_some()))
-        })
+        .method_with::<WhoAmI, _, _>(
+            Access::workspace(String::as_str),
+            |ctx, _workspace| async move {
+                Ok(format!("{} token:{}", ctx.scope, ctx.hello.token.is_some()))
+            },
+        )
         .method::<Fail, _, _>(|_, ()| async {
             Err(ErrorObject::new(1234, "nope").with_data(json!({"why": "test"})))
         })
@@ -648,6 +650,311 @@ async fn servers_without_an_authenticator_ignore_tokens() {
         client.request::<WhoAmI>("ws".into()).await.unwrap(),
         "the daemon token:false"
     );
+}
+
+// ---- route access -----------------------------------------------------------
+
+#[derive(Debug)]
+enum Touch {}
+impl Method for Touch {
+    const NAME: &'static str = "test/touch";
+    type Params = ();
+    type Result = ();
+}
+
+#[derive(Debug)]
+enum Explicit {}
+impl Method for Explicit {
+    const NAME: &'static str = "test/explicit";
+    type Params = String;
+    type Result = ();
+}
+
+#[derive(Debug)]
+enum InWorkspace {}
+impl Method for InWorkspace {
+    const NAME: &'static str = "test/inWorkspace";
+    type Params = String;
+    type Result = ();
+}
+
+#[derive(Debug)]
+enum InSession {}
+impl Method for InSession {
+    const NAME: &'static str = "test/inSession";
+    type Params = String;
+    type Result = ();
+}
+
+#[derive(Debug)]
+enum Even {}
+impl Method for Even {
+    const NAME: &'static str = "test/even";
+    type Params = u32;
+    type Result = ();
+}
+
+#[derive(Debug)]
+enum Nudge {}
+impl NotificationMethod for Nudge {
+    const NAME: &'static str = "test/nudge";
+    type Params = String;
+}
+
+#[derive(Debug)]
+enum WorkspaceNudge {}
+impl NotificationMethod for WorkspaceNudge {
+    const NAME: &'static str = "test/workspaceNudge";
+    type Params = String;
+}
+
+#[derive(Debug)]
+enum DaemonFeed {}
+impl Topic for DaemonFeed {
+    const NAME: &'static str = "test/daemonFeed";
+    type Params = String;
+    type Event = u64;
+}
+
+#[derive(Debug)]
+enum WorkspaceFeed {}
+impl Topic for WorkspaceFeed {
+    const NAME: &'static str = "test/workspaceFeed";
+    type Params = String;
+    type Event = u64;
+}
+
+type Ran = Arc<std::sync::Mutex<Vec<String>>>;
+
+fn empty_feed() -> EventFeed<u64> {
+    EventFeed {
+        head: 0,
+        events: futures_util::stream::pending().boxed(),
+    }
+}
+
+/// One route of each kind and access; every handler records that it ran.
+fn access_router(ran: &Ran) -> Router {
+    let record = |ran: &Ran, what: String| ran.lock().unwrap().push(what);
+    let (r1, r2, r3, r4, r5, r6, r7, r8, r9) = (
+        ran.clone(),
+        ran.clone(),
+        ran.clone(),
+        ran.clone(),
+        ran.clone(),
+        ran.clone(),
+        ran.clone(),
+        ran.clone(),
+        ran.clone(),
+    );
+    Router::new()
+        .method::<Touch, _, _>(move |_, ()| {
+            record(&r1, "touch".into());
+            async { Ok(()) }
+        })
+        .method_with::<Explicit, _, _>(Access::daemon(), move |_, p| {
+            record(&r2, format!("explicit {p}"));
+            async { Ok(()) }
+        })
+        .method_with::<InWorkspace, _, _>(Access::workspace(String::as_str), move |_, p| {
+            record(&r3, format!("inWorkspace {p}"));
+            async { Ok(()) }
+        })
+        .method_with::<InSession, _, _>(Access::session(String::as_str), move |_, p| {
+            record(&r4, format!("inSession {p}"));
+            async { Ok(()) }
+        })
+        .method_with::<Even, _, _>(
+            Access::check(|scope: &Scope, n: &u32| {
+                if n.is_multiple_of(2) {
+                    Ok(())
+                } else {
+                    scope.require_daemon("odd numbers")
+                }
+            }),
+            move |_, n| {
+                record(&r5, format!("even {n}"));
+                async { Ok(()) }
+            },
+        )
+        .notification::<Nudge, _, _>(move |_, p| {
+            record(&r6, format!("nudge {p}"));
+            async {}
+        })
+        .notification_with::<WorkspaceNudge, _, _>(
+            Access::workspace(String::as_str),
+            move |_, p| {
+                record(&r7, format!("workspaceNudge {p}"));
+                async {}
+            },
+        )
+        .topic::<DaemonFeed, _, _>(move |_, p, _| {
+            record(&r8, format!("daemonFeed {p}"));
+            async { Ok(empty_feed()) }
+        })
+        .topic_with::<WorkspaceFeed, _, _>(Access::workspace(String::as_str), move |_, p, _| {
+            record(&r9, format!("workspaceFeed {p}"));
+            async { Ok(empty_feed()) }
+        })
+}
+
+async fn connect_access(ran: &Ran, token: &str) -> Client {
+    let server = Server::new(access_router(ran), authenticating_server());
+    let (a, b) = tokio::io::duplex(1 << 16);
+    tokio::spawn(async move { server.serve(b).await });
+    Client::connect(a, client_with_token(Some(token)))
+        .await
+        .expect("connect")
+        .0
+}
+
+fn assert_forbidden<T: std::fmt::Debug>(result: Result<T, ProtocolError>) {
+    match result {
+        Err(e) => assert_eq!(e.rpc().map(|e| e.code), Some(codes::FORBIDDEN), "{e}"),
+        Ok(r) => panic!("expected FORBIDDEN, got {r:?}"),
+    }
+}
+
+/// Waits until `ran` holds `what`; notifications have no response to wait
+/// for.
+async fn ran_eventually(ran: &Ran, what: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !ran.lock().unwrap().iter().any(|r| r == what) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{what} never ran"));
+}
+
+#[tokio::test]
+async fn session_tokens_reach_only_the_routes_opened_to_them() {
+    let ran = Ran::default();
+    // Scoped to session s-1 in workspace ws-a.
+    let client = connect_access(&ran, "ws-a-token").await;
+
+    // Routes that were not opened: refused, and the handler does not run.
+    assert_forbidden(client.request::<Touch>(()).await);
+    assert_forbidden(client.request::<Explicit>("ws-a".into()).await);
+    assert_forbidden(client.subscribe::<DaemonFeed>("ws-a".into(), None).await);
+    // Refused before the params are read, so garbage gets FORBIDDEN too.
+    assert_forbidden(
+        client
+            .request_raw(Touch::NAME, Some(json!({"bogus": true})))
+            .await,
+    );
+    let e = client.request::<Touch>(()).await.unwrap_err();
+    assert!(e.to_string().contains("test/touch"), "{e}");
+    assert!(e.to_string().contains("ws-a"), "{e}");
+
+    // Opened routes, outside the token's workspace or session: refused.
+    assert_forbidden(client.request::<InWorkspace>("ws-b".into()).await);
+    assert_forbidden(client.request::<InSession>("s-2".into()).await);
+    assert_forbidden(client.request::<Even>(3).await);
+    assert_forbidden(client.subscribe::<WorkspaceFeed>("ws-b".into(), None).await);
+
+    // Opened routes, inside its scope: allowed.
+    client.request::<InWorkspace>("ws-a".into()).await.unwrap();
+    client.request::<InSession>("s-1".into()).await.unwrap();
+    client.request::<Even>(4).await.unwrap();
+    client
+        .subscribe::<WorkspaceFeed>("ws-a".into(), None)
+        .await
+        .unwrap();
+
+    // Refused notifications are dropped.
+    client.notify::<Nudge>("ws-a".into()).await.unwrap();
+    client
+        .notify::<WorkspaceNudge>("ws-b".into())
+        .await
+        .unwrap();
+    client
+        .notify::<WorkspaceNudge>("ws-a".into())
+        .await
+        .unwrap();
+    ran_eventually(&ran, "workspaceNudge ws-a").await;
+    // A round trip after the notifications, so the refused ones were handled.
+    client.request::<InWorkspace>("ws-a".into()).await.unwrap();
+
+    let mut ran = ran.lock().unwrap().clone();
+    ran.sort();
+    assert_eq!(
+        ran,
+        [
+            "even 4",
+            "inSession s-1",
+            "inWorkspace ws-a",
+            "inWorkspace ws-a",
+            "workspaceFeed ws-a",
+            "workspaceNudge ws-a",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn the_daemon_token_reaches_every_route() {
+    let ran = Ran::default();
+    let client = connect_access(&ran, "daemon-token").await;
+    client.request::<Touch>(()).await.unwrap();
+    client.request::<Explicit>("ws-b".into()).await.unwrap();
+    client.request::<InWorkspace>("ws-b".into()).await.unwrap();
+    client.request::<InSession>("s-2".into()).await.unwrap();
+    client.request::<Even>(3).await.unwrap();
+    client
+        .subscribe::<DaemonFeed>("ws-b".into(), None)
+        .await
+        .unwrap();
+    client
+        .subscribe::<WorkspaceFeed>("ws-b".into(), None)
+        .await
+        .unwrap();
+    client.notify::<Nudge>("ws-b".into()).await.unwrap();
+    client
+        .notify::<WorkspaceNudge>("ws-b".into())
+        .await
+        .unwrap();
+    ran_eventually(&ran, "nudge ws-b").await;
+    ran_eventually(&ran, "workspaceNudge ws-b").await;
+    assert_eq!(ran.lock().unwrap().len(), 9);
+}
+
+#[test]
+fn routes_lists_every_route_with_its_access() {
+    let routes = access_router(&Ran::default()).routes();
+    let listed: Vec<_> = routes.iter().map(|r| (r.kind, r.name, r.access)).collect();
+    use AccessKind as A;
+    use RouteKind as K;
+    assert_eq!(
+        listed,
+        [
+            (K::Method, "test/even", Some(A::Check)),
+            (K::Method, "test/explicit", Some(A::Daemon)),
+            (K::Method, "test/inSession", Some(A::Session)),
+            (K::Method, "test/inWorkspace", Some(A::Workspace)),
+            (K::Method, "test/touch", None),
+            (K::Notification, "test/nudge", None),
+            (K::Notification, "test/workspaceNudge", Some(A::Workspace)),
+            (K::Topic, "test/daemonFeed", None),
+            (K::Topic, "test/workspaceFeed", Some(A::Workspace)),
+        ]
+    );
+    let open: Vec<_> = routes
+        .iter()
+        .filter(|r| r.opens_to_sessions())
+        .map(|r| r.name)
+        .collect();
+    assert_eq!(
+        open,
+        [
+            "test/even",
+            "test/inSession",
+            "test/inWorkspace",
+            "test/workspaceNudge",
+            "test/workspaceFeed"
+        ]
+    );
+    let debug = format!("{:?}", access_router(&Ran::default()));
+    assert!(debug.contains("open_to_sessions"), "{debug}");
 }
 
 // ---- handshake ------------------------------------------------------------

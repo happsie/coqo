@@ -7,6 +7,13 @@
 //! and topics, built from the shared [`DaemonContext`]. Add one line per
 //! service below. Method types live in `coqo-protocol` so clients share
 //! them (see `crates/protocol/src/daemon.rs` for an example).
+//!
+//! **Every route declares who may call it** with an
+//! [`Access`](coqo_protocol::Access) (`method_with`, `notification_with`,
+//! `topic_with`); the router checks it before the handler runs. Session
+//! tokens (`coqod mcp`) are denied unless the route opens to them, and the
+//! tests fail on a route without a declaration or a change to the
+//! session-token allowlist (ADR 0007, *Socket security*).
 
 use std::sync::Arc;
 
@@ -35,3 +42,6 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     let router = terminal::register(router, terminal::Terminals::for_daemon(ctx));
     Ok(router)
 }
+
+#[cfg(test)]
+mod tests;

@@ -118,7 +118,26 @@ A server may require a **session token** in `coqo/hello` (`token`, a string). `c
 | Token | Where a client gets it | Scope |
 |---|---|---|
 | The **daemon token**: 256 random bits, hex, new at every daemon start | `coqod.token` (`0600`) in the runtime directory, next to the socket. `coqo-client` reads it automatically, after connecting. | Everything. |
-| A **session token**, minted by the daemon for one agent session | Passed to the process the agent launches (`coqod mcp`) in the `COQO_SESSION_TOKEN` environment variable, never in `argv`. | One agent session in one workspace. Calls outside it fail with `-32007 FORBIDDEN`; daemon-wide calls such as `daemon/shutdown` too. |
+| A **session token**, minted by the daemon for one agent session | Passed to the process the agent launches (`coqod mcp`) in the `COQO_SESSION_TOKEN` environment variable, never in `argv`. | The methods and topics opened to session tokens (below), for its own workspace only. Everything else fails with `-32007 FORBIDDEN`. |
+
+**Session tokens are denied by default.** Every method, notification and topic declares, when the server registers it, whether session tokens may call it and how the call is bound to the token's workspace or agent session. The server checks this before the handler runs. A session token gets `-32007 FORBIDDEN` from:
+
+- any method or topic that is not opened to session tokens, whatever its params (they are not read);
+- an opened method or topic aimed at another workspace or session than the token's.
+
+A refused notification is dropped, since there is no response to carry the error. The daemon token is never refused.
+
+In `coqod`, session tokens may call only these, and only for their own workspace:
+
+| Method or topic | Bound by |
+|---|---|
+| `workspace/get`, `workspace/getState` | `id` |
+| `workspace/events` (topic) | `workspace`; an unfiltered feed needs the daemon token |
+| `fs/list`, `fs/stat`, `fs/read`, `fs/changes` (topic) | `workspace` |
+| `buffer/open` | `workspace` |
+| `buffer/edit` (notification), `buffer/close`, `buffer/changes` (topic) | the workspace the `buffer` is open in |
+
+Everything else, including `daemon/*`, the rest of `workspace/*`, `buffer/save`, `buffer/revertChange`, `terminal/*`, `agents/*` and `sessions/*`, needs the daemon token.
 
 Tokens are secrets. Compare them in constant time, and never log them or put them on a command line. The server takes the token out of the hello before request handlers see it. Before the handshake, `coqod` also checks that the connecting process runs as the same user (`SO_PEERCRED` / `getpeereid`), and both sides check that the runtime directory belongs to the user and is closed to everyone else ([ADR 0007](../docs/adr/0007-daemon-lifecycle.md)).
 

@@ -1108,6 +1108,16 @@ async fn a_session_token_stays_in_its_workspace() {
     )
     .await;
     forbidden::<wsm::Close>(&agent, WorkspaceParams { id: a.id.clone() }).await;
+    // The state document is the UI's.
+    forbidden::<wsm::SetState>(
+        &agent,
+        SetStateParams {
+            id: a.id.clone(),
+            key: "k".into(),
+            value: json!(1),
+        },
+    )
+    .await;
 
     // The daemon token reaches both.
     admin
