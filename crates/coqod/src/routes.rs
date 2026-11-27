@@ -41,14 +41,25 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     let workspaces = Arc::new(WorkspaceService::open(ctx.data.clone())?);
     let router = workspace::register(router, Arc::clone(&workspaces));
     let router = editor::register(router, EditorService::new(Arc::clone(&workspaces)));
-    let router = agents::register(router, agents::open(ctx)?);
+    let sessions = agents::open(ctx)?;
+    let router = agents::register(router, sessions.clone());
     let buffers = BufferService::new(workspaces, ctx.data.clone(), BufferConfig::default());
     ctx.agent_fs
         .set(Arc::new(agents::BufferFs(Arc::clone(&buffers))));
     buffers::flush_on_shutdown(&buffers, ctx.shutdown.clone());
     let router = syntax::register(router, SyntaxService::new(Arc::clone(&buffers)));
     let router = buffers::register(router, buffers);
-    let router = terminal::register(router, terminal::Terminals::for_daemon(ctx));
+    // One set of terminals: the `terminal/*` routes and ACP agents' commands
+    // (issue #185) share it, so agents' commands show in `terminal/list`.
+    let terminals = terminal::Terminals::for_daemon(ctx);
+    let title: Arc<terminal::SessionTitle> =
+        Arc::new(move |id| sessions.snapshot(id).ok()?.info.title);
+    ctx.agent_terminals
+        .set(Arc::new(terminal::AgentTerminalService::new(
+            terminals.clone(),
+            title,
+        )));
+    let router = terminal::register(router, terminals);
     Ok(router)
 }
 

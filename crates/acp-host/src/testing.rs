@@ -28,6 +28,16 @@
 //!     writes the file itself (like Claude Code) and completes the call;
 //!   - `run <command>`: the same for a shell command (`kind: execute`,
 //!     `rawInput.command`, like the adapter's `Bash`), without running it;
+//!   - `terminal [options] -- <command>`: `terminal/create` (with no args:
+//!     the command line as one string), says `created <id>`, then
+//!     `terminal/wait_for_exit`, `terminal/output` and `terminal/release`,
+//!     and says a JSON line: `id`, `exit_code`, `signal`, `output`,
+//!     `truncated`, `output_exit_code` and `after_release` (the error a
+//!     `terminal/output` after release got). A failed create says
+//!     `error: <message>`. Options: `cwd=<dir>`, `limit=<bytes>`,
+//!     `env=<k>=<v>`, `argv` (split the command into program and args),
+//!     `kill` (`terminal/kill` before waiting), `show` (a `tool_call` with
+//!     the terminal as content, completed at the end), `keep` (no release);
 //!   - `write <path> <text>`: `fs/write_text_file` through the client;
 //!   - `read <path>`: `fs/read_text_file`, then says what it read;
 //!   - `wait`: waits for `session/cancel` and ends the turn as cancelled;
@@ -162,6 +172,134 @@ fn modes() -> acp::SessionModeState {
 fn signed_out() -> agent_client_protocol::Error {
     agent_client_protocol::Error::auth_required()
         .data(json!({"reason": "signed_out", "message": "run claude /login"}))
+}
+
+fn error_text(e: &agent_client_protocol::Error) -> String {
+    match &e.data {
+        Some(Value::String(s)) => format!("{}: {s}", e.message),
+        _ => e.message.clone(),
+    }
+}
+
+/// The `terminal` command: `terminal [options] -- <command>`; see the
+/// module docs.
+async fn run_terminal(
+    cx: &ConnectionTo<Client>,
+    id: &acp::SessionId,
+    n: usize,
+    rest: &str,
+) -> Result<(), agent_client_protocol::Error> {
+    let (opts, command) = rest.split_once("--").unwrap_or(("", rest));
+    let command = command.trim();
+    let mut req = acp::CreateTerminalRequest::new(id.clone(), command);
+    let (mut kill, mut show, mut keep) = (false, false, false);
+    for opt in opts.split_whitespace() {
+        match opt.split_once('=') {
+            Some(("cwd", dir)) => req = req.cwd(PathBuf::from(dir)),
+            Some(("limit", n)) => req = req.output_byte_limit(n.parse::<u64>().ok()),
+            Some(("env", kv)) => {
+                let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+                req.env.push(acp::EnvVariable::new(k, v));
+            }
+            _ => match opt {
+                "argv" => {
+                    let mut words = command.split_whitespace().map(str::to_owned);
+                    req.command = words.next().unwrap_or_default();
+                    req.args = words.collect();
+                }
+                "kill" => kill = true,
+                "show" => show = true,
+                "keep" => keep = true,
+                _ => {}
+            },
+        }
+    }
+    let say = |t: String| notify(cx, id, acp::SessionUpdate::AgentMessageChunk(text(t)));
+    let created = cx.send_request(req).block_task().await;
+    let terminal = match created {
+        Ok(r) => r.terminal_id,
+        Err(e) => {
+            say(format!("error: {}\n", error_text(&e)));
+            return Ok(());
+        }
+    };
+    say(format!("created {}\n", terminal.0));
+    let call_id = acp::ToolCallId::new(format!("terminal-{n}"));
+    let content = || {
+        vec![acp::ToolCallContent::Terminal(acp::Terminal::new(
+            terminal.clone(),
+        ))]
+    };
+    if show {
+        let mut call = acp::ToolCall::new(call_id.clone(), command);
+        call.kind = acp::ToolKind::Execute;
+        call.status = acp::ToolCallStatus::InProgress;
+        call.content = content();
+        notify(cx, id, acp::SessionUpdate::ToolCall(call));
+    }
+    if kill {
+        cx.send_request(acp::KillTerminalRequest::new(id.clone(), terminal.clone()))
+            .block_task()
+            .await?;
+    }
+    let exit = cx
+        .send_request(acp::WaitForTerminalExitRequest::new(
+            id.clone(),
+            terminal.clone(),
+        ))
+        .block_task()
+        .await?
+        .exit_status;
+    let out = cx
+        .send_request(acp::TerminalOutputRequest::new(
+            id.clone(),
+            terminal.clone(),
+        ))
+        .block_task()
+        .await?;
+    let mut after_release = Value::Null;
+    if !keep {
+        cx.send_request(acp::ReleaseTerminalRequest::new(
+            id.clone(),
+            terminal.clone(),
+        ))
+        .block_task()
+        .await?;
+        let again = cx
+            .send_request(acp::TerminalOutputRequest::new(
+                id.clone(),
+                terminal.clone(),
+            ))
+            .block_task()
+            .await;
+        after_release = match again {
+            Ok(_) => Value::String("output".into()),
+            Err(e) => Value::String(error_text(&e)),
+        };
+    }
+    if show {
+        notify(
+            cx,
+            id,
+            acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                call_id,
+                acp::ToolCallUpdateFields::new()
+                    .status(acp::ToolCallStatus::Completed)
+                    .content(content()),
+            )),
+        );
+    }
+    let report = json!({
+        "id": terminal.0,
+        "exit_code": exit.exit_code,
+        "signal": exit.signal,
+        "output": out.output,
+        "truncated": out.truncated,
+        "output_exit_code": out.exit_status.and_then(|s| s.exit_code),
+        "after_release": after_release,
+    });
+    say(format!("{report}\n"));
+    Ok(())
 }
 
 /// Runs one prompt; returns why it ended.
@@ -306,6 +444,7 @@ async fn turn(
                 };
                 notify(&cx, &id, acp::SessionUpdate::AgentMessageChunk(text(said)));
             }
+            "terminal" => run_terminal(&cx, &id, n, rest).await?,
             "wait" => {
                 state.cancel_signal(&id.0).notified().await;
                 return Ok(acp::StopReason::Cancelled);

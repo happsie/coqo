@@ -116,6 +116,44 @@ pub fn screen<T>(term: &Term<T>) -> Screen {
     }
 }
 
+/// Everything in the grid, scrollback first, as plain text: one line per
+/// logical line (wrapped rows joined), trailing blanks and the empty rest of
+/// the screen dropped. `true` if the scrollback holds `scrollback` lines, so
+/// earlier output may be gone.
+pub fn text<T>(term: &Term<T>, scrollback: usize) -> (String, bool) {
+    let grid = term.grid();
+    let history = grid.history_size();
+    let cols = grid.columns();
+    let top = -i32::try_from(history).unwrap_or(i32::MAX);
+    let bottom = i32::try_from(term.screen_lines()).unwrap_or(i32::MAX);
+    let mut out = String::new();
+    let mut line = String::new();
+    for l in top..bottom {
+        let cells = &grid[Line(l)];
+        for col in 0..cols {
+            let cell = &cells[Column(col)];
+            if !cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                push_cell(&mut line, cell);
+            }
+        }
+        let wrapped = cols > 0 && cells[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+        if !wrapped {
+            out.push_str(line.trim_end_matches(' '));
+            out.push('\n');
+            line.clear();
+        }
+    }
+    out.push_str(line.trim_end_matches(' '));
+    out.truncate(out.trim_end_matches('\n').len());
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    (out, history >= scrollback)
+}
+
 /// The rows that changed since the last frame, or `None` if nothing did.
 pub fn take_frame<T: EventListener>(term: &mut Term<T>, last: &mut Sent) -> Option<Frame> {
     let rows = term.screen_lines();

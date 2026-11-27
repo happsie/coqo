@@ -73,6 +73,9 @@ pub struct DaemonContext {
     /// once they exist ([`routes::router`]), since provider mods activate
     /// first.
     pub agent_fs: coqo_acp_host::FsHandle,
+    /// Where ACP agents' `terminal/*` commands run: set to the daemon's
+    /// terminals in [`routes::router`], like `agent_fs`.
+    pub agent_terminals: coqo_acp_host::TerminalHandle,
 }
 
 /// Why the daemon could not start.
@@ -200,7 +203,8 @@ pub async fn serve(
     let (idle_tx, idle_rx) = watch::channel(IdlePhase::Active);
     let shutdown = CancellationToken::new();
     let agent_fs = coqo_acp_host::FsHandle::new();
-    let mods = Mods::load(mods::builtins(&data, &agent_fs));
+    let agent_terminals = coqo_acp_host::TerminalHandle::new();
+    let mods = Mods::load(mods::builtins(&data, &agent_fs, &agent_terminals));
     mods.start().await;
     let ctx = DaemonContext {
         paths: paths.clone(),
@@ -214,6 +218,7 @@ pub async fn serve(
         mods,
         auth: auth.clone(),
         agent_fs,
+        agent_terminals,
     };
     let router = routes::router(&ctx)?;
     tracing::debug!(?router, "routes registered");

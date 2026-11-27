@@ -534,6 +534,55 @@ fn the_agents_status_shows_in_the_panel_the_list_and_the_tab() {
     );
 }
 
+#[test]
+fn a_tool_calls_terminal_opens_in_a_terminal_tab() {
+    let fixture = Fixture::new(ScriptedProvider::new());
+    fixture.provider.push_turn([
+        Step::Update(AgentUpdate::ToolCall(ToolCall {
+            id: ToolCallId("t1".into()),
+            title: "cargo test".into(),
+            kind: ToolKind::Execute,
+            status: ToolCallStatus::InProgress,
+            // An agent's `terminal/create`, mapped to daemon terminal 7.
+            content: vec![ToolCallContent::Terminal {
+                terminal_id: "7".into(),
+            }],
+            locations: vec![],
+            raw_input: None,
+            raw_output: None,
+        })),
+        Step::Stop(StopReason::EndTurn),
+    ]);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    ui.cx.update(|cx| {
+        let handle = crate::daemon::Daemon::global(cx).unwrap().read(cx).handle();
+        crate::terminal::init(Rc::new(crate::terminal::DaemonBackend::new(handle)), cx);
+    });
+    let chat = ui.new_chat();
+    ui.send(&chat, "Run the tests");
+    ui.wait_for("the tool call", |ui| {
+        ui.entries(&chat)
+            .iter()
+            .any(|e| matches!(e, Entry::Tool(_)))
+    });
+    let ix = ui.entry_index(&chat, |e| matches!(e, Entry::Tool(_)));
+    // The link shows on the collapsed card.
+    let link = format!("chat-terminal-{ix}-0");
+    ui.wait_for("the terminal link", |ui| ui.shows(&link));
+
+    ui.frame(|window, cx| window.click(name(&link), cx));
+    let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
+    let terminal_tab = |ui: &mut Ui| {
+        ui.cx.read(|cx| {
+            dock.read(cx)
+                .find_tab(crate::terminal::KIND, "terminal:7", cx)
+        })
+    };
+    ui.wait_for("the terminal tab", |ui| terminal_tab(ui).is_some());
+    let active = ui.cx.read(|cx| dock.read(cx).active_tab());
+    assert_eq!(active, terminal_tab(&mut ui), "it is in front");
+}
+
 fn ask() -> PermissionAsk {
     PermissionAsk {
         title: "Run cargo test".into(),

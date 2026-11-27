@@ -10,8 +10,9 @@
 //!   of that workspace on one connection. The process runs under the kernel
 //!   supervisor (its own process group, stdio as a protocol channel,
 //!   restarts with backoff) and stops when its last session closes.
-//! - **Lifecycle:** `initialize` advertises `fs` and `plan` (never
-//!   `auth.terminal`: Coqo runs no login flow); `session/new` with the
+//! - **Lifecycle:** `initialize` advertises `fs`, `plan` and, with a
+//!   terminal backend, `terminal` (never `auth.terminal`: Coqo runs no
+//!   login flow); `session/new` with the
 //!   session's `cwd` and MCP servers; `session/prompt` streams
 //!   `session/update`s into the session manager; `session/cancel`,
 //!   `session/set_mode` and `session/close`. Sessions reattach with
@@ -25,6 +26,10 @@
 //!   [`AgentFs::expect_write`] before the agent writes, so the write shows
 //!   up in open buffers as the agent's change (Claude Code writes files
 //!   itself, ADR 0005).
+//! - **Terminals:** `terminal/*` run through [`AgentTerminals`] (the
+//!   daemon's PTYs, so the user can open, watch and kill them as terminal
+//!   tabs), in the session's workspace only, with ACP's output byte limit.
+//!   Tool-call `terminal` content is mapped to the daemon terminal id.
 //! - **Auth:** `auth_required` becomes
 //!   [`ProviderError::AuthRequired`](coqo_agents::ProviderError::AuthRequired);
 //!   `auth/status_update` and the Claude adapter's `_auth/status_update`
@@ -40,7 +45,11 @@ mod convert;
 mod fs;
 mod host;
 mod provider;
+mod terminal;
 pub mod testing;
 
 pub use fs::{AgentFs, FsHandle};
 pub use provider::{AcpOptions, AcpProvider, AgentCommand, Launcher};
+pub use terminal::{
+    AgentTerminal, AgentTerminals, TerminalExit, TerminalHandle, TerminalRequest, TerminalText,
+};

@@ -14,7 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use coqo_acp_host::FsHandle;
+use coqo_acp_host::{FsHandle, TerminalHandle};
 use coqo_kernel::mods::{BuiltinMods, ModManager, ModState};
 use coqo_kernel::{ContributionRegistry, ServiceRegistry};
 use coqo_storage::DataDirs;
@@ -29,10 +29,18 @@ pub const CLAUDE_PLAN_LOGINS_ENV: &str = "COQO_CLAUDE_PLAN_LOGINS";
 
 /// The core mods linked into the daemon, and the contribution points their
 /// crates own. `data` is the daemon's data directory (Claude's ACP adapter
-/// is installed under it); agents read and write files through `agent_fs`.
-pub fn builtins(data: &DataDirs, agent_fs: &FsHandle) -> BuiltinMods {
+/// is installed under it); agents read and write files through `agent_fs`
+/// and run commands they hand the client through `agent_terminals`.
+pub fn builtins(
+    data: &DataDirs,
+    agent_fs: &FsHandle,
+    agent_terminals: &TerminalHandle,
+) -> BuiltinMods {
     let mut claude = coqo_agent_claude::ClaudeOptions::new(data.root());
     claude.fs = agent_fs.clone();
+    // The adapter (0.113.0) runs its Bash tool itself and never asks for a
+    // client terminal; other ACP agents built on these options would.
+    claude.acp.terminals = agent_terminals.clone();
     claude.plan_logins = std::env::var(CLAUDE_PLAN_LOGINS_ENV)
         .map_or(true, |v| !matches!(v.trim(), "0" | "false" | "off"));
     BuiltinMods::new()
@@ -111,7 +119,7 @@ pub(crate) mod tests {
 
     /// The built-in mods, with data in `dir`.
     pub(crate) fn test_builtins(dir: &std::path::Path) -> BuiltinMods {
-        builtins(&DataDirs::at(dir), &FsHandle::new())
+        builtins(&DataDirs::at(dir), &FsHandle::new(), &TerminalHandle::new())
     }
 
     #[tokio::test]

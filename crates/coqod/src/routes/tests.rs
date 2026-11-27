@@ -117,6 +117,7 @@ pub(crate) fn context_with(dir: &Path, agent: ScriptedProvider) -> DaemonContext
         ),
         auth: Auth::generate().unwrap(),
         agent_fs: coqo_acp_host::FsHandle::new(),
+        agent_terminals: coqo_acp_host::TerminalHandle::new(),
     }
 }
 
