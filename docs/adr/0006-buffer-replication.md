@@ -191,6 +191,6 @@ Model B's real advantage is multi-master and offline sync, which Coqo doesn't ne
 ## Consequences
 
 - #40 implements model A in the daemon (one buffer actor per open file) plus a UI replica crate. The property tests in `spikes/s6-buffers/tests/convergence.rs` are the template for #40's acceptance test ("never lose characters").
-- #41 needs `apply_remote_edits` in gpui-component, preferably upstream, otherwise a minimal patch behind the `coqo-ui` facade. It also needs Coqo-owned undo and redo. Track the editor API in its own issue so #41 doesn't stall on upstream.
+- #41 needs `apply_remote_edits` in gpui-component, preferably upstream, otherwise a minimal patch behind the `coqo-ui` facade. It also needs Coqo-owned undo and redo. Track the editor API in its own issue so #41 doesn't stall on upstream. (Done in #145 as a vendored gpui-base patch behind `coqo_ui::editor`; see [ADR 0008](0008-editor-remote-edits-patch.md).)
 - The buffer journal needs a table in the daemon's SQLite store.
 - `yrs` is not added to the workspace. The prototype stays in `spikes/` as the documented fallback.
