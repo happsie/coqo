@@ -148,10 +148,22 @@ fn locations(items: &[acp::ToolCallLocation]) -> Vec<m::ToolCallLocation> {
         .collect()
 }
 
+/// The tool's name from a tool call's `_meta`: a `toolName` string at the
+/// top or one level down (the Claude adapter's `_meta.claudeCode.toolName`).
+fn tool_name(meta: Option<&Map<String, Value>>) -> Option<String> {
+    let meta = meta?;
+    let name =
+        |m: &Map<String, Value>| m.get("toolName").and_then(Value::as_str).map(str::to_owned);
+    name(meta)
+        .or_else(|| meta.values().filter_map(Value::as_object).find_map(name))
+        .filter(|n| !n.is_empty())
+}
+
 pub(crate) fn tool_call(tc: &acp::ToolCall) -> m::ToolCall {
     m::ToolCall {
         id: m::ToolCallId(tc.tool_call_id.0.to_string()),
         title: tc.title.clone(),
+        name: tool_name(tc.meta.as_ref()),
         kind: tool_kind(&tc.kind),
         status: tool_status(&tc.status),
         content: tool_content(&tc.content),
@@ -469,6 +481,31 @@ pub(crate) fn legacy_auth_status(params: &Value) -> Option<m::AuthStatus> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn tool_calls_carry_the_adapters_tool_name() {
+        let call = |meta: Value| -> acp::ToolCall {
+            serde_json::from_value(json!({
+                "toolCallId": "t1", "title": "editor_context", "_meta": meta,
+                // The adapter's own extra field, which ACP drops.
+                "name": "ignored",
+            }))
+            .unwrap()
+        };
+        let named = call(json!({"claudeCode": {"toolName": "mcp__coqo-editor__editor_context"}}));
+        assert_eq!(
+            tool_call(&named).name.as_deref(),
+            Some("mcp__coqo-editor__editor_context")
+        );
+        assert_eq!(
+            tool_call(&call(json!({"toolName": "Read"})))
+                .name
+                .as_deref(),
+            Some("Read")
+        );
+        assert_eq!(tool_call(&call(json!({"other": 1}))).name, None);
+        assert_eq!(tool_call(&call(Value::Null)).name, None);
+    }
 
     #[test]
     fn auth_status_keeps_kind_and_plan_only() {

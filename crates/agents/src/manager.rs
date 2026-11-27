@@ -53,6 +53,7 @@ use crate::registry::ProviderRegistry;
 use crate::rules::{self, Subject};
 use crate::state::{self, Event, Tracked};
 use crate::store::{SessionStore, StoredSession};
+use crate::tool_use;
 
 type Result<T> = std::result::Result<T, AgentError>;
 
@@ -524,7 +525,18 @@ impl EventSink for Sink {
             return;
         }
         let mode = matches!(update, AgentUpdate::Modes(_) | AgentUpdate::CurrentMode(_));
+        // A tool call counts once per id (an agent may report one again).
+        let new_tool = match &update {
+            AgentUpdate::ToolCall(call) if !st.fold.tools.contains_key(&call.id) => {
+                Some(tool_use::classify(call))
+            }
+            _ => None,
+        };
         let result = inner.record(s, &mut st, update.into()).and_then(|_| {
+            if let Some((name, group)) = new_tool {
+                tool_use::count(&mut st.stored.info.tool_use, name, group);
+                inner.save_info(&mut st)?;
+            }
             if mode {
                 inner.sync_mode(&mut st)
             } else {
@@ -737,6 +749,7 @@ impl SessionManager {
                 state_since: Some(ts),
                 status: None,
                 criteria: Vec::new(),
+                tool_use: Vec::new(),
                 mode: None,
                 closed: false,
                 created_at: ts,

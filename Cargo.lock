@@ -1212,6 +1212,7 @@ dependencies = [
  "coqo-acp-host",
  "coqo-agents",
  "coqo-mod-api",
+ "coqo-protocol",
  "futures-util",
  "serde_json",
  "tempfile",
@@ -1274,6 +1275,18 @@ dependencies = [
 [[package]]
 name = "coqo-dap-client"
 version = "0.0.0"
+
+[[package]]
+name = "coqo-evals"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "coqo-client",
+ "coqo-protocol",
+ "futures-util",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "coqo-kernel"

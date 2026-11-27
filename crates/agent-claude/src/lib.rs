@@ -25,6 +25,13 @@
 //! - **Plan logins:** the setting `claude.acp.plan-logins` ("Use Claude plan
 //!   logins through ACP", default on). When off, the adapter runs with
 //!   `--hide-claude-auth`.
+//! - **Coqo operating guide:** [`guide`] (`guide.md`, versioned) is
+//!   appended to Claude Code's own system prompt (ACP `systemPrompt`, mode
+//!   `append`, never `override`) on every new and resumed session, if the
+//!   adapter advertises `sessionCapabilities.systemPrompt`. It says when to
+//!   use each `coqo-editor` tool. Claude Code keeps its preset, the user's
+//!   CLAUDE.md and settings. The setting `claude.guide` (default on) turns
+//!   it off.
 //! - **Billing badge, modes and commands** come from the adapter through the
 //!   ACP host: auth status reduced to kind, label and plan (no email or
 //!   organization), session modes, and the available slash commands and
@@ -69,6 +76,35 @@ pub const INSTALL_ACTION: &str = "install-adapter";
 
 /// The setting "Use Claude plan logins through ACP".
 pub const PLAN_LOGINS_SETTING: &str = "claude.acp.plan-logins";
+
+/// The setting "Append Coqo's operating guide to Claude's system prompt".
+pub const GUIDE_SETTING: &str = "claude.guide";
+
+/// The Coqo operating guide as kept in the repo (`guide.md`). Its first
+/// line names the version; `<!-- -->` lines are notes for maintainers.
+pub const GUIDE_SOURCE: &str = include_str!("../guide.md");
+
+/// The guide's version, from its `(vN)` heading.
+pub fn guide_version() -> u32 {
+    GUIDE_SOURCE
+        .lines()
+        .next()
+        .and_then(|l| l.rsplit_once("(v"))
+        .and_then(|(_, v)| v.strip_suffix(')'))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The guide as sent to Claude: [`GUIDE_SOURCE`] without maintainer notes.
+pub fn guide() -> String {
+    GUIDE_SOURCE
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("<!--"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned()
+}
 
 /// The parsed, validated [`MANIFEST`].
 pub fn manifest() -> Manifest {
@@ -118,5 +154,19 @@ mod tests {
         assert_eq!(m.id.as_str(), "coqo.claude");
         assert_eq!(m.tier, Tier::Core);
         assert!(MANIFEST.contains(PLAN_LOGINS_SETTING));
+    }
+
+    #[test]
+    fn the_guide_is_versioned_short_and_names_every_core_tool() {
+        assert!(guide_version() >= 1, "{GUIDE_SOURCE}");
+        assert!(MANIFEST.contains(GUIDE_SETTING));
+        let text = guide();
+        assert!(!text.contains("<!--"), "{text}");
+        // It costs context on every turn.
+        let words = text.split_whitespace().count();
+        assert!(words <= 260, "{words} words");
+        for tool in coqo_protocol::methods::mcp::CORE_TOOLS {
+            assert!(text.contains(tool), "the guide does not mention {tool}");
+        }
     }
 }

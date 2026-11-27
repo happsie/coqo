@@ -1821,6 +1821,8 @@ export type SessionInfo = {
   status?: AgentStatus | null;
   /** Title for tabs and the sidebar. */
   title?: string | null;
+  /** The tools the agent called this session and how often, in order of first use, counted from its tool calls (live ones, not replays). */
+  toolUse?: Array<ToolUse>;
   /** Last change to this info, Unix milliseconds. */
   updatedAt: number;
   /** The workspace it belongs to, if any. */
@@ -2304,6 +2306,8 @@ export type ToolCall = {
   kind?: ToolKind;
   /** Files it touches. */
   locations?: Array<ToolCallLocation>;
+  /** The tool's name as the agent calls it, if the agent says (`Read`, `mcp__coqo-editor__ask_question`). The Claude adapter sends it as `_meta.claudeCode.toolName`. Tool-use stats count by it. */
+  name?: string | null;
   /** The tool's raw input, provider-specific. */
   rawInput?: unknown;
   /** The tool's raw output, provider-specific. */
@@ -2367,6 +2371,9 @@ export type ToolCallUpdate = {
   title?: string | null;
 };
 
+/** Which kind of tool a call used, for tool-use stats. */
+export type ToolGroup = "coqo" | "mod" | "mcp" | "agent";
+
 /** A mod-contributed tool. */
 export type ToolInfo = {
   /** What it does, for the agent. */
@@ -2385,6 +2392,16 @@ export type ToolInfo = {
 
 /** What kind of tool a call is, for icons and grouping (ACP `ToolKind`). */
 export type ToolKind = "read" | "edit" | "delete" | "move" | "search" | "execute" | "think" | "fetch" | "switch_mode" | "other";
+
+/** How often a session called one tool. */
+export type ToolUse = {
+  /** Tool calls so far. */
+  count: number;
+  /** Which kind of tool it is. */
+  group: ToolGroup;
+  /** The tool: its own name for `coqo-editor` tools (`ask_question`), else the name the agent calls it by (`Read`, `mcp__github__get_issue`). Tool calls whose agent gives no name count by their kind (`edit`). */
+  name: string;
+};
 
 /** One event of [`ToolsChanged`]: the set of tools changed; list again. */
 export type ToolsChangedEvent = {

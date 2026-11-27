@@ -209,6 +209,18 @@ const CORE_TOOLS: [&str; 7] = [
     "set_status",
 ];
 
+#[test]
+fn the_protocols_core_tool_list_matches_the_registry() {
+    // Tool-use stats (`coqo-agents`) group calls by this list.
+    let mut listed: Vec<&str> = coqo_protocol::methods::mcp::CORE_TOOLS.to_vec();
+    listed.sort_unstable();
+    assert_eq!(listed, CORE_TOOLS);
+    assert_eq!(
+        crate::SERVER_NAME,
+        coqo_protocol::methods::mcp::EDITOR_SERVER
+    );
+}
+
 fn core_registry() -> ToolRegistry {
     let registry = ToolRegistry::new();
     tools::core(&registry);

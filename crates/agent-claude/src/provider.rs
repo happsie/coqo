@@ -35,6 +35,10 @@ pub struct ClaudeOptions {
     /// "Use Claude plan logins through ACP": when off, the adapter runs with
     /// `--hide-claude-auth`.
     pub plan_logins: bool,
+    /// "Append Coqo's operating guide" (`claude.guide`): when on, every new
+    /// and resumed session gets [`crate::guide`] appended to Claude Code's
+    /// system prompt, if the adapter takes one.
+    pub guide: bool,
     /// Where the agent's file traffic goes (the daemon's buffers).
     pub fs: FsHandle,
     /// The `PATH` to find `claude`, `node` and `npm` on; the daemon's when
@@ -50,6 +54,7 @@ impl ClaudeOptions {
         Self {
             data_dir: data_dir.into(),
             plan_logins: true,
+            guide: true,
             fs: FsHandle::new(),
             path: None,
             acp: AcpOptions::new(crate::ADAPTER_BIN),
@@ -91,6 +96,7 @@ impl ClaudeProvider {
         let detector = Arc::new(Detector::new(options.path.clone(), options.adapter_dir()));
         let mut acp = options.acp.clone();
         acp.fs = options.fs.clone();
+        acp.system_prompt = options.guide.then(crate::guide);
         let launch = Arc::clone(&detector);
         let plan_logins = options.plan_logins;
         let acp = AcpProvider::new(

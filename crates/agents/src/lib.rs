@@ -68,6 +68,7 @@ mod rules;
 mod state;
 mod store;
 pub mod testing;
+mod tool_use;
 
 pub use error::AgentError;
 pub use manager::{ManagerOptions, McpServerSource, SessionManager};

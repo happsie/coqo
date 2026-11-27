@@ -12,7 +12,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use coqo_protocol::methods::agents::{
     AcceptanceCriterion, AgentState, AgentStatus, PermissionRule, PermissionRuleId,
-    PermissionRuleSpec, RuleDecision, SessionId, SessionInfo, SessionUpdate, ToolKind,
+    PermissionRuleSpec, RuleDecision, SessionId, SessionInfo, SessionUpdate, ToolKind, ToolUse,
 };
 use coqo_storage::{GlobalDb, StorageError};
 use rusqlite::{OptionalExtension, Row, params};
@@ -69,7 +69,7 @@ fn parse_state(s: &str) -> AgentState {
 
 const SELECT: &str = "SELECT id, provider, workspace, cwd, title, state, state_reason, mode, \
                       closed, created_at, updated_at, provider_session, change_seq, \
-                      state_since, status, criteria \
+                      state_since, status, criteria, tool_use \
                       FROM agent_sessions";
 
 /// A stored status; one that no longer parses is dropped (it is only a
@@ -90,6 +90,13 @@ fn parse_criteria(json: Option<String>) -> Vec<AcceptanceCriterion> {
     })
 }
 
+/// Stored tool-use stats; ones that no longer parse are dropped (they are
+/// only stats).
+fn parse_tool_use(json: Option<String>) -> Vec<ToolUse> {
+    json.and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default()
+}
+
 fn session_row(row: &Row<'_>) -> rusqlite::Result<(StoredSession, u64)> {
     let state: String = row.get(5)?;
     Ok((
@@ -105,6 +112,7 @@ fn session_row(row: &Row<'_>) -> rusqlite::Result<(StoredSession, u64)> {
                 state_since: row.get(13)?,
                 status: parse_status(row.get(14)?),
                 criteria: parse_criteria(row.get(15)?),
+                tool_use: parse_tool_use(row.get(16)?),
                 mode: row.get(7)?,
                 closed: row.get(8)?,
                 created_at: row.get(9)?,
@@ -143,21 +151,24 @@ impl SessionStore {
         let criteria = (!i.criteria.is_empty())
             .then(|| serde_json::to_string(&i.criteria))
             .transpose()?;
+        let tool_use = (!i.tool_use.is_empty())
+            .then(|| serde_json::to_string(&i.tool_use))
+            .transpose()?;
         let db = self.db();
         db.connection()
             .prepare_cached(
                 "INSERT INTO agent_sessions (id, provider, workspace, cwd, title, state,
                      state_reason, mode, closed, provider_session, created_at, updated_at,
-                     change_seq, state_since, status, criteria)
+                     change_seq, state_since, status, criteria, tool_use)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                     ?16)
+                     ?16, ?17)
                  ON CONFLICT (id) DO UPDATE SET
                      title = excluded.title, state = excluded.state,
                      state_reason = excluded.state_reason, mode = excluded.mode,
                      closed = excluded.closed, provider_session = excluded.provider_session,
                      updated_at = excluded.updated_at, change_seq = excluded.change_seq,
                      state_since = excluded.state_since, status = excluded.status,
-                     criteria = excluded.criteria",
+                     criteria = excluded.criteria, tool_use = excluded.tool_use",
             )?
             .execute(params![
                 i.id.0,
@@ -176,6 +187,7 @@ impl SessionStore {
                 i.state_since,
                 status,
                 criteria,
+                tool_use,
             ])?;
         Ok(())
     }
@@ -434,6 +446,7 @@ mod tests {
                 state_since: None,
                 status: None,
                 criteria: Vec::new(),
+                tool_use: Vec::new(),
                 mode: None,
                 closed: false,
                 created_at: 1,

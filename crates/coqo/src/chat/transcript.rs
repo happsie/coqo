@@ -265,6 +265,7 @@ impl Transcript {
                     let mut tool = ToolEntry::new(ToolCall {
                         id: update.id.clone(),
                         title: String::new(),
+                        name: None,
                         kind: Default::default(),
                         status: Default::default(),
                         content: Vec::new(),
@@ -526,6 +527,7 @@ mod tests {
         ToolCall {
             id: ToolCallId(id.into()),
             title: "Write a.txt".into(),
+            name: None,
             kind: ToolKind::Edit,
             status: ToolCallStatus::Pending,
             content: vec![ToolCallContent::Diff {

@@ -7,8 +7,8 @@
 //!
 //! # Behaviour
 //!
-//! - `initialize` advertises `loadSession`, `session/resume` and
-//!   `session/close`, then reports an auth status twice (the RFD
+//! - `initialize` advertises `loadSession`, `session/resume`,
+//!   `session/close` and `systemPrompt`, then reports an auth status twice (the RFD
 //!   `auth/status_update` and the legacy `_auth/status_update`), both
 //!   carrying an email and an organization that the host must drop.
 //! - `session/new` answers with three modes (`default`, `acceptEdits`,
@@ -38,6 +38,10 @@
 //!     `env=<k>=<v>`, `argv` (split the command into program and args),
 //!     `kill` (`terminal/kill` before waiting), `show` (a `tool_call` with
 //!     the terminal as content, completed at the end), `keep` (no release);
+//!   - `tool <name>`: a completed `tool_call` named `<name>` in
+//!     `_meta.claudeCode.toolName`, as the Claude adapter names its tools
+//!     (`Read`, `mcp__coqo-editor__ask_question`), reported twice with the
+//!     same id;
 //!   - `write <path> <text>`: `fs/write_text_file` through the client;
 //!   - `read <path>`: `fs/read_text_file`, then says what it read;
 //!   - `wait`: waits for `session/cancel` and ends the turn as cancelled;
@@ -48,6 +52,7 @@
 //! - `FAKE_ACP_SIGNED_OUT=1`: `session/new`, `session/resume` and
 //!   `session/load` fail with `auth_required`.
 //! - `FAKE_ACP_NO_RESUME=1`: no `session/resume` (only `session/load`).
+//! - `FAKE_ACP_NO_SYSTEM_PROMPT=1`: no `sessionCapabilities.systemPrompt`.
 //! - `FAKE_ACP_LOG=<file>`: appends one JSON line per event: `start` (argv
 //!   pid, argv and the `CLAUDE*`/`FAKE_ACP*` variables), then
 //!   each request with its params.
@@ -422,6 +427,15 @@ async fn turn(
                     )),
                 );
             }
+            "tool" => {
+                let mut call = acp::ToolCall::new(acp::ToolCallId::new(format!("tool-{n}")), rest);
+                call.status = acp::ToolCallStatus::Completed;
+                call.meta = json!({"claudeCode": {"toolName": rest}})
+                    .as_object()
+                    .cloned();
+                notify(&cx, &id, acp::SessionUpdate::ToolCall(call.clone()));
+                notify(&cx, &id, acp::SessionUpdate::ToolCall(call));
+            }
             "write" => {
                 let (path, content) = rest.split_once(' ').unwrap_or((rest, ""));
                 cx.send_request(acp::WriteTextFileRequest::new(id.clone(), path, content))
@@ -500,6 +514,9 @@ pub async fn run_fake_agent() -> Result<(), agent_client_protocol::Error> {
                     acp::SessionCapabilities::new().close(acp::SessionCloseCapabilities::new());
                 if !flag("FAKE_ACP_NO_RESUME") {
                     sessions = sessions.resume(acp::SessionResumeCapabilities::new());
+                }
+                if !flag("FAKE_ACP_NO_SYSTEM_PROMPT") {
+                    sessions = sessions.system_prompt(acp::SessionSystemPromptCapabilities::new());
                 }
                 responder.respond(
                     acp::InitializeResponse::new(req.protocol_version)

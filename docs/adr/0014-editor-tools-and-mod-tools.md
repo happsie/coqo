@@ -51,6 +51,12 @@ The daemon serves them as `mcp/tools` (session-callable for its own workspace), 
 
 **Where new tools go.** A tool that only needs session-callable daemon state is a bridge core tool in `crates/mcp/src/tools` (add its daemon route to `SESSION_ROUTES` and `probes()` in `crates/coqod/src/routes/tests.rs`). A tool owned by a feature that is a mod in the daemon (maven, trace; questions #73 and status #75 turned out core tools, see ADR 0015 and 0016) registers through `register_mcp_tool` from that mod, which needs no new route. Either way it must pass the editor-only rule above. A tool that blocks (`ask_question`) can be either; as a bridge tool it gets MCP progress through `ToolContext::progress`, which `mcp/call` does not carry yet.
 
+**Agent guidance and measuring it (#216).** Tool descriptions and the MCP `instructions` alone left Claude reaching for its own tools, and Claude Code may defer MCP tool schemas behind its tool search, so the model sees little more than names. Three parts:
+
+- **An operating guide in the system prompt.** For Claude, a short versioned guide (`crates/agent-claude/guide.md`, one bullet per core tool: when to use it) is appended to Claude Code's system prompt through ACP `systemPrompt` (append, never override; ADR 0005, as built #216). It costs context on every turn, so it stays near 250 words. A new core tool adds one bullet, and the guide's test checks every name in `CORE_TOOLS` is mentioned.
+- **Tool-use stats.** The daemon counts each session's tool calls by name from the ACP stream: the adapter names the tool in `_meta.claudeCode.toolName`, which the ACP host passes on as `ToolCall.name`. Calls count once per tool-call id and never from replays. `coqo-agents` groups them: `coqo` (a core tool of `coqo-editor`, the list `coqo_protocol::methods::mcp::CORE_TOOLS`, which `coqo-mcp` checks against its registry), `mod` (another `coqo-editor` tool), `mcp` (another server's) and `agent` (the agent's own, such as `Read`). They are on `SessionInfo.toolUse` (additive), saved with the session, shown in the chat's session panel ("Coqo tools: set_status 5 · ask_question 2") and, later, the trace view.
+- **Evals.** `cargo run -p coqo-evals` runs a handful of scenarios against the user's real Claude Code and checks the stats ([docs/evals.md](../evals.md)). Manual only: it spends real usage.
+
 ## Consequences
 
 - Agents see seven core tools plus every active mod's tools, all scoped by the route policy. A UI is optional: only `editor_context` and `editor_reveal` need one, and both say when there is none.

@@ -22,6 +22,22 @@ use serde_json::{Map, Value};
 use super::workspace::WorkspaceId;
 use crate::method::{Method, Topic};
 
+/// The MCP server name of Coqo's editor bridge, as agents see it
+/// (`mcp__coqo-editor__<tool>` in Claude Code).
+pub const EDITOR_SERVER: &str = "coqo-editor";
+
+/// The core tools of [`EDITOR_SERVER`] (ADR 0014); its other tools come
+/// from mods. `coqo-mcp` checks that this matches what it registers.
+pub const CORE_TOOLS: &[&str] = &[
+    "editor_context",
+    "editor_reveal",
+    "set_status",
+    "ask_question",
+    "await_answer",
+    "annotate",
+    "set_acceptance_criteria",
+];
+
 /// Params of [`Tools`] and the [`ToolsChanged`] topic.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]

@@ -381,6 +381,44 @@ fn streams_the_agent_reply_into_the_tab_and_the_sidebar() {
 }
 
 #[test]
+fn the_session_panel_counts_the_coqo_tools_the_agent_used() {
+    let call = |id: &str, name: &str| {
+        Step::Update(AgentUpdate::ToolCall(ToolCall {
+            id: ToolCallId(id.into()),
+            title: name.into(),
+            name: Some(name.into()),
+            kind: ToolKind::Other,
+            status: ToolCallStatus::Completed,
+            content: vec![],
+            locations: vec![],
+            raw_input: None,
+            raw_output: None,
+        }))
+    };
+    let provider = ScriptedProvider::new().turn([
+        call("t1", "mcp__coqo-editor__editor_context"),
+        call("t2", "Read"),
+        call("t3", "mcp__coqo-editor__set_status"),
+        call("t4", "mcp__coqo-editor__set_status"),
+        Step::Stop(StopReason::EndTurn),
+    ]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.frame(|window, _| {
+        assert!(window.try_find("chat-tool-use").is_none(), "no tools yet");
+    });
+    ui.send(&chat, "Explain this");
+    let line = "Coqo tools: set_status 2 · editor_context 1";
+    ui.wait_for("the tool-use line", |ui| {
+        ui.cx.read(|cx| chat.read(cx).tool_use_line(cx)).as_deref() == Some(line)
+    });
+    ui.frame(|window, _| {
+        assert!(window.try_find("chat-tool-use").is_some());
+    });
+}
+
+#[test]
 fn tool_calls_show_their_diff_and_open_their_files() {
     let provider = ScriptedProvider::new();
     let fixture = Fixture::new(provider);
@@ -389,6 +427,7 @@ fn tool_calls_show_their_diff_and_open_their_files() {
         Step::Update(AgentUpdate::ToolCall(ToolCall {
             id: ToolCallId("t1".into()),
             title: "Edit src/main.rs".into(),
+            name: None,
             kind: ToolKind::Edit,
             status: ToolCallStatus::InProgress,
             content: vec![ToolCallContent::Diff {
@@ -541,6 +580,7 @@ fn a_tool_calls_terminal_opens_in_a_terminal_tab() {
         Step::Update(AgentUpdate::ToolCall(ToolCall {
             id: ToolCallId("t1".into()),
             title: "cargo test".into(),
+            name: None,
             kind: ToolKind::Execute,
             status: ToolCallStatus::InProgress,
             // An agent's `terminal/create`, mapped to daemon terminal 7.
@@ -1315,6 +1355,7 @@ fn chat_screenshots() {
         state_since: None,
         status: None,
         criteria: Vec::new(),
+        tool_use: Vec::new(),
         mode: Some("default".into()),
         closed: false,
         created_at: at,
@@ -1392,6 +1433,7 @@ fn chat_screenshots() {
         SessionUpdate::ToolCall(ToolCall {
             id: ToolCallId(id.into()),
             title: title.into(),
+            name: None,
             kind,
             status: ToolCallStatus::Completed,
             content,
