@@ -211,7 +211,7 @@ Rules:
 ### 7.1 Editor core (Zed-level editing)
 Multi-cursor and column selection, split panes, tab groups, fuzzy file and symbol finder, project search, outline and breadcrumbs, go to definition / references / implementation, rename, code actions, format on save, inlay hints, diagnostics panel, semantic highlighting, indent and bracket guides, folding, sticky scroll, optional vim mode, terminal, tasks/run configurations, and a large-file mode. The starting point is gpui-component's code editor, extended by Coqo where it falls short (anchored popovers, inline ghost values; see [ADR 0002](adr/0002-ui-editor-component.md)).
 
-**Live agent edits:** ACP agents write files through the client (`fs/write_text_file`), which is the daemon. Their edits therefore arrive in open buffers live, as tracked changes, even in files with unsaved user edits.
+**Live agent edits:** agent edits arrive in open buffers live, as tracked changes, even in files with unsaved user edits. ACP agents that write through the client (`fs/write_text_file`, served by the daemon) go straight into the replicated buffer. Claude Code writes files itself, so for Claude the daemon takes the diff from the ACP tool call (it arrives before the write) and reconciles open buffers through a workspace file watcher ([ADR 0005](adr/0005-claude-integration.md)).
 
 ### 7.1.1 ⚡ Bolt: on-demand language intelligence
 JDT LS and kotlin-lsp alone can use 1–3 GB, and often you only want to read code or watch an agent work. Coqo therefore splits language support into two layers:
@@ -247,7 +247,7 @@ JDT LS and kotlin-lsp alone can use 1–3 GB, and often you only want to read co
 
 | Kind | How | Examples |
 |---|---|---|
-| **ACP agent** | The daemon runs the agent as an ACP client. It renders messages, plans, tool calls, and diffs, answers permission requests, serves `fs/*` and `terminal/*`, and **injects the `coqo-editor` MCP server** in `session/new.mcpServers`. | **Claude** (Claude Agent ACP adapter, built on the Claude Agent SDK, runs your installed `claude`), Codex CLI, Gemini CLI, any ACP agent |
+| **ACP agent** | The daemon runs the agent as an ACP client. It renders messages, plans, tool calls, and diffs, answers permission requests, serves `fs/*` and `terminal/*`, and **injects the `coqo-editor` MCP server** in `session/new.mcpServers`. | **Claude** (`@agentclientprotocol/claude-agent-acp`, built on the Claude Agent SDK; Coqo installs it from npm and points it at your installed `claude` with `CLAUDE_CODE_EXECUTABLE`, [ADR 0005](adr/0005-claude-integration.md)), Codex CLI, Gemini CLI, any ACP agent |
 | **Terminal agent** | The official, unmodified `claude` CLI runs interactively in a Coqo terminal tab (the PTY is owned by the daemon, so it survives UI close), launched with `--mcp-config <coqo>`. You get the CLI's own UI, and **all Coqo editor features still work through MCP**. | Claude Code TUI |
 | **Native loop** | Coqo's own Rust agent loop over provider HTTP APIs, with an API key, Coqo tools, MCP servers (`rmcp`), and skills | Anthropic API, OpenAI API, OpenRouter, Ollama, Bedrock, Vertex |
 
@@ -255,7 +255,7 @@ JDT LS and kotlin-lsp alone can use 1–3 GB, and often you only want to read co
 
 | Mode | Auth | Billing |
 |---|---|---|
-| **Claude Code (your login)** via ACP | You run `claude` → `/login` yourself in the official binary. Coqo only spawns it and **never** sees, reads, or stores tokens. | Claude plan. ⚠️ Anthropic announced (May 2026) that ACP, `claude -p`, and SDK usage would move to a separate monthly **"Agent SDK credit"**. Per Zed's June 16, 2026 update this was postponed and subscriptions still apply. **This must be re-checked before release, and the UI shows which pool applies.** |
+| **Claude Code (your login)** via ACP | You run `claude` → `/login` yourself in the official binary. Coqo only spawns it and **never** sees, reads, or stores tokens. | Claude plan. ⚠️ Anthropic announced (May 2026) that ACP, `claude -p`, and SDK usage would move to a separate monthly **"Agent SDK credit"**. Anthropic paused that on June 15, 2026: Agent SDK, `claude -p` and third-party app usage still draw from subscription limits. Since Oct 7, 2026, Max/Ultra/Team plans also include monthly API credits, used only by an API key from the linked Console org. The billing source comes from ACP `auth/status`, and the UI shows which pool applies. **Re-check before release (#129).** A setting can stop plan logins over ACP (the adapter's `--hide-claude-auth`) and send those users to terminal mode, in case Anthropic rules that out. |
 | **Claude Code terminal** | Same: the unmodified CLI, interactive | Normal first-party Claude Code usage of your plan |
 | **Claude API key** | Console key in the OS keychain | API pay-as-you-go |
 | **Bedrock / Vertex / Foundry** | Cloud credentials | Cloud billing |
@@ -411,7 +411,7 @@ docs/                    PLAN.md, ADRs, protocol docs
 |---|---|---|---|
 | **S1** | Java + Kotlin coexisting in one Maven project | JDT LS + kotlin-lsp side by side on a mixed multi-module Maven sample: no server conflicts, clean diagnostics after cross-language edits (compile-on-save), `mvn verify` passes, mixed-project doctor rules | Run kotlin-lsp only for `.kt` with JDT LS reading compiled classes; JetBrains "Java and Kotlin" LSP if it can run standalone |
 | **S2** | Non-blocking JVM capture in mixed projects (one JDWP connection) | Run each of kotlin-lsp DAP (`start_debug_server`), java-debug, and a minimal JDI prototype against a Maven Spring Boot app with `.java` + `.kt` probes. Check: logpoint support, thread-only suspend, `.java` resolution in kotlin-lsp DAP, `.kt` resolution in java-debug, p50/p99 overhead per hit under load | `coqo-jvm-probe` (JDI/JDWP) |
-| **S3** | Claude via ACP, policy-safe auth, daemon-owned sessions | Claude Agent ACP adapter: lifecycle, MCP injection, permissions, `available_commands`, `session/load` after daemon restart, billing-source detection; terminal mode + `--mcp-config` in a daemon PTY | Terminal mode only for subscription users |
+| **S3** | Claude via ACP, policy-safe auth, daemon-owned sessions | Claude Agent ACP adapter: lifecycle, MCP injection, permissions, `available_commands`, `session/load` after daemon restart, billing-source detection; terminal mode + `--mcp-config` in a daemon PTY | Terminal mode only for subscription users. **Go** ([ADR 0005](adr/0005-claude-integration.md)) |
 | **S4** | GPUI editor capability | gpui-component editor: 100k-line file, 500 decorations, anchored popovers, inline ghost values, side-by-side diff of a 5k-line file, multi-cursor feel | Own editor element on rope + tree-sitter |
 | **S5** | Packaging and notifications | Notarized `.app` with daemon helper + notifications; AppImage/deb/rpm/Flatpak; Wayland + X11 | Per-platform workarounds |
 | **S6** | UI↔daemon buffer replication | Op-log vs `yrs` CRDT: typing latency under 1 ms locally, concurrent agent + user edits, reattach with unsaved changes | Daemon-authoritative with optimistic local apply |
@@ -469,6 +469,7 @@ Dependencies: M1 → M2 → M3 → M4 → M5 → (M6 ∥ M7) → M8. M9 depends 
 | 6 | Agents run in a background daemon that survives the UI and supports reattach | ✅ decided |
 | 7 | Mixed Java+Kotlin: coexist and compile together; no cross-language code navigation required | ✅ decided |
 | 8 | JVM debug/trace adapter: kotlin-lsp DAP vs java-debug vs `coqo-jvm-probe`, chosen per project behind one interface | decided by spike S2 |
+| 9 | Claude: the Claude Agent ACP adapter on the user's installed `claude`, with terminal mode beside it ([ADR 0005](adr/0005-claude-integration.md)) | ✅ decided by spike S3 |
 
 ## 14. Design mocks
 
