@@ -164,9 +164,16 @@ impl Agent {
         self.send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
     }
 
-    /// Wait for the process to exit; its status and stderr.
+    /// Close stdin and wait for the process to exit; its status and
+    /// stderr.
     fn wait(mut self) -> (ExitStatus, String) {
         drop(self.stdin.take());
+        self.wait_open()
+    }
+
+    /// Wait for the process to exit with stdin still open (so it cannot
+    /// exit for stdin EOF); its status and stderr.
+    fn wait_open(mut self) -> (ExitStatus, String) {
         let deadline = Instant::now() + TIMEOUT;
         let status = loop {
             if let Some(status) = self.child.try_wait().unwrap() {
@@ -174,7 +181,13 @@ impl Agent {
             }
             if Instant::now() > deadline {
                 let _ = self.child.kill();
-                panic!("coqod mcp did not exit");
+                let _ = self.child.wait();
+                let mut stderr = String::new();
+                let _ = std::io::Read::read_to_string(
+                    &mut self.child.stderr.take().unwrap(),
+                    &mut stderr,
+                );
+                panic!("coqod mcp did not exit: {stderr}");
             }
             std::thread::sleep(Duration::from_millis(20));
         };
@@ -231,7 +244,8 @@ async fn coqod_mcp_exits_when_the_daemon_stops() {
     let mut agent = Agent::spawn(daemon.bridge(&ws.id.0, Some(&daemon.token())));
     agent.initialize();
     drop(daemon);
-    let (status, stderr) = agent.wait();
+    // stdin stays open: closing it could win the race and exit cleanly.
+    let (status, stderr) = agent.wait_open();
     assert!(!status.success(), "{status}");
     assert!(stderr.contains("daemon connection closed"), "{stderr}");
 }
