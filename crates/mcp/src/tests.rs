@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use coqo_protocol::methods::fs::{ReadFile, ReadResult};
+use coqo_protocol::methods::editor::{self as edm, EditorContext, RevealResult};
 use coqo_protocol::methods::workspace::{
     self as wsm, RootId, WorkspaceId, WorkspaceInfo, WorkspaceRoot,
 };
@@ -39,7 +39,8 @@ fn ws_info() -> WorkspaceInfo {
     }
 }
 
-/// A daemon with `workspace/get` and `fs/read` for one workspace.
+/// A daemon with `workspace/get`, `editor/getContext` (no window) and
+/// `editor/reveal` for one workspace.
 async fn fake_daemon() -> (Client, tokio::sync::oneshot::Sender<()>) {
     let router = Router::new()
         .method::<wsm::Get, _, _>(|_cx, p| async move {
@@ -49,20 +50,15 @@ async fn fake_daemon() -> (Client, tokio::sync::oneshot::Sender<()>) {
                 Err(ErrorObject::new(codes::FORBIDDEN, "other workspace"))
             }
         })
-        .method::<ReadFile, _, _>(|_cx, p| async move {
+        .method::<edm::GetContext, _, _>(|_cx, p| async move {
+            Ok(EditorContext {
+                workspace: p.workspace,
+                windows: Vec::new(),
+            })
+        })
+        .method::<edm::Reveal, _, _>(|_cx, p| async move {
             match (p.workspace.0.as_str(), p.root, p.path.as_str()) {
-                ("ws-1", RootId(0), "src/a.txt") => Ok(ReadResult {
-                    text: Some("hello\n".into()),
-                    binary: false,
-                    size: 6,
-                    mtime: None,
-                }),
-                ("ws-1", RootId(0), "logo.png") => Ok(ReadResult {
-                    text: None,
-                    binary: true,
-                    size: 3,
-                    mtime: None,
-                }),
+                ("ws-1", RootId(0), "src/a.txt") => Ok(RevealResult { delivered: false }),
                 _ => Err(ErrorObject::new(codes::FORBIDDEN, "outside")),
             }
         });
@@ -202,6 +198,17 @@ impl Agent {
     }
 }
 
+/// The core tools, in the order `tools/list` gives them.
+const CORE_TOOLS: [&str; 7] = [
+    "annotate",
+    "ask_question",
+    "await_answer",
+    "editor_context",
+    "editor_reveal",
+    "set_acceptance_criteria",
+    "set_status",
+];
+
 fn core_registry() -> ToolRegistry {
     let registry = ToolRegistry::new();
     tools::core(&registry);
@@ -227,63 +234,84 @@ async fn initialize_list_and_call() {
         "{init}"
     );
 
+    let instructions = result["instructions"].as_str().unwrap();
+    assert_eq!(instructions, crate::server::INSTRUCTIONS);
+    for tool in ["editor_context", "ask_question", "set_status"] {
+        assert!(instructions.contains(tool), "{tool} in {instructions}");
+    }
+
+    // Only the editor-only tools (ADR 0014): nothing the agent's own file
+    // tools already do.
     let list = agent.request("tools/list", json!({})).await;
     let tools = list["result"]["tools"].as_array().unwrap();
     let names: Vec<_> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(
-        names,
-        [
-            "annotate",
-            "ask_question",
-            "await_answer",
-            "editor_context",
-            "editor_reveal",
-            "file_outline",
-            "find_files",
-            "list_files",
-            "read_file",
-            "set_acceptance_criteria",
-            "set_status",
-            "workspace_info"
-        ]
+    assert_eq!(names, CORE_TOOLS);
+    for tool in tools {
+        let description = tool["description"].as_str().unwrap();
+        assert!(
+            description.contains("Use it") || description.contains("Call it"),
+            "{} says when to use it: {description}",
+            tool["name"]
+        );
+    }
+    let context = tools
+        .iter()
+        .find(|t| t["name"] == "editor_context")
+        .unwrap();
+    assert_eq!(context["inputSchema"]["type"], "object");
+    assert_eq!(context["annotations"]["readOnlyHint"], true);
+    let reveal = tools.iter().find(|t| t["name"] == "editor_reveal").unwrap();
+    assert_eq!(reveal["inputSchema"]["required"], json!(["path"]));
+    assert!(
+        reveal["inputSchema"]["properties"]["path"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("relative")
     );
-    let read = tools.iter().find(|t| t["name"] == "read_file").unwrap();
-    assert_eq!(read["inputSchema"]["type"], "object");
-    assert_eq!(read["inputSchema"]["required"], json!(["path"]));
-    assert_eq!(read["annotations"]["readOnlyHint"], true);
-    assert!(read["description"].as_str().unwrap().contains("relative"));
 
-    let info = agent.call("workspace_info", json!({})).await;
-    assert_eq!(info["result"]["isError"], false, "{info}");
-    let structured = &info["result"]["structuredContent"];
-    assert_eq!(structured["id"], "ws-1");
-    assert_eq!(structured["name"], "demo");
-    assert_eq!(structured["session"], "s-1");
-    assert_eq!(structured["roots"][0]["path"], "/work/demo");
-    assert!(text(&info).contains("/work/demo"));
+    // editor_context without a window still gives the roots and session.
+    let context = agent.call("editor_context", json!({})).await;
+    assert_eq!(context["result"]["isError"], false, "{context}");
+    let structured = &context["result"]["structuredContent"];
+    assert_eq!(structured["attached"], false);
+    assert_eq!(structured["workspace"]["id"], "ws-1");
+    assert_eq!(structured["workspace"]["name"], "demo");
+    assert_eq!(structured["workspace"]["session"], "s-1");
+    assert_eq!(
+        structured["workspace"]["roots"],
+        json!([{ "id": 0, "name": "demo", "path": "/work/demo" }])
+    );
+    let summary = text(&context);
+    assert!(
+        summary.starts_with("Workspace: demo (session s-1)\nRoot: /work/demo\nNo Coqo window"),
+        "{summary}"
+    );
 
     // Relative to the first root, or absolute inside it.
-    let file = agent
-        .call("read_file", json!({ "path": "src/a.txt" }))
-        .await;
-    assert_eq!(text(&file), "hello\n", "{file}");
-    let file = agent
-        .call("read_file", json!({ "path": "/work/demo/src/a.txt" }))
-        .await;
-    assert_eq!(text(&file), "hello\n", "{file}");
+    for path in ["src/a.txt", "/work/demo/src/a.txt"] {
+        let r = agent.call("editor_reveal", json!({ "path": path })).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        assert_eq!(
+            r["result"]["structuredContent"]["path"],
+            "/work/demo/src/a.txt"
+        );
+    }
 
     // Tool failures are results the model can read, not protocol errors.
     for (args, expect) in [
         (json!({}), "`path`"),
         (json!({ "path": "/etc/passwd" }), "outside the workspace"),
         (json!({ "path": "../b/x" }), "outside"),
-        (json!({ "path": "logo.png" }), "not a UTF-8 text file"),
+        (
+            json!({ "path": "x", "line": 0 }),
+            "`line` must be at least 1",
+        ),
         (
             json!({ "path": "x", "root": "zero" }),
             "`root` must be an integer",
         ),
     ] {
-        let r = agent.call("read_file", args.clone()).await;
+        let r = agent.call("editor_reveal", args.clone()).await;
         assert_eq!(r["result"]["isError"], true, "{args}: {r}");
         assert!(text(&r).contains(expect), "{args}: {r}");
     }
@@ -325,7 +353,10 @@ async fn registry_changes_and_progress_reach_the_agent() {
     registry.register(Slow).unwrap();
     agent.notification("notifications/tools/list_changed").await;
     let list = agent.request("tools/list", json!({})).await;
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 13);
+    assert_eq!(
+        list["result"]["tools"].as_array().unwrap().len(),
+        CORE_TOOLS.len() + 1
+    );
 
     let r = agent
         .request(

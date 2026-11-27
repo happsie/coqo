@@ -224,7 +224,7 @@ JDT LS and kotlin-lsp alone can use 1–3 GB, and often you only want to read co
 
 - **The bolt button** in the top bar shows how many languages have intellisense on ("1 of 3"). Its popover lists each language in the workspace with its server, its state (`sleeping · starting · indexing · ready`), live memory use, and a switch. The status bar shows the same state in short form, and a tab shows a small ⚡ badge when its language has intellisense on.
 - **Per-workspace memory:** bolt state is saved per workspace and language. There is a global default (off) and a per-repo default in `.coqo/settings.toml`.
-- **Agents and the bolt:** the agent's `lsp_*` MCP tools respect the bolt. A setting, on by default, *"Let agents wake a sleeping server"*, lets an agent start the server for a tool call. It goes back to sleep after N minutes idle, and that state is shown in the UI. With the setting off, agents get a clear "intellisense is off for Kotlin" tool result and fall back to grep or tree-sitter.
+- **Agents and the bolt:** Coqo gives agents no `lsp_*` MCP tools (#204, not planned; [ADR 0014](adr/0014-editor-tools-and-mod-tools.md)): code navigation is the harness's job (Claude Code's own LSP, Grep and Read). The bolt governs the editor's language servers.
 - **Sleep, not kill:** turning the bolt off shuts the server down cleanly. Where the server supports it, its index cache is kept on disk, so turning it back on later is fast.
 - Implemented by the `lsp` mod as a `coqo.intellisense@1` service, so language mods only declare their server and don't manage its lifecycle themselves.
 
@@ -237,7 +237,7 @@ JDT LS and kotlin-lsp alone can use 1–3 GB, and often you only want to read co
   - Build: the standard mixed setup, where `kotlin-maven-plugin` compiles first (both `src/main/kotlin` and `src/main/java` as source dirs, execution id `kotlin-compile`, which kotlin-lsp's Maven import recognises), followed by `maven-compiler-plugin`. The `maven` mod includes a **mixed-project doctor** that checks the plugin ordering and source dirs and offers a fix.
   - No false errors: JDT LS only sees Kotlin types through compiled classes. `jvm-mixed` therefore triggers an incremental Kotlin compile when `.kt` files are saved, so Java files that use Kotlin types don't show bogus "cannot resolve" diagnostics.
   - **Spike S1** checks that both servers run side by side on a mixed multi-module Maven sample, that diagnostics stay clean after cross-language edits, and that `mvn verify` passes.
-- Language servers live in the **daemon**, so JDT LS and kotlin-lsp **stay indexed across UI restarts**. Agents can use them through MCP (`lsp_*` tools) even while the UI is closed.
+- Language servers live in the **daemon**, so JDT LS and kotlin-lsp **stay indexed across UI restarts**.
 - **Maven mod:** detects `pom.xml`/`mvnw`, shows a module tree with goals and plugins, handles run configs, parses surefire/failsafe reports into a test explorer, and shows the dependency tree. Agent tools: `maven_run`, `maven_test`, `maven_modules`.
 
 ### 7.3 Agent chat (first-class)
@@ -274,13 +274,12 @@ Hard rules, documented in `agent-claude` and in CONTRIBUTING: no claude.ai OAuth
 - An agent launches `coqod mcp --workspace <id> --session <id>` (the same binary in a stdio MCP server mode). It connects to the daemon socket with a one-time session token from its environment, and that token's scope routes calls to the right workspace and agent session ([ADR 0012](adr/0012-editor-mcp-bridge.md)). **This works whether or not a UI is open.**
 - **Tools are contributed by mods** through the registry, so a new mod automatically gives agents new editor powers. Mods register them in the daemon (`ModContext::register_mcp_tool`); the bridge lists them over `mcp/*`, names an installed mod's tools `<mod id>_<tool>`, and checks every call's arguments against the tool's schema. The UI publishes each window's editor context to the daemon, and reveals reach it over a daemon topic ([ADR 0014](adr/0014-editor-tools-and-mod-tools.md)).
 
+- **Editor-only tools.** A tool exists only for what no harness already offers: the editor's live state, the user (questions, notes, status), and Coqo's own features (criteria, walkthroughs, trace). Reading, listing and searching files, outlines and LSP navigation are left to the agent's own tools (Claude Code's Read, Glob, Grep, LSP); each tool definition costs context on every turn. Every description says when to use the tool, and the server's MCP instructions say when to reach for each ([ADR 0014](adr/0014-editor-tools-and-mod-tools.md)). Mod tools follow the same rule.
+
 | Tool | Purpose |
 |---|---|
-| `workspace_info` / `read_file` / `list_files` / `find_files` | The workspace's roots and files (ignores respected) |
-| `file_outline` | A file's symbols as a tree, from tree-sitter (always on, no language server) |
-| `editor_context` | Open files, selection, cursors, visible ranges (when the UI is attached) |
-| `editor_reveal` | Open or reveal a location for the user |
-| `lsp_diagnostics` / `lsp_references` / `lsp_symbols` / `lsp_definition` | Real IDE intelligence for agents (Java/Kotlin especially) |
+| `editor_context` | What the user is looking at: active file, selections, cursors, visible lines, open tabs (when the UI is attached), plus the workspace's roots and the session id |
+| `editor_reveal` | Show the user code: open a file and select a range |
 | `ask_question` | **Anchored question** (§7.5). Blocks until answered (with progress), or returns an id when `wait: false` |
 | `await_answer` | Waits for an async question |
 | `annotate` | Non-blocking anchored info or warning note ([ADR 0016](adr/0016-anchored-questions.md)) |

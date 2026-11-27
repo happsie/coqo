@@ -287,11 +287,13 @@ impl Tool for AskQuestionTool {
         props.insert("timeout_s".into(), timeout_property());
         ToolDefinition::new(
             "ask_question",
-            "Ask the user a question pinned to code in Coqo: it appears in the editor at \
-             those lines, and the user answers there. Use it when you need a decision or a \
-             fact only the user has, about specific code. By default it waits for the answer \
-             (with progress) and returns it; with `wait: false` it returns an id for \
-             await_answer. Lines are 1-based.",
+            "Ask the user a question pinned to lines of code: it appears in the Coqo editor at \
+             those lines, and the user answers there with the code in view. Use it instead of \
+             asking in chat whenever the question is about specific code (which approach to \
+             take here, whether this behaviour is intended, whether you may change this API). \
+             Give `options` for a decision. It blocks until the user answers (with progress) \
+             and returns the answer, unless `wait: false`: then it returns an id at once, so \
+             you can go on and collect the answer later with await_answer. Lines are 1-based.",
         )
         .with_title("Ask a question about code")
         .with_schema(json!({
@@ -381,8 +383,10 @@ impl Tool for AwaitAnswerTool {
         ToolDefinition::new(
             "await_answer",
             "Wait for the user's answer to a question asked with ask_question (by its id), \
-             with progress, and return it. Returns at once if it is already answered or \
-             dismissed; if the wait runs out, the question stays open.",
+             with progress, and return it. Use it after ask_question with `wait: false` once \
+             you need the answer, or to wait again after a question timed out. Returns at once \
+             if it is already answered or dismissed; if the wait runs out, the question stays \
+             open.",
         )
         .with_title("Wait for an answer")
         .read_only()
@@ -441,9 +445,11 @@ impl Tool for AnnotateTool {
         );
         ToolDefinition::new(
             "annotate",
-            "Pin a note to code in Coqo for the user to see: an observation, a caveat or a \
-             warning at those lines. It does not wait for anything and does not edit the \
-             file. Lines are 1-based.",
+            "Pin a note to lines of code for the user to see in the Coqo editor, without \
+             waiting for a reply: an observation, a caveat, a risk or a follow-up at those \
+             lines (`severity: warning` for one they should not miss). Use it instead of a \
+             remark in chat when the remark is about particular lines, e.g. a known limitation \
+             of a change you just made. It does not edit the file. Lines are 1-based.",
         )
         .with_title("Annotate code")
         .with_schema(json!({

@@ -349,30 +349,35 @@ async fn a_session_bridge_reaches_its_own_workspace_until_the_session_closes() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    for name in ["read_file", "workspace_info", "editor_context"] {
+    for name in ["editor_context", "editor_reveal", "ask_question"] {
         assert!(names.iter().any(|n| n == name), "{name} in {names:?}");
     }
 
-    let (is_error, _, info) = bridge.call("workspace_info", json!({})).await;
-    assert!(!is_error, "{info}");
+    let (is_error, _, context) = bridge.call("editor_context", json!({})).await;
+    assert!(!is_error, "{context}");
+    let info = &context["workspace"];
     assert_eq!(info["id"], a.id.0);
     assert_eq!(info["session"], session.id.0);
     assert_eq!(info["roots"][0]["path"], a.roots[0].path);
 
-    let (is_error, text, _) = bridge.call("read_file", json!({ "path": "a.txt" })).await;
+    // No UI here, so nobody sees a reveal, but the path is the workspace's.
+    let (is_error, text, _) = bridge
+        .call("editor_reveal", json!({ "path": "a.txt" }))
+        .await;
     assert!(!is_error, "{text}");
-    assert_eq!(text, "text\n");
     let absolute = format!("{}/a.txt", a.roots[0].path);
-    let (_, text, _) = bridge.call("read_file", json!({ "path": absolute })).await;
-    assert_eq!(text, "text\n");
+    let (is_error, text, _) = bridge
+        .call("editor_reveal", json!({ "path": absolute }))
+        .await;
+    assert!(!is_error, "{text}");
 
     // Outside the workspace: refused by the tool, the daemon's path checks,
     // and the route policy.
     let other = format!("{}/b.txt", b.roots[0].path);
-    let (is_error, text, _) = bridge.call("read_file", json!({ "path": other })).await;
+    let (is_error, text, _) = bridge.call("editor_reveal", json!({ "path": other })).await;
     assert!(is_error && text.contains("outside"), "{text}");
     let (is_error, text, _) = bridge
-        .call("read_file", json!({ "path": "../b.txt" }))
+        .call("editor_reveal", json!({ "path": "../b.txt" }))
         .await;
     assert!(is_error, "{text}");
     let read_b = bridge
@@ -401,7 +406,7 @@ async fn a_session_bridge_reaches_its_own_workspace_until_the_session_closes() {
     let mut lying = spec.clone();
     lying.args[2] = b.id.0.clone();
     let mut misrouted = Bridge::launch(&h, &lying, Some(ticket.expose())).await;
-    let (is_error, text, _) = misrouted.call("workspace_info", json!({})).await;
+    let (is_error, text, _) = misrouted.call("editor_context", json!({})).await;
     assert!(is_error, "{text}");
     assert!(text.contains("outside this connection's scope"), "{text}");
 

@@ -90,6 +90,7 @@ Static contributions go under `[contributes]`. A point's id is its key path ther
 
 Some details:
 
+- **MCP tools** must give agents something they cannot do with their own tools: wrap what only your mod knows or does (`maven_test` runs Maven with the mod's settings and reports the failures), never a second way to read, list or search files or navigate code; Claude Code's Read, Glob, Grep and LSP already do that, and every tool costs the agent context on every turn. Write the `description` for the agent and say **when** to use the tool, not only what it does ([ADR 0014](../adr/0014-editor-tools-and-mod-tools.md)).
 - **Keys** are chords separated by spaces, each chord being modifiers and a key joined by `+`: `ctrl+shift+p`, `mod+k mod+s`. Modifiers are `ctrl`, `alt`, `shift`, `cmd` and `mod` (`cmd` on macOS, `ctrl` elsewhere). Keys are lowercase: one character, `f1`…`f24`, or `enter`, `escape`, `tab`, `space`, `backspace`, `delete`, `insert`, `home`, `end`, `pageup`, `pagedown`, `up`, `down`, `left`, `right`.
 - **Menus** are `command_palette`, `editor.context`, `editor.title`, `explorer.context`, `tab.context` and `view.title`.
 - **Setting types** are `boolean`, `string`, `integer`, `number`, `enum` (needs `values`) and `string_list`. `default` must match the type, and `minimum` / `maximum` apply only to numbers.

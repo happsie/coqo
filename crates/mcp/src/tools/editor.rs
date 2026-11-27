@@ -59,6 +59,36 @@ fn tab_json(ws: &WorkspaceInfo, tab: &EditorTab) -> Value {
     v
 }
 
+/// The workspace and session, for `editor_context`'s result.
+fn workspace_json(ws: &WorkspaceInfo, session: &str) -> Value {
+    json!({
+        "id": ws.id,
+        "name": ws.name,
+        "session": session,
+        "roots": ws.roots.iter().map(|r| json!({
+            "id": r.id,
+            "name": r.name,
+            "path": r.path,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// The workspace and session, as the first lines of `editor_context`'s text.
+fn workspace_text(ws: &WorkspaceInfo, session: &str) -> Vec<String> {
+    let mut text = vec![format!("Workspace: {} (session {session})", ws.name)];
+    match ws.roots.as_slice() {
+        [] => text.push("No folder roots.".into()),
+        [root] => text.push(format!("Root: {}", root.path)),
+        roots => {
+            text.push("Roots (id: path):".into());
+            for r in roots {
+                text.push(format!("- {}: {}", r.id.0, r.path));
+            }
+        }
+    }
+    text
+}
+
 /// `editor_context`.
 #[derive(Debug)]
 pub struct EditorContextTool;
@@ -67,11 +97,14 @@ impl Tool for EditorContextTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new(
             "editor_context",
-            "What the user is looking at in Coqo right now: the active file, its selections and \
-             cursors (with the selected text), the lines on screen, and the other open file \
-             tabs (unsaved ones marked). Lines and columns are 1-based. Use it when the user \
-             says \"this\", \"here\" or \"the selected code\". Empty when no Coqo window shows \
-             the workspace.",
+            "What the user is looking at in Coqo right now: the active file with its cursors \
+             and selections (and the selected text), the lines on screen, and the other open \
+             tabs (unsaved ones marked), plus the workspace's folder roots and this session's \
+             id. Call it first whenever the user refers to \"this\", \"here\", \"the \
+             selection\", \"this function\" or \"the open file\", or asks about what they are \
+             looking at, instead of guessing which code they mean. Lines and columns are \
+             1-based. When no Coqo window shows the workspace it says so and gives only the \
+             roots.",
         )
         .with_title("Editor context")
         .read_only()
@@ -83,22 +116,24 @@ impl Tool for EditorContextTool {
         _args: Map<String, Value>,
     ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         Box::pin(async move {
+            let ws = workspace(cx).await?;
             let context = cx
                 .daemon()
                 .request::<edm::GetContext>(GetContextParams {
                     workspace: cx.workspace().clone(),
                 })
                 .await?;
+            let about = workspace_json(&ws, cx.session());
+            let mut text = workspace_text(&ws, cx.session());
             let Some(window) = context.windows.first() else {
-                let mut output = ToolOutput::json(json!({ "attached": false }));
-                output.text = NO_WINDOW.into();
+                text.push(NO_WINDOW.into());
+                let mut output = ToolOutput::json(json!({ "attached": false, "workspace": about }));
+                output.text = text.join("\n");
                 return Ok(output);
             };
-            let ws = workspace(cx).await?;
             let tabs = &window.context.tabs;
             let active = tabs.iter().find(|t| t.active);
 
-            let mut text = Vec::new();
             match active {
                 Some(tab) => {
                     text.push(format!(
@@ -146,6 +181,7 @@ impl Tool for EditorContextTool {
 
             let mut output = ToolOutput::json(json!({
                 "attached": true,
+                "workspace": about,
                 "focused": window.context.focused,
                 "activeFile": active.map(|t| tab_json(&ws, t)),
                 "openTabs": tabs.iter().map(|t| tab_json(&ws, t)).collect::<Vec<_>>(),
@@ -218,10 +254,12 @@ impl Tool for EditorRevealTool {
         );
         ToolDefinition::new(
             "editor_reveal",
-            "Show the user a place in Coqo: open the file in an editor tab, scroll to `line` and \
-             select from `line`/`column` to `end_line`/`end_column` (1-based). Use it to point \
-             at code you are talking about. It moves the user's cursor, so don't call it \
-             unprompted in a loop. Does not edit anything.",
+            "Show the user code in Coqo: open the file in an editor tab, scroll to `line` and \
+             select from `line`/`column` to `end_line`/`end_column` (1-based). Use it to show \
+             the user the code you are talking about, or code you just changed that they \
+             should look at. It moves the user's cursor, so call it once per place you want \
+             them to see, not for files you only read yourself and not in a loop. Does not \
+             edit anything.",
         )
         .with_title("Reveal in editor")
         .with_schema(json!({
