@@ -198,13 +198,11 @@ pub async fn connect(
         Err(e) if is_not_running(&e) => return Err(ConnectError::NotRunning(path)),
         Err(source) => return Err(ConnectError::Io { path, source }),
     };
-    let uid = stream
-        .peer_cred()
-        .map_err(|source| ConnectError::Io {
-            path: path.clone(),
-            source,
-        })?
-        .uid();
+    let uid = match stream.peer_cred() {
+        Ok(cred) => cred.uid(),
+        Err(e) if is_not_running(&e) => return Err(ConnectError::NotRunning(path)),
+        Err(source) => return Err(ConnectError::Io { path, source }),
+    };
     if uid != current_uid() {
         return Err(ConnectError::ForeignDaemon { path, uid });
     }
@@ -213,13 +211,25 @@ pub async fn connect(
         // answers with a clear `Unauthorized`.
         config.token = dir.read_token()?;
     }
-    Ok(Client::connect(stream, config).await?)
+    match Client::connect(stream, config).await {
+        Ok(client) => Ok(client),
+        // A non-blocking connect to a socket nobody listens on can report
+        // success; the refusal then shows up as a reset, a broken pipe or EOF
+        // on the first write or read. That is a stale socket, not a daemon.
+        Err(ProtocolError::Io(e)) if is_not_running(&e) => Err(ConnectError::NotRunning(path)),
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn is_not_running(e: &io::Error) -> bool {
     matches!(
         e.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+        io::ErrorKind::NotFound
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::UnexpectedEof
     )
 }
 
@@ -353,6 +363,25 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ConnectError::NotRunning(_)), "{err}");
+    }
+
+    #[test]
+    fn refusals_that_surface_after_connect_mean_not_running() {
+        // Seen on CI (#149): the stale-socket refusal arrives as EPIPE or
+        // ECONNRESET during the handshake instead of ECONNREFUSED on connect.
+        for kind in [
+            io::ErrorKind::ConnectionRefused,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::NotConnected,
+            io::ErrorKind::UnexpectedEof,
+            io::ErrorKind::NotFound,
+        ] {
+            assert!(is_not_running(&io::Error::from(kind)), "{kind:?}");
+        }
+        assert!(!is_not_running(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
     }
 
     #[tokio::test]
