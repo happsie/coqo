@@ -1,12 +1,24 @@
 [package]
 name = "coqo-anchors"
-description = "Anchor model and re-anchoring of code locations."
+description = "Anchor model and re-anchoring of code locations: questions, walkthroughs, comments and trace points pinned to code that survive edits."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+
+[dependencies]
+# Enclosing symbols (fingerprints, relocation by symbol identity).
+coqo-syntax = { path = "../syntax" }
+serde = { version = "1", features = ["derive"] }
+# Myers diff for similarity and offset mapping (Apache-2.0; no dependencies
+# without its default `text` feature).
+similar = { version = "2.7", default-features = false }
+
+[dev-dependencies]
+proptest = "1"
+serde_json = "1"
 
 [lints]
 workspace = true

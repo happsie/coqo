@@ -16,3 +16,4 @@ Architecture decisions for Coqo, one file per decision. See [ADR 0001](0001-reco
 | [0010](0010-replicated-buffers.md) | Replicated buffers: protocol details, disk merges and the journal (refines 0006) | Accepted |
 | [0011](0011-syntax-layer.md) | Syntax layer: `coqo-syntax`, shared by the daemon and the UI | Accepted |
 | [0012](0012-editor-mcp-bridge.md) | Editor MCP bridge: `coqod mcp`, one-time session tokens and the tool registry | Accepted |
+| [0013](0013-anchors.md) | Anchors: `coqo-anchors`, exact mapping first, fingerprint relocation after a gap | Accepted |

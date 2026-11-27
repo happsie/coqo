@@ -293,8 +293,8 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 
 ### 7.5 Anchored questions
 - **Anchor model** (`coqo-anchors` crate, shared by questions, walkthroughs, comments, and trace):
-  `{ path, range: {start:{line,col}, end:{line,col}}, text_hash, context_before[3], context_after[3], rev }`
-  **Re-anchoring** after edits tries, in order: the exact range, a search for the snippet nearby, a fuzzy match (diff + tree-sitter node identity), and finally an `orphaned` state shown with its original snippet.
+  `{ path, range: {start:{line,col,offset}, end:{line,col,offset}}, text_hash, text, prefix, suffix, context_before[3], context_after[3], symbol, rev }` (`symbol`: the enclosing tree-sitter symbol's path and kind).
+  **Re-anchoring** after edits first maps the range exactly through the buffer's changes when they are known. After a gap (disk change, restart) it tries, in order: the exact range, a search for the snippet, a whitespace-insensitive match, a fuzzy match (line diff + tree-sitter symbol identity), and finally an `orphaned` state shown with its original snippet. The status is `exact`, `moved`, `fuzzy` (with a confidence) or `orphaned`, and a weak or ambiguous match is orphaned rather than guessed. See [ADR 0013](adr/0013-anchors.md).
 - **UI:** a gutter marker plus range highlight and a **popover** anchored to the code, with the question (markdown), quick-answer option buttons, a free-text reply, an "open in chat" link, and the asking agent and session. One question can have several anchors ("these two places disagree"). A questions panel lists everything open in the workspace. `F8` / `Shift+F8` jump to the next/previous question.
 - **Kinds:** `decision` (options), `clarification` (free text), `confirmation` (yes/no), `info` (acknowledge).
 - **Answer flow:** the answer returns as the MCP tool result *and* appears in the chat transcript as a structured message linked to the anchor. Unanswered blocking questions raise alerts.
