@@ -156,6 +156,9 @@ pub struct ChildSpec {
     pub args: Vec<OsString>,
     /// Extra environment variables (on top of the daemon's).
     pub env: Vec<(OsString, OsString)>,
+    /// Variables of the daemon's environment not to pass on (applied before
+    /// [`env`](Self::env), so a variable both removed and set is set).
+    pub env_remove: Vec<OsString>,
     /// Working directory; the daemon's if `None`.
     pub cwd: Option<PathBuf>,
     /// How the standard streams are wired.
@@ -175,6 +178,7 @@ impl ChildSpec {
             program: program.into(),
             args: Vec::new(),
             env: Vec::new(),
+            env_remove: Vec::new(),
             cwd: None,
             stdio: ChildStdio::default(),
             restart: RestartPolicy::default(),
@@ -204,6 +208,12 @@ impl ChildSpec {
         self
     }
 
+    /// Does not pass the daemon's variable `key` on to the child.
+    pub fn env_remove(mut self, key: impl Into<OsString>) -> Self {
+        self.env_remove.push(key.into());
+        self
+    }
+
     /// Sets the working directory.
     pub fn current_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.cwd = Some(dir.into());
@@ -230,6 +240,9 @@ impl ChildSpec {
 
     fn command(&self) -> Command {
         let mut cmd = Command::new(&self.program);
+        for key in &self.env_remove {
+            cmd.env_remove(key);
+        }
         cmd.args(&self.args)
             .envs(self.env.iter().map(|(k, v)| (k, v)))
             .process_group(0)

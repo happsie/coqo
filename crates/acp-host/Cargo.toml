@@ -1,12 +1,40 @@
 [package]
 name = "coqo-acp-host"
-description = "Agent Client Protocol host for running ACP agents."
+description = "Agent Client Protocol host: runs ACP agents as Coqo agent providers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+
+# A scripted ACP agent for tests (no network, no real agent). Built with the
+# crate so integration tests here and in provider crates can launch it.
+[[bin]]
+name = "coqo-fake-acp-agent"
+path = "src/bin/fake_acp_agent.rs"
+test = false
+doc = false
+
+[dependencies]
+# The official ACP SDK (Apache-2.0). Pinned exactly: it churns hard (majors
+# 1 to 5 in five months, ADR 0005), and only this crate may use it.
+# `unstable_auth_status` gives the billing badge (`auth/status_update`). The
+# adapter process is spawned by the kernel supervisor, not the SDK, so the
+# `process` feature is not needed.
+agent-client-protocol = { version = "=5.6.1", features = ["unstable_auth_status"] }
+coqo-agents = { path = "../agents" }
+coqo-kernel = { path = "../kernel" }
+coqo-mod-api = { path = "../mod-api" }
+serde_json = "1"
+tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "rt", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+tracing = "0.1"
+
+[dev-dependencies]
+coqo-protocol = { path = "../protocol" }
+tempfile = "3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

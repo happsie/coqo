@@ -8,10 +8,12 @@
 //! idle-exit mid-turn, and transcripts are persisted in `coqo.db`.
 
 use std::any::Any;
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use coqo_agents::model::ProviderInfo;
+use coqo_acp_host::AgentFs;
+use coqo_agents::model::{ProviderInfo, SessionId};
 use coqo_agents::{
     AgentProvider, AgentProviderImpls, KeepAlive, ManagerOptions, ProviderRegistry, SessionManager,
     SessionStore, provider_info,
@@ -20,6 +22,7 @@ use coqo_kernel::ContributionRegistry;
 use coqo_mod_api::points;
 use coqo_protocol::Router;
 
+use crate::buffers::BufferService;
 use crate::daemon::DaemonContext;
 use crate::lifecycle::Activity;
 
@@ -30,6 +33,34 @@ pub struct ActivityKeepAlive(pub Activity);
 impl KeepAlive for ActivityKeepAlive {
     fn hold(&self, reason: String) -> Box<dyn Any + Send + Sync> {
         Box::new(self.0.busy(reason))
+    }
+}
+
+/// ACP agents' file access through the daemon's replicated buffers (ADR
+/// 0010): `fs/read_text_file` sees unsaved edits, `fs/write_text_file` into
+/// an open buffer is a tracked `agent` change, and tool-call diffs mark the
+/// disk write that follows as the session's.
+#[derive(Debug, Clone)]
+pub struct BufferFs(pub Arc<BufferService>);
+
+impl AgentFs for BufferFs {
+    fn expect_write(
+        &self,
+        session: &SessionId,
+        path: &Path,
+        old_text: Option<String>,
+        new_text: String,
+    ) {
+        self.0
+            .expect_agent_write(&session.0, path, old_text, new_text);
+    }
+
+    fn open_text(&self, path: &Path) -> Option<String> {
+        self.0.open_text(path)
+    }
+
+    fn replace_open(&self, session: &SessionId, path: &Path, text: &str) -> bool {
+        self.0.agent_replace(&session.0, path, text).is_some()
     }
 }
 

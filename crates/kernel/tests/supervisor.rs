@@ -303,3 +303,36 @@ async fn spawning_a_missing_program_fails() {
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     assert!(supervisor.snapshot().await.is_empty());
 }
+
+#[tokio::test]
+async fn env_remove_keeps_daemon_variables_from_the_child() {
+    timeout(LIMIT, async {
+        let supervisor = Supervisor::new();
+        let output = async |spec: ChildSpec| {
+            let mut child = supervisor
+                .spawn(spec.restart(RestartPolicy::never()))
+                .unwrap();
+            let events = events_until(&mut child, |e| matches!(e, ChildEvent::Output(_))).await;
+            let Some(ChildEvent::Output(line)) = events.last() else {
+                unreachable!()
+            };
+            line.line.clone()
+        };
+        let script = "echo \"home=${HOME-unset}\"";
+        assert_eq!(
+            output(sh("removed", script).env_remove("HOME")).await,
+            "home=unset"
+        );
+        assert_eq!(
+            output(
+                sh("replaced", script)
+                    .env_remove("HOME")
+                    .env("HOME", "/elsewhere")
+            )
+            .await,
+            "home=/elsewhere"
+        );
+    })
+    .await
+    .unwrap();
+}

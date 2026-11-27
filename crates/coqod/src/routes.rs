@@ -28,6 +28,8 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     let router = workspace::register(router, Arc::clone(&workspaces));
     let router = agents::register(router, agents::open(ctx)?);
     let buffers = BufferService::new(workspaces, ctx.data.clone(), BufferConfig::default());
+    ctx.agent_fs
+        .set(Arc::new(agents::BufferFs(Arc::clone(&buffers))));
     buffers::flush_on_shutdown(&buffers, ctx.shutdown.clone());
     let router = buffers::register(router, buffers);
     let router = terminal::register(router, terminal::Terminals::for_daemon(ctx));

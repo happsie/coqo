@@ -69,6 +69,10 @@ pub struct DaemonContext {
     /// The session tokens the daemon accepts. Services mint scoped tokens
     /// here ([`Auth::mint_session`]) for `coqod mcp`.
     pub auth: Auth,
+    /// Where ACP agents read and write files: set to the daemon's buffers
+    /// once they exist ([`routes::router`]), since provider mods activate
+    /// first.
+    pub agent_fs: coqo_acp_host::FsHandle,
 }
 
 /// Why the daemon could not start.
@@ -195,6 +199,7 @@ pub async fn serve(
     let activity = Activity::new();
     let (idle_tx, idle_rx) = watch::channel(IdlePhase::Active);
     let shutdown = CancellationToken::new();
+    let agent_fs = coqo_acp_host::FsHandle::new();
     let mods = Mods::load(mods::builtins());
     mods.start().await;
     let ctx = DaemonContext {
@@ -208,6 +213,7 @@ pub async fn serve(
         started: Instant::now(),
         mods,
         auth: auth.clone(),
+        agent_fs,
     };
     let router = routes::router(&ctx)?;
     tracing::debug!(?router, "routes registered");
