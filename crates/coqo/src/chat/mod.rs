@@ -14,9 +14,9 @@
 //! Coqo never signs anyone in: when a provider needs a login, the chat says
 //! how to sign in to the agent's own tool ([`SIGN_IN_HELP`]).
 //!
-//! Hooks for the composer work (#64: @-mentions, slash commands, the
-//! provider and model picker) are the [`PromptInput`](coqo_ui::input::PromptInput)
-//! in [`tab::ChatTab::composer`] and the transcript's `commands`.
+//! The composer (`tab::composer`) has @-mentions of workspace files, the
+//! session's slash commands and skills, the provider and mode dropdowns and
+//! prompt history.
 
 pub mod diff;
 pub mod list;
@@ -61,6 +61,9 @@ coqo_ui::gpui::actions!(
         NewChat,
         /// Stop the chat's running turn.
         CancelTurn,
+        /// A chat tab now shows another session (a provider switch): save
+        /// the layout, since the tab's key changed.
+        SessionSwitched,
     ]
 );
 
