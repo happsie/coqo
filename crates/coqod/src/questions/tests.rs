@@ -812,11 +812,11 @@ async fn ask_answer_and_await_through_the_bridge() {
     let data = tempfile::tempdir().unwrap();
     let daemon = Daemon::start(data.path(), &ScriptedProvider::new()).await;
     let ui = daemon.ui().await;
-    let (_dir, ws) = project(&ui).await;
+    let (dir, ws) = project(&ui).await;
     let mut agent = Agent::start(daemon.agent(&ws, "s-1").await, &ws, "s-1").await;
-    // Absolute paths are matched against the canonical root path, and macOS
+    // The temp folder as given: not the canonical root path on macOS, whose
     // temp folders are under a symlink (`/var` → `/private/var`).
-    let main_rs = Path::new(&ws.roots[0].path).join("src/main.rs");
+    let main_rs = dir.path().join("src/main.rs");
 
     // Asked without waiting: it is listed for the UI.
     let r = agent
@@ -916,11 +916,20 @@ async fn ask_answer_and_await_through_the_bridge() {
     let r = agent.ok("await_answer", json!({ "id": late.0 })).await;
     assert_eq!(r["structuredContent"]["status"], "dismissed", "{r}");
 
-    // A note: non-blocking, listed with its severity.
+    // A note: non-blocking, listed with its severity. Named through a
+    // symlink to the project, as by an agent whose cwd is one.
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("project");
+    std::os::unix::fs::symlink(dir.path(), &link).unwrap();
     let r = agent
         .ok(
             "annotate",
-            json!({ "path": "notes.txt", "line": 2, "note": "Typo?", "severity": "warning" }),
+            json!({
+                "path": link.join("notes.txt"),
+                "line": 2,
+                "note": "Typo?",
+                "severity": "warning",
+            }),
         )
         .await;
     let note = QuestionId(r["structuredContent"]["id"].as_u64().unwrap());
