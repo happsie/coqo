@@ -379,7 +379,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 ## 9. Security and privacy
 - No telemetry by default. Crash reports are opt-in.
 - Secrets live only in the keychain and never in files or logs.
-- **Daemon socket:** a user-only directory, 0600 permissions, a peer credential check (`SO_PEERCRED` / `LOCAL_PEERCRED`), and per-session MCP tokens scoped to a workspace.
+- **Daemon socket:** a user-only directory (verified, never adopted: no symlinks, no other owner, no group or other access), 0600 permissions, a peer credential check (`SO_PEERCRED` / `LOCAL_PEERCRED`), a per-start daemon token in `coqod.token` (0600) that every `coqo/hello` must present, and per-session MCP tokens scoped to a workspace. The daemon token is an ephemeral capability in a user-only runtime file, not a long-lived secret, so it does not go in the keychain. See [ADR 0007](adr/0007-daemon-lifecycle.md).
 - WASM mods are sandboxed through WASI capabilities. Process mods and core mods are trusted and declare their permissions. Every mod install shows its permission list.
 - Trace redaction runs before writing, and tracing is never used against production.
 - Agent permission prompts are always shown, and auto-approve rules can be set per workspace.

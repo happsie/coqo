@@ -56,6 +56,14 @@ impl Method for Sleep {
 }
 
 #[derive(Debug)]
+enum WhoAmI {}
+impl Method for WhoAmI {
+    const NAME: &'static str = "test/whoami";
+    type Params = String;
+    type Result = String;
+}
+
+#[derive(Debug)]
 enum Poke {}
 impl NotificationMethod for Poke {
     const NAME: &'static str = "test/poke";
@@ -109,6 +117,10 @@ fn router(f: &Fixture) -> Router {
     Router::new()
         .method::<Add, _, _>(|_, p| async move { Ok(p.a + p.b) })
         .method::<Ping, _, _>(|_, ()| async { Ok(()) })
+        .method::<WhoAmI, _, _>(|ctx, workspace| async move {
+            ctx.scope.require_workspace(&workspace)?;
+            Ok(format!("{} token:{}", ctx.scope, ctx.hello.token.is_some()))
+        })
         .method::<Fail, _, _>(|_, ()| async {
             Err(ErrorObject::new(1234, "nope").with_data(json!({"why": "test"})))
         })
@@ -532,6 +544,110 @@ async fn slow_client_gets_lagged_and_can_resume_without_loss() {
         }
     }
     assert_eq!(seen, (1..=50).collect::<Vec<u64>>());
+}
+
+// ---- authentication -------------------------------------------------------
+
+/// Lets in `daemon-token` with the daemon scope and `ws-a-token` scoped to
+/// workspace `ws-a`.
+#[derive(Debug)]
+struct TestAuth;
+
+impl Authenticator for TestAuth {
+    fn authenticate(&self, token: Option<&SessionToken>) -> Result<Scope, Unauthorized> {
+        let token = token.ok_or_else(|| Unauthorized("no token".into()))?;
+        if *token == SessionToken::new("daemon-token") {
+            Ok(Scope::Daemon)
+        } else if *token == SessionToken::new("ws-a-token") {
+            Ok(Scope::Session {
+                workspace: "ws-a".into(),
+                session: "s-1".into(),
+            })
+        } else {
+            Err(Unauthorized("wrong token".into()))
+        }
+    }
+}
+
+fn authenticating_server() -> ServerConfig {
+    let mut config = ServerConfig::new("s", "b");
+    config.authenticator = Some(Arc::new(TestAuth));
+    config
+}
+
+fn client_with_token(token: Option<&str>) -> ClientConfig {
+    let mut config = ClientConfig::new("c", "b");
+    config.token = token.map(SessionToken::new);
+    config
+}
+
+#[tokio::test]
+async fn missing_or_wrong_token_is_unauthorized_on_both_sides() {
+    for (token, why) in [(None, "no token"), (Some("guess"), "wrong token")] {
+        let f = fixture();
+        let (a, b) = tokio::io::duplex(1 << 16);
+        let server = spawn_server(&f, authenticating_server(), b);
+        let e = tokio::time::timeout(
+            Duration::from_secs(5),
+            Client::connect(a, client_with_token(token)),
+        )
+        .await
+        .expect("no hang")
+        .unwrap_err();
+        assert!(
+            matches!(&e, ProtocolError::Unauthorized(m) if m == why),
+            "{e:?}"
+        );
+        assert!(e.to_string().contains("session token"), "{e}");
+        let server_err = server.await.unwrap().unwrap_err();
+        assert!(
+            matches!(server_err, ProtocolError::Unauthorized(_)),
+            "{server_err:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_token_grants_a_scope_and_is_hidden_from_handlers() {
+    let f = fixture();
+    let (client, _n, _t) = connect_with(
+        &f,
+        authenticating_server(),
+        client_with_token(Some("daemon-token")),
+    )
+    .await;
+    assert_eq!(
+        client.request::<WhoAmI>("ws-b".into()).await.unwrap(),
+        "the daemon token:false"
+    );
+
+    let (client, _n, _t) = connect_with(
+        &f,
+        authenticating_server(),
+        client_with_token(Some("ws-a-token")),
+    )
+    .await;
+    assert_eq!(
+        client.request::<WhoAmI>("ws-a".into()).await.unwrap(),
+        "session s-1 in workspace ws-a token:false"
+    );
+    let e = client.request::<WhoAmI>("ws-b".into()).await.unwrap_err();
+    assert_eq!(e.rpc().map(|e| e.code), Some(codes::FORBIDDEN), "{e}");
+}
+
+#[tokio::test]
+async fn servers_without_an_authenticator_ignore_tokens() {
+    let f = fixture();
+    let (client, _n, _t) = connect_with(
+        &f,
+        ServerConfig::new("s", "b"),
+        client_with_token(Some("anything")),
+    )
+    .await;
+    assert_eq!(
+        client.request::<WhoAmI>("ws".into()).await.unwrap(),
+        "the daemon token:false"
+    );
 }
 
 // ---- handshake ------------------------------------------------------------

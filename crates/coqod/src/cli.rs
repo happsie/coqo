@@ -29,8 +29,10 @@ DUR is a number with an optional unit: ms, s (default), m or h.
 Idle means no client attached and no busy work (agents, traces).
 
 Environment:
-  COQO_RUNTIME_DIR  Socket and lock directory (default: $XDG_RUNTIME_DIR/coqo
-                    on Linux, ~/Library/Application Support/Coqo/run on macOS).
+  COQO_RUNTIME_DIR  Socket, lock and token directory (default:
+                    $XDG_RUNTIME_DIR/coqo on Linux, ~/Library/Application
+                    Support/Coqo/run on macOS). It must be yours, not a
+                    symlink, and closed to other users (0700).
   COQO_DATA_DIR     Data directory (default: $XDG_DATA_HOME/coqo,
                     ~/Library/Application Support/Coqo).
   COQO_LOG          Log filter, e.g. `debug` or `coqod=debug,info`.

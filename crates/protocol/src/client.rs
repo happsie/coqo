@@ -23,7 +23,7 @@ use crate::error::ProtocolError;
 use crate::frame::{DEFAULT_MAX_FRAME_LEN, HANDSHAKE_MAX_FRAME_LEN};
 use crate::handshake::{
     DEFAULT_HANDSHAKE_TIMEOUT, Hello, IncompatibleProtocol, PROTOCOL_VERSION, ProtocolVersion,
-    Welcome,
+    SessionToken, Welcome,
 };
 use crate::message::{ErrorObject, Id, Message, Notification, Request, Response, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
@@ -54,6 +54,9 @@ pub struct ClientConfig {
     pub subscription_buffer: usize,
     /// Outgoing messages buffered before senders wait.
     pub outgoing_buffer: usize,
+    /// The session token sent in `coqo/hello`, for servers that require
+    /// one. `coqo-client` fills it in from the daemon's token file.
+    pub token: Option<SessionToken>,
 }
 
 impl ClientConfig {
@@ -69,6 +72,7 @@ impl ClientConfig {
             max_frame_len: DEFAULT_MAX_FRAME_LEN,
             subscription_buffer: 1024,
             outgoing_buffer: 256,
+            token: None,
         }
     }
 
@@ -78,6 +82,7 @@ impl ClientConfig {
             build: self.build.clone(),
             client: self.client.clone(),
             encodings: self.encodings.clone(),
+            token: self.token.clone(),
         }
     }
 }
@@ -252,6 +257,9 @@ impl Client {
                     },
                     None => ProtocolError::Handshake(e.message),
                 });
+            }
+            Err(e) if e.code == codes::UNAUTHORIZED => {
+                return Err(ProtocolError::Unauthorized(e.message));
             }
             Err(e) => return Err(ProtocolError::Handshake(e.to_string())),
         };

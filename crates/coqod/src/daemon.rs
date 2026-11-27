@@ -3,18 +3,19 @@
 //! The daemon skeleton: runtime directory, single-instance lock, socket,
 //! accept loop, idle policy and shutdown (PLAN §4.3).
 
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Write as _};
-use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context as _, Result};
-use coqo_client::{DATA_DIR_ENV, DaemonPaths};
+use coqo_client::{DATA_DIR_ENV, DaemonPaths, LOCK_FILE, RuntimeDir, current_uid};
 use coqo_protocol::{Server, ServerConfig};
 use coqo_storage::DataDirs;
 use nix::errno::Errno;
-use nix::fcntl::{Flock, FlockArg};
+use nix::fcntl::{Flock, FlockArg, OFlag};
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
@@ -22,6 +23,7 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::auth::{self, Auth};
 use crate::lifecycle::{Activity, IdlePhase, IdlePolicy, idle_monitor};
 use crate::mods::{self, Mods};
 use crate::routes;
@@ -64,6 +66,9 @@ pub struct DaemonContext {
     /// The kernel registries and the mods running on them. Startup mods
     /// are active before services register their routes.
     pub mods: Mods,
+    /// The session tokens the daemon accepts. Services mint scoped tokens
+    /// here ([`Auth::mint_session`]) for `coqod mcp`.
+    pub auth: Auth,
 }
 
 /// Why the daemon could not start.
@@ -90,36 +95,34 @@ pub fn data_dirs() -> Result<DataDirs> {
     }
 }
 
-/// Holds the single-instance lock for the daemon's lifetime. The kernel
-/// releases it when the process exits, however it exits.
+/// Holds the single-instance lock for the daemon's lifetime (the kernel
+/// releases it when the process exits, however it exits), the verified
+/// runtime directory and the session tokens.
 #[derive(Debug)]
 pub struct InstanceLock {
+    dir: RuntimeDir,
+    auth: Auth,
     _file: Flock<File>,
 }
 
-/// Create the runtime directory (0700) and take the single-instance lock.
+impl InstanceLock {
+    /// The tokens this daemon accepts.
+    pub fn auth(&self) -> &Auth {
+        &self.auth
+    }
+}
+
+/// Create and verify the runtime directory (0700, ours, not a symlink),
+/// take the single-instance lock, and write a fresh session token to
+/// `coqod.token` (0600).
 pub fn acquire(paths: &DaemonPaths) -> Result<InstanceLock, StartError> {
-    let dir = paths.runtime_dir();
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .with_context(|| format!("cannot create {}", dir.display()))?;
-    // `recursive` leaves an existing directory's mode alone. Ownership and
-    // peer-credential checks come with socket hardening (#21).
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("cannot restrict {}", dir.display()))?;
+    let dir = RuntimeDir::create(paths.runtime_dir()).map_err(anyhow::Error::new)?;
 
     let lock_path = paths.lock_file();
     // Never truncate before locking: the file holds the running daemon's pid.
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(&lock_path)
-        .with_context(|| format!("cannot open {}", lock_path.display()))?;
+    let file = dir
+        .open_file(LOCK_FILE, OFlag::O_RDWR | OFlag::O_CREAT, 0o600)
+        .map_err(anyhow::Error::new)?;
     let mut file = match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
         Ok(lock) => lock,
         Err((_, Errno::EWOULDBLOCK)) => {
@@ -137,7 +140,16 @@ pub fn acquire(paths: &DaemonPaths) -> Result<InstanceLock, StartError> {
     file.set_len(0)
         .and_then(|()| writeln!(&mut *file, "{}", std::process::id()))
         .with_context(|| format!("cannot write {}", lock_path.display()))?;
-    Ok(InstanceLock { _file: file })
+
+    // Before the socket exists, so a client that can connect can also
+    // read the token of the daemon it reached.
+    let auth = Auth::generate().context("cannot generate a session token")?;
+    auth::write_token_file(&dir, &auth.daemon_token())?;
+    Ok(InstanceLock {
+        dir,
+        auth,
+        _file: file,
+    })
 }
 
 /// Bind the socket, replacing a stale one. Only call with the lock held:
@@ -175,6 +187,11 @@ pub async fn serve(
     lock: InstanceLock,
     listener: UnixListener,
 ) -> Result<()> {
+    // Nobody can have swapped the directory (it is ours and 0700, and so
+    // is its entry in a sticky /tmp), but check before trusting the
+    // path-bound socket.
+    lock.dir.check_still_at_path()?;
+    let auth = lock.auth.clone();
     let activity = Activity::new();
     let (idle_tx, idle_rx) = watch::channel(IdlePhase::Active);
     let shutdown = CancellationToken::new();
@@ -190,10 +207,14 @@ pub async fn serve(
         started_at: SystemTime::now(),
         started: Instant::now(),
         mods,
+        auth: auth.clone(),
     };
     let router = routes::router(&ctx)?;
     tracing::debug!(?router, "routes registered");
-    let server = Server::new(router, ServerConfig::new("coqod", BUILD));
+    let mut config = ServerConfig::new("coqod", BUILD);
+    config.authenticator = Some(Arc::new(auth));
+    let server = Server::new(router, config);
+    let uid = current_uid();
 
     let mut sigterm = signal(SignalKind::terminate()).context("cannot handle SIGTERM")?;
     let mut sigint = signal(SignalKind::interrupt()).context("cannot handle SIGINT")?;
@@ -216,6 +237,11 @@ pub async fn serve(
         tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
+                    // Before reading a byte: only our own user gets in.
+                    if let Err(e) = auth::admit_peer(&stream, uid) {
+                        tracing::warn!("{e}");
+                        continue;
+                    }
                     let guard = activity.connection();
                     let server = server.clone();
                     connections.spawn(async move {
@@ -247,6 +273,7 @@ pub async fn serve(
     // wind down.
     drop(listener);
     remove_socket(&paths.socket());
+    auth::remove_token_file(&lock.dir);
     shutdown.cancel();
     ctx.mods.shutdown().await;
     tokio::time::sleep(SHUTDOWN_GRACE).await;

@@ -3,16 +3,24 @@
 //! Where the daemon's socket and lock live (PLAN §4.3).
 //!
 //! ```text
-//! <runtime dir>/               $XDG_RUNTIME_DIR/coqo (Linux), ~/Library/Application Support/Coqo/run (macOS)
-//!   coqod.sock                 the Coqo Protocol socket
+//! <runtime dir>/               $XDG_RUNTIME_DIR/coqo (Linux), ~/Library/Application Support/Coqo/run (macOS); 0700
+//!   coqod.sock                 the Coqo Protocol socket (0600)
 //!   coqod.lock                 single-instance lock (flock), holds the daemon's pid
+//!   coqod.token                the running daemon's session token (0600)
 //! ```
+//!
+//! Both sides verify the directory before using it ([`RuntimeDir`]): it
+//! must be a real directory (not a symlink), owned by the current user,
+//! with no group or other access.
 //!
 //! `COQO_RUNTIME_DIR` overrides the directory, for tests and for running
 //! more than one daemon side by side.
 
 use std::io;
 use std::path::{Path, PathBuf};
+
+#[cfg(doc)]
+use crate::RuntimeDir;
 
 /// Overrides the runtime directory (socket and lock).
 pub const RUNTIME_DIR_ENV: &str = "COQO_RUNTIME_DIR";
@@ -22,11 +30,20 @@ pub const DATA_DIR_ENV: &str = "COQO_DATA_DIR";
 /// Path of the `coqod` binary to spawn. See
 /// [`SpawnOptions::locate`](crate::SpawnOptions::locate).
 pub const DAEMON_BIN_ENV: &str = "COQO_DAEMON";
+/// How a scoped session token is handed to a child process such as
+/// `coqod mcp` (PLAN §7.4): in the environment, never in `argv`, which
+/// other users can read. [`connect`](crate::connect) never reads it on its
+/// own; the child sets [`ClientConfig::token`](coqo_protocol::ClientConfig)
+/// from it.
+pub const SESSION_TOKEN_ENV: &str = "COQO_SESSION_TOKEN";
 
 /// File name of the daemon socket.
 pub const SOCKET_FILE: &str = "coqod.sock";
 /// File name of the single-instance lock.
 pub const LOCK_FILE: &str = "coqod.lock";
+/// File name of the daemon's session token, which clients send in
+/// `coqo/hello`.
+pub const TOKEN_FILE: &str = "coqod.token";
 
 /// No runtime directory could be determined.
 #[derive(Debug, thiserror::Error)]
@@ -86,6 +103,12 @@ impl DaemonPaths {
         self.dir.join(LOCK_FILE)
     }
 
+    /// The daemon's session token file, `<dir>/coqod.token`. Read it with
+    /// [`RuntimeDir::read_token`], which checks its owner and mode.
+    pub fn token_file(&self) -> PathBuf {
+        self.dir.join(TOKEN_FILE)
+    }
+
     /// The pid recorded by the daemon that holds (or last held) the lock.
     ///
     /// Informational only: the daemon may have exited since, and the pid may
@@ -111,6 +134,10 @@ mod tests {
         assert_eq!(
             paths.lock_file(),
             Path::new("/run/user/1000/coqo/coqod.lock")
+        );
+        assert_eq!(
+            paths.token_file(),
+            Path::new("/run/user/1000/coqo/coqod.token")
         );
     }
 

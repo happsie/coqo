@@ -8,6 +8,8 @@
 //!   encoded as JSON or (negotiated) MessagePack ([`Encoding`]).
 //! - [`handshake`]: `coqo/hello` with protocol version + build id; an
 //!   incompatible version is a clear error, never a hang.
+//! - [`auth`]: session tokens in the handshake and the [`Scope`] they
+//!   grant each connection.
 //! - [`Method`], [`NotificationMethod`], [`Topic`]: typed method
 //!   definitions, used by the [`Client`] and the server [`Router`].
 //! - [`subscription`]: sequenced event streams with resume-from-seq, and
@@ -46,6 +48,7 @@
 //! # }
 //! ```
 
+pub mod auth;
 pub mod client;
 pub mod daemon;
 pub mod encoding;
@@ -66,11 +69,12 @@ mod schema;
 #[cfg(test)]
 mod tests;
 
+pub use auth::{Authenticator, Scope, Unauthorized};
 pub use client::{Client, ClientConfig, Notifications, Subscription};
 pub use encoding::{DecodeError, DecodeErrorKind, EncodeError, Encoding};
 pub use error::ProtocolError;
 pub use frame::{FrameCodec, FrameError};
-pub use handshake::{Hello, PROTOCOL_VERSION, ProtocolVersion, Welcome};
+pub use handshake::{Hello, PROTOCOL_VERSION, ProtocolVersion, SessionToken, Welcome};
 pub use message::{ErrorObject, Id, Message, Notification, Request, Response, codes};
 pub use method::{Method, NotificationMethod, Topic, builtin};
 pub use server::{Peer, RequestContext, Router, Server, ServerConfig};

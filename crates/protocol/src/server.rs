@@ -19,6 +19,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 
+use crate::auth::{Authenticator, Scope, Unauthorized};
 use crate::encoding::Encoding;
 use crate::error::ProtocolError;
 use crate::frame::{DEFAULT_MAX_FRAME_LEN, HANDSHAKE_MAX_FRAME_LEN};
@@ -194,6 +195,10 @@ pub struct ServerConfig {
     pub max_frame_len: usize,
     /// Outgoing messages buffered per connection before senders wait.
     pub outgoing_buffer: usize,
+    /// Checks each client's session token and decides its [`Scope`].
+    /// `None` lets every client in with [`Scope::Daemon`]: only for
+    /// in-process and test servers.
+    pub authenticator: Option<Arc<dyn Authenticator>>,
 }
 
 impl ServerConfig {
@@ -207,6 +212,7 @@ impl ServerConfig {
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             max_frame_len: DEFAULT_MAX_FRAME_LEN,
             outgoing_buffer: 1024,
+            authenticator: None,
         }
     }
 }
@@ -256,8 +262,11 @@ impl Peer {
 pub struct RequestContext {
     /// The client, for pushing notifications.
     pub peer: Peer,
-    /// The client's handshake.
+    /// The client's handshake, without its token.
     pub hello: Arc<Hello>,
+    /// What this connection's token allows. Check it with
+    /// [`Scope::require_daemon`] / [`Scope::require_workspace`].
+    pub scope: Arc<Scope>,
 }
 
 /// Serves connections with a [`Router`]. Cheap to clone.
@@ -333,8 +342,13 @@ impl Server {
                 }
             }
             Some(Ok(Ok(other))) => {
+                // Describe it without its params: they may hold a token.
+                let what = match other {
+                    Message::Notification(n) => format!("a {} notification", n.method),
+                    _ => "a response".to_owned(),
+                };
                 return Err(ProtocolError::Handshake(format!(
-                    "expected a coqo/hello request, got {other:?}"
+                    "expected a coqo/hello request, got {what}"
                 )));
             }
         };
@@ -357,6 +371,26 @@ impl Server {
                 peer_build: hello.build,
             });
         };
+        // Take the token out of the hello so handlers never see it.
+        let mut hello = hello;
+        let token = hello.token.take();
+        let scope = match &config.authenticator {
+            None => Scope::Daemon,
+            Some(auth) => match auth.authenticate(token.as_ref()) {
+                Ok(scope) => scope,
+                Err(Unauthorized(message)) => {
+                    let error = ErrorObject::new(codes::UNAUTHORIZED, message.clone());
+                    let _ = transport::send(
+                        &mut writer,
+                        Encoding::Json,
+                        &Response::err(Some(id), error).into(),
+                    )
+                    .await;
+                    return Err(ProtocolError::Unauthorized(message));
+                }
+            },
+        };
+        drop(token);
         let encoding = negotiate_encoding(&hello.encodings, &config.encodings);
         let connection = self.next_connection.fetch_add(1, Ordering::Relaxed);
         let welcome = Welcome {
@@ -386,6 +420,7 @@ impl Server {
                 outgoing: out_tx,
             },
             hello: Arc::new(hello),
+            scope: Arc::new(scope),
         };
         let subs: SubTable = Arc::default();
         let next_sub = Arc::new(AtomicU64::new(1));

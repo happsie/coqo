@@ -57,6 +57,11 @@ pub enum ProtocolError {
         /// The peer's build id.
         peer_build: String,
     },
+    /// The server requires a session token and rejected ours (missing or
+    /// wrong). Clients of `coqod` read it from `coqod.token` in the runtime
+    /// directory; `coqo-client` does that automatically.
+    #[error("the server rejected this client's session token: {0}")]
+    Unauthorized(String),
     /// The handshake failed for another reason.
     #[error("Coqo Protocol handshake failed: {0}")]
     Handshake(String),

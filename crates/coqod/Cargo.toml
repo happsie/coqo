@@ -26,6 +26,7 @@ coqo-mod-hello = { path = "../../mods/hello" }
 coqo-protocol = { path = "../protocol" }
 coqo-storage = { path = "../storage" }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+getrandom = { version = "0.3", features = ["std"] }
 ignore = "0.4"
 nix = { version = "0.30", default-features = false, features = ["fs", "process"] }
 notify = "8"
