@@ -1110,6 +1110,16 @@ name = "coqo-anchors"
 version = "0.0.0"
 
 [[package]]
+name = "coqo-buffers"
+version = "0.0.0"
+dependencies = [
+ "coqo-protocol",
+ "proptest",
+ "ropey",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "coqo-client"
 version = "0.0.0"
 dependencies = [
@@ -1219,6 +1229,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "coqo-agents",
+ "coqo-buffers",
  "coqo-client",
  "coqo-kernel",
  "coqo-mod-api",
@@ -1230,7 +1241,9 @@ dependencies = [
  "ignore",
  "nix",
  "notify",
+ "proptest",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",

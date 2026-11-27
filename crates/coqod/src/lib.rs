@@ -12,6 +12,8 @@
 //!   startup, deactivated at shutdown.
 //! - [`agents`]: daemon-owned agent sessions (`agents/*`, `sessions/*`).
 //! - [`cli`]: command-line arguments.
+//! - [`buffers`]: replicated text buffers (`buffer/*`): open, edit, save,
+//!   disk changes and the unsaved-edit journal.
 //! - [`workspace`]: workspaces (folder roots), their persisted state, and
 //!   read-only file-system access with live change events.
 //!
@@ -19,6 +21,7 @@
 
 pub mod agents;
 pub mod auth;
+pub mod buffers;
 pub mod cli;
 pub mod daemon;
 pub mod lifecycle;

@@ -13,17 +13,22 @@ use std::sync::Arc;
 use anyhow::Result;
 use coqo_protocol::Router;
 
+use crate::buffers::{self, BufferConfig, BufferService};
 use crate::daemon::DaemonContext;
 use crate::workspace::{self, WorkspaceService};
 use crate::{agents, methods};
 
-/// Build the daemon's router. Called once at startup; an error stops the
-/// daemon before it accepts clients.
+/// Build the daemon's router. Called once at startup, inside the runtime;
+/// an error stops the daemon before it accepts clients.
 pub fn router(ctx: &DaemonContext) -> Result<Router> {
     let router = Router::new();
     let router = methods::register(router, ctx);
     // Services, one line each.
-    let router = workspace::register(router, Arc::new(WorkspaceService::open(ctx.data.clone())?));
+    let workspaces = Arc::new(WorkspaceService::open(ctx.data.clone())?);
+    let router = workspace::register(router, Arc::clone(&workspaces));
     let router = agents::register(router, agents::open(ctx)?);
+    let buffers = BufferService::new(workspaces, ctx.data.clone(), BufferConfig::default());
+    buffers::flush_on_shutdown(&buffers, ctx.shutdown.clone());
+    let router = buffers::register(router, buffers);
     Ok(router)
 }

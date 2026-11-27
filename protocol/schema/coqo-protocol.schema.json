@@ -153,6 +153,56 @@
       ],
       "type": "object"
     },
+    "BufferChange": {
+      "description": "One event of the [`Changes`] topic: a committed change. The event's\nsubscription `seq` equals `rev`.",
+      "properties": {
+        "clientSeq": {
+          "default": 0,
+          "description": "The replica's `client_seq` for client changes, else 0.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "conflict": {
+          "description": "A disk or agent change that overlapped unsaved edits; both were kept,\nand the user should look at the result.",
+          "type": "boolean"
+        },
+        "dirty": {
+          "description": "Whether the text differs from the file on disk after this change.",
+          "type": "boolean"
+        },
+        "edits": {
+          "description": "The edits, sorted and non-overlapping, against the text at `rev - 1`.",
+          "items": {
+            "$ref": "#/$defs/TextEdit"
+          },
+          "type": "array"
+        },
+        "origin": {
+          "$ref": "#/$defs/Origin",
+          "description": "Who made it."
+        },
+        "rev": {
+          "description": "The revision this change produced (the previous one plus 1).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "rev",
+        "origin",
+        "edits",
+        "dirty"
+      ],
+      "type": "object"
+    },
+    "BufferId": {
+      "description": "Identifies an open buffer in the running daemon. Not stable across\ndaemon restarts or after a buffer is unloaded: reopen by path then.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
     "ChangesParams": {
       "description": "Params of the [`Changes`] topic.",
       "properties": {
@@ -177,6 +227,37 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "ChangesParams3": {
+      "description": "Params of the [`Changes`] topic.",
+      "properties": {
+        "buffer": {
+          "$ref": "#/$defs/BufferId",
+          "description": "The buffer."
+        }
+      },
+      "required": [
+        "buffer"
+      ],
+      "type": "object"
+    },
+    "CloseParams": {
+      "description": "Params of [`Close`].",
+      "properties": {
+        "buffer": {
+          "$ref": "#/$defs/BufferId",
+          "description": "The buffer."
+        },
+        "replica": {
+          "$ref": "#/$defs/ReplicaId",
+          "description": "The replica going away."
+        }
+      },
+      "required": [
+        "buffer",
+        "replica"
+      ],
       "type": "object"
     },
     "ContentBlock": {
@@ -463,6 +544,76 @@
         "symlink",
         "size",
         "ignored"
+      ],
+      "type": "object"
+    },
+    "EditParams": {
+      "description": "Params of the [`Edit`] notification: one change made by a replica.",
+      "properties": {
+        "baseRev": {
+          "description": "The revision the edits were made against.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "buffer": {
+          "$ref": "#/$defs/BufferId",
+          "description": "The buffer."
+        },
+        "clientSeq": {
+          "description": "Per-replica sequence number, strictly increasing from 1. Resending a\nchange keeps its seq; the daemon ignores seqs it has committed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "edits": {
+          "description": "The edits, sorted and non-overlapping, against the text at `base_rev`.",
+          "items": {
+            "$ref": "#/$defs/TextEdit"
+          },
+          "type": "array"
+        },
+        "replica": {
+          "$ref": "#/$defs/ReplicaId",
+          "description": "The replica that made the change."
+        }
+      },
+      "required": [
+        "buffer",
+        "replica",
+        "baseRev",
+        "clientSeq",
+        "edits"
+      ],
+      "type": "object"
+    },
+    "EditRejectedParams": {
+      "description": "Params of the [`EditRejected`] notification.",
+      "properties": {
+        "buffer": {
+          "$ref": "#/$defs/BufferId",
+          "description": "The buffer."
+        },
+        "clientSeq": {
+          "description": "The rejected change's seq.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "error": {
+          "$ref": "#/$defs/ErrorObject",
+          "description": "Why, e.g. [`REVISION_GONE`](super::codes::REVISION_GONE) or\n[`INVALID_EDIT`](super::codes::INVALID_EDIT)."
+        },
+        "replica": {
+          "$ref": "#/$defs/ReplicaId",
+          "description": "The replica whose change was rejected."
+        }
+      },
+      "required": [
+        "buffer",
+        "replica",
+        "clientSeq",
+        "error"
       ],
       "type": "object"
     },
@@ -761,6 +912,21 @@
       ],
       "type": "object"
     },
+    "LineEnding": {
+      "description": "The file's line-ending convention, detected from its first line break.\n\nThe buffer text keeps line breaks exactly as they are on disk (mixed\nfiles round-trip unchanged); this tells the editor which break to insert.",
+      "oneOf": [
+        {
+          "const": "lf",
+          "description": "`\\n` (also the default for files without line breaks).",
+          "type": "string"
+        },
+        {
+          "const": "crlf",
+          "description": "`\\r\\n`.",
+          "type": "string"
+        }
+      ]
+    },
     "ListDirResult": {
       "description": "Result of [`ListDir`].",
       "properties": {
@@ -848,6 +1014,154 @@
         }
       },
       "type": "object"
+    },
+    "OpenParams2": {
+      "description": "Params of [`Open`].",
+      "properties": {
+        "path": {
+          "description": "`/`-separated path of a file relative to the root.",
+          "type": "string"
+        },
+        "replica": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReplicaId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reuse this replica id (when reopening after a reconnect or a resume\ngap), so the daemon reports which of its changes it already has."
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root the path is relative to."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root",
+        "path"
+      ],
+      "type": "object"
+    },
+    "OpenResult": {
+      "description": "Result of [`Open`]: a snapshot of the buffer.",
+      "properties": {
+        "buffer": {
+          "$ref": "#/$defs/BufferId",
+          "description": "The buffer. The same file opened twice (from two windows, or through\na symlink) is the same buffer."
+        },
+        "dirty": {
+          "description": "Whether the text differs from the file on disk.",
+          "type": "boolean"
+        },
+        "encoding": {
+          "$ref": "#/$defs/TextEncoding",
+          "description": "Encoding on disk."
+        },
+        "lastSeq": {
+          "description": "The highest `client_seq` of `replica` the daemon has committed (0 if\nnone): a pending change with a seq at or below it is already in\n`text`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lineEnding": {
+          "$ref": "#/$defs/LineEnding",
+          "description": "Line-ending convention."
+        },
+        "replica": {
+          "$ref": "#/$defs/ReplicaId",
+          "description": "This replica's id: the one asked for, or a new one."
+        },
+        "rev": {
+          "description": "The revision `text` reflects. Subscribe to [`Changes`] with `since`\nset to it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "savedRev": {
+          "description": "Revision of the last save or reload from disk.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "description": "The buffer text, including unsaved edits.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "buffer",
+        "replica",
+        "rev",
+        "text",
+        "lineEnding",
+        "encoding",
+        "savedRev",
+        "dirty",
+        "lastSeq"
+      ],
+      "type": "object"
+    },
+    "Origin": {
+      "description": "Who made a change, with an id whose meaning depends on the kind.",
+      "properties": {
+        "id": {
+          "description": "The source's id, if it has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/OriginKind",
+          "description": "What kind of source."
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "OriginKind": {
+      "description": "Who made a change.",
+      "oneOf": [
+        {
+          "const": "client",
+          "description": "A replica; `id` is its [`ReplicaId`].",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "An agent; `id` is its session id. Agents' disk writes are attributed\nwhen they match a tool call the daemon was told about.",
+          "type": "string"
+        },
+        {
+          "const": "disk",
+          "description": "The file changed on disk (another program, or an unattributed agent).",
+          "type": "string"
+        },
+        {
+          "const": "format",
+          "description": "A formatter run by the daemon.",
+          "type": "string"
+        },
+        {
+          "const": "revert",
+          "description": "[`RevertChange`]; `id` is the reverted revision.",
+          "type": "string"
+        },
+        {
+          "const": "save",
+          "description": "The buffer was saved: no edits, `dirty` becomes false.",
+          "type": "string"
+        }
+      ]
     },
     "PathParams": {
       "description": "Params naming a path in a workspace.",
@@ -1322,6 +1636,10 @@
       ],
       "type": "object"
     },
+    "ReplicaId": {
+      "description": "Identifies one replica of a buffer (one editor in one window), e.g.\n`r-3f2a9c1d0b7e4a65`. Assigned by [`Open`]; a replica keeps it across\nreconnects and reopens so the daemon can recognise its changes.",
+      "type": "string"
+    },
     "RespondPermissionParams": {
       "description": "Params of `sessions/respondPermission`.",
       "properties": {
@@ -1374,11 +1692,78 @@
       ],
       "type": "object"
     },
+    "RevertParams": {
+      "description": "Params of [`RevertChange`].",
+      "properties": {
+        "buffer": {
+          "$ref": "#/$defs/BufferId",
+          "description": "The buffer."
+        },
+        "rev": {
+          "description": "The revision whose change to undo.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "buffer",
+        "rev"
+      ],
+      "type": "object"
+    },
+    "RevertResult": {
+      "description": "Result of [`RevertChange`].",
+      "properties": {
+        "rev": {
+          "description": "The revision of the reverting change.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "rev"
+      ],
+      "type": "object"
+    },
     "RootId": {
       "description": "Identifies a root within its workspace. Stable for the root's lifetime and\nnever reused within the workspace.",
       "format": "uint32",
       "minimum": 0,
       "type": "integer"
+    },
+    "SaveParams": {
+      "description": "Params of [`Save`].",
+      "properties": {
+        "buffer": {
+          "$ref": "#/$defs/BufferId",
+          "description": "The buffer."
+        },
+        "force": {
+          "description": "Overwrite the file even if it changed on disk since it was last read.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "buffer"
+      ],
+      "type": "object"
+    },
+    "SaveResult": {
+      "description": "Result of [`Save`].",
+      "properties": {
+        "savedRev": {
+          "description": "The revision of the save event; the file holds the text as of it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "savedRev"
+      ],
+      "type": "object"
     },
     "SessionId": {
       "description": "Identifies an agent session. Generated by the daemon; stable forever.",
@@ -2157,6 +2542,48 @@
       "minimum": 0,
       "type": "integer"
     },
+    "TextEdit": {
+      "description": "Replace the bytes `start..end` with `text`.",
+      "properties": {
+        "end": {
+          "description": "One past the last byte replaced; `start` for a pure insert.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "description": "First byte replaced (UTF-8 offset, on a character boundary).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "description": "The replacement.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "text"
+      ],
+      "type": "object"
+    },
+    "TextEncoding": {
+      "description": "The file's text encoding. Only UTF-8 is supported for now; other files\nfail to open with [`UNSUPPORTED_ENCODING`](super::codes::UNSUPPORTED_ENCODING).",
+      "oneOf": [
+        {
+          "const": "utf8",
+          "description": "UTF-8 without a byte-order mark.",
+          "type": "string"
+        },
+        {
+          "const": "utf8Bom",
+          "description": "UTF-8 with a byte-order mark. The mark is not part of the buffer text\nand is written back on save.",
+          "type": "string"
+        }
+      ]
+    },
     "ToolCall": {
       "description": "A tool call, as first reported.",
       "properties": {
@@ -2765,6 +3192,7 @@
     "FORBIDDEN": -32007,
     "INCOMPATIBLE_PROTOCOL": -32001,
     "INTERNAL_ERROR": -32603,
+    "INVALID_EDIT": 1204,
     "INVALID_PARAMS": -32602,
     "INVALID_REQUEST": -32600,
     "IO_ERROR": 1009,
@@ -2778,10 +3206,13 @@
     "PROVIDER_ERROR": 1108,
     "REQUEST_CANCELLED": -32005,
     "RESUME_GAP": -32003,
+    "REVISION_GONE": 1203,
+    "SAVE_CONFLICT": 1205,
     "SESSION_BUSY": 1103,
     "SESSION_CLOSED": 1104,
     "STORAGE_ERROR": 1109,
     "UNAUTHORIZED": -32006,
+    "UNKNOWN_BUFFER": 1201,
     "UNKNOWN_PERMISSION_REQUEST": 1105,
     "UNKNOWN_PROVIDER": 1102,
     "UNKNOWN_ROOT": 1002,
@@ -2789,6 +3220,7 @@
     "UNKNOWN_SUBSCRIPTION": -32004,
     "UNKNOWN_WORKSPACE": 1001,
     "UNSUPPORTED": 1106,
+    "UNSUPPORTED_ENCODING": 1202,
     "WORKSPACE_CLOSED": 1008
   },
   "x-framing": "u32 big-endian payload length, then one JSON-RPC 2.0 message (JSON, or MessagePack if negotiated)",
@@ -2805,6 +3237,77 @@
           "$ref": "#/$defs/ProviderInfo"
         },
         "type": "array"
+      }
+    },
+    "buffer/changes": {
+      "description": "Every committed change of a buffer; seq is the buffer rev (resumable with since).",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/BufferChange"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/ChangesParams3"
+      }
+    },
+    "buffer/close": {
+      "description": "A replica is done with a buffer; it unloads once unsubscribed.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/CloseParams"
+      },
+      "result": {
+        "type": "null"
+      }
+    },
+    "buffer/edit": {
+      "description": "A replica's change against base_rev; acknowledged by its own buffer/changes event.",
+      "direction": "client→server",
+      "kind": "notification",
+      "params": {
+        "$ref": "#/$defs/EditParams"
+      }
+    },
+    "buffer/editRejected": {
+      "description": "A buffer/edit the daemon could not apply; reopen the buffer.",
+      "direction": "server→client",
+      "kind": "notification",
+      "params": {
+        "$ref": "#/$defs/EditRejectedParams"
+      }
+    },
+    "buffer/open": {
+      "description": "Open (or join) the buffer of a file: text, rev and a replica id.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/OpenParams2"
+      },
+      "result": {
+        "$ref": "#/$defs/OpenResult"
+      }
+    },
+    "buffer/revertChange": {
+      "description": "Undo one change (typically an agent's), transformed past later changes.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/RevertParams"
+      },
+      "result": {
+        "$ref": "#/$defs/RevertResult"
+      }
+    },
+    "buffer/save": {
+      "description": "Write the buffer to its file atomically.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SaveParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SaveResult"
       }
     },
     "coqo/event": {
