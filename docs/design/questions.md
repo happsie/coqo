@@ -25,7 +25,8 @@ The code lives in these places:
    - a click on the marker;
    - `F8` / `Shift F8`;
    - a click on a card in the Questions pane;
-   - a click on the chat card.
+   - a click on the chat card;
+   - opening its alert (an alert-center row or the toast's Open).
 4. **The user answers.**
    - The answer is an option, a typed reply, Yes/No, or OK.
    - Sending it calls `questions/answer`. Dismiss calls `questions/dismiss`.

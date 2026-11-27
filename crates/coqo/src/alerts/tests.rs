@@ -309,6 +309,20 @@ impl Ui {
         })
     }
 
+    /// The question whose popover the file tab of `path` shows.
+    fn popover_in(&mut self, path: &str) -> Option<qm::QuestionId> {
+        let dock = self.cx.read(|cx| self.shell.read(cx).dock().clone());
+        self.cx.read(|cx| {
+            let dock = dock.read(cx);
+            dock.tree()
+                .tabs()
+                .into_iter()
+                .filter_map(|t| dock.tab(t.id)?.downcast::<FileEditor>())
+                .find(|t| t.read(cx).path() == path)
+                .and_then(|t| t.read(cx).popover_question(cx))
+        })
+    }
+
     fn file_tabs(&mut self) -> Vec<String> {
         let dock = self.cx.read(|cx| self.shell.read(cx).dock().clone());
         self.cx.read(|cx| {
@@ -436,11 +450,15 @@ fn a_waiting_question_opens_its_code_and_an_error_turns_the_bell_rose() {
     ));
     ui.wait_for("the sand badge", |ui| ui.shows("alerts-badge-needs-you"));
 
-    // Opening it opens the code it is pinned to.
+    // Opening it opens the code it is pinned to, with the question's
+    // popover.
     ui.click(name("alerts"));
     ui.wait_for("the alert center", |ui| ui.shows("alerts-center"));
     ui.click(super::view::row_id(0));
     ui.wait_for("the file tab", |ui| ui.file_tabs() == ["src/main.rs"]);
+    ui.wait_for("the question's popover", |ui| {
+        ui.popover_in("src/main.rs") == Some(question.id)
+    });
 
     // Answering resolves it; the finished turn is done (sage).
     let qid = question.id;

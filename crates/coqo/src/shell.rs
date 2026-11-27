@@ -287,7 +287,7 @@ impl Shell {
         range: Option<Range>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<Entity<FileEditor>> {
         let dock = self.dock.clone();
         let key = file_editor::key(&workspace, root, &path);
         let open = dock.read(cx).find_tab(file_editor::KIND, &key, cx);
@@ -307,9 +307,10 @@ impl Shell {
                 Some(tab)
             }
         };
-        if let Some(file) = file {
+        if let Some(file) = &file {
             file.update(cx, |file, cx| file.reveal(range, window, cx));
         }
+        file
     }
 
     // ---- alerts ------------------------------------------------------------
@@ -436,14 +437,24 @@ impl Shell {
                 location: None,
                 ..
             }) => chat_of(session, self, window, cx),
-            // The question's code: #74's popover shows there.
-            Some(
-                AlertTarget::Question {
-                    location: Some(location),
-                    ..
+            // The question's code, with its popover open (once the
+            // question is listed in the tab's workspace).
+            Some(AlertTarget::Question {
+                question,
+                location: Some(location),
+                ..
+            }) => {
+                if let Some(workspace) = workspace {
+                    let (root, path, range) = file_target(location);
+                    let file = self.open_file_at(workspace, root, path, range, window, cx);
+                    if let Some(file) = file {
+                        file.update(cx, |file, cx| {
+                            file.show_question(*question, true, true, window, cx)
+                        });
+                    }
                 }
-                | AlertTarget::File { location },
-            ) => {
+            }
+            Some(AlertTarget::File { location }) => {
                 if let Some(workspace) = workspace {
                     let (root, path, range) = file_target(location);
                     self.open_file_at(workspace, root, path, range, window, cx);
