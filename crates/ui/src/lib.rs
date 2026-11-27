@@ -11,7 +11,9 @@
 
 pub mod dock;
 pub mod editor;
+pub mod input;
 pub mod slots;
+pub mod text;
 pub mod theme;
 pub mod widgets;
 

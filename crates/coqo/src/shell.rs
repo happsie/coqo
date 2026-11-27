@@ -31,6 +31,7 @@ use coqo_ui::{
 };
 
 use crate::{
+    chat,
     daemon::{self, Daemon},
     files,
     welcome::{self, shortcut},
@@ -51,6 +52,7 @@ pub fn init(cx: &mut App) {
     register_builtin_slots(cx);
     daemon::register_status_slot(cx);
     files::init(cx);
+    chat::init(cx);
     SidebarPanes::register(
         cx,
         SidebarPane::new("git", "Git", 10, |_, _, cx| {
@@ -216,6 +218,14 @@ impl Render for Shell {
         div()
             .id("workbench")
             .on_action(|_: &OpenFolder, _, cx| prompt_open_folder(cx))
+            .on_action(cx.listener(|this, _: &chat::NewChat, window, cx| {
+                chat::new_chat(this.dock.downgrade(), window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, location: &chat::OpenLocation, window, cx| {
+                    chat::open_location(this.dock.downgrade(), location, window, cx)
+                }),
+            )
             .size_full()
             .flex()
             .flex_col()
@@ -327,9 +337,7 @@ impl Shell {
                     .flex_col()
                     .px(m.gap)
                     .pb(px(14.))
-                    .gap_1()
-                    .child(section_label("Chats", cx))
-                    .child(empty_note("No chats yet", cx)),
+                    .child(chat::list::render_section(self.dock.downgrade(), cx)),
             )
             .into_any_element()
     }

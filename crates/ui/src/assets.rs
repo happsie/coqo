@@ -38,6 +38,23 @@ icons!(
     "image",
     "folder-open",
     "rotate-cw",
+    "check",
+    "circle",
+    "circle-dot",
+    "loader-circle",
+    "square",
+    "file-pen",
+    "terminal",
+    "brain",
+    "globe",
+    "trash",
+    "eye",
+    "shield-alert",
+    "wrench",
+    "arrow-right-left",
+    "circle-x",
+    "log-in",
+    "arrow-up",
 );
 
 /// Serves Coqo's bundled icons, then gpui-kit's defaults.

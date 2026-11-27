@@ -7,6 +7,7 @@
 //! `coqod`, starting it if needed (PLAN §4.3). CLI subcommands arrive in
 //! later issues (PLAN §12).
 
+mod chat;
 mod daemon;
 mod files;
 mod shell;

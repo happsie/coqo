@@ -35,11 +35,28 @@ pub enum Icon {
     Image,
     FolderOpen,
     RotateCw,
+    Check,
+    Circle,
+    CircleDot,
+    LoaderCircle,
+    Square,
+    FilePen,
+    Terminal,
+    Brain,
+    Globe,
+    Trash,
+    Eye,
+    ShieldAlert,
+    Wrench,
+    ArrowRightLeft,
+    CircleX,
+    LogIn,
+    ArrowUp,
 }
 
 impl Icon {
     /// Every variant, for tests that check the bundle.
-    pub const ALL: [Icon; 21] = [
+    pub const ALL: [Icon; 38] = [
         Icon::Search,
         Icon::Zap,
         Icon::Bell,
@@ -61,6 +78,23 @@ impl Icon {
         Icon::Image,
         Icon::FolderOpen,
         Icon::RotateCw,
+        Icon::Check,
+        Icon::Circle,
+        Icon::CircleDot,
+        Icon::LoaderCircle,
+        Icon::Square,
+        Icon::FilePen,
+        Icon::Terminal,
+        Icon::Brain,
+        Icon::Globe,
+        Icon::Trash,
+        Icon::Eye,
+        Icon::ShieldAlert,
+        Icon::Wrench,
+        Icon::ArrowRightLeft,
+        Icon::CircleX,
+        Icon::LogIn,
+        Icon::ArrowUp,
     ];
 
     pub(crate) fn path(self) -> &'static str {
@@ -86,6 +120,23 @@ impl Icon {
             Icon::Image => "icons/image.svg",
             Icon::FolderOpen => "icons/folder-open.svg",
             Icon::RotateCw => "icons/rotate-cw.svg",
+            Icon::Check => "icons/check.svg",
+            Icon::Circle => "icons/circle.svg",
+            Icon::CircleDot => "icons/circle-dot.svg",
+            Icon::LoaderCircle => "icons/loader-circle.svg",
+            Icon::Square => "icons/square.svg",
+            Icon::FilePen => "icons/file-pen.svg",
+            Icon::Terminal => "icons/terminal.svg",
+            Icon::Brain => "icons/brain.svg",
+            Icon::Globe => "icons/globe.svg",
+            Icon::Trash => "icons/trash.svg",
+            Icon::Eye => "icons/eye.svg",
+            Icon::ShieldAlert => "icons/shield-alert.svg",
+            Icon::Wrench => "icons/wrench.svg",
+            Icon::ArrowRightLeft => "icons/arrow-right-left.svg",
+            Icon::CircleX => "icons/circle-x.svg",
+            Icon::LogIn => "icons/log-in.svg",
+            Icon::ArrowUp => "icons/arrow-up.svg",
         }
     }
 }
@@ -156,6 +207,39 @@ pub fn raised(div: Div, cx: &App) -> Div {
     .shadow(vec![
         top_highlight(highlight),
         shadow(hsla(0., 0., 0., drop), 1., 3.),
+    ])
+}
+
+/// The primary ("go") control: a sage gradient with dark text in the dark
+/// appearance and light text in the light one, as on the Send button.
+pub fn primary(div: Div, cx: &App) -> Div {
+    let t = cx.tokens();
+    let p = &t.palette;
+    let sage = p.sage.hsla();
+    let top = gpui_kit::Hsla {
+        l: (sage.l + 0.06).min(1.),
+        ..sage
+    };
+    let (text, highlight, drop) = if is_light(cx) {
+        (p.panel_raised.hsla(), 0.2, 0.12)
+    } else {
+        (p.ground.hsla(), 0.35, 0.4)
+    };
+    div.bg(linear_gradient(
+        180.,
+        linear_color_stop(top, 0.),
+        linear_color_stop(sage, 1.),
+    ))
+    .border_1()
+    .border_color(gpui_kit::Hsla {
+        l: (sage.l - 0.08).max(0.),
+        ..sage
+    })
+    .text_color(text)
+    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+    .shadow(vec![
+        top_highlight(highlight),
+        shadow(hsla(0., 0., 0., drop), 2., 6.),
     ])
 }
 
