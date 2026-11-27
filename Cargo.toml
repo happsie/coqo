@@ -2,6 +2,8 @@
 resolver = "3"
 # Built-in core mods live under `mods/` (PLAN §6).
 members = ["crates/*", "mods/*"]
+# Vendored, patched third-party crates keep their own lints and are not members.
+exclude = ["third_party"]
 
 [workspace.package]
 version = "0.0.0"
@@ -16,6 +18,11 @@ missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# gpui-base carries a small Coqo patch (remote edits for the editor, ADR 0007).
+# See third_party/gpui-base/PATCHES.md. It is the exact 0.11.0 that gpui-kit pins.
+[patch.crates-io]
+gpui-base = { path = "third_party/gpui-base" }
 
 [profile.release]
 lto = "thin"
