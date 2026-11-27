@@ -53,8 +53,8 @@ use coqo_ui::{
     ActiveTokens as _, Rgb,
     dock::{AnyTab, TabItem},
     editor::{
-        self, CodeEditor, CodeMarker, EditOrigin, EditorEdits, HistoryAction, MarkerClicked,
-        OverlayAnchor,
+        self, AskClicked, CodeEditor, CodeMarker, EditOrigin, EditorEdits, HistoryAction,
+        MarkerClicked, OverlayAnchor,
     },
     gpui::{
         AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, FontWeight,
@@ -68,7 +68,8 @@ use coqo_ui::{
 use crate::{
     daemon::{Daemon, DaemonError, DaemonEvent, EventStream, ServerNotification},
     questions::{
-        self, QuestionsEvent, WorkspaceQuestions,
+        self, AskAboutCode, QuestionsEvent, WorkspaceQuestions,
+        ask::{AskEvent, AskPopover},
         popover::{PopoverEvent, QuestionPopover},
     },
     workspace::{Workspaces, WorkspacesEvent},
@@ -151,6 +152,7 @@ struct Session {
     editor: Entity<CodeEditor>,
     _edits: Subscription,
     _markers: Subscription,
+    _ask: Subscription,
 }
 
 /// Markers per question: one per anchor, `question * MARKERS_PER_QUESTION +
@@ -196,6 +198,8 @@ pub struct FileEditor {
     questions: Option<Entity<WorkspaceQuestions>>,
     /// The open question popover.
     popover: Option<(Entity<QuestionPopover>, Subscription)>,
+    /// The open ask popover (#229).
+    ask: Option<(Entity<AskPopover>, Subscription)>,
     /// A question to show once the file is open (and its markers placed).
     pending_question: Option<PendingQuestion>,
     _opening: Option<Task<()>>,
@@ -314,6 +318,7 @@ impl FileEditor {
             pending_reveal: None,
             questions,
             popover: None,
+            ask: None,
             pending_question: None,
             _opening: None,
             _changes: None,
@@ -583,6 +588,16 @@ impl FileEditor {
                         this.show_question(id, true, false, window, cx);
                     },
                 );
+                let ask = cx.subscribe_in(
+                    &editor,
+                    window,
+                    |this, _, clicked: &AskClicked, window, cx| {
+                        this.ask_about(clicked.lines.clone(), window, cx);
+                    },
+                );
+                if self.questions.is_some() {
+                    editor.update(cx, |editor, cx| editor.set_ask_enabled(true, cx));
+                }
                 if self.focus.is_focused(window) {
                     editor.update(cx, |editor, cx| editor.focus(window, cx));
                 }
@@ -591,6 +606,7 @@ impl FileEditor {
                     editor,
                     _edits: edits,
                     _markers: markers,
+                    _ask: ask,
                 });
                 self.content = Content::Text;
             }
@@ -1245,6 +1261,7 @@ impl FileEditor {
         if status != QuestionStatus::Open {
             return; // Answered or dismissed meanwhile: nothing to ask.
         }
+        self.ask = None;
         self.sync_markers(cx);
         let reused = self
             .popover
@@ -1299,6 +1316,79 @@ impl FileEditor {
             });
         }
         cx.notify();
+    }
+
+    /// Ask an agent about `lines` (0-based, `end` exclusive): open the ask
+    /// popover under them, with the keyboard in it.
+    pub fn ask_about(
+        &mut self,
+        lines: std::ops::Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(editor), Some(store)) = (self.editor().cloned(), self.questions.clone()) else {
+            return;
+        };
+        if self.popover.is_some() {
+            self.close_popover(window, cx);
+        }
+        let shown = crate::shell::shown_chats(&self.workspace, cx);
+        let sessions = questions::ask::choices(&self.workspace, &shown, cx);
+        let (workspace, root, path) = (self.workspace.clone(), self.root, self.path.clone());
+        let range = lines.clone();
+        let ask =
+            cx.new(|cx| AskPopover::new(workspace, root, path, range, store, sessions, window, cx));
+        let events = cx.subscribe_in(&ask, window, |this, _, event, window, cx| match event {
+            AskEvent::Cancel => this.close_ask(window, cx),
+            AskEvent::Asked(id) => {
+                this.close_ask(window, cx);
+                this.show_question(*id, true, false, window, cx);
+            }
+        });
+        self.ask = Some((ask.clone(), events));
+        let view = ask.clone();
+        editor.update(cx, |editor, cx| {
+            let anchor = OverlayAnchor::Lines {
+                start: lines.start,
+                end: lines.end,
+            };
+            editor.set_overlay(anchor, view.into(), cx);
+        });
+        ask.update(cx, |ask, cx| ask.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Ask about the selected lines ([`AskAboutCode`]).
+    fn ask_about_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.editor() else {
+            return;
+        };
+        let lines = editor.read(cx).selected_lines(cx);
+        self.ask_about(lines, window, cx);
+    }
+
+    /// Close the ask popover; the keyboard goes back to the code if it was
+    /// in it.
+    pub fn close_ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((ask, _)) = self.ask.take() else {
+            return;
+        };
+        let focused = ask.read(cx).contains_focus(window, cx);
+        if let Some(editor) = self.editor().cloned() {
+            editor.update(cx, |editor, cx| {
+                editor.clear_overlay(cx);
+                if focused {
+                    editor.focus(window, cx);
+                }
+            });
+        }
+        cx.notify();
+    }
+
+    /// The ask popover, if open.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn ask_popover(&self) -> Option<&Entity<AskPopover>> {
+        self.ask.as_ref().map(|(ask, _)| ask)
     }
 
     /// The question whose popover is open.
@@ -1601,6 +1691,9 @@ impl Render for FileEditor {
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &Save, _, cx| this.save(false, cx)))
+            .on_action(cx.listener(|this, _: &AskAboutCode, window, cx| {
+                this.ask_about_selection(window, cx)
+            }))
             .size_full()
             .flex()
             .flex_col()

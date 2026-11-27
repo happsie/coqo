@@ -8,6 +8,9 @@
 //! it was asked, the question's first line and where it is pinned. Clicking
 //! a card shows it in its file with the popover open ([`OpenQuestion`]). A
 //! confirmation can be answered right on its card (Yes / No).
+//!
+//! Threads the user started (#229) are listed too; a filter shows all, the
+//! agents' questions only, or the user's threads only.
 
 use coqo_protocol::methods::questions::{AnswerParams, Question, QuestionKind, QuestionStatus};
 use coqo_ui::{
@@ -22,8 +25,8 @@ use coqo_ui::{
 };
 
 use super::{
-    OpenQuestion, WorkspaceQuestions, ago_short, answer, answer_text, kind_color, kind_label,
-    location, primary_anchor, questions_for,
+    OpenQuestion, WorkspaceQuestions, ago_short, anchor_line, answer, answer_text, kind_color,
+    kind_label, location, primary_anchor, questions_for,
 };
 use crate::workspace::{Workspaces, WorkspacesEvent};
 
@@ -34,11 +37,32 @@ pub enum Showing {
     Answered,
 }
 
+/// Whose questions the pane lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Filter {
+    All,
+    /// Asked by agents.
+    Agents,
+    /// Threads the user started.
+    Yours,
+}
+
+impl Filter {
+    fn keeps(self, q: &Question) -> bool {
+        match self {
+            Filter::All => true,
+            Filter::Agents => q.author.is_agent(),
+            Filter::Yours => !q.author.is_agent(),
+        }
+    }
+}
+
 /// The Questions pane.
 pub struct QuestionsPane {
     workspaces: Option<Entity<Workspaces>>,
     store: Option<Entity<WorkspaceQuestions>>,
     showing: Showing,
+    filter: Filter,
     _store: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
@@ -66,6 +90,7 @@ impl QuestionsPane {
             workspaces,
             store: None,
             showing: Showing::Open,
+            filter: Filter::All,
             _store: None,
             _subscriptions: subscriptions,
         };
@@ -95,6 +120,12 @@ impl QuestionsPane {
     /// Show the open questions or the answered ones.
     pub fn show(&mut self, showing: Showing, cx: &mut Context<Self>) {
         self.showing = showing;
+        cx.notify();
+    }
+
+    /// List only these.
+    pub fn filter(&mut self, filter: Filter, cx: &mut Context<Self>) {
+        self.filter = filter;
         cx.notify();
     }
 
@@ -227,16 +258,33 @@ impl Render for QuestionsPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.tokens();
         let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let filter = self.filter;
         let (open, closed): (Vec<Question>, Vec<Question>) = match &self.store {
             Some(store) => {
                 let store = store.read(cx);
-                let mut open: Vec<Question> = Vec::new();
-                for item in store.navigation() {
-                    if let Some(q) = store.get(item.id) {
-                        open.push(q.clone());
-                    }
-                }
-                (open, store.closed().into_iter().cloned().collect())
+                // By file, then line.
+                let mut open: Vec<Question> = store
+                    .open()
+                    .into_iter()
+                    .filter(|q| filter.keeps(q))
+                    .cloned()
+                    .collect();
+                open.sort_by_cached_key(|q| {
+                    let a = primary_anchor(q);
+                    (
+                        a.map_or(0, |a| a.anchor.root.0),
+                        a.map(|a| a.anchor.path.clone()).unwrap_or_default(),
+                        a.map_or(0, anchor_line),
+                        q.id,
+                    )
+                });
+                let closed = store
+                    .closed()
+                    .into_iter()
+                    .filter(|q| filter.keeps(q))
+                    .cloned()
+                    .collect();
+                (open, closed)
             }
             None => (Vec::new(), Vec::new()),
         };
@@ -266,6 +314,32 @@ impl Render for QuestionsPane {
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| this.show(Showing::Answered, cx))),
             );
+        let mut filters = div().flex().gap(px(4.)).px(px(4.));
+        for (id, label, f) in [
+            ("questions-filter-all", "All", Filter::All),
+            ("questions-filter-agents", "Agents", Filter::Agents),
+            ("questions-filter-yours", "Yours", Filter::Yours),
+        ] {
+            filters = filters.child(
+                div()
+                    .id(id)
+                    .test_support()
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(px(999.))
+                    .text_size(m.text_xs)
+                    .cursor_pointer()
+                    .map(|d| {
+                        if filter == f {
+                            d.bg(p.surface.hsla()).text_color(p.text.hsla())
+                        } else {
+                            d.text_color(p.text_subtle.hsla())
+                        }
+                    })
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| this.filter(f, cx))),
+            );
+        }
 
         let mut list = div().flex().flex_col().gap(px(8.));
         let shown = match showing {
@@ -338,6 +412,7 @@ impl Render for QuestionsPane {
                     ),
             )
             .child(tabs)
+            .child(filters)
             .child(list)
             .child(
                 div()

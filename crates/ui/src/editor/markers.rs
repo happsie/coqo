@@ -8,6 +8,10 @@
 //!   emits [`MarkerClicked`]. A marker with `pulse` set (an agent waits for
 //!   it) has a stronger band and a pulsing diamond. Marker ranges follow
 //!   edits like the editor's decorations ([`CodeEditor::marker_range`]).
+//! - **The ask button** ([`CodeEditor::set_ask_enabled`], #229): a speech
+//!   bubble in the same gap, on the line under the mouse and on the first
+//!   line of the selection while the editor has the keyboard. A click emits
+//!   [`AskClicked`] with the lines to ask about.
 //! - **The overlay** ([`CodeEditor::set_overlay`]): one view (the question
 //!   popover) drawn over the code, below the lines of a marker with a caret
 //!   pointing at them, or above them when there is more room there; or at the
@@ -68,11 +72,20 @@ pub struct CodeMarker {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MarkerClicked(pub u64);
 
+/// The ask button was clicked: ask about these lines (0-based, `end`
+/// exclusive).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AskClicked {
+    pub lines: Range<usize>,
+}
+
 /// Where [`CodeEditor::set_overlay`] puts its view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverlayAnchor {
     /// At the lines of this marker. If the marker is gone, at the top.
     Marker(u64),
+    /// At these lines (0-based, `end` exclusive), as they are now.
+    Lines { start: usize, end: usize },
     /// At the top of the editor.
     Top,
 }
@@ -96,6 +109,10 @@ pub(super) struct Overlays {
     overlay: Option<Overlay>,
     /// The editor's bounds in the last frame.
     frame: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Whether the ask button shows.
+    ask: bool,
+    /// The line under the mouse.
+    hovered: Option<usize>,
     /// A marker to scroll near the top once laid out, and the frames left
     /// to wait for that.
     scroll_to: Option<(u64, usize)>,
@@ -222,6 +239,51 @@ impl CodeEditor {
         Some(text.origin.y - frame.origin.y + state.line_top(line)?)
     }
 
+    /// Show the ask button (on the hovered line and the selection).
+    pub fn set_ask_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.overlays.ask != enabled {
+            self.overlays.ask = enabled;
+            cx.notify();
+        }
+    }
+
+    /// The lines of the primary selection (0-based, `end` exclusive): what
+    /// the user asks about. A selection ending at the start of a line leaves
+    /// that line out.
+    pub fn selected_lines(&self, cx: &App) -> Range<usize> {
+        let state = self.state.read(cx);
+        let range = self.selections(cx).first().cloned().unwrap_or(0..0);
+        lines_of(state.text(), &range)
+    }
+
+    /// The line at `y` in the window, if it is a line of the text on screen.
+    pub(super) fn hover_at(&mut self, y: Pixels, cx: &mut Context<Self>) {
+        let line = self.line_at(y, cx);
+        if line != self.overlays.hovered {
+            self.overlays.hovered = line;
+            if self.overlays.ask {
+                cx.notify();
+            }
+        }
+    }
+
+    fn line_at(&self, y: Pixels, cx: &App) -> Option<usize> {
+        let frame = self.overlays.frame.get()?;
+        if y < frame.origin.y || y >= frame.origin.y + frame.size.height {
+            return None;
+        }
+        let state = self.state.read(cx);
+        let text = state.text_bounds()?;
+        let rel = y - text.origin.y;
+        let lines = self.visible_lines(cx)?;
+        let count = state.text().lines_len();
+        lines.filter(|l| *l < count).find(|&l| {
+            state
+                .line_top(l)
+                .is_some_and(|top| top <= rel && rel < top + px(CODE_LINE_HEIGHT))
+        })
+    }
+
     /// Scroll so marker `id`'s first line sits near the top of the editor,
     /// leaving the room below it for an overlay. Waits for the first layout.
     pub fn scroll_marker_to_top(&mut self, id: u64, cx: &mut Context<Self>) {
@@ -272,7 +334,8 @@ impl CodeEditor {
                 .size_full()
                 .into_any_element(),
         ];
-        if self.overlays.markers.is_empty() && self.overlays.overlay.is_none() {
+        if self.overlays.markers.is_empty() && self.overlays.overlay.is_none() && !self.overlays.ask
+        {
             return elements;
         }
         let geometry = {
@@ -365,12 +428,72 @@ impl CodeEditor {
             );
         }
 
+        // The ask button: on the hovered line, else (with the keyboard in
+        // the editor) the selection's first line; not over a diamond.
+        let focused = gpui_kit::Focusable::focus_handle(self.state.read(cx), cx).is_focused(window);
+        let selected = self.selected_lines(cx);
+        let ask_line = self
+            .overlays
+            .hovered
+            .or_else(|| focused.then_some(selected.start))
+            .filter(|_| self.overlays.ask && self.overlays.overlay.is_none());
+        if let Some(line) = ask_line {
+            let state = self.state.read(cx);
+            let marked = placed.iter().any(|(_, top, _)| {
+                state
+                    .line_top(line)
+                    .is_some_and(|t| (dy + t - *top).abs() < px(1.))
+            });
+            if let Some(top) = state.line_top(line).map(|t| dy + t)
+                && !marked
+                && top >= px(0.)
+                && top < height
+            {
+                let lines = if selected.contains(&line) {
+                    selected.clone()
+                } else {
+                    line..line + 1
+                };
+                let p = &cx.tokens().palette;
+                elements.push(
+                    div()
+                        .id("code-ask")
+                        .test_support()
+                        .absolute()
+                        .left(dx + gutter - px(GUTTER_GAP))
+                        .top(top)
+                        .w(px(GUTTER_GAP))
+                        .h(line_height)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .occlude()
+                        .child(icon(Icon::MessageCircle, px(13.), p.blue.hsla()))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(AskClicked {
+                                lines: lines.clone(),
+                            })
+                        }))
+                        .into_any_element(),
+                );
+            }
+        }
+
         if let Some(overlay) = &self.overlays.overlay {
+            let state = self.state.read(cx);
             let target = match overlay.anchor {
                 OverlayAnchor::Marker(id) => placed
                     .iter()
                     .find(|(m, ..)| m.id == id)
                     .map(|(_, top, bottom)| (*top, *bottom)),
+                OverlayAnchor::Lines { start, end } => state.line_top(start).map(|t| {
+                    let top = dy + t;
+                    let bottom = state
+                        .line_top(end.max(start + 1) - 1)
+                        .map_or(top + line_height, |t| dy + t + line_height);
+                    (top, bottom.max(top + line_height))
+                }),
                 OverlayAnchor::Top => None,
             };
             let left = (dx + gutter).min(frame.size.width - px(OVERLAY_MARGIN + 200.));

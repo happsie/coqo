@@ -7,22 +7,21 @@
 //! to this window.
 
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use coqo_agents::{
-    AgentUpdate, ManagerOptions, PermissionAsk, SessionManager, SessionStore, StaticProviders,
+    AgentUpdate, PermissionAsk,
     model::{
         ContentBlock, CreateSessionParams, PermissionOption, PermissionOptionKind, PromptParams,
         SessionId, StopReason,
     },
     testing::{ScriptedProvider, Step},
 };
-use coqo_client::{DaemonPaths, RuntimeDir, connect};
-use coqo_mod_api::contrib::{AgentProviderInfo, AgentProviderKind};
+use coqo_protocol::Client;
 use coqo_protocol::methods::{
     agents as agm,
     alerts::{Alert, AlertKind, AlertTarget},
@@ -30,8 +29,6 @@ use coqo_protocol::methods::{
     questions::{self as qm, AnswerParams, CreateParams, NewAnchor, QuestionKind},
     workspace::WorkspaceInfo,
 };
-use coqo_protocol::{Client, ClientConfig, Router, Server, ServerConfig};
-use coqo_storage::DataDirs;
 use coqo_ui::{
     Appearance,
     dock::store::MemoryLayoutStore,
@@ -42,8 +39,7 @@ use coqo_ui::{
     test::{TestAppContext, TestWindowExt as _},
 };
 use tempfile::TempDir;
-use tokio::{runtime::Runtime, sync::Notify};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::Notify;
 
 use super::AlertCenter;
 use crate::{
@@ -56,88 +52,7 @@ use crate::{
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The daemon's workspace, session, buffer, question and alert services on
-/// a socket.
-struct TestDaemon {
-    runtime: Runtime,
-    paths: DaemonPaths,
-    _stop: CancellationToken,
-}
-
-impl TestDaemon {
-    fn start(dir: &Path, provider: &ScriptedProvider) -> Self {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap();
-        let paths = DaemonPaths::at(dir.join("run"));
-        let data = DataDirs::at(dir.join("data"));
-        std::fs::create_dir_all(data.root()).unwrap();
-        let stop = CancellationToken::new();
-        let entered = runtime.enter();
-        let registry = StaticProviders::new().with(
-            AgentProviderInfo {
-                id: "fake".parse().unwrap(),
-                name: "Fake agent".into(),
-                kind: AgentProviderKind::Acp,
-                description: None,
-            },
-            Arc::new(provider.clone()),
-        );
-        let db = data.global_db();
-        let store = SessionStore::open(&db).unwrap();
-        let manager =
-            SessionManager::open(store, Arc::new(registry), ManagerOptions::default()).unwrap();
-        let workspaces = Arc::new(coqod::workspace::WorkspaceService::open(data.clone()).unwrap());
-        let buffers = coqod::buffers::BufferService::new(
-            Arc::clone(&workspaces),
-            data,
-            coqod::buffers::BufferConfig::default(),
-        );
-        let questions = coqod::questions::QuestionService::open(
-            &db,
-            Arc::clone(&workspaces),
-            Arc::clone(&buffers),
-            Some(manager.clone()),
-        )
-        .unwrap();
-        let alerts = coqod::alerts::AlertService::open(&db, None).unwrap();
-        coqod::alerts::agents::AgentSource::new(
-            Arc::clone(&alerts),
-            manager.clone(),
-            Some(questions.clone()),
-        )
-        .spawn(stop.clone());
-        let router = coqod::workspace::register(Router::new(), workspaces);
-        let router = coqo_agents::rpc::register(router, manager);
-        let router = coqod::questions::register(router, questions);
-        let router = coqod::buffers::register(router, buffers);
-        let router = coqod::alerts::register(router, alerts);
-        let server = Server::new(router, ServerConfig::new("coqod", "test"));
-        RuntimeDir::create(paths.runtime_dir()).unwrap();
-        let listener = tokio::net::UnixListener::bind(paths.socket()).unwrap();
-        runtime.spawn(coqo_protocol::unix::serve_unix(server, listener));
-        drop(entered);
-        Self {
-            runtime,
-            paths,
-            _stop: stop,
-        }
-    }
-
-    /// Run `f` with a client of its own (another UI, the CLI, an agent's
-    /// bridge).
-    fn with_client<R>(&self, f: impl AsyncFnOnce(Client) -> R) -> R {
-        let paths = self.paths.clone();
-        self.runtime.block_on(async move {
-            let (client, _) = connect(&paths, ClientConfig::new("coqo-tests", "test"))
-                .await
-                .unwrap();
-            f(client).await
-        })
-    }
-}
+use crate::test_support::AgentDaemon as TestDaemon;
 
 struct Fixture {
     _tmp: TempDir,

@@ -10,7 +10,8 @@ use std::path::Path;
 use coqo_anchors::Anchor;
 use coqo_protocol::methods::agents::SessionId;
 use coqo_protocol::methods::questions::{
-    QuestionAnswer, QuestionId, QuestionKind, QuestionOption, QuestionStatus, Severity,
+    QuestionAnswer, QuestionAuthor, QuestionId, QuestionKind, QuestionOption, QuestionStatus,
+    Severity, ThreadMessage,
 };
 use coqo_protocol::methods::workspace::{RootId, WorkspaceId};
 use coqo_storage::{GlobalDb, StorageError};
@@ -53,11 +54,14 @@ pub(crate) struct Record {
     pub id: QuestionId,
     pub workspace: WorkspaceId,
     pub session: SessionId,
+    pub author: QuestionAuthor,
     pub kind: QuestionKind,
     pub severity: Option<Severity>,
     pub body: String,
     pub options: Vec<QuestionOption>,
     pub anchors: Vec<StoredAnchor>,
+    /// A user's thread: their messages (empty for an agent's question).
+    pub thread: Vec<ThreadMessage>,
     pub status: QuestionStatus,
     pub answer: Option<QuestionAnswer>,
     pub created_at: i64,
@@ -71,6 +75,7 @@ pub(crate) struct Record {
 pub(crate) struct NewRecord {
     pub workspace: WorkspaceId,
     pub session: SessionId,
+    pub author: QuestionAuthor,
     pub kind: QuestionKind,
     pub severity: Option<Severity>,
     pub body: String,
@@ -108,7 +113,8 @@ fn parse_json<T: DeserializeOwned>(col: usize, s: &str) -> rusqlite::Result<T> {
 }
 
 const SELECT: &str = "SELECT id, workspace, session, kind, severity, body, options, anchors, \
-                      status, answer, created_at, closed_at, change_seq FROM questions";
+                      status, answer, created_at, closed_at, change_seq, author, thread \
+                      FROM questions";
 
 fn record_row(row: &Row<'_>) -> rusqlite::Result<Record> {
     let kind: String = row.get(3)?;
@@ -117,15 +123,23 @@ fn record_row(row: &Row<'_>) -> rusqlite::Result<Record> {
     let anchors: String = row.get(7)?;
     let status: String = row.get(8)?;
     let answer: Option<String> = row.get(9)?;
+    let author: String = row.get(13)?;
+    let thread: Option<String> = row.get(14)?;
     Ok(Record {
         id: QuestionId(u64_of(row.get(0)?)),
         workspace: WorkspaceId(row.get(1)?),
         session: SessionId(row.get(2)?),
+        author: parse_name(&author)?,
         kind: parse_name(&kind)?,
         severity: severity.as_deref().map(parse_name).transpose()?,
         body: row.get(5)?,
         options: parse_json(6, &options)?,
         anchors: parse_json(7, &anchors)?,
+        thread: thread
+            .as_deref()
+            .map(|t| parse_json(14, t))
+            .transpose()?
+            .unwrap_or_default(),
         status: parse_name(&status)?,
         answer: answer.as_deref().map(|a| parse_json(9, a)).transpose()?,
         created_at: row.get(10)?,
@@ -163,7 +177,8 @@ impl Store {
         let conn = self.db.connection();
         conn.execute(
             "INSERT INTO questions (workspace, session, kind, severity, body, options, anchors, \
-             status, created_at, change_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             status, created_at, change_seq, author) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 new.workspace.0,
                 new.session.0,
@@ -175,6 +190,7 @@ impl Store {
                 name_of(&QuestionStatus::Open),
                 new.created_at,
                 i64_of(seq),
+                name_of(&new.author),
             ],
         )?;
         let id = QuestionId(u64_of(conn.last_insert_rowid()));
@@ -182,11 +198,13 @@ impl Store {
             id,
             workspace: new.workspace.clone(),
             session: new.session.clone(),
+            author: new.author,
             kind: new.kind,
             severity: new.severity,
             body: new.body.clone(),
             options: new.options.clone(),
             anchors: new.anchors.clone(),
+            thread: Vec::new(),
             status: QuestionStatus::Open,
             answer: None,
             created_at: new.created_at,
@@ -205,11 +223,11 @@ impl Store {
             .optional()?)
     }
 
-    /// Writes `record`'s status, answer and anchors as change `seq`.
+    /// Writes `record`'s status, answer, anchors and thread as change `seq`.
     pub fn update(&self, record: &Record, seq: u64) -> Result<()> {
         self.db.connection().execute(
             "UPDATE questions SET status = ?2, answer = ?3, closed_at = ?4, anchors = ?5, \
-             change_seq = ?6 WHERE id = ?1",
+             change_seq = ?6, thread = ?7 WHERE id = ?1",
             params![
                 i64_of(record.id.0),
                 name_of(&record.status),
@@ -221,6 +239,9 @@ impl Store {
                 record.closed_at,
                 serde_json::to_string(&record.anchors)?,
                 i64_of(seq),
+                (!record.thread.is_empty())
+                    .then(|| serde_json::to_string(&record.thread))
+                    .transpose()?,
             ],
         )?;
         Ok(())
@@ -300,14 +321,15 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
-    /// The open questions (not notes) of `session`, oldest first.
+    /// The open questions (not notes, nor threads the user started) of
+    /// `session`, oldest first: what it waits on the user for.
     pub fn open_questions_of(&self, session: &SessionId) -> Result<Vec<Record>> {
         Ok(self
             .db
             .connection()
             .prepare_cached(&format!(
                 "{SELECT} WHERE session = ?1 AND status = 'open' AND kind != 'annotation' \
-                 ORDER BY id"
+                 AND author = 'agent' ORDER BY id"
             ))?
             .query_map([&session.0], record_row)?
             .collect::<rusqlite::Result<_>>()?)
@@ -325,6 +347,7 @@ mod tests {
         NewRecord {
             workspace: WorkspaceId(workspace.into()),
             session: SessionId(session.into()),
+            author: QuestionAuthor::Agent,
             kind,
             severity: (kind == QuestionKind::Annotation).then_some(Severity::Warning),
             body: "Why **1**?".into(),
@@ -368,15 +391,39 @@ mod tests {
             answered.seq = 3;
             answered
         };
+        // A thread the user started, with a follow-up.
+        let thread = {
+            let store = Store::open(&path).unwrap();
+            let mut new = new_record("ws", "s-1", QuestionKind::Clarification);
+            new.author = QuestionAuthor::User;
+            let mut t = store.insert(&new, 4).unwrap();
+            t.thread = vec![
+                ThreadMessage {
+                    text: "Why 1?".into(),
+                    turn: 1,
+                    at: 11,
+                },
+                ThreadMessage {
+                    text: "And 2?".into(),
+                    turn: 2,
+                    at: 12,
+                },
+            ];
+            store.update(&t, 5).unwrap();
+            t.seq = 5;
+            t
+        };
         let store = Store::open(&path).unwrap();
-        assert_eq!(store.head().unwrap(), 3);
+        assert_eq!(store.head().unwrap(), 5);
         assert_eq!(store.get(q.id).unwrap().unwrap(), q);
+        assert_eq!(store.get(thread.id).unwrap().unwrap(), thread);
         let ws = WorkspaceId("ws".into());
         let open = store.list(&ws, None, false, 10).unwrap();
-        assert_eq!(open.len(), 1);
+        assert_eq!(open.len(), 2);
         assert_eq!(open[0].kind, QuestionKind::Annotation);
         assert_eq!(open[0].severity, Some(Severity::Warning));
-        assert_eq!(store.list(&ws, None, true, 10).unwrap().len(), 2);
+        assert_eq!(open[1].author, QuestionAuthor::User);
+        assert_eq!(store.list(&ws, None, true, 10).unwrap().len(), 3);
         assert!(
             store
                 .list(&ws, Some(&SessionId("other".into())), true, 10)
@@ -386,7 +433,7 @@ mod tests {
         let changed = store.changed_since(1, None, 10).unwrap();
         assert_eq!(
             changed.iter().map(|r| r.seq).collect::<Vec<_>>(),
-            [2, 3],
+            [2, 3, 5],
             "oldest change first"
         );
         assert!(
@@ -395,7 +442,8 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        // The annotation is not a question waiting for an answer.
+        // Neither the annotation nor the user's thread is a question
+        // waiting for an answer.
         assert!(
             store
                 .open_questions_of(&SessionId("s-1".into()))

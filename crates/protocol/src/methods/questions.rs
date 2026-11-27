@@ -27,6 +27,16 @@
 //!
 //! # For the bridge
 //!
+//! # Threads the user starts
+//!
+//! The other way round, the user asks an agent about code (#229):
+//! [`Ask`] (`questions/ask`) pins a thread to the lines like an agent's
+//! question ([`QuestionAuthor::User`]) and prompts the chosen session with
+//! the question and the code; [`Reply`] (`questions/reply`) adds a
+//! follow-up. Each [`ThreadMessage`] carries the session turn that answers
+//! it, so the agent's reply is that turn of `sessions/updates`. Nobody
+//! waits on a thread: it stays open until the user dismisses it.
+//!
 //! [`Create`] (`questions/create`) asks a question or adds a note, and
 //! [`Watch`] (`questions/watch`) follows one question: its first event is
 //! the question as it is now, then one per change, so a waiting agent never
@@ -54,6 +64,38 @@ pub const MAX_ANCHORS: usize = 8;
 pub const MAX_ANCHOR_LINES: u32 = 2000;
 /// Longest free-text answer, in bytes.
 pub const MAX_ANSWER: usize = 16 * 1024;
+
+/// Who started a question.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionAuthor {
+    /// An agent asked the user (`ask_question`, `annotate`).
+    #[default]
+    Agent,
+    /// The user asked an agent ([`Ask`]): a thread the agent answers in its
+    /// session.
+    User,
+}
+
+impl QuestionAuthor {
+    /// Whether an agent asked (the default, left out on the wire).
+    pub fn is_agent(&self) -> bool {
+        *self == Self::Agent
+    }
+}
+
+/// One message the user sent in a thread ([`Ask`], [`Reply`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct ThreadMessage {
+    /// The message, markdown.
+    pub text: String,
+    /// The session turn it started: the agent's reply is that turn.
+    pub turn: u64,
+    /// Sent, Unix milliseconds.
+    pub at: i64,
+}
 
 /// Identifies a question or note. Assigned by the daemon, never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -293,9 +335,14 @@ pub struct Question {
     pub id: QuestionId,
     /// The workspace.
     pub workspace: WorkspaceId,
-    /// The agent session that asked.
+    /// The agent session that asked (or, for a thread the user started,
+    /// the session asked).
     pub session: SessionId,
-    /// What kind of answer it wants.
+    /// Who asked: an agent, or the user ([`Ask`]).
+    #[serde(default, skip_serializing_if = "QuestionAuthor::is_agent")]
+    pub author: QuestionAuthor,
+    /// What kind of answer it wants (a thread the user started is a
+    /// `clarification`).
     pub kind: QuestionKind,
     /// How important a note is (annotations only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -317,6 +364,10 @@ pub struct Question {
     /// `ask_question` or `await_answer`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub waiting: bool,
+    /// A thread the user started: their messages, oldest first, each with
+    /// the turn that answers it. Empty for an agent's question.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thread: Vec<ThreadMessage>,
     /// Asked, Unix milliseconds.
     pub created_at: i64,
     /// Answered or dismissed, Unix milliseconds.
@@ -430,6 +481,31 @@ pub struct CreateParams {
     pub anchors: Vec<NewAnchor>,
 }
 
+/// Params of [`Ask`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct AskParams {
+    /// The workspace.
+    pub workspace: WorkspaceId,
+    /// The agent session to ask; it must not be running a turn.
+    pub session: SessionId,
+    /// The question, markdown.
+    pub body: String,
+    /// The code it is about: 1 to [`MAX_ANCHORS`] locations, as for
+    /// [`Create`].
+    pub anchors: Vec<NewAnchor>,
+}
+
+/// Params of [`Reply`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct ReplyParams {
+    /// The thread.
+    pub id: QuestionId,
+    /// The follow-up, markdown.
+    pub body: String,
+}
+
 /// Params of the [`Watch`] topic.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -494,6 +570,31 @@ impl Method for Create {
     type Result = Question;
 }
 
+/// `questions/ask`: the user asks an agent session about code. The daemon
+/// pins a thread to the code (like [`Create`], authored by the user), then
+/// prompts the session with the question and the anchored code as embedded
+/// resources. Fails like `sessions/prompt` (`SESSION_BUSY` while a turn
+/// runs), and then no thread is left behind.
+#[derive(Debug)]
+pub enum Ask {}
+impl Method for Ask {
+    const NAME: &'static str = "questions/ask";
+    type Params = AskParams;
+    type Result = Question;
+}
+
+/// `questions/reply`: a follow-up in a thread the user started, prompted to
+/// the same session with the code again. An agent's question is invalid
+/// params (answer it instead); a dismissed thread is
+/// [`QUESTION_CLOSED`](super::codes::QUESTION_CLOSED).
+#[derive(Debug)]
+pub enum Reply {}
+impl Method for Reply {
+    const NAME: &'static str = "questions/reply";
+    type Params = ReplyParams;
+    type Result = Question;
+}
+
 /// `questions/changes`: questions whose state changed, as their latest
 /// state. Resumable from [`QuestionList::seq`]; resuming replays each
 /// question's newest state only.
@@ -527,6 +628,7 @@ mod tests {
             id: QuestionId(7),
             workspace: WorkspaceId("ws-1".into()),
             session: SessionId("s-1".into()),
+            author: Default::default(),
             kind: QuestionKind::Decision,
             severity: None,
             body: "Which **map**?".into(),
@@ -577,6 +679,7 @@ mod tests {
                 text: None,
             }),
             waiting: true,
+            thread: vec![],
             created_at: 1,
             closed_at: Some(2),
             seq: 9,

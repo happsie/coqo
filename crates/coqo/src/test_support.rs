@@ -22,6 +22,7 @@ use coqo_storage::{DataDirs, GlobalDb, NewEvent, Retention, Timestamp};
 use coqod::IdlePolicy;
 use tempfile::TempDir;
 use tokio::{runtime::Runtime, task::JoinHandle};
+use tokio_util::sync::CancellationToken;
 
 /// How long tests wait for the daemon.
 pub const TIMEOUT: Duration = Duration::from_secs(10);
@@ -228,5 +229,89 @@ impl Fixture {
         let path = self.tmp.path().join(name);
         write(&path, "README.md", format!("# {name}\n"));
         path
+    }
+}
+
+/// The daemon's workspace, session, buffer, question and alert services on
+/// a socket, with a scripted agent as the provider "fake".
+pub struct AgentDaemon {
+    pub runtime: Runtime,
+    pub paths: DaemonPaths,
+    _stop: CancellationToken,
+}
+
+impl AgentDaemon {
+    /// Serve `provider` as the "fake" agent, with state under `dir`.
+    pub fn start(dir: &Path, provider: &ScriptedProvider) -> Self {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let paths = DaemonPaths::at(dir.join("run"));
+        let data = DataDirs::at(dir.join("data"));
+        std::fs::create_dir_all(data.root()).unwrap();
+        let stop = CancellationToken::new();
+        let entered = runtime.enter();
+        let registry = StaticProviders::new().with(
+            AgentProviderInfo {
+                id: "fake".parse().unwrap(),
+                name: "Fake agent".into(),
+                kind: AgentProviderKind::Acp,
+                description: None,
+            },
+            Arc::new(provider.clone()),
+        );
+        let db = data.global_db();
+        let store = SessionStore::open(&db).unwrap();
+        let manager =
+            SessionManager::open(store, Arc::new(registry), ManagerOptions::default()).unwrap();
+        let workspaces = Arc::new(coqod::workspace::WorkspaceService::open(data.clone()).unwrap());
+        let buffers = coqod::buffers::BufferService::new(
+            Arc::clone(&workspaces),
+            data,
+            coqod::buffers::BufferConfig::default(),
+        );
+        let questions = coqod::questions::QuestionService::open(
+            &db,
+            Arc::clone(&workspaces),
+            Arc::clone(&buffers),
+            Some(manager.clone()),
+        )
+        .unwrap();
+        let alerts = coqod::alerts::AlertService::open(&db, None).unwrap();
+        coqod::alerts::agents::AgentSource::new(
+            Arc::clone(&alerts),
+            manager.clone(),
+            Some(questions.clone()),
+        )
+        .spawn(stop.clone());
+        let router = coqod::workspace::register(Router::new(), workspaces);
+        let router = coqo_agents::rpc::register(router, manager);
+        let router = coqod::questions::register(router, questions);
+        let router = coqod::buffers::register(router, buffers);
+        let router = coqod::alerts::register(router, alerts);
+        let server = Server::new(router, ServerConfig::new("coqod", "test"));
+        RuntimeDir::create(paths.runtime_dir()).unwrap();
+        let listener = tokio::net::UnixListener::bind(paths.socket()).unwrap();
+        runtime.spawn(coqo_protocol::unix::serve_unix(server, listener));
+        drop(entered);
+        Self {
+            runtime,
+            paths,
+            _stop: stop,
+        }
+    }
+
+    /// Run `f` with a client of its own (another UI, the CLI, an agent's
+    /// bridge).
+    pub fn with_client<R>(&self, f: impl AsyncFnOnce(Client) -> R) -> R {
+        let paths = self.paths.clone();
+        self.runtime.block_on(async move {
+            let (client, _) = connect(&paths, ClientConfig::new("coqo-tests", "test"))
+                .await
+                .unwrap();
+            f(client).await
+        })
     }
 }

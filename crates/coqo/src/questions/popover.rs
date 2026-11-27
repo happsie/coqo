@@ -17,11 +17,18 @@
 //! `Esc` or **Later** closes it without answering. **Dismiss** closes the
 //! question without an answer (`questions/dismiss`).
 //!
+//! A thread the user started (#229, `author: user`) shows the conversation
+//! instead: each of the user's messages and the agent's reply to it,
+//! streamed from that turn of the chat ([`ThreadReplies`]), and a field for
+//! a follow-up (`questions/reply`). **Resolve** closes the thread.
+//!
 //! [`CodeEditor::set_overlay`]: coqo_ui::editor::CodeEditor::set_overlay
 
 use coqo_protocol::methods::{
     codes,
-    questions::{AnchorStatus, AnswerParams, Question, QuestionAnchor, QuestionId, QuestionKind},
+    questions::{
+        AnchorStatus, AnswerParams, Question, QuestionAnchor, QuestionId, QuestionKind, ReplyParams,
+    },
     workspace::RootId,
 };
 use coqo_ui::{
@@ -39,7 +46,8 @@ use coqo_ui::{
 };
 
 use super::{
-    WorkspaceQuestions, ago, answer, dismiss, kind_color, kind_label, location, span_lines,
+    WorkspaceQuestions, ago, answer, dismiss, kind_color, kind_label, location, reply, span_lines,
+    thread::ThreadReplies,
 };
 
 #[allow(unused_imports)]
@@ -63,6 +71,9 @@ pub struct OpenQuestionChat {
 }
 
 const KEY_CONTEXT: &str = "QuestionPopover";
+/// The tallest a thread gets before it scrolls, so the reply field and
+/// the buttons stay in view.
+const THREAD_MAX_HEIGHT: f32 = 240.;
 /// Lines of a snippet shown at most.
 const SNIPPET_LINES: usize = 6;
 
@@ -88,8 +99,11 @@ pub struct QuestionPopover {
     path: String,
     /// The chosen option (decision, confirmation).
     selected: Option<String>,
-    /// The free-text reply (decision, clarification, confirmation).
+    /// The free-text reply (decision, clarification, confirmation), or a
+    /// follow-up in a user's thread.
     reply: Option<Entity<PromptInput>>,
+    /// The agent's replies, in a thread the user started.
+    replies: Option<Entity<ThreadReplies>>,
     focus: FocusHandle,
     sending: bool,
     error: Option<String>,
@@ -118,8 +132,13 @@ impl QuestionPopover {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let kind = store.read(cx).get(id).map(|q| q.kind);
+        let q = store.read(cx).get(id);
+        let kind = q.map(|q| q.kind);
+        let thread_of = q
+            .filter(|q| !q.author.is_agent())
+            .map(|q| q.session.clone());
         let placeholder = match kind {
+            _ if thread_of.is_some() => Some("Ask a follow-up question"),
             Some(QuestionKind::Decision) => Some("e.g. Option B, but keep the old name"),
             Some(QuestionKind::Clarification) => Some("Your answer"),
             Some(QuestionKind::Confirmation) => Some("Add a comment (optional)"),
@@ -127,7 +146,8 @@ impl QuestionPopover {
         };
         let mut subscriptions = vec![cx.observe(&store, |_, _, cx| cx.notify())];
         let reply = placeholder.map(|placeholder| {
-            let reply = cx.new(|cx| PromptInput::new(placeholder, 2, 6, window, cx));
+            let rows = if thread_of.is_some() { 1 } else { 2 };
+            let reply = cx.new(|cx| PromptInput::new(placeholder, rows, 6, window, cx));
             subscriptions.push(cx.subscribe_in(
                 &reply,
                 window,
@@ -143,6 +163,11 @@ impl QuestionPopover {
             ));
             reply
         });
+        let replies = thread_of.map(|session| {
+            let replies = cx.new(|cx| ThreadReplies::follow(session, cx));
+            subscriptions.push(cx.observe(&replies, |_, _, cx| cx.notify()));
+            replies
+        });
         Self {
             id,
             store,
@@ -150,6 +175,7 @@ impl QuestionPopover {
             path,
             selected: None,
             reply,
+            replies,
             focus: cx.focus_handle(),
             sending: false,
             error: None,
@@ -189,6 +215,10 @@ impl QuestionPopover {
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         let kind = self.store.read(cx).get(self.id).map(|q| q.kind);
         match (&self.reply, kind) {
+            (Some(reply), _) if self.replies.is_some() => {
+                let handle = reply.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            }
             (Some(reply), Some(QuestionKind::Decision | QuestionKind::Clarification)) => {
                 let handle = reply.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
@@ -241,14 +271,24 @@ impl QuestionPopover {
         }
     }
 
-    /// Send the answer (a note: dismiss it).
-    pub fn send(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    /// The agent's replies, in a thread the user started.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn replies(&self) -> Option<&Entity<ThreadReplies>> {
+        self.replies.as_ref()
+    }
+
+    /// Send the answer (a note: dismiss it; a user's thread: the follow-up).
+    pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.sending {
             return;
         }
         let Some(q) = self.store.read(cx).get(self.id).cloned() else {
             return;
         };
+        if self.replies.is_some() {
+            self.follow_up(window, cx);
+            return;
+        }
         if q.kind == QuestionKind::Annotation {
             self.dismiss(cx);
             return;
@@ -302,17 +342,151 @@ impl QuestionPopover {
         }));
     }
 
+    /// Send the follow-up in a user's thread; the field empties once sent.
+    fn follow_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(body) = self.reply_text(cx) else {
+            self.error = Some("Write a follow-up first.".into());
+            cx.notify();
+            return;
+        };
+        let task = reply(&self.store, ReplyParams { id: self.id, body }, cx);
+        self.sending = true;
+        self.error = None;
+        cx.notify();
+        self._sending = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| {
+                this.sending = false;
+                match result {
+                    Ok(_) => {
+                        if let Some(reply) = &this.reply {
+                            reply.update(cx, |r, cx| r.set_text("", window, cx));
+                        }
+                    }
+                    Err(e) => this.error = Some(format!("Couldn't send it: {e}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
     fn later(&mut self, cx: &mut Context<Self>) {
         cx.emit(PopoverEvent::Close);
     }
 
     // ---- rendering ----------------------------------------------------------
 
+    /// A user's thread: their messages and the agent's replies.
+    fn render_thread(&self, q: &Question, cx: &App) -> AnyElement {
+        let t = cx.tokens();
+        let (p, m) = (&t.palette, &t.metrics);
+        let replies = self.replies.as_ref().map(|r| r.read(cx));
+        let mut col = div()
+            .id("thread")
+            .test_support()
+            .px(px(18.))
+            .pt(px(10.))
+            .max_h(px(THREAD_MAX_HEIGHT))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(10.));
+        let messages: Vec<(String, Option<u64>)> = if q.thread.is_empty() {
+            vec![(q.body.clone(), None)]
+        } else {
+            q.thread
+                .iter()
+                .map(|m| (m.text.clone(), Some(m.turn)))
+                .collect()
+        };
+        for (ix, (text, turn)) in messages.into_iter().enumerate() {
+            col = col.child(
+                div()
+                    .id(("thread-message", ix))
+                    .test_support()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(m.text_label)
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(p.blue.hsla())
+                            .child("YOU"),
+                    )
+                    .child(
+                        div()
+                            .line_height(px(21.))
+                            .child(markdown(("thread-text", ix), text)),
+                    ),
+            );
+            let reply = turn.and_then(|turn| replies.and_then(|r| r.reply(turn)));
+            let (body, color): (AnyElement, _) = match reply {
+                Some(r) if !r.text.trim().is_empty() => (
+                    markdown(("thread-reply-text", ix), r.text.clone()).into_any_element(),
+                    p.text,
+                ),
+                Some(r) if r.error.is_some() => (
+                    SharedString::from(format!(
+                        "The turn failed: {}",
+                        r.error.clone().unwrap_or_default()
+                    ))
+                    .into_any_element(),
+                    p.rose,
+                ),
+                Some(r) if r.done => ("No reply.".into_any_element(), p.text_subtle),
+                _ => ("Thinking…".into_any_element(), p.text_subtle),
+            };
+            col = col.child(
+                div()
+                    .id(("thread-reply", ix))
+                    .test_support()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .pl(px(10.))
+                    .border_l_2()
+                    .border_color(p.border.hsla())
+                    .child(
+                        div()
+                            .text_size(m.text_label)
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(p.text_subtle.hsla())
+                            .child(self.store.read(cx).asker(&q.session, cx).to_uppercase()),
+                    )
+                    .child(
+                        div()
+                            .line_height(px(21.))
+                            .text_color(color.hsla())
+                            .child(body),
+                    ),
+            );
+        }
+        if let Some(e) = replies.and_then(|r| r.error()) {
+            col = col.child(
+                div()
+                    .text_size(m.text_sm)
+                    .text_color(p.rose.hsla())
+                    .child(SharedString::from(e.to_owned())),
+            );
+        }
+        col.into_any_element()
+    }
+
     fn render_header(&self, q: &Question, cx: &App) -> AnyElement {
         let t = cx.tokens();
         let (p, m) = (&t.palette, &t.metrics);
         let store = self.store.read(cx);
-        let meta = format!("{} · {}", store.asker(&q.session, cx), ago(q.created_at));
+        let meta = if q.author.is_agent() {
+            format!("{} · {}", store.asker(&q.session, cx), ago(q.created_at))
+        } else {
+            format!(
+                "You → {} · {}",
+                store.asker(&q.session, cx),
+                ago(q.created_at)
+            )
+        };
         let mut row = div()
             .flex()
             .flex_wrap()
@@ -614,6 +788,7 @@ impl QuestionPopover {
         let t = cx.tokens();
         let (p, m) = (&t.palette, &t.metrics);
         let label = match q.kind {
+            _ if self.replies.is_some() => "",
             QuestionKind::Decision => "Or reply in your own words",
             QuestionKind::Confirmation => "Comment",
             _ => "Your answer",
@@ -625,12 +800,14 @@ impl QuestionPopover {
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                .child(
-                    div()
-                        .text_size(m.text_sm)
-                        .text_color(p.text_muted.hsla())
-                        .child(label),
-                )
+                .when(!label.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_size(m.text_sm)
+                            .text_color(p.text_muted.hsla())
+                            .child(label),
+                    )
+                })
                 .child(
                     div()
                         .id("question-reply")
@@ -650,8 +827,14 @@ impl QuestionPopover {
     fn render_footer(&self, q: &Question, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.tokens();
         let (p, m) = (t.palette.clone(), t.metrics.clone());
-        let valid = q.kind == QuestionKind::Annotation || self.params(q, cx).is_ok();
+        let thread = self.replies.is_some();
+        let valid = if thread {
+            self.reply_text(cx).is_some()
+        } else {
+            q.kind == QuestionKind::Annotation || self.params(q, cx).is_ok()
+        };
         let send_label = match q.kind {
+            _ if thread => "Send",
             QuestionKind::Info => "OK",
             QuestionKind::Annotation => "Dismiss",
             _ => "Send answer",
@@ -681,17 +864,22 @@ impl QuestionPopover {
             )
             .when(q.kind.is_question(), |d| {
                 d.child(
-                    link("question-dismiss", "Dismiss")
-                        .text_color(p.text_subtle.hsla())
-                        .on_click(cx.listener(|this, _, _, cx| this.dismiss(cx))),
+                    link(
+                        "question-dismiss",
+                        if thread { "Resolve" } else { "Dismiss" },
+                    )
+                    .text_color(p.text_subtle.hsla())
+                    .on_click(cx.listener(|this, _, _, cx| this.dismiss(cx))),
                 )
             })
-            .child(
-                div()
-                    .text_size(m.text_sm)
-                    .text_color(p.text_subtle.hsla())
-                    .child("F8 next question"),
-            )
+            .when(!thread, |d| {
+                d.child(
+                    div()
+                        .text_size(m.text_sm)
+                        .text_color(p.text_subtle.hsla())
+                        .child("F8 next question"),
+                )
+            })
             .child(div().flex_1())
             .child(
                 raised(div(), cx)
@@ -756,7 +944,11 @@ impl Render for QuestionPopover {
                 .child("This question is gone.");
         };
         let header = self.render_header(&q, cx);
-        let body = self.render_body(&q, cx);
+        let body = if self.replies.is_some() {
+            self.render_thread(&q, cx)
+        } else {
+            self.render_body(&q, cx)
+        };
         let snippets = self.render_snippets(&q, cx);
         let options = self.render_options(&q, cx);
         let reply = self.render_reply(&q, cx);

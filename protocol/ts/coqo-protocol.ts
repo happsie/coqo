@@ -281,6 +281,18 @@ export type AnswerParams = {
   text?: string | null;
 };
 
+/** Params of [`Ask`]. */
+export type AskParams = {
+  /** The code it is about: 1 to [`MAX_ANCHORS`] locations, as for [`Create`]. */
+  anchors: Array<NewAnchor>;
+  /** The question, markdown. */
+  body: string;
+  /** The agent session to ask; it must not be running a turn. */
+  session: SessionId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
 /** Where the agent's usage is billed (from ACP `auth/status`). */
 export type AuthKind = "account" | "api_key" | "gateway" | "external" | "none" | "unknown";
 
@@ -1548,6 +1560,8 @@ export type Question = {
   anchors: Array<QuestionAnchor>;
   /** The answer, once answered. */
   answer?: QuestionAnswer | null;
+  /** Who asked: an agent, or the user ([`Ask`]). */
+  author?: QuestionAuthor;
   /** The question or note, in markdown. */
   body: string;
   /** Answered or dismissed, Unix milliseconds. */
@@ -1556,18 +1570,20 @@ export type Question = {
   createdAt: number;
   /** Id. */
   id: QuestionId;
-  /** What kind of answer it wants. */
+  /** What kind of answer it wants (a thread the user started is a `clarification`). */
   kind: QuestionKind;
   /** The answers it offers, in order (empty for a clarification or a note). */
   options?: Array<QuestionOption>;
   /** The `questions/changes` seq of this state. */
   seq: number;
-  /** The agent session that asked. */
+  /** The agent session that asked (or, for a thread the user started, the session asked). */
   session: SessionId;
   /** How important a note is (annotations only). */
   severity?: Severity | null;
   /** Open, answered or dismissed. */
   status: QuestionStatus;
+  /** A thread the user started: their messages, oldest first, each with the turn that answers it. Empty for an agent's question. */
+  thread?: Array<ThreadMessage>;
   /** Whether the agent is blocked on it right now (a waiting `ask_question` or `await_answer`). */
   waiting?: boolean;
   /** The workspace. */
@@ -1589,6 +1605,9 @@ export type QuestionAnswer = {
   /** A free-text reply or comment (markdown). */
   text?: string | null;
 };
+
+/** Who started a question. */
+export type QuestionAuthor = "agent" | "user";
 
 /** Identifies a question or note. Assigned by the daemon, never reused. */
 export type QuestionId = number;
@@ -1673,6 +1692,14 @@ export type RenameParams = {
 
 /** Identifies one replica of a buffer (one editor in one window), e.g. `r-3f2a9c1d0b7e4a65`. Assigned by [`Open`]; a replica keeps it across reconnects and reopens so the daemon can recognise its changes. */
 export type ReplicaId = string;
+
+/** Params of [`Reply`]. */
+export type ReplyParams = {
+  /** The follow-up, markdown. */
+  body: string;
+  /** The thread. */
+  id: QuestionId;
+};
 
 /** Where a root's repository is. */
 export type RepoInfo = {
@@ -2452,6 +2479,16 @@ export type TextEdit = {
 /** The file's text encoding. Only UTF-8 is supported for now; other files fail to open with [`UNSUPPORTED_ENCODING`](super::codes::UNSUPPORTED_ENCODING). */
 export type TextEncoding = "utf8" | "utf8Bom";
 
+/** One message the user sent in a thread ([`Ask`], [`Reply`]). */
+export type ThreadMessage = {
+  /** Sent, Unix milliseconds. */
+  at: number;
+  /** The message, markdown. */
+  text: string;
+  /** The session turn it started: the agent's reply is that turn. */
+  turn: number;
+};
+
 /** A tool call, as first reported. */
 export type ToolCall = {
   /** Output or proposed changes. */
@@ -3020,6 +3057,10 @@ export interface Requests {
   "questions/answer": { params: AnswerParams; result: Question };
   /** Close a question without an answer, or a note. (client→server) */
   "questions/dismiss": { params: QuestionParams; result: Question };
+  /** The user asks an agent session about code: a thread pinned to it. (client→server) */
+  "questions/ask": { params: AskParams; result: Question };
+  /** A follow-up in a thread the user started. (client→server) */
+  "questions/reply": { params: ReplyParams; result: Question };
   /** An agent asks a question or adds a note pinned to code. (client→server) */
   "questions/create": { params: CreateParams; result: Question };
   /** A root's repository: branch and changed paths. (client→server) */

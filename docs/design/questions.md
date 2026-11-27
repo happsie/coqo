@@ -84,6 +84,7 @@ What the popover contains, top to bottom:
 | `F8` / `Shift F8` | anywhere in the window | Opens the next / previous open question. The order is file path, then line, across files, wrapping around. It starts from the open popover, else the cursor in the active file tab. |
 | `Enter` | in the popover | Sends the answer. In the reply field, `Shift Enter` is a new line. |
 | `Esc` | in the popover | Closes it without answering. The keyboard goes back to the code. |
+| `Ctrl Shift /` (`Cmd Shift /` on macOS) | in a file tab | Asks about the selected lines (see "Asking about code"). |
 
 ## Questions pane
 
@@ -109,11 +110,31 @@ The chat card shows a `SessionUpdate::Question` in the asking chat's transcript.
 - **Contents:** a diamond, the kind label, "Asked about src/cart.rs:42 · Open in editor" ("Note on" for notes), the title, and the state ("Waiting for your answer", "Answered: …" or "Dismissed").
 - **Click:** opens the popover.
 
+## Asking about code (#229)
+
+The user can ask too. Board 2 has no frame for it, so it reuses the question's markers, popover and pane in blue, the colour of a note (the user's own words, nothing waits on them).
+
+![The ask popover under the selected lines](screenshots/ask-dark.png)
+
+![The pinned thread with the agent's reply](screenshots/thread-dark.png)
+
+Light: [ask](screenshots/ask-light.png), [thread](screenshots/thread-light.png).
+
+1. **Ask.** A blue speech-bubble button sits in the diamond's gap on the line under the mouse and, while the editor has the keyboard, on the first selected line (not on a line with a marker). A click on it, or `Ctrl Shift /` (`Cmd Shift /` on macOS; also `Ctrl ?` / `Cmd ?`) in a file tab, opens the **ask popover** under the selected lines (the cursor's line with no selection; a selection ending at the start of a line leaves that line out).
+2. **Choose the chat.** A row of pills: up to four of the workspace's open chats, the default first, and **New chat**. The default is the chat shown in the workbench (the active tab, then the other groups' visible tabs, then any open chat tab), else the workspace's most recently active chat, else **New chat**. A new chat uses Claude when it is available, else the first available provider, and is listed under CHATS.
+3. **Send** (`Enter`, or **Ask**; `Esc` or **Cancel** closes it). `questions/ask` pins the thread and prompts the chat with the question and the code. The ask popover gives way to the **thread popover** at the same lines, with a blue marker.
+4. **The thread.** A "YOU ASKED" badge and "You → Claude · <chat> · <age>", then each of the user's messages and, under it, the agent's reply to it streamed from that turn of the chat ("Thinking…" until it starts). The conversation scrolls past 240 px. The field below sends a follow-up (`questions/reply`), which empties it once sent. **Open in chat**, **Resolve** (closes the thread, `questions/dismiss`), **Later** (closes the popover).
+5. **Afterwards.** The marker stays on the lines and follows edits and restarts like a question's; a click on it reopens the thread. F8 skips threads (they need nothing from the user) and badges do not count them. In the chat the thread is a card, "YOU ASKED about src/cart.rs:42–48", with "Pinned to the code" or "Resolved"; the prompt and the agent's answer are ordinary turns of the chat.
+
+The Questions pane lists threads with the questions. Under the Open / Answered tabs a filter shows **All**, **Agents** (questions and notes) or **Yours** (threads).
+
+To regenerate these screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored ask_screenshots` and downscale to 1440×900 as `ask-<appearance>.png` and `thread-<appearance>.png`.
+
 ## For other parts of the UI
 
 `WorkspaceQuestions` (one per workspace, `questions::questions_for`) holds:
 - the live list;
-- `open_count`, `waiting_count` and `note_count` for badges and alerts (#76);
+- `open_count`, `waiting_count` and `note_count` for badges and alerts (#76); `open_count` leaves out the user's threads;
 - `QuestionsEvent::Waiting(id)` when an agent starts waiting.
 
 To regenerate the screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored questions_screenshots` (offscreen, needs a GPU) and downscale the 2× PNGs to 1440×900 as `questions-<appearance>.png`.

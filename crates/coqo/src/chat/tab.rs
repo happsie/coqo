@@ -1078,7 +1078,10 @@ impl ChatTab {
         let place = questions::primary_anchor(q)
             .map(questions::location)
             .unwrap_or_default();
-        let verb = if q.kind.is_question() {
+        let user = !q.author.is_agent();
+        let verb = if user {
+            "about"
+        } else if q.kind.is_question() {
             "Asked about"
         } else {
             "Note on"
@@ -1093,6 +1096,8 @@ impl ChatTab {
             .trim()
             .to_owned();
         let (outcome, outcome_color) = match q.status {
+            QuestionStatus::Open if user => ("Pinned to the code".to_owned(), p.blue),
+            QuestionStatus::Dismissed if user => ("Resolved".to_owned(), p.text_subtle),
             QuestionStatus::Answered => (
                 format!(
                     "Answered: {}",

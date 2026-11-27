@@ -45,7 +45,7 @@ use crate::theme::ActiveTokens as _;
 
 mod markers;
 
-pub use markers::{CodeMarker, MarkerClicked, OverlayAnchor};
+pub use markers::{AskClicked, CodeMarker, MarkerClicked, OverlayAnchor};
 
 /// Code font size and line height, as on design board 2.
 const CODE_TEXT_SIZE: f32 = 13.;
@@ -155,6 +155,7 @@ impl std::fmt::Debug for CodeEditor {
 
 impl EventEmitter<EditorEdits> for CodeEditor {}
 impl EventEmitter<MarkerClicked> for CodeEditor {}
+impl EventEmitter<AskClicked> for CodeEditor {}
 
 impl CodeEditor {
     /// An editor with line numbers, showing `text`.
@@ -437,6 +438,12 @@ impl Render for CodeEditor {
             .relative()
             .size_full()
             .overflow_hidden()
+            .on_mouse_move(cx.listener(|this, e: &gpui_kit::MouseMoveEvent, _, cx| {
+                this.hover_at(e.position.y, cx)
+            }))
+            .on_mouse_exit(
+                cx.listener(|this, _: &gpui_kit::MouseExitEvent, _, cx| this.hover_at(px(-1.), cx)),
+            )
             .capture_action(cx.listener(|this, _: &Undo, window, cx| {
                 this.on_history(HistoryAction::Undo, window, cx)
             }))
