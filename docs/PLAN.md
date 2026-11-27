@@ -143,7 +143,8 @@ Honest notes:
 
 ### 4.4 Coqo Protocol
 - JSON-RPC 2.0 with length-prefixed frames over the Unix socket. MessagePack encoding is negotiable for hot paths (buffer ops, trace streams). Supports request/response, notifications, and **subscriptions** with sequence numbers.
-- Versioned, documented schema (`protocol/`), with generated Rust types and a TypeScript client for tooling and possible future UIs.
+- Versioned, documented schema (`protocol/`). The Rust types in `crates/protocol` are the source of truth. A JSON Schema and a TypeScript client stub are generated from them for tooling and possible future UIs ([ADR 0003](adr/0003-coqo-protocol-v0.md)).
+- The handshake (`coqo/hello`: protocol version + build) is frozen across versions. Equal major versions are compatible, and an incompatible one is reported as a clear error, never a hang. Subscriptions resume from the last seen sequence number, or fail with a resume-gap error that tells the client to re-snapshot.
 - Because the protocol is transport-agnostic, running `coqod` on a remote machine over SSH later is straightforward. That gives remote development without changing the UI.
 
 ---

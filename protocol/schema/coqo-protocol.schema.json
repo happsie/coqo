@@ -1,0 +1,365 @@
+{
+  "$comment": "Generated from crates/protocol by `COQO_BLESS=1 cargo test -p coqo-protocol schema`. Do not edit.",
+  "$defs": {
+    "Encoding": {
+      "description": "How a frame's payload is encoded.\n\nJSON is mandatory and is always used for the handshake. MessagePack is\noptional and is switched on for the rest of the connection when both\nsides list it in the handshake; it is intended for hot paths (buffer ops,\ntrace streams).",
+      "oneOf": [
+        {
+          "const": "json",
+          "description": "UTF-8 JSON.",
+          "type": "string"
+        },
+        {
+          "const": "msgpack",
+          "description": "MessagePack, with structs encoded as maps keyed by field name.",
+          "type": "string"
+        }
+      ]
+    },
+    "ErrorObject": {
+      "description": "A JSON-RPC 2.0 error object (§5.1).",
+      "properties": {
+        "code": {
+          "description": "One of [`codes`] or an application-defined code.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "data": {
+          "description": "Structured details, if any."
+        },
+        "message": {
+          "description": "A short human-readable description.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "EventParams": {
+      "description": "Params of `coqo/event`.",
+      "properties": {
+        "event": {
+          "description": "The event, shaped by the topic."
+        },
+        "seq": {
+          "description": "The event's sequence number.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "subscription": {
+          "$ref": "#/$defs/SubscriptionId",
+          "description": "The subscription this event belongs to."
+        }
+      },
+      "required": [
+        "subscription",
+        "seq",
+        "event"
+      ],
+      "type": "object"
+    },
+    "Hello": {
+      "description": "Params of `coqo/hello`, sent by the client.",
+      "properties": {
+        "build": {
+          "description": "The client's build id (version + commit), shown in errors and logs.",
+          "type": "string"
+        },
+        "client": {
+          "description": "What the client is, e.g. `coqo-ui`, `coqo-cli`, `coqod-mcp`.",
+          "type": "string"
+        },
+        "encodings": {
+          "default": [],
+          "description": "Encodings the client accepts after the handshake, in preference\norder. JSON is always accepted, even if not listed.",
+          "items": {
+            "$ref": "#/$defs/Encoding"
+          },
+          "type": "array"
+        },
+        "protocol": {
+          "$ref": "#/$defs/ProtocolVersion",
+          "description": "The client's protocol version."
+        }
+      },
+      "required": [
+        "protocol",
+        "build",
+        "client"
+      ],
+      "type": "object"
+    },
+    "IncompatibleProtocol": {
+      "description": "`data` of the [`codes::INCOMPATIBLE_PROTOCOL`] error.",
+      "properties": {
+        "build": {
+          "description": "The server's build id.",
+          "type": "string"
+        },
+        "protocol": {
+          "$ref": "#/$defs/ProtocolVersion",
+          "description": "The server's protocol version."
+        }
+      },
+      "required": [
+        "protocol",
+        "build"
+      ],
+      "type": "object"
+    },
+    "ProtocolVersion": {
+      "description": "A protocol version: `major.minor`.",
+      "properties": {
+        "major": {
+          "description": "Incremented for breaking changes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minor": {
+          "description": "Incremented for additive changes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "major",
+        "minor"
+      ],
+      "type": "object"
+    },
+    "ResumeGap": {
+      "description": "`data` of a [`RESUME_GAP`](codes::RESUME_GAP) error.",
+      "properties": {
+        "head": {
+          "description": "The source's latest sequence number.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "needed": {
+          "description": "The first sequence number the subscriber needed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "oldest": {
+          "description": "The oldest sequence number still available (`head + 1` if none).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "needed",
+        "oldest",
+        "head"
+      ],
+      "type": "object"
+    },
+    "SubscribeParams": {
+      "description": "Params of `coqo/subscribe`.",
+      "properties": {
+        "params": {
+          "default": null,
+          "description": "Topic-specific params (`null` if none)."
+        },
+        "since": {
+          "description": "Resume after this sequence number; omit for live events only.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "topic": {
+          "description": "Topic name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "topic"
+      ],
+      "type": "object"
+    },
+    "SubscribeResult": {
+      "description": "Result of `coqo/subscribe`.",
+      "properties": {
+        "head": {
+          "description": "The source's latest sequence number when the subscription started.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "subscription": {
+          "$ref": "#/$defs/SubscriptionId",
+          "description": "Id used in `coqo/event` notifications and `coqo/unsubscribe`."
+        }
+      },
+      "required": [
+        "subscription",
+        "head"
+      ],
+      "type": "object"
+    },
+    "SubscriptionEndedParams": {
+      "description": "Params of `coqo/subscriptionEnded`.",
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorObject"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why, if it ended abnormally."
+        },
+        "subscription": {
+          "$ref": "#/$defs/SubscriptionId",
+          "description": "The subscription that ended."
+        }
+      },
+      "required": [
+        "subscription"
+      ],
+      "type": "object"
+    },
+    "SubscriptionId": {
+      "description": "Identifies a subscription on one connection.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "UnsubscribeParams": {
+      "description": "Params of `coqo/unsubscribe`.",
+      "properties": {
+        "subscription": {
+          "$ref": "#/$defs/SubscriptionId",
+          "description": "The subscription to stop."
+        }
+      },
+      "required": [
+        "subscription"
+      ],
+      "type": "object"
+    },
+    "Welcome": {
+      "description": "Result of `coqo/hello`, sent by the server.",
+      "properties": {
+        "build": {
+          "description": "The server's build id. Equal builds are compatible by definition;\ndifferent builds are compatible when the protocol versions are.",
+          "type": "string"
+        },
+        "connection": {
+          "description": "A server-assigned id for this connection, unique per server process.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "encoding": {
+          "$ref": "#/$defs/Encoding",
+          "description": "The encoding both sides use from the next frame on."
+        },
+        "negotiated": {
+          "$ref": "#/$defs/ProtocolVersion",
+          "description": "The negotiated version for this connection."
+        },
+        "protocol": {
+          "$ref": "#/$defs/ProtocolVersion",
+          "description": "The server's protocol version."
+        },
+        "server": {
+          "description": "What the server is, e.g. `coqod`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol",
+        "negotiated",
+        "build",
+        "server",
+        "encoding",
+        "connection"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Coqo Protocol",
+  "x-error-codes": {
+    "INCOMPATIBLE_PROTOCOL": -32001,
+    "INTERNAL_ERROR": -32603,
+    "INVALID_PARAMS": -32602,
+    "INVALID_REQUEST": -32600,
+    "METHOD_NOT_FOUND": -32601,
+    "NOT_INITIALIZED": -32002,
+    "PARSE_ERROR": -32700,
+    "REQUEST_CANCELLED": -32005,
+    "RESUME_GAP": -32003,
+    "UNKNOWN_SUBSCRIPTION": -32004
+  },
+  "x-framing": "u32 big-endian payload length, then one JSON-RPC 2.0 message (JSON, or MessagePack if negotiated)",
+  "x-methods": {
+    "coqo/event": {
+      "description": "One event of a subscription.",
+      "direction": "server→client",
+      "kind": "notification",
+      "params": {
+        "$ref": "#/$defs/EventParams"
+      }
+    },
+    "coqo/hello": {
+      "description": "Handshake. Always the first request, always JSON.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/Hello"
+      },
+      "result": {
+        "$ref": "#/$defs/Welcome"
+      }
+    },
+    "coqo/subscribe": {
+      "description": "Start a subscription to a topic.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SubscribeParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SubscribeResult"
+      }
+    },
+    "coqo/subscriptionEnded": {
+      "description": "The server ended a subscription, with an error if abnormal.",
+      "direction": "server→client",
+      "kind": "notification",
+      "params": {
+        "$ref": "#/$defs/SubscriptionEndedParams"
+      }
+    },
+    "coqo/unsubscribe": {
+      "description": "Stop a subscription. Result is true if it existed.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/UnsubscribeParams"
+      },
+      "result": {
+        "type": "boolean"
+      }
+    }
+  },
+  "x-protocol-version": {
+    "major": 0,
+    "minor": 0
+  }
+}

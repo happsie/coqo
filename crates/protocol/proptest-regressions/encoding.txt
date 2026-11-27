@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4458862c5bf7df37bcf489bdc15f81d9a5b45c8dd7ecb66e9d7fdc1e94fdb831 # shrinks to m = Response(Response { id: None, outcome: Err(ErrorObject { code: 0, message: "", data: Some(Null) }) })
