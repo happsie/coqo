@@ -8,18 +8,21 @@
 //! service below. Method types live in `coqo-protocol` so clients share
 //! them (see `crates/protocol/src/daemon.rs` for an example).
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use coqo_protocol::Router;
 
 use crate::daemon::DaemonContext;
 use crate::methods;
+use crate::workspace::{self, WorkspaceService};
 
 /// Build the daemon's router. Called once at startup; an error stops the
 /// daemon before it accepts clients.
 pub fn router(ctx: &DaemonContext) -> Result<Router> {
     let router = Router::new();
     let router = methods::register(router, ctx);
-    // Services, one line each, e.g.:
-    // let router = workspace::register(router, workspace::Workspaces::open(&ctx.data)?);
+    // Services, one line each.
+    let router = workspace::register(router, Arc::new(WorkspaceService::open(ctx.data.clone())?));
     Ok(router)
 }

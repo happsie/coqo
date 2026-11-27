@@ -8,6 +8,8 @@
 //! - [`routes`]: **where services register their protocol routes.**
 //! - [`methods`]: `daemon/status` and `daemon/shutdown`.
 //! - [`cli`]: command-line arguments.
+//! - [`workspace`]: workspaces (folder roots), their persisted state, and
+//!   read-only file-system access with live change events.
 //!
 //! Clients reach the daemon through `coqo-client`, never this crate.
 
@@ -16,6 +18,7 @@ pub mod daemon;
 pub mod lifecycle;
 pub mod methods;
 pub mod routes;
+pub mod workspace;
 
 pub use daemon::DaemonContext;
 pub use lifecycle::{Activity, BusyGuard, IdlePhase, IdlePolicy};

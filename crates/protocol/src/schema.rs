@@ -20,7 +20,8 @@ use serde_json::{Map, Value, json};
 use crate::daemon;
 use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
-use crate::method::{Method, NotificationMethod, builtin};
+use crate::method::{Method, NotificationMethod, Topic, builtin};
+use crate::methods::{self, fs, workspace};
 use crate::subscription::ResumeGap;
 
 struct Entry {
@@ -65,11 +66,27 @@ where
     }
 }
 
+fn topic<T: Topic>(g: &mut SchemaGenerator, doc: &'static str) -> Entry
+where
+    T::Params: JsonSchema,
+    T::Event: JsonSchema,
+{
+    Entry {
+        name: T::NAME,
+        kind: "topic",
+        direction: "server→client",
+        doc,
+        params: g.subschema_for::<T::Params>().to_value(),
+        result: Some(g.subschema_for::<T::Event>().to_value()),
+    }
+}
+
 fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
     // Types that only appear in error `data`; registered so they are documented.
     g.subschema_for::<ErrorObject>();
     g.subschema_for::<IncompatibleProtocol>();
     g.subschema_for::<ResumeGap>();
+    g.subschema_for::<fs::FileTooLarge>();
     vec![
         request::<builtin::Hello>(
             g,
@@ -98,6 +115,63 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "Stop the daemon. Refused while work is busy unless `force` is set.",
         ),
+        request::<workspace::Open>(
+            g,
+            "client→server",
+            "Open (creating if needed) the workspace for a folder, or reopen one by id.",
+        ),
+        request::<workspace::List>(
+            g,
+            "client→server",
+            "Every known workspace, with the event-log seq the snapshot reflects.",
+        ),
+        request::<workspace::Get>(g, "client→server", "One workspace."),
+        request::<workspace::Close>(
+            g,
+            "client→server",
+            "Close a workspace (stops its watchers).",
+        ),
+        request::<workspace::Remove>(
+            g,
+            "client→server",
+            "Forget a workspace and its daemon-side data. Result is true if it existed.",
+        ),
+        request::<workspace::AddRoot>(g, "client→server", "Add a folder root to a workspace."),
+        request::<workspace::RemoveRoot>(
+            g,
+            "client→server",
+            "Remove a folder root from a workspace.",
+        ),
+        request::<workspace::Rename>(g, "client→server", "Rename a workspace."),
+        request::<workspace::GetState>(
+            g,
+            "client→server",
+            "A workspace's persisted state document (tabs, layout, settings overrides).",
+        ),
+        request::<workspace::SetState>(
+            g,
+            "client→server",
+            "Set (or, with null, remove) one workspace state entry.",
+        ),
+        topic::<workspace::Events>(
+            g,
+            "Workspace changes, from the persistent event log (resumable with since).",
+        ),
+        request::<fs::ListDir>(g, "client→server", "List a directory in a workspace root."),
+        request::<fs::Stat>(
+            g,
+            "client→server",
+            "Metadata of one path in a workspace root.",
+        ),
+        request::<fs::ReadFile>(
+            g,
+            "client→server",
+            "Read a file in a workspace root, up to a size limit.",
+        ),
+        topic::<fs::Changes>(
+            g,
+            "Debounced file-system changes in an open workspace (live only).",
+        ),
     ]
 }
 
@@ -113,6 +187,15 @@ fn error_codes() -> Value {
         "RESUME_GAP": codes::RESUME_GAP,
         "UNKNOWN_SUBSCRIPTION": codes::UNKNOWN_SUBSCRIPTION,
         "REQUEST_CANCELLED": codes::REQUEST_CANCELLED,
+        "UNKNOWN_WORKSPACE": methods::codes::UNKNOWN_WORKSPACE,
+        "UNKNOWN_ROOT": methods::codes::UNKNOWN_ROOT,
+        "PATH_OUTSIDE_WORKSPACE": methods::codes::PATH_OUTSIDE_WORKSPACE,
+        "NOT_FOUND": methods::codes::NOT_FOUND,
+        "FILE_TOO_LARGE": methods::codes::FILE_TOO_LARGE,
+        "NOT_A_DIRECTORY": methods::codes::NOT_A_DIRECTORY,
+        "NOT_A_FILE": methods::codes::NOT_A_FILE,
+        "WORKSPACE_CLOSED": methods::codes::WORKSPACE_CLOSED,
+        "IO_ERROR": methods::codes::IO_ERROR,
     })
 }
 
@@ -130,7 +213,8 @@ fn generate() -> (Value, Vec<Entry>) {
                 "params": e.params,
             });
             if let Some(r) = &e.result {
-                m["result"] = r.clone();
+                let key = if e.kind == "topic" { "event" } else { "result" };
+                m[key] = r.clone();
             }
             (e.name.to_owned(), m)
         })
@@ -319,6 +403,19 @@ fn typescript(doc: &Value, entries: &[Entry]) -> String {
         );
     }
     out.push_str(
+        "}\n\n/** Topics (`coqo/subscribe`): topic name → params and event. */\nexport interface Topics {\n",
+    );
+    for e in entries.iter().filter(|e| e.kind == "topic") {
+        let _ = writeln!(
+            out,
+            "  /** {} */\n  \"{}\": {{ params: {}; event: {} }};",
+            e.doc,
+            e.name,
+            ts_type(&e.params),
+            ts_type(e.result.as_ref().unwrap())
+        );
+    }
+    out.push_str(
         "}\n\n\
          /** Encode one frame: u32 big-endian length, then the JSON payload. */\n\
          export function encodeFrame(message: Message): Uint8Array {\n  \
@@ -384,4 +481,56 @@ fn schema_covers_every_builtin_method() {
     ] {
         assert!(doc["$defs"].get(def).is_some(), "{def} missing from $defs");
     }
+}
+
+#[test]
+fn schema_covers_the_application_methods() {
+    let (doc, _) = generate();
+    let methods = doc["x-methods"].as_object().unwrap();
+    for name in [
+        workspace::Open::NAME,
+        workspace::List::NAME,
+        workspace::Get::NAME,
+        workspace::Close::NAME,
+        workspace::Remove::NAME,
+        workspace::AddRoot::NAME,
+        workspace::RemoveRoot::NAME,
+        workspace::Rename::NAME,
+        workspace::GetState::NAME,
+        workspace::SetState::NAME,
+        fs::ListDir::NAME,
+        fs::Stat::NAME,
+        fs::ReadFile::NAME,
+    ] {
+        assert_eq!(methods[name]["kind"], "request", "{name}");
+    }
+    for name in [workspace::Events::NAME, fs::Changes::NAME] {
+        assert_eq!(methods[name]["kind"], "topic", "{name}");
+        assert!(methods[name].get("event").is_some(), "{name} has no event");
+    }
+    assert!(doc["$defs"].get("FileTooLarge").is_some());
+}
+
+/// Wire shapes the UI relies on.
+#[test]
+fn application_wire_shapes() {
+    let ev = workspace::WorkspaceEvent::StateChanged {
+        id: "ws-1".into(),
+        key: "tabs".into(),
+        value: json!([]),
+    };
+    assert_eq!(
+        serde_json::to_value(&ev).unwrap(),
+        json!({"type": "stateChanged", "id": "ws-1", "key": "tabs", "value": []})
+    );
+    let open: workspace::OpenParams = serde_json::from_value(json!({"path": "/src"})).unwrap();
+    assert_eq!(open.path.as_deref(), Some("/src"));
+    let read: fs::ReadParams = serde_json::from_value(
+        json!({"workspace": "ws-1", "root": 1, "path": "a", "maxBytes": 10}),
+    )
+    .unwrap();
+    assert_eq!(read.max_bytes, Some(10));
+    let list: fs::PathParams =
+        serde_json::from_value(json!({"workspace": "ws-1", "root": 1})).unwrap();
+    assert_eq!(list.path, "");
 }
