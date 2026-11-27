@@ -181,4 +181,21 @@ mod tests {
             assert!(text.contains(tool), "the guide does not mention {tool}");
         }
     }
+
+    #[test]
+    fn the_guide_puts_the_two_trigger_rules_before_the_tool_list() {
+        // The #216 evals: set_status and ask_question were skipped while
+        // their schemas were deferred, so the guide leads with when to call
+        // them (#238).
+        assert!(guide_version() >= 3, "{GUIDE_SOURCE}");
+        let text = guide();
+        let list = text.find("\n- **").expect("a tool list");
+        let (rules, _) = text.split_at(list);
+        for tool in ["set_acceptance_criteria", "set_status", "ask_question"] {
+            assert!(rules.contains(tool), "{tool} is not in the rules: {rules}");
+        }
+        assert!(rules.contains("several steps"), "{rules}");
+        assert!(rules.contains("do not ask in chat"), "{rules}");
+        assert!(rules.contains("mcp__coqo-editor__"), "{rules}");
+    }
 }

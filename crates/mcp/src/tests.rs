@@ -267,6 +267,26 @@ async fn initialize_list_and_call() {
             tool["name"]
         );
     }
+    // The two triggers the #216 evals missed lead with when to call them,
+    // in the description and in the instructions (#238).
+    for (name, trigger) in [
+        ("set_status", "Call it at the start of every step"),
+        (
+            "ask_question",
+            "Use it instead of asking in chat, and instead of deciding",
+        ),
+    ] {
+        let tool = tools.iter().find(|t| t["name"] == name).unwrap();
+        let description = tool["description"].as_str().unwrap();
+        assert!(description.starts_with(trigger), "{name}: {description}");
+    }
+    let rules = instructions.find("Also:").unwrap();
+    for tool in ["set_acceptance_criteria", "set_status", "ask_question"] {
+        assert!(
+            instructions[..rules].contains(tool),
+            "{tool} in {instructions}"
+        );
+    }
     let context = tools
         .iter()
         .find(|t| t["name"] == "editor_context")

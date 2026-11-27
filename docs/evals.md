@@ -30,8 +30,8 @@ Claude Code saves its own transcripts of these sessions, as of any session, unde
 | Name | Prompt (shortened) | Editor context | Passes when |
 |---|---|---|---|
 | `explain-selection` | "Explain the selected function" | `pricing.py`, `apply_discount` selected | `editor_context` called |
-| `ambiguous-default` | "I'm not sure what the free-shipping threshold should default to…" | `config.py`, `pricing.py` open | `ask_question` anchored to `config.py` lines 6–10 |
-| `three-steps` | add `tax_rate` to `total()`, a test, and a README line | none | `set_status` at least twice and `set_acceptance_criteria` |
+| `ambiguous-default` | "Turn on free shipping in the config. I haven't decided on the threshold yet, and that's my call, not yours." (nothing in the code hints at a value) | `config.py`, `pricing.py` open | `ask_question` anchored to `config.py` lines 6–10 |
+| `three-steps` | sales tax "in three phases": a `TAX_RATE` setting, applying it in `total()`, then tests and a README line | none | `set_status` at least twice and `set_acceptance_criteria` |
 | `show-where` | "Show me where refunds are handled" | `README.md` open | `editor_reveal` of `orders.py` |
 | `plain-question` | list vs tuple, no code | none | no Coqo tool at all (no over-use) |
 | `walkthrough` | "Walk me through this change." on `evals/changes/shop-tax-rate.patch` (uncommitted, on a one-commit repo of the fixture) | none | `publish_walkthrough` called, and its walkthrough covers every hunk of `git diff -U0 HEAD` with a step anchor or a trivial hunk (the coverage guard's rule, #99) |
@@ -42,17 +42,22 @@ Shell commands are rejected, except plain read-only git ones (`git diff`, `statu
 
 ## Baseline
 
-Claude Code 2.1.332, adapter 0.113.0, guide v1, 2026-11-27 (#216). Results vary between runs; treat one run as a smoke test, not a score.
+Claude Code 2.1.332, adapter 0.113.0, Coqo's Claude Code plugin loaded, guide v3, 2026-11-27 (#238). Results vary between runs; treat one run as a smoke test, not a score.
 
 | Scenario | Guide on: Coqo tools, context tokens | Guide off: Coqo tools, context tokens |
 |---|---|---|
-| `explain-selection` | pass: `editor_context`, 25.8k | pass: `editor_context`, 25.6k |
-| `ambiguous-default` | FAIL: none (it picked 50.0 itself), 28.0k | FAIL: none, 26.9k |
-| `three-steps` | FAIL: `set_acceptance_criteria`×2, `editor_reveal` (no `set_status`), 31.7k | FAIL: none, 27.4k |
-| `show-where` | pass: `editor_reveal`, 27.5k | pass: `editor_reveal`, 27.1k |
-| `plain-question` | pass: none, 23.2k | pass: none, 22.7k |
-| **Passed** | **3/5** | **3/5** |
+| `explain-selection` | pass: `editor_context`, 26.4k | pass: `editor_context`, 25.9k |
+| `ambiguous-default` | pass: `set_acceptance_criteria`×2, `set_status`×2, `ask_question`, `editor_reveal`, 36.8k | pass: `ask_question`, `publish_walkthrough`, 36.6k |
+| `three-steps` | pass: `set_acceptance_criteria`×2, `set_status`×5, `publish_walkthrough`, 42.8k | pass: `set_acceptance_criteria`×2, `set_status`×4, `publish_walkthrough`, 40.3k |
+| `show-where` | pass: `editor_reveal`, 28.1k | pass: `editor_reveal`, 27.6k |
+| `plain-question` | pass: none, 23.5k | pass: none, 23.0k |
+| `walkthrough` | pass: `publish_walkthrough` (6 steps, 0 of 8 hunks uncovered), 39.3k | pass: `publish_walkthrough` (5 steps, 0 of 8 hunks uncovered), 38.7k |
+| **Passed** | **6/6** | **6/6** |
 
-`walkthrough` (#98, Coqo's Claude Code plugin loaded, guide v2, 2026-11-27): pass. Claude loaded the skill (`coqo:coqo-walkthrough`), read the diff with `git diff -U0 HEAD`, and published six steps (entry point, config, flow, logic, edge case, tests) with what, why and risks on the first call; all 8 hunks covered (7 anchors, 1 trivial: the test file's new import), 38.6k context tokens.
+What changed since #216 (guide v1, 3/5 either way): the two scenarios were reworded to test the behaviour fairly (`ambiguous-default` used to say "give it a sensible default", which hands Claude the choice; `three-steps` is now a task in named phases over four files), and the triggers got sharper in three places: two rules at the top of the guide, the first sentence of the `set_status` and `ask_question` descriptions, and the MCP `instructions`. Since the instructions reach Claude with or without the guide, the guide-off column passes too; the guide's own effect is small now.
 
-The guide costs about 0.2–0.5k context tokens per turn. With it, the multi-step task got acceptance criteria (registered, then verified) and a reveal of the change; without it, no Coqo tool. Neither run asked a question in `ambiguous-default`: the prompt says "give it a sensible default", which Claude reads as permission to decide.
+In `ambiguous-default`, both runs asked with `ask_question` anchored to the threshold in `config.py` (lines 6–10) rather than picking a value. The first guide-on run asked a clarification at line 7 (and set 50.0 only after the answer) but the eval then tried to answer it a second time, when the answered question came back as an update; the eval now answers each question once, while it is open, and the row is from a re-run.
+
+Over-use to watch: for what becomes a one-line edit, `ambiguous-default` also got acceptance criteria and statuses (guide on) or a walkthrough (guide off). `plain-question` only covers a question with no code; a one-step edit scenario is #255.
+
+Earlier, #216 (guide v1): `explain-selection`, `show-where` and `plain-question` passed with and without the guide; `ambiguous-default` failed both ways (Claude picked 50.0 itself); `three-steps` got `set_acceptance_criteria` and `editor_reveal` but no `set_status` with the guide, and no Coqo tool without it. The guide costs about 0.2–0.5k context tokens per turn.

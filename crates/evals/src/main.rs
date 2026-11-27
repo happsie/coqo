@@ -33,7 +33,7 @@ use coqo_protocol::methods::editor::{
     self as edm, EditorTab, Position, PublishContextParams, Range, RevealsParams, Selection,
     WindowContext,
 };
-use coqo_protocol::methods::questions::{self as qm, AnswerParams, Question};
+use coqo_protocol::methods::questions::{self as qm, AnswerParams, Question, QuestionStatus};
 use coqo_protocol::methods::walkthroughs::{self as wtm, ListParams, WalkthroughParams};
 use coqo_protocol::methods::workspace::{self as wsm, WorkspaceInfo};
 use coqo_protocol::{Client, ClientConfig};
@@ -442,6 +442,7 @@ async fn run(
         })
         .await?;
     let mut outcome = Outcome::default();
+    let mut asked = std::collections::HashSet::new();
     let turn = async {
         while let Some(item) = updates.next().await {
             match item?.event {
@@ -455,7 +456,12 @@ async fn run(
                         })
                         .await?;
                 }
-                SessionUpdate::Question(q) => {
+                // A question comes again on each change (answered, too):
+                // count and answer it once, while it is open.
+                SessionUpdate::Question(q) if q.status == QuestionStatus::Open => {
+                    if !asked.insert(q.id) {
+                        continue;
+                    }
                     if let Some(anchor) = q.anchors.first() {
                         outcome.questions.push((
                             relative(&ws, &anchor.anchor.path),
