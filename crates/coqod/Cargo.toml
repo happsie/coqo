@@ -45,6 +45,8 @@ coqo-mcp = { path = "../mcp" }
 coqo-mod-api = { path = "../mod-api" }
 # Built-in core mods (see src/mods.rs).
 coqo-mod-hello = { path = "../../mods/hello" }
+# `git/*` runs on its `coqo.git@1` service.
+coqo-mod-git = { path = "../../mods/git" }
 coqo-protocol = { path = "../protocol" }
 coqo-storage = { path = "../storage" }
 # The always-on syntax layer: `syntax/*` and the built-in `coqo.syntax` mod.

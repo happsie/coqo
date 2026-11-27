@@ -9,6 +9,7 @@ export const ErrorCodes = {
   AUTH_REQUIRED: 1107,
   FILE_TOO_LARGE: 1005,
   FORBIDDEN: -32007,
+  GIT_FAILED: 1603,
   INCOMPATIBLE_PROTOCOL: -32001,
   INTERNAL_ERROR: -32603,
   INVALID_EDIT: 1204,
@@ -18,6 +19,7 @@ export const ErrorCodes = {
   METHOD_NOT_FOUND: -32601,
   NOT_A_DIRECTORY: 1006,
   NOT_A_FILE: 1007,
+  NOT_A_REPOSITORY: 1601,
   NOT_FOUND: 1004,
   NOT_INITIALIZED: -32002,
   NO_SUCH_TERMINAL: 1301,
@@ -31,6 +33,7 @@ export const ErrorCodes = {
   SESSION_BUSY: 1103,
   SESSION_CLOSED: 1104,
   SPAWN_FAILED: 1302,
+  STALE_SELECTION: 1602,
   STORAGE_ERROR: 1109,
   UNAUTHORIZED: -32006,
   UNKNOWN_BUFFER: 1201,
@@ -184,6 +187,68 @@ export type AvailableCommand = {
   name: string;
 };
 
+/** Consecutive lines last changed by one commit. */
+export type BlameHunk = {
+  /** Lines in the hunk. */
+  lines: number;
+  /** The commit (a key of [`BlameResult::commits`]). */
+  oid: string;
+  /** The file's path in that commit, if it was renamed since. */
+  origPath?: string | null;
+  /** 1-based first line in the file as that commit left it. */
+  origStart: number;
+  /** 1-based first line in the file. */
+  start: number;
+};
+
+/** Params of [`Blame`]. */
+export type BlameParams = {
+  /** The file, repository-relative. */
+  path: string;
+  /** The revision to blame (default `HEAD`). Uncommitted changes are not blamed. */
+  rev?: string | null;
+  /** The root. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Result of [`Blame`]. */
+export type BlameResult = {
+  /** The commits the hunks name, by id. */
+  commits: Record<string, unknown>;
+  /** Hunks in line order, covering every line. */
+  hunks: Array<BlameHunk>;
+  /** Lines in the file at that commit. */
+  lineCount: number;
+  /** The commit blamed. */
+  rev: string;
+};
+
+/** A branch, in [`BranchesResult`]. */
+export type Branch = {
+  /** `HEAD` is on it. */
+  current: boolean;
+  /** Short name: `main`, or `origin/main` for a remote branch. */
+  name: string;
+  /** The commit it points at. */
+  oid: string;
+  /** A remote-tracking branch. */
+  remote: boolean;
+  /** The commit's message's first line. */
+  summary: string;
+  /** The commit's time, in Unix seconds. */
+  time: number;
+  /** Its upstream (local branches). */
+  upstream?: string | null;
+};
+
+/** Result of [`Branches`]. */
+export type BranchesResult = {
+  /** Local branches, then remote ones, each by name. */
+  branches: Array<Branch>;
+};
+
 /** One event of the [`Changes`] topic: a committed change. The event's subscription `seq` equals `rev`. */
 export type BufferChange = {
   /** The replica's `client_seq` for client changes, else 0. */
@@ -233,6 +298,20 @@ export type CallResult = {
   text: string;
 };
 
+/** A file that differs, in [`DiffFilesResult`]. */
+export type ChangedFile = {
+  /** Added lines (0 for binary files). */
+  additions: number;
+  /** Either side is binary. */
+  binary: boolean;
+  /** `added`, `modified`, `deleted` or `typeChanged`. */
+  change: FileChange;
+  /** Removed lines (0 for binary files). */
+  deletions: number;
+  /** Repository-relative. */
+  path: string;
+};
+
 /** Params of the [`Changes`] topic. */
 export type ChangesParams = {
   /** The workspace to watch. It must be open. */
@@ -255,6 +334,12 @@ export type ChangesParams3 = {
 export type ChangesParams4 = {
   /** Only this workspace's questions. */
   workspace?: WorkspaceId | null;
+};
+
+/** Params of the [`Changes`] topic. */
+export type ChangesParams5 = {
+  /** The workspace to watch. It must be open. */
+  workspace: WorkspaceId;
 };
 
 /** Params of [`Close`]. */
@@ -298,6 +383,43 @@ export type Color = "default" | {
   rgb: [number, number, number];
 };
 
+/** A commit blame points at. */
+export type CommitInfo = {
+  /** The author's name. */
+  author: string;
+  /** The author's email. */
+  email: string;
+  /** Its id. */
+  oid: string;
+  /** The message's first line. */
+  summary: string;
+  /** The author time, in Unix seconds. */
+  time: number;
+};
+
+/** Params of [`Commit`]. */
+export type CommitParams = {
+  /** Amend the last commit instead. */
+  amend?: boolean;
+  /** The message. May be empty only when amending (keeps the old one). */
+  message: string;
+  /** The root. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Result of [`Commit`]. */
+export type CommitResult = {
+  /** The new commit. */
+  oid: string;
+  /** Its message's first line. */
+  summary: string;
+};
+
+/** An unmerged path. */
+export type Conflict = "bothDeleted" | "addedByUs" | "deletedByThem" | "addedByThem" | "deletedByUs" | "bothAdded" | "bothModified";
+
 /** A piece of message content (ACP `ContentBlock`). */
 export type ContentBlock = {
   /** The text. */
@@ -337,6 +459,20 @@ export type Cost = {
   amount: number;
   /** ISO currency code, such as `USD`. */
   currency: string;
+};
+
+/** Params of [`CreateBranch`]. */
+export type CreateBranchParams = {
+  /** The new branch. */
+  name: string;
+  /** The root. */
+  root: RootId;
+  /** Where it starts (default `HEAD`). */
+  start?: string | null;
+  /** Switch to it. */
+  switch?: boolean;
+  /** The workspace. */
+  workspace: WorkspaceId;
 };
 
 /** Params of [`Create`]. */
@@ -431,6 +567,59 @@ export type DaemonStatus = {
   version: string;
 };
 
+/** Params of [`DiffFiles`]. */
+export type DiffFilesParams = {
+  /** The old side. */
+  base: DiffSide;
+  /** The new side. */
+  head: DiffSide;
+  /** The root. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Result of [`DiffFiles`]. */
+export type DiffFilesResult = {
+  /** The files, sorted by path (`git diff --numstat`). Untracked files are not on the `worktree` side. */
+  files: Array<ChangedFile>;
+};
+
+/** One line of a [`Hunk`]. */
+export type DiffLine = {
+  /** What it is. */
+  kind: LineKind;
+  /** 1-based line on the new side (context and added lines). */
+  newLine?: number | null;
+  /** `false` for a last line without a line break ("\ No newline at end of file"). */
+  newline: boolean;
+  /** 1-based line on the old side (context and removed lines). */
+  oldLine?: number | null;
+  /** The text, without its line break. */
+  text: string;
+};
+
+/** Params of [`Diff`]. */
+export type DiffParams = {
+  /** The old side. Unstaged changes: `index` → `worktree`; staged ones: `{"rev": "HEAD"}` → `index`. */
+  base: DiffSide;
+  /** Lines of context around changes (default 3, at most 10 000). */
+  context?: number | null;
+  /** The new side. */
+  head: DiffSide;
+  /** The file, repository-relative. */
+  path: string;
+  /** The root. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** One side of a diff. */
+export type DiffSide = "worktree" | "index" | {
+  rev: string;
+};
+
 /** One entry of a directory listing. */
 export type DirEntry = {
   /** Whether ignore rules exclude it. */
@@ -446,6 +635,9 @@ export type DirEntry = {
   /** Whether the entry itself is a symlink. */
   symlink: boolean;
 };
+
+/** How a graph line meets a row. */
+export type EdgeKind = "through" | "in" | "out";
 
 /** Params of the [`Edit`] notification: one change made by a replica. */
 export type EditParams = {
@@ -529,6 +721,35 @@ export type EventsParams = {
   workspace?: WorkspaceId | null;
 };
 
+/** How a path changed on one side. */
+export type FileChange = "added" | "modified" | "deleted" | "typeChanged" | "untracked";
+
+/** Result of [`Diff`]. */
+export type FileDiff = {
+  /** Added lines. */
+  additions: number;
+  /** Either side is binary (then there are no hunks). */
+  binary: boolean;
+  /** Removed lines. */
+  deletions: number;
+  /** The changes; empty when the contents are equal. */
+  hunks: Array<Hunk>;
+  /** The new side's file; absent for a deleted file. */
+  new?: FileSide | null;
+  /** The old side's file; absent for an added file. */
+  old?: FileSide | null;
+  /** The file, repository-relative. */
+  path: string;
+};
+
+/** A file as one diff side has it. */
+export type FileSide = {
+  /** Git's mode: `33188` (`0o100644`), `33261` (`0o100755`), `40960` (`0o120000`, a symlink) or `57344` (`0o160000`, a submodule). */
+  mode: number;
+  /** The blob id; absent for a work-tree file. */
+  oid?: string | null;
+};
+
 /** Result of [`Stat`]. */
 export type FileStat = {
   /** Whether ignore rules exclude it. */
@@ -603,6 +824,49 @@ export type GetContextParams = {
   workspace: WorkspaceId;
 };
 
+/** What may have changed, in a [`GitChanges`] event. */
+export type GitChangeKind = "worktree" | "index" | "head" | "refs" | "stash";
+
+/** One event of [`Changes`]: a root's repository may have changed. */
+export type GitChanges = {
+  /** What may have changed, sorted. Status depends on `worktree`, `index` and `head`; branches on `head` and `refs`; the log on `head` and `refs`; the stash list on `stash`. */
+  kinds: Array<GitChangeKind>;
+  /** The root whose repository changed. */
+  root: RootId;
+};
+
+/** A graph line within one row. */
+export type GraphEdge = {
+  /** The lane it starts in. */
+  from: number;
+  /** How it meets the row. */
+  kind: EdgeKind;
+  /** The lane it ends in. */
+  to: number;
+};
+
+/** The graph at one commit's row. Rows are the same whatever the page. */
+export type GraphRow = {
+  /** The commit's lane (0 is leftmost). */
+  column: number;
+  /** The lines crossing the row. */
+  edges: Array<GraphEdge>;
+};
+
+/** Where `HEAD` is. */
+export type Head = {
+  /** Commits the upstream lacks. */
+  ahead: number;
+  /** Commits on the upstream the branch lacks. */
+  behind: number;
+  /** The branch's short name; absent when `HEAD` is detached. */
+  branch?: string | null;
+  /** The commit; absent on a branch with no commits yet. */
+  oid?: string | null;
+  /** The branch's upstream, such as `origin/main`. */
+  upstream?: string | null;
+};
+
 /** Params of `coqo/hello`, sent by the client. */
 export type Hello = {
   /** The client's build id (version + commit), shown in errors and logs. */
@@ -615,6 +879,22 @@ export type Hello = {
   protocol: ProtocolVersion;
   /** The session token that authenticates this client (since 0.1). A server that authenticates (`coqod` does) rejects a missing or wrong one with [`codes::UNAUTHORIZED`]. Never logged; servers drop it from the [`Hello`] they hand to request handlers. */
   token?: SessionToken | null;
+};
+
+/** A run of changes with context, as `git diff` groups them. */
+export type Hunk = {
+  /** The lines. */
+  lines: Array<DiffLine>;
+  /** New lines in the hunk. */
+  newLines: number;
+  /** First new line (the one before, when `new_lines` is 0). */
+  newStart: number;
+  /** Old lines in the hunk. */
+  oldLines: number;
+  /** First old line (the one before, when `old_lines` is 0). */
+  oldStart: number;
+  /** The heading after `@@` (the enclosing function, roughly). */
+  section?: string | null;
 };
 
 /** Where the daemon is in its idle policy. */
@@ -648,12 +928,23 @@ export type InputParams = {
 /** The file's line-ending convention, detected from its first line break.  The buffer text keeps line breaks exactly as they are on disk (mixed files round-trip unchanged); this tells the editor which break to insert. */
 export type LineEnding = "lf" | "crlf";
 
+/** What a diff line is. */
+export type LineKind = "context" | "added" | "removed";
+
 /** Lines shown in a tab's viewport: 0-based, `end` inclusive. */
 export type LineRange = {
   /** Last visible line. */
   end: number;
   /** First visible line. */
   start: number;
+};
+
+/** Lines of one file's diff, by their numbers in it. Choosing a whole hunk is choosing all its removed and added lines. */
+export type LineSelection = {
+  /** New-side numbers of added lines. */
+  added?: Array<number>;
+  /** Old-side numbers of removed lines. */
+  removed?: Array<number>;
 };
 
 /** Result of [`ListDir`]. */
@@ -690,6 +981,48 @@ export type ListSessionsParams = {
   includeClosed?: boolean;
   /** Only this workspace's sessions. */
   workspace?: string | null;
+};
+
+/** One commit of [`LogResult`]. */
+export type LogCommit = {
+  /** The author's name. */
+  author: string;
+  /** The author's email. */
+  email: string;
+  /** Its row of the graph. */
+  graph: GraphRow;
+  /** Its id. */
+  oid: string;
+  /** Its parents, first parent first. */
+  parents: Array<string>;
+  /** Branches and tags at it (short names), and `HEAD`. */
+  refs: Array<string>;
+  /** The message's first line. */
+  summary: string;
+  /** The author time, in Unix seconds. */
+  time: number;
+};
+
+/** Params of [`Log`]. */
+export type LogParams = {
+  /** Commits to return (default 100, at most 1000). */
+  limit?: number | null;
+  /** Start from these revisions (`git log a b`); empty for `HEAD`. */
+  revs?: Array<string>;
+  /** The root. */
+  root: RootId;
+  /** Commits to skip (paging). */
+  skip?: number;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Result of [`Log`]. */
+export type LogResult = {
+  /** Newest first (by committer time, as `git log`). */
+  commits: Array<LogCommit>;
+  /** More commits follow: ask again with `skip` past these. */
+  more: boolean;
 };
 
 /** Terminal modes that change how a client encodes input. */
@@ -1139,6 +1472,22 @@ export type RenameParams = {
 /** Identifies one replica of a buffer (one editor in one window), e.g. `r-3f2a9c1d0b7e4a65`. Assigned by [`Open`]; a replica keeps it across reconnects and reopens so the daemon can recognise its changes. */
 export type ReplicaId = string;
 
+/** Where a root's repository is. */
+export type RepoInfo = {
+  /** The root's path within the work tree (`""` when the root is the top). A git path `p` is the root-relative path `p` minus `prefix + "/"`. */
+  prefix: string;
+  /** The work tree's top folder, absolute. */
+  workdir: string;
+};
+
+/** Params naming a workspace root, whose repository the method acts on. */
+export type RepoParams = {
+  /** The root; its repository is the one whose work tree contains it. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
 /** Params of [`Resize`]. */
 export type ResizeParams = {
   id: TerminalId;
@@ -1537,12 +1886,92 @@ export type SpawnParams = {
   title?: string | null;
 };
 
+/** Params of [`Stage`] and [`Unstage`]. */
+export type StageParams = {
+  /** Only these lines of the file's diff: for [`Stage`] the unstaged diff (`index` → `worktree`), for [`Unstage`] the staged one (`HEAD` → `index`), both with 3 lines of context. Lines that are not in the current diff fail with [`STALE_SELECTION`](super::codes::STALE_SELECTION). */
+  lines?: LineSelection | null;
+  /** Repository-relative paths. With `lines`, exactly one. */
+  paths: Array<string>;
+  /** The root. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** A stash entry, in [`StashListResult`]. */
+export type Stash = {
+  /** `n` of `stash@{n}`. */
+  index: number;
+  /** As `git stash list` shows it: `On main: message`. */
+  message: string;
+  /** The stash commit. */
+  oid: string;
+  /** When it was made, in Unix seconds. */
+  time: number;
+};
+
+/** Result of [`StashList`]. */
+export type StashListResult = {
+  /** Newest (`stash@{0}`) first. */
+  stashes: Array<Stash>;
+};
+
+/** Params of [`StashPop`], [`StashApply`] and [`StashDrop`]. */
+export type StashParams = {
+  /** `n` of `stash@{n}`. */
+  index: number;
+  /** The root. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Params of [`StashPush`]. */
+export type StashPushParams = {
+  /** Stash untracked files too. */
+  includeUntracked?: boolean;
+  /** A message (default: git's `WIP on …`). */
+  message?: string | null;
+  /** The root. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Result of [`StashPush`]. */
+export type StashPushResult = {
+  /** `false` if there was nothing to stash. */
+  created: boolean;
+};
+
+/** One changed path of [`Status`]. */
+export type StatusEntry = {
+  /** Set for an unmerged path (then `staged` and `unstaged` are absent). */
+  conflict?: Conflict | null;
+  /** Repository-relative. An untracked folder git does not look into (a nested repository) ends in `/`. */
+  path: string;
+  /** `HEAD` → index. */
+  staged?: FileChange | null;
+  /** Index → work tree. */
+  unstaged?: FileChange | null;
+};
+
 /** Countable progress: `current` of `total` steps done. */
 export type StatusProgress = {
   /** Steps done (at most `total`). */
   current: number;
   /** All steps (at least 1). */
   total: number;
+};
+
+/** Result of [`Status`]. */
+export type StatusResult = {
+  /** Changed paths, sorted. Untracked files are listed one by one; ignored files are not listed; renames show as a deletion and an addition. */
+  entries: Array<StatusEntry>;
+  /** Where `HEAD` is. */
+  head: Head;
+  /** Where the repository is. */
+  repo: RepoInfo;
 };
 
 /** The state an agent claims with its status (`set_status`). */
@@ -1587,6 +2016,16 @@ export type SubscriptionEndedParams = {
 
 /** Identifies a subscription on one connection. */
 export type SubscriptionId = number;
+
+/** Params of [`SwitchBranch`]. */
+export type SwitchBranchParams = {
+  /** A local branch, or a remote branch's name without the remote (git then creates a tracking branch). */
+  name: string;
+  /** The root. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
 
 /** A named definition: a function, method, type, module, heading, key, … */
 export type Symbol = {
@@ -2066,6 +2505,38 @@ export interface Requests {
   "questions/dismiss": { params: QuestionParams; result: Question };
   /** An agent asks a question or adds a note pinned to code. (client→server) */
   "questions/create": { params: CreateParams; result: Question };
+  /** A root's repository: branch and changed paths. (client→server) */
+  "git/status": { params: RepoParams; result: StatusResult };
+  /** One file's hunks between two sides (work tree, index, a revision). (client→server) */
+  "git/diff": { params: DiffParams; result: FileDiff };
+  /** The files that differ between two sides, with line counts. (client→server) */
+  "git/diffFiles": { params: DiffFilesParams; result: DiffFilesResult };
+  /** Stage whole files, or chosen lines of one file. (client→server) */
+  "git/stage": { params: StageParams; result: null };
+  /** Unstage whole files, or chosen lines of one file. (client→server) */
+  "git/unstage": { params: StageParams; result: null };
+  /** Commit what is staged, or amend. (client→server) */
+  "git/commit": { params: CommitParams; result: CommitResult };
+  /** Local and remote branches. (client→server) */
+  "git/branches": { params: RepoParams; result: BranchesResult };
+  /** Switch to a branch. (client→server) */
+  "git/switchBranch": { params: SwitchBranchParams; result: null };
+  /** Create a branch, and optionally switch to it. (client→server) */
+  "git/createBranch": { params: CreateBranchParams; result: null };
+  /** The stash, newest first. (client→server) */
+  "git/stashList": { params: RepoParams; result: StashListResult };
+  /** Stash the changes. (client→server) */
+  "git/stashPush": { params: StashPushParams; result: StashPushResult };
+  /** Apply a stash and drop it. (client→server) */
+  "git/stashPop": { params: StashParams; result: null };
+  /** Apply a stash and keep it. (client→server) */
+  "git/stashApply": { params: StashParams; result: null };
+  /** Drop a stash. (client→server) */
+  "git/stashDrop": { params: StashParams; result: null };
+  /** Which commit last changed each line of a file. (client→server) */
+  "git/blame": { params: BlameParams; result: BlameResult };
+  /** Commits newest first, a page at a time, with graph lanes. (client→server) */
+  "git/log": { params: LogParams; result: LogResult };
 }
 
 /** Notifications: method name → params. */
@@ -2104,6 +2575,8 @@ export interface Topics {
   "questions/changes": { params: ChangesParams4; event: Question };
   /** One question for the agent that asked: its state now, then every change. */
   "questions/watch": { params: WatchParams; event: Question };
+  /** A root's repository may have changed: work tree, index, HEAD, refs or stash (live only). */
+  "git/changes": { params: ChangesParams5; event: GitChanges };
 }
 
 /** Encode one frame: u32 big-endian length, then the JSON payload. */

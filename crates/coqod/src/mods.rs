@@ -50,6 +50,7 @@ pub fn builtins(
             coqo_syntax::builtin::MANIFEST,
             coqo_syntax::builtin::SyntaxMod::new(),
         )
+        .with(coqo_mod_git::MANIFEST, coqo_mod_git::GitMod::default())
         .with(
             coqo_agent_claude::MANIFEST,
             coqo_agent_claude::ClaudeMod::new(claude),
