@@ -27,9 +27,8 @@ use coqo_ui::{
     gpui::{
         AnyElement, AnyView, App, AppContext as _, BoxShadow, Context, Div, DragMoveEvent,
         ElementId, Empty, Entity, Focusable as _, FontWeight, InteractiveElement as _, IntoElement,
-        ParentElement as _, Pixels, Render, SharedString, Stateful,
-        StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, hsla, point,
-        px,
+        ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _,
+        Styled as _, Subscription, Task, Window, div, hsla, point, px,
     },
     slots::{PaneBuilder, SidebarPane, SidebarPanes, Slot, Slots},
     widgets::{
@@ -38,15 +37,20 @@ use coqo_ui::{
 };
 
 use crate::{
-    chat,
+    activity, chat,
     daemon::{self, Daemon},
     files,
     layout::{DaemonLayoutStore, LAYOUT_KEY},
     welcome::{self, shortcut},
     workspace::{
-        KnownWorkspaces, OpenFolder, Workspaces, WorkspacesEvent, initials, prompt_open_folder_in,
+        KnownWorkspaces, OpenFolder, SwitchToWorkspace, Workspaces, WorkspacesEvent,
+        prompt_open_folder_in,
     },
 };
+
+pub mod rail;
+
+use rail::Rail;
 
 /// The key a window's layout is saved under while no workspace is open.
 pub const DEFAULT_WORKSPACE: &str = "default";
@@ -63,6 +67,7 @@ pub fn init(cx: &mut App) {
     daemon::register_status_slot(cx);
     files::init(cx);
     chat::init(cx);
+    activity::init(cx);
     SidebarPanes::register(
         cx,
         SidebarPane::new("git", "Git", 10, |_, _, cx| {
@@ -81,6 +86,7 @@ pub struct Shell {
     dock: Entity<Dock>,
     store: Rc<dyn LayoutStore>,
     workspaces: Entity<Workspaces>,
+    rail: Entity<Rail>,
     /// The key the layout is saved under: the workspace id, or `local_key`.
     layout_key: SharedString,
     /// The key while no workspace is open.
@@ -147,11 +153,13 @@ impl Shell {
         let focus = dock.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         let sidebar = saved.map(|l| l.sidebar);
+        let rail = cx.new(|cx| Rail::new(workspaces.clone(), cx));
         Self {
             _dock_events: cx.subscribe(&dock, |this, _, _: &DockEvent, cx| this.schedule_save(cx)),
             dock,
             store,
             workspaces,
+            rail,
             layout_key: local_key.clone(),
             local_key,
             sidebar_width: sidebar.as_ref().map_or_else(
@@ -171,6 +179,12 @@ impl Shell {
         &self.workspaces
     }
 
+    /// The window's workspace rail.
+    #[allow(dead_code)] // Used by tests.
+    pub fn rail(&self) -> &Entity<Rail> {
+        &self.rail
+    }
+
     /// The key the layout is saved under now.
     #[allow(dead_code)] // Used by tests.
     pub fn layout_key(&self) -> &SharedString {
@@ -181,6 +195,17 @@ impl Shell {
     /// reconnect): switch to its layout.
     fn workspace_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(info) = self.workspaces.read(cx).current() else {
+            // The workspace was removed: nothing to save it to. Show the
+            // window's own layout (or the default).
+            if self.layout_key != self.local_key {
+                self.pending_save = None;
+                self.layout_key = self.local_key.clone();
+                let saved = self.store.load(&self.local_key).unwrap_or_else(|err| {
+                    eprintln!("coqo: couldn't load the saved layout, using the default: {err}");
+                    None
+                });
+                self.apply_layout(saved, window, cx);
+            }
             return;
         };
         let key: SharedString = info.id.0.clone().into();
@@ -316,11 +341,15 @@ impl Render for Shell {
         let top = top_bar(workspace_name, window, cx);
         let sidebar = self.render_sidebar(window, cx);
         let status = status_bar(window, cx);
-        let rail = rail(&self.workspaces, cx);
+        let rail = self.rail.clone();
         let workspaces = self.workspaces.downgrade();
         div()
             .id("workbench")
             .on_action(move |_: &OpenFolder, _, cx| prompt_open_folder_in(workspaces.clone(), cx))
+            .on_action(cx.listener(|this, action: &SwitchToWorkspace, _, cx| {
+                this.rail
+                    .update(cx, |rail, cx| rail.switch_to_index(action.index, cx))
+            }))
             .on_action(cx.listener(|this, _: &chat::NewChat, window, cx| {
                 chat::new_chat(this.dock.downgrade(), window, cx)
             }))
@@ -634,106 +663,6 @@ fn register_builtin_slots(cx: &mut App) {
             .child("0 agents")
             .into_any_element()
     });
-}
-
-fn rail_button(id: &'static str, cx: &App) -> Stateful<Div> {
-    let m = &cx.tokens().metrics;
-    div()
-        .id(id)
-        .size(m.rail_button)
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .rounded(m.radius_rail)
-}
-
-fn rail(workspaces: &Entity<Workspaces>, cx: &App) -> AnyElement {
-    let buttons = workspace_buttons(workspaces, cx);
-    let open_folder = workspaces.downgrade();
-    let t = cx.tokens();
-    let (p, m) = (&t.palette, &t.metrics);
-    let muted = p.text_muted.hsla();
-    region(
-        "workspace-rail",
-        div()
-            .w(m.rail_width)
-            .flex_none()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(12.))
-            .py(px(6.))
-            .children(buttons)
-            .child(
-                rail_button("add-workspace", cx)
-                    .test_support()
-                    .border_1()
-                    .border_dashed()
-                    .border_color(p.border_strong.hsla())
-                    .cursor_pointer()
-                    .child(icon(Icon::Plus, px(18.), muted))
-                    .on_click(move |_, _, cx| prompt_open_folder_in(open_folder.clone(), cx)),
-            )
-            .child(div().flex_1())
-            .child(rail_button("alerts", cx).child(icon(Icon::Bell, px(20.), muted)))
-            .child(rail_button("settings", cx).child(icon(Icon::Settings, px(20.), muted))),
-    )
-}
-
-/// One rail button per open workspace, the window's current one lit in sage.
-fn workspace_buttons(workspaces: &Entity<Workspaces>, cx: &App) -> Vec<AnyElement> {
-    let window_workspaces = workspaces.downgrade();
-    let current = workspaces.read(cx).current().cloned();
-    let mut list: Vec<_> = KnownWorkspaces::global(cx)
-        .map(|known| known.read(cx).open_workspaces().cloned().collect())
-        .unwrap_or_default();
-    if let Some(cur) = &current
-        && !list.iter().any(|w| w.id == cur.id)
-    {
-        list.insert(0, cur.clone());
-    }
-    let current = current.map(|w| w.id);
-    let t = cx.tokens();
-    let (p, m) = (&t.palette, &t.metrics);
-    list.into_iter()
-        .enumerate()
-        .map(|(ix, info)| {
-            let selected = current.as_ref() == Some(&info.id);
-            let base = div()
-                .id(("workspace", ix))
-                .test_support()
-                .size(m.rail_button)
-                .flex()
-                .flex_none()
-                .items_center()
-                .justify_center()
-                .rounded(m.radius_rail)
-                .text_size(m.text_md)
-                .font_weight(FontWeight::BOLD)
-                .cursor_pointer();
-            let base = if selected {
-                base.bg(p.sage.alpha(0.22))
-                    .border_1()
-                    .border_color(p.sage.alpha(0.4))
-                    .text_color(p.text.hsla())
-            } else {
-                base.bg(p.surface.hsla())
-                    .border_1()
-                    .border_color(p.border.hsla())
-                    .text_color(p.text_muted.hsla())
-                    .hover(|s| s.bg(p.surface_strong.hsla()))
-            };
-            let id = info.id.clone();
-            let workspaces = window_workspaces.clone();
-            base.child(initials(&info.name))
-                .on_click(move |_, _, cx| {
-                    let id = id.clone();
-                    workspaces.update(cx, |w, cx| w.switch_to(id, cx)).ok();
-                })
-                .into_any_element()
-        })
-        .collect()
 }
 
 fn empty_note(text: impl Into<SharedString>, cx: &App) -> Div {
