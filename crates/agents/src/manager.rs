@@ -31,16 +31,17 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use coqo_mod_api::BoxFuture;
 use coqo_protocol::methods::agents::{
-    AgentState, AgentStatus, CreateSessionParams, ListSessionsParams, PermissionOutcome,
-    PermissionRequest, PermissionRequestId, PermissionRule, PermissionRuleId, PromptResult,
-    ProviderInfo, SessionId, SessionInfo, SessionList, SessionSnapshot, SessionUpdate,
-    SetStatusParams, StatusProgress, StopReason, ToolCallUpdate,
+    AgentState, AgentStatus, CreateSessionParams, CriterionAuthor, ListSessionsParams,
+    PermissionOutcome, PermissionRequest, PermissionRequestId, PermissionRule, PermissionRuleId,
+    PromptResult, ProviderInfo, SessionId, SessionInfo, SessionList, SessionSnapshot,
+    SessionUpdate, SetCriteriaParams, SetStatusParams, StatusProgress, StopReason, ToolCallUpdate,
 };
 use coqo_protocol::methods::questions::Question;
 use coqo_protocol::{ErrorObject, EventFeed, Sequenced};
 use coqo_storage::Timestamp;
 use tokio::sync::{broadcast, oneshot};
 
+use crate::criteria;
 use crate::error::AgentError;
 use crate::feed::{Page, feed};
 use crate::fold::Fold;
@@ -735,6 +736,7 @@ impl SessionManager {
                 state_reason: None,
                 state_since: Some(ts),
                 status: None,
+                criteria: Vec::new(),
                 mode: None,
                 closed: false,
                 created_at: ts,
@@ -954,6 +956,38 @@ impl SessionManager {
             });
         if !repeat {
             inner.transition(&s, &mut st, event)?;
+        }
+        Ok(st.info().clone())
+    }
+
+    /// Sets or updates the session's acceptance criteria
+    /// (`sessions/setCriteria`, the `set_acceptance_criteria` MCP tool) as
+    /// [`crate::criteria`] says, the changes made by `author`. Returns the
+    /// session's new info; a change also goes out on `sessions/changes`. A
+    /// call that changes nothing sends nothing. Criteria are not part of the
+    /// state machine: they last as long as the session.
+    pub fn set_criteria(
+        &self,
+        params: SetCriteriaParams,
+        author: CriterionAuthor,
+    ) -> Result<SessionInfo> {
+        let inner = &self.inner;
+        let id = &params.session;
+        let s = inner.session(id)?;
+        let mut st = lock(&s.state);
+        if st.info().closed {
+            return Err(AgentError::Closed(id.clone()));
+        }
+        let change = criteria::Change {
+            author,
+            now: now(),
+            cwd: &st.info().cwd,
+        };
+        let next = criteria::apply(&st.info().criteria, params.criteria, params.replace, change)
+            .map_err(AgentError::InvalidParams)?;
+        if next != st.info().criteria {
+            st.stored.info.criteria = next;
+            inner.save_info(&mut st)?;
         }
         Ok(st.info().clone())
     }

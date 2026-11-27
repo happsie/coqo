@@ -174,6 +174,16 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
             CREATE UNIQUE INDEX questions_change_seq ON questions (change_seq);
         ",
     },
+    Migration {
+        version: 7,
+        name: "agent session acceptance criteria",
+        // The task's acceptance criteria (#96, `coqo-agents`): the JSON
+        // array of `AcceptanceCriterion` (id, text, status, evidence, who
+        // changed it and when), NULL when there are none.
+        sql: "
+            ALTER TABLE agent_sessions ADD COLUMN criteria TEXT;
+        ",
+    },
 ];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.

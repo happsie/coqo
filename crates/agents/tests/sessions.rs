@@ -1357,3 +1357,167 @@ async fn the_agents_status_follows_its_turns() {
     assert_eq!(app_error(err), app_codes::SESSION_CLOSED);
     assert_eq!(d.busy.held(), 0);
 }
+
+fn criterion(
+    id: Option<&str>,
+    text: Option<&str>,
+    status: Option<CriterionStatus>,
+) -> CriterionInput {
+    CriterionInput {
+        id: id.map(Into::into),
+        text: text.map(Into::into),
+        status,
+        evidence: None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn acceptance_criteria_stream_and_survive_a_daemon_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("coqo.db");
+    let provider = ScriptedProvider::new();
+    let id = {
+        let d = daemon(SessionStore::open(&db).unwrap(), &provider);
+        let client = d.connect().await;
+        let id = create(&client).await.id;
+        let head = client
+            .request::<List>(ListSessionsParams::default())
+            .await
+            .unwrap()
+            .seq;
+        let mut changes = client
+            .subscribe::<Changes>(ChangesParams::default(), Some(head))
+            .await
+            .unwrap();
+
+        // The agent registers its criteria (the manager, as the route does
+        // for a session token).
+        let set = SetCriteriaParams {
+            session: id.clone(),
+            criteria: vec![
+                criterion(None, Some("100+ units get 10% off"), None),
+                criterion(None, Some("Discount capped at 500 EUR"), None),
+            ],
+            replace: true,
+        };
+        let info = d
+            .manager
+            .set_criteria(set.clone(), CriterionAuthor::Agent)
+            .unwrap();
+        let ids: Vec<_> = info.criteria.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["AC1", "AC2"]);
+        let seen = next_change(&mut changes, &id).await;
+        assert_eq!(seen.criteria, info.criteria);
+
+        // It verifies one, with evidence relative to its cwd.
+        let mut met = criterion(Some("AC1"), None, Some(CriterionStatus::Met));
+        met.evidence = Some(vec![CriterionEvidence {
+            text: "test volume_discount passes".into(),
+            path: Some("src/discount.rs".into()),
+            line: Some(12),
+        }]);
+        let update = SetCriteriaParams {
+            session: id.clone(),
+            criteria: vec![met],
+            replace: false,
+        };
+        let info = d
+            .manager
+            .set_criteria(update.clone(), CriterionAuthor::Agent)
+            .unwrap();
+        let ac1 = &info.criteria[0];
+        assert_eq!(ac1.status, CriterionStatus::Met);
+        assert_eq!(
+            ac1.evidence[0].path.as_deref(),
+            Some("/work/app/src/discount.rs")
+        );
+        next_change(&mut changes, &id).await;
+
+        // The same call again sends no change. The user's mark over the
+        // daemon's scope (this server has no authenticator) is the user's.
+        d.manager
+            .set_criteria(update, CriterionAuthor::Agent)
+            .unwrap();
+        let info = client
+            .request::<SetCriteria>(SetCriteriaParams {
+                session: id.clone(),
+                criteria: vec![criterion(Some("AC2"), None, Some(CriterionStatus::Failed))],
+                replace: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(info.criteria[1].changed_by, CriterionAuthor::User);
+        let seen = next_change(&mut changes, &id).await;
+        assert_eq!(
+            seen.criteria[1].status,
+            CriterionStatus::Failed,
+            "no change in between"
+        );
+
+        // Bad calls.
+        let err = client
+            .request::<SetCriteria>(SetCriteriaParams {
+                session: id.clone(),
+                criteria: vec![criterion(Some("AC9"), None, None)],
+                replace: false,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(app_error(err), codes::INVALID_PARAMS);
+        let err = client
+            .request::<SetCriteria>(SetCriteriaParams {
+                session: SessionId("nope".into()),
+                ..set
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(app_error(err), app_codes::UNKNOWN_SESSION);
+        id
+    };
+
+    // A new daemon on the same database has them.
+    let d = daemon(SessionStore::open(&db).unwrap(), &provider);
+    let client = d.connect().await;
+    let snap = client
+        .request::<Get>(SessionParams {
+            session: id.clone(),
+        })
+        .await
+        .unwrap();
+    let got: Vec<_> = snap
+        .info
+        .criteria
+        .iter()
+        .map(|c| (c.id.as_str(), c.status, c.changed_by))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("AC1", CriterionStatus::Met, CriterionAuthor::Agent),
+            ("AC2", CriterionStatus::Failed, CriterionAuthor::User),
+        ]
+    );
+    assert_eq!(snap.info.criteria[0].evidence[0].line, Some(12));
+    let listed = client
+        .request::<List>(ListSessionsParams::default())
+        .await
+        .unwrap();
+    assert_eq!(listed.sessions[0].criteria, snap.info.criteria);
+
+    // A closed session takes no more.
+    client
+        .request::<Close>(SessionParams {
+            session: id.clone(),
+        })
+        .await
+        .unwrap();
+    let err = client
+        .request::<SetCriteria>(SetCriteriaParams {
+            session: id,
+            criteria: vec![],
+            replace: true,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(app_error(err), app_codes::SESSION_CLOSED);
+}

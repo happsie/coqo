@@ -220,6 +220,11 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "The agent's status line, progress and claimed state (session tokens: own session).",
         ),
+        request::<agents::SetCriteria>(
+            g,
+            "client→server",
+            "Set or update the session's acceptance criteria (session tokens: own session).",
+        ),
         request::<agents::Close>(
             g,
             "client→server",
@@ -699,6 +704,7 @@ fn schema_covers_every_builtin_method() {
         agents::Create::NAME,
         agents::Prompt::NAME,
         agents::SetStatus::NAME,
+        agents::SetCriteria::NAME,
         agents::PermissionRules::NAME,
         agents::DeletePermissionRule::NAME,
         agents::Updates::NAME,

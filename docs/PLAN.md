@@ -285,7 +285,7 @@ Hard rules, documented in `agent-claude` and in CONTRIBUTING: no claude.ai OAuth
 | `await_answer` | Waits for an async question |
 | `annotate` | Non-blocking anchored info or warning note ([ADR 0016](adr/0016-anchored-questions.md)) |
 | `set_status` | A short status line, optional progress, and `working \| blocked \| done`, which feeds alerts (`needs_input` comes from questions; [ADR 0015](adr/0015-agent-state-and-status.md)) |
-| `set_acceptance_criteria` | Registers the criteria for the current task |
+| `set_acceptance_criteria` | Registers the task's acceptance criteria (`AC1`, …) and, as the agent verifies them, each one's status (`pending \| met \| failed \| unknown`) and evidence; shown in the chat's session panel, where the user can mark them too ([ADR 0017](adr/0017-acceptance-criteria.md)) |
 | `publish_walkthrough` | Publishes a walkthrough (§7.6) |
 | `request_review` | Asks the user to review the diff |
 | `trace_launch` / `trace_plan` / `scenario_begin` / `scenario_end` / `trace_query` | Live trace (§7.10) |

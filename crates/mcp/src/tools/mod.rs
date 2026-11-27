@@ -18,6 +18,7 @@
 //! | `ask_question` | a question pinned to code; waits for the answer unless `wait: false` | `questions/create`, `questions/watch` |
 //! | `await_answer` | wait for the answer to an earlier question | `questions/watch` |
 //! | `annotate` | a note pinned to code, non-blocking | `questions/create` |
+//! | `set_acceptance_criteria` | the task's acceptance criteria and whether each holds | `sessions/setCriteria` |
 //!
 //! [`daemon`] adds the tools mods contribute in the daemon (`mcp/*`).
 //!
@@ -32,6 +33,7 @@ use serde_json::{Map, Value, json};
 
 use crate::registry::{Tool, ToolContext, ToolError, ToolRegistry};
 
+mod criteria;
 pub mod daemon;
 mod editor;
 mod files;
@@ -39,6 +41,7 @@ pub mod questions;
 mod status;
 mod syntax;
 
+pub use criteria::SetAcceptanceCriteriaTool;
 pub use editor::{EditorContextTool, EditorRevealTool};
 pub use files::{FindFilesTool, ListFilesTool, ReadFileTool, WorkspaceInfoTool};
 pub use questions::{AnnotateTool, AskQuestionTool, AwaitAnswerTool};
@@ -47,7 +50,7 @@ pub use syntax::FileOutlineTool;
 
 /// Register the core tools.
 pub fn core(registry: &ToolRegistry) {
-    let tools: [Arc<dyn Tool>; 11] = [
+    let tools: [Arc<dyn Tool>; 12] = [
         Arc::new(WorkspaceInfoTool),
         Arc::new(ReadFileTool),
         Arc::new(ListFilesTool),
@@ -59,6 +62,7 @@ pub fn core(registry: &ToolRegistry) {
         Arc::new(AskQuestionTool),
         Arc::new(AwaitAnswerTool),
         Arc::new(AnnotateTool),
+        Arc::new(SetAcceptanceCriteriaTool),
     ];
     for error in registry.update(&[], tools.into()) {
         tracing::warn!(error = %error, "cannot register a core tool");

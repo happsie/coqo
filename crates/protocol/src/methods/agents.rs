@@ -42,6 +42,16 @@
 //! turn ends unless the agent marked it `blocked` or `done` (then it is the
 //! outcome, kept until the next turn). Status changes stream on
 //! `sessions/changes`; they are not transcript updates.
+//!
+//! # Acceptance criteria
+//!
+//! What "done" means for the session's task, as the agent states it:
+//! [`SessionInfo::criteria`], each an [`AcceptanceCriterion`] with a stable
+//! id (`AC1`, …), its text, a [`CriterionStatus`] and evidence (a test name,
+//! a `file:line`). Set and updated with `sessions/setCriteria` (the
+//! `set_acceptance_criteria` MCP tool, or the user in the session panel).
+//! They last as long as the session; walkthroughs and trace scenarios refer
+//! to them by id. Changes stream on `sessions/changes`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -778,6 +788,81 @@ pub struct AgentStatus {
 /// The longest status line, in characters; longer ones are cut with `…`.
 pub const MAX_STATUS_CHARS: usize = 120;
 
+/// Whether an acceptance criterion holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum CriterionStatus {
+    /// Not checked yet.
+    #[default]
+    Pending,
+    /// Verified to hold; the evidence says how.
+    Met,
+    /// Checked and does not hold.
+    Failed,
+    /// Cannot be checked here (needs the user, an environment, …).
+    Unknown,
+}
+
+/// Who last changed a criterion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum CriterionAuthor {
+    /// The session's agent (a session token: the MCP tool).
+    #[default]
+    Agent,
+    /// The user (the daemon token: the UI or the CLI).
+    User,
+}
+
+/// Why a criterion has its status: a test, a command, a place in the code.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct CriterionEvidence {
+    /// What shows it, in a few words ("test `volume_discount_caps` passes").
+    pub text: String,
+    /// A file that shows it: absolute (a relative path is taken from the
+    /// session's `cwd`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Line in `path`, **1-based**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+}
+
+/// One acceptance criterion of a session's task.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceCriterion {
+    /// Stable id within the session (`AC1`, or the agent's own), which
+    /// walkthroughs and trace scenarios refer to.
+    pub id: String,
+    /// What must hold, one sentence.
+    pub text: String,
+    /// Whether it holds.
+    pub status: CriterionStatus,
+    /// Why it has that status.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<CriterionEvidence>,
+    /// Who changed it last.
+    pub changed_by: CriterionAuthor,
+    /// When it last changed, Unix milliseconds.
+    pub updated_at: i64,
+}
+
+/// Most acceptance criteria per session.
+pub const MAX_CRITERIA: usize = 50;
+/// Longest criterion text, in characters; longer is cut with `…`.
+pub const MAX_CRITERION_CHARS: usize = 300;
+/// Most evidence entries per criterion.
+pub const MAX_EVIDENCE: usize = 5;
+/// Longest evidence text, in characters; longer is cut with `…`.
+pub const MAX_EVIDENCE_CHARS: usize = 200;
+/// Longest criterion id: ASCII letters, digits, `.`, `_` and `-`.
+pub const MAX_CRITERION_ID: usize = 32;
+
 /// Why a turn ended (ACP `StopReason`, plus Coqo's own).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -935,6 +1020,9 @@ pub struct SessionInfo {
     /// `blocked` or `done` outcome).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<AgentStatus>,
+    /// The task's acceptance criteria, in order (`sessions/setCriteria`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub criteria: Vec<AcceptanceCriterion>,
     /// Current mode id, if the provider has modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
@@ -1209,6 +1297,56 @@ pub enum SetStatus {}
 impl Method for SetStatus {
     const NAME: &'static str = "sessions/setStatus";
     type Params = SetStatusParams;
+    type Result = SessionInfo;
+}
+
+/// One entry of `sessions/setCriteria`: a new criterion, or a change to
+/// the one with `id`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct CriterionInput {
+    /// The criterion to change; a new one gets this id (or `AC<n>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Its text; required for a new criterion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Its status; a new criterion is `pending`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<CriterionStatus>,
+    /// Replaces its evidence (`[]` clears it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<Vec<CriterionEvidence>>,
+}
+
+/// Params of `sessions/setCriteria`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct SetCriteriaParams {
+    /// The session.
+    pub session: SessionId,
+    /// New criteria and changes, in order.
+    pub criteria: Vec<CriterionInput>,
+    /// The list becomes exactly `criteria`, in that order: criteria not
+    /// named are dropped, named ones keep what their entry does not change.
+    /// Otherwise an entry with a known id changes that criterion in place
+    /// and the others are added at the end.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replace: bool,
+}
+
+/// `sessions/setCriteria`: set or update the session's acceptance
+/// criteria. Session tokens may call it for their own session (the
+/// `set_acceptance_criteria` MCP tool; the changes are the agent's), the
+/// daemon token for any session (the changes are the user's). Returns the
+/// session's new info, which also goes out on `sessions/changes` if
+/// anything changed. Fails with `UNKNOWN_SESSION`, `SESSION_CLOSED` or
+/// `INVALID_PARAMS`.
+#[derive(Debug)]
+pub enum SetCriteria {}
+impl Method for SetCriteria {
+    const NAME: &'static str = "sessions/setCriteria";
+    type Params = SetCriteriaParams;
     type Result = SessionInfo;
 }
 

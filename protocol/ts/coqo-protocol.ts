@@ -55,6 +55,22 @@ export type Response<R = unknown> =
   | { jsonrpc: "2.0"; id: Id | null; error: ErrorObject };
 export type Message = Request | Notification | Response;
 
+/** One acceptance criterion of a session's task. */
+export type AcceptanceCriterion = {
+  /** Who changed it last. */
+  changedBy: CriterionAuthor;
+  /** Why it has that status. */
+  evidence?: Array<CriterionEvidence>;
+  /** Stable id within the session (`AC1`, or the agent's own), which walkthroughs and trace scenarios refer to. */
+  id: string;
+  /** Whether it holds. */
+  status: CriterionStatus;
+  /** What must hold, one sentence. */
+  text: string;
+  /** When it last changed, Unix milliseconds. */
+  updatedAt: number;
+};
+
 /** Params of [`AddRoot`]. */
 export type AddRootParams = {
   /** The workspace. */
@@ -354,6 +370,34 @@ export type CreateSessionParams = {
   /** The workspace it belongs to. */
   workspace?: string | null;
 };
+
+/** Who last changed a criterion. */
+export type CriterionAuthor = "agent" | "user";
+
+/** Why a criterion has its status: a test, a command, a place in the code. */
+export type CriterionEvidence = {
+  /** Line in `path`, **1-based**. */
+  line?: number | null;
+  /** A file that shows it: absolute (a relative path is taken from the session's `cwd`). */
+  path?: string | null;
+  /** What shows it, in a few words ("test `volume_discount_caps` passes"). */
+  text: string;
+};
+
+/** One entry of `sessions/setCriteria`: a new criterion, or a change to the one with `id`. */
+export type CriterionInput = {
+  /** Replaces its evidence (`[]` clears it). */
+  evidence?: Array<CriterionEvidence> | null;
+  /** The criterion to change; a new one gets this id (or `AC<n>`). */
+  id?: string | null;
+  /** Its status; a new criterion is `pending`. */
+  status?: CriterionStatus | null;
+  /** Its text; required for a new criterion. */
+  text?: string | null;
+};
+
+/** Whether an acceptance criterion holds. */
+export type CriterionStatus = "pending" | "met" | "failed" | "unknown";
 
 /** The cursor, in screen coordinates. */
 export type Cursor = {
@@ -1265,6 +1309,8 @@ export type SessionInfo = {
   closed: boolean;
   /** Created, Unix milliseconds. */
   createdAt: number;
+  /** The task's acceptance criteria, in order (`sessions/setCriteria`). */
+  criteria?: Array<AcceptanceCriterion>;
   /** The agent's working directory (the workspace root). */
   cwd: string;
   /** Id. */
@@ -1407,6 +1453,16 @@ export type SessionUpdate = {
   update: "turn_ended";
 } | Question | {
   update: "closed";
+};
+
+/** Params of `sessions/setCriteria`. */
+export type SetCriteriaParams = {
+  /** New criteria and changes, in order. */
+  criteria: Array<CriterionInput>;
+  /** The list becomes exactly `criteria`, in that order: criteria not named are dropped, named ones keep what their entry does not change. Otherwise an entry with a known id changes that criterion in place and the others are added at the end. */
+  replace?: boolean;
+  /** The session. */
+  session: SessionId;
 };
 
 /** Params of `sessions/setMode`. */
@@ -1956,6 +2012,8 @@ export interface Requests {
   "sessions/setMode": { params: SetModeParams; result: null };
   /** The agent's status line, progress and claimed state (session tokens: own session). (client→server) */
   "sessions/setStatus": { params: SetStatusParams; result: SessionInfo };
+  /** Set or update the session's acceptance criteria (session tokens: own session). (client→server) */
+  "sessions/setCriteria": { params: SetCriteriaParams; result: SessionInfo };
   /** End a session; its transcript stays readable. Result is true if it was open. (client→server) */
   "sessions/close": { params: SessionParams; result: boolean };
   /** A workspace's permission rules (auto-approve and auto-reject), oldest first. (client→server) */

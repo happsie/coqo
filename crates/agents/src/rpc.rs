@@ -4,19 +4,22 @@
 //! the workspaces' permission rules (`agents/permissionRules`,
 //! `agents/deletePermissionRule`).
 
+use coqo_protocol::methods::agents::CriterionAuthor;
 use coqo_protocol::methods::agents::{
     Cancel, Changes, Close, Create, DeletePermissionRule, Get, List, PermissionRules, Prompt,
-    Providers, RespondPermission, RunAction, SetMode, SetStatus, Updates,
+    Providers, RespondPermission, RunAction, SetCriteria, SetMode, SetStatus, Updates,
 };
-use coqo_protocol::{Access, Router};
+use coqo_protocol::{Access, Router, Scope};
 
 use crate::manager::SessionManager;
 
 /// Adds the agent methods and topics, served by `manager`. All of them but
-/// one need the daemon token: they reach every session and workspace, and
+/// two need the daemon token: they reach every session and workspace, and
 /// run provider actions, so a session token (`coqod mcp`) gets `FORBIDDEN`.
-/// The exception is `sessions/setStatus`, which a session token may call
-/// for its own session (the `set_status` MCP tool).
+/// The exceptions are `sessions/setStatus` and `sessions/setCriteria`,
+/// which a session token may call for its own session (the `set_status`
+/// and `set_acceptance_criteria` MCP tools). A session token's criteria
+/// changes are the agent's, the daemon token's the user's.
 pub fn register(router: Router, manager: SessionManager) -> Router {
     let m = manager;
     let providers = m.clone();
@@ -29,6 +32,7 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
     let respond = m.clone();
     let set_mode = m.clone();
     let set_status = m.clone();
+    let set_criteria = m.clone();
     let close = m.clone();
     let rules = m.clone();
     let delete_rule = m.clone();
@@ -79,6 +83,15 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
         })
         .method_with::<SetStatus, _, _>(Access::session(|p| &p.session.0), move |_, p| {
             let r = set_status.set_status(p).map_err(Into::into);
+            async move { r }
+        })
+        .method_with::<SetCriteria, _, _>(Access::session(|p| &p.session.0), move |cx, p| {
+            let author = if matches!(*cx.scope, Scope::Daemon) {
+                CriterionAuthor::User
+            } else {
+                CriterionAuthor::Agent
+            };
+            let r = set_criteria.set_criteria(p, author).map_err(Into::into);
             async move { r }
         })
         .method_with::<Close, _, _>(Access::daemon(), move |_, p| {
