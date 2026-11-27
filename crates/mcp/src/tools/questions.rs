@@ -287,11 +287,13 @@ impl Tool for AskQuestionTool {
         props.insert("timeout_s".into(), timeout_property());
         ToolDefinition::new(
             "ask_question",
-            "Ask the user a question pinned to lines of code: it appears in the Coqo editor at \
-             those lines, and the user answers there with the code in view. Use it instead of \
-             asking in chat whenever the question is about specific code (which approach to \
-             take here, whether this behaviour is intended, whether you may change this API). \
-             Give `options` for a decision. It blocks until the user answers (with progress) \
+            "Use it instead of asking in chat, and instead of deciding yourself, when a choice \
+             about code is the user's: a product or business value, a trade-off they want to \
+             make, anything they are unsure about. The question is pinned to lines of code: it \
+             appears in the Coqo editor at those lines, and the user answers there with the code \
+             in view. Also for any other question about specific code (which approach to take \
+             here, whether this behaviour is intended, whether you may change this API). Give \
+             `options` for a decision. It blocks until the user answers (with progress) \
              and returns the answer, unless `wait: false`: then it returns an id at once, so \
              you can go on and collect the answer later with await_answer. Lines are 1-based.",
         )

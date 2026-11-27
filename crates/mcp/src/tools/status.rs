@@ -59,11 +59,11 @@ impl Tool for SetStatusTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new(
             "set_status",
-            "Tell the user what you are doing, in a few words. Coqo shows it next to this chat in \
-             the chat list, the chat's session panel and the workspace rail, so the user can follow \
-             along without reading the transcript. Call it at the start of each phase of a \
-             multi-step task (\"Running the test suite\"), with `progress` for countable work; \
-             skip it for a quick one-step answer. Set `state` to \"blocked\" when you cannot go \
+            "Call it at the start of every step of a multi-step task, and with state \"done\" \
+             when you finish: tell the user what you are doing, in a few words (\"Adding the \
+             tests\"). Coqo shows it next to this chat in the chat list, the chat's session panel \
+             and the workspace rail, so the user can follow along without reading the transcript. \
+             Add `progress` for countable work; skip it for a quick one-step answer. Set `state` to \"blocked\" when you cannot go \
              on without the user (say why in `status`; the user is alerted), \"working\" when you \
              go on after that, and \"done\" when the task is finished (`status` is then the \
              outcome, kept after the turn). A status without a state clears when the turn ends; \

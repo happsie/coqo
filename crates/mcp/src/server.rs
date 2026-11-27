@@ -23,14 +23,17 @@ use crate::registry::{ToolContext, ToolDefinition, ToolError, ToolRegistry};
 pub(crate) const INSTRUCTIONS: &str = "Coqo is the desktop editor the user works in; this server \
      connects you to it, for the Coqo workspace this session belongs to. Keep using your own \
      tools to read, search and edit files and to run commands: Coqo sees your edits. Use these \
-     tools for what only the editor knows or can do: call editor_context first when the user \
-     says \"this\", \"here\", \"the selection\" or \"the open file\"; editor_reveal to show the \
-     user code you are talking about or just changed; ask_question instead of asking in chat \
-     when a question is about specific code (it blocks until answered, or use wait:false and \
-     await_answer later); annotate to pin a non-blocking note to lines; set_status at the start \
-     of each phase of a longer task, with state \"blocked\" when you need the user and \"done\" \
-     at the end; set_acceptance_criteria at the start of a task to say what done means, and \
-     again as you verify each criterion; publish_walkthrough when you finish a change, before \
+     tools for what only the editor knows or can do. Before you start a task of several steps, \
+     call set_acceptance_criteria to say what done means, then set_status at the start of each \
+     step and with state \"done\" at the end (\"blocked\" when you need the user). When a choice \
+     is the user's (a product value, anything they call their decision or are unsure about), \
+     do not decide it and do not ask in chat: call ask_question anchored to the lines it \
+     affects (it blocks until answered, or use wait:false and await_answer later). Also: \
+     editor_context first when the user says \"this\", \"here\", \"the selection\" or \"the \
+     open file\"; editor_reveal to show the user code you are talking about or just changed; \
+     ask_question for any other question about specific code; annotate to pin a non-blocking \
+     note to lines; set_acceptance_criteria again as you verify each criterion; \
+     publish_walkthrough when you finish a change, before \
      saying it is done. Paths are absolute or relative to a workspace root; \
      lines and columns are 1-based. Other tools here come from Coqo mods and say when to use \
      them.";

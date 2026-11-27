@@ -275,8 +275,11 @@ pub const SCENARIOS: &[Scenario] = &[
                 selection: None,
             },
         ],
-        prompt: "I'm not sure what the free-shipping threshold should default to. \
-                 Give it a sensible default in the config.",
+        // A product choice the code gives no hint about, which the user
+        // keeps for themselves (#238): the #216 wording ("give it a
+        // sensible default") delegated it.
+        prompt: "Turn on free shipping in the config. I haven't decided on the threshold \
+                 yet, and that's my call, not yours.",
         answer: "Use 50.0 EUR.",
         expects: "ask_question on config.py:6-10",
         check: |o| {
@@ -291,9 +294,11 @@ pub const SCENARIOS: &[Scenario] = &[
         fixture: "shop",
         change: None,
         tabs: &[],
-        prompt: "Add an optional `tax_rate` parameter (default 0) to `total()` in \
-                 shop/pricing.py, add a test for it to test_pricing.py, and mention it \
-                 in the README's usage section. Don't run anything.",
+        // Separate phases over four files (#238), not one quick edit.
+        prompt: "Add sales tax to the shop, in three phases: first a TAX_RATE setting \
+                 (default 0.0) in shop/config.py; then apply it in total() in \
+                 shop/pricing.py, after shipping; last, tests for it in test_pricing.py \
+                 and a line in the README's usage section. Don't run anything.",
         answer: "Apply the tax after shipping.",
         expects: "set_status ≥2, set_acceptance_criteria",
         check: |o| o.calls("set_status") >= 2 && o.calls("set_acceptance_criteria") >= 1,
