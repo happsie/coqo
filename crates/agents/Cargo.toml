@@ -1,0 +1,29 @@
+[package]
+name = "coqo-agents"
+description = "Coqo agents: the AgentProvider API and daemon-owned agent sessions (coqo.agents@1)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+coqo-mod-api = { path = "../mod-api" }
+coqo-protocol = { path = "../protocol" }
+coqo-storage = { path = "../storage" }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+rusqlite = "0.43"
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tokio-util = "0.7"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["io-util", "macros", "rt", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

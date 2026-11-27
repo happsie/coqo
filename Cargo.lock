@@ -1081,6 +1081,24 @@ name = "coqo-acp-host"
 version = "0.0.0"
 
 [[package]]
+name = "coqo-agents"
+version = "0.0.0"
+dependencies = [
+ "coqo-mod-api",
+ "coqo-protocol",
+ "coqo-storage",
+ "futures-util",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "coqo-anchors"
 version = "0.0.0"
 
@@ -1193,6 +1211,7 @@ name = "coqod"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "coqo-agents",
  "coqo-client",
  "coqo-kernel",
  "coqo-mod-api",

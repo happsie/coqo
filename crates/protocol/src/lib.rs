@@ -17,7 +17,8 @@
 //! - [`daemon`]: `daemon/status` and `daemon/shutdown`, the daemon's own
 //!   lifecycle methods.
 //! - [`methods`]: the daemon's application methods and topics
-//!   (`workspace/*`, `fs/*`), shared by clients and `coqod`.
+//!   (`workspace/*`, `fs/*`, `agents/*`, `sessions/*`), shared by clients and
+//!   `coqod`.
 //!
 //! The client and server work over any `AsyncRead + AsyncWrite` byte stream;
 //! [`unix`] has Unix socket helpers.

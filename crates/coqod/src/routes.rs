@@ -14,8 +14,8 @@ use anyhow::Result;
 use coqo_protocol::Router;
 
 use crate::daemon::DaemonContext;
-use crate::methods;
 use crate::workspace::{self, WorkspaceService};
+use crate::{agents, methods};
 
 /// Build the daemon's router. Called once at startup; an error stops the
 /// daemon before it accepts clients.
@@ -24,5 +24,6 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     let router = methods::register(router, ctx);
     // Services, one line each.
     let router = workspace::register(router, Arc::new(WorkspaceService::open(ctx.data.clone())?));
+    let router = agents::register(router, agents::open(ctx)?);
     Ok(router)
 }

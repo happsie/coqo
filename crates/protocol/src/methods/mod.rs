@@ -11,7 +11,10 @@
 //! - [`workspace`]: `workspace/*`, workspaces (folder roots) and their state.
 //! - [`fs`]: `fs/*`, read-only file-system access inside a workspace and
 //!   live change events.
+//! - [`agents`]: `agents/*` and `sessions/*`, agent providers and the
+//!   daemon-owned agent sessions (`coqo.agents@1`, PLAN §7.3).
 
+pub mod agents;
 pub mod fs;
 pub mod workspace;
 
@@ -39,4 +42,26 @@ pub mod codes {
     pub const WORKSPACE_CLOSED: i64 = 1008;
     /// A file-system error (permissions, I/O).
     pub const IO_ERROR: i64 = 1009;
+    /// No agent session has the given id.
+    pub const UNKNOWN_SESSION: i64 = 1101;
+    /// No agent provider has the given id, or it is not available (its mod
+    /// is not active).
+    pub const UNKNOWN_PROVIDER: i64 = 1102;
+    /// The session is already running a turn. Wait for it to end, or
+    /// `sessions/cancel` it.
+    pub const SESSION_BUSY: i64 = 1103;
+    /// The session was closed; its transcript can still be read.
+    pub const SESSION_CLOSED: i64 = 1104;
+    /// The session has no pending permission request with the given id, or
+    /// the option is not one of the request's options.
+    pub const UNKNOWN_PERMISSION_REQUEST: i64 = 1105;
+    /// The provider does not support this operation (e.g. session modes).
+    pub const UNSUPPORTED: i64 = 1106;
+    /// The agent needs the user to sign in, in the agent's own tool (for
+    /// Claude: run `claude` and `/login`). Coqo never handles the login.
+    pub const AUTH_REQUIRED: i64 = 1107;
+    /// The provider failed (process died, protocol error, …).
+    pub const PROVIDER_ERROR: i64 = 1108;
+    /// Reading or writing the session store failed.
+    pub const STORAGE_ERROR: i64 = 1109;
 }

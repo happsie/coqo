@@ -70,6 +70,44 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
             ) WITHOUT ROWID;
         ",
     },
+    Migration {
+        version: 3,
+        name: "agent sessions",
+        // Agent sessions (#53, `coqo-agents`). `agent_session_updates` is each
+        // session's transcript: JSON `SessionUpdate`s with a per-session `seq`
+        // from 1. It is kept apart from `event_log` so event-log retention
+        // never prunes a transcript. `change_seq` orders changes to the
+        // session rows for the `sessions/changes` topic and only grows.
+        // `workspace` is a workspace id but not a foreign key: a session's
+        // transcript outlives the workspace. Timestamps are Unix milliseconds.
+        sql: "
+            CREATE TABLE agent_sessions (
+                id               TEXT    PRIMARY KEY NOT NULL,
+                provider         TEXT    NOT NULL,
+                workspace        TEXT,
+                cwd              TEXT    NOT NULL,
+                title            TEXT,
+                state            TEXT    NOT NULL,
+                state_reason     TEXT,
+                mode             TEXT,
+                closed           INTEGER NOT NULL DEFAULT 0,
+                provider_session TEXT,
+                created_at       INTEGER NOT NULL,
+                updated_at       INTEGER NOT NULL,
+                change_seq       INTEGER NOT NULL
+            ) WITHOUT ROWID;
+            CREATE INDEX agent_sessions_workspace ON agent_sessions (workspace, updated_at);
+            CREATE UNIQUE INDEX agent_sessions_change_seq ON agent_sessions (change_seq);
+            CREATE TABLE agent_session_updates (
+                session TEXT    NOT NULL REFERENCES agent_sessions (id) ON DELETE CASCADE,
+                seq     INTEGER NOT NULL,
+                kind    TEXT    NOT NULL,
+                payload TEXT    NOT NULL,
+                ts      INTEGER NOT NULL,
+                PRIMARY KEY (session, seq)
+            ) WITHOUT ROWID;
+        ",
+    },
 ];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.

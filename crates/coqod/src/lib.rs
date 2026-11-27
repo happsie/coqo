@@ -10,12 +10,14 @@
 //! - [`methods`]: `daemon/status` and `daemon/shutdown`.
 //! - [`mods`]: **where built-in mods are listed**; loaded and activated at
 //!   startup, deactivated at shutdown.
+//! - [`agents`]: daemon-owned agent sessions (`agents/*`, `sessions/*`).
 //! - [`cli`]: command-line arguments.
 //! - [`workspace`]: workspaces (folder roots), their persisted state, and
 //!   read-only file-system access with live change events.
 //!
 //! Clients reach the daemon through `coqo-client`, never this crate.
 
+pub mod agents;
 pub mod auth;
 pub mod cli;
 pub mod daemon;

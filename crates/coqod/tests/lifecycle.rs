@@ -392,3 +392,20 @@ async fn bare_coqod_starts_it_in_the_background() {
         .unwrap();
     client.closed().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_sessions_are_served_from_the_global_database() {
+    use coqo_protocol::methods::agents::{List, ListSessionsParams, Providers};
+
+    let env = Env::new();
+    let _daemon = env.foreground(&["--idle-exit", "5m"]).await;
+    let client = env.client().await;
+    // No built-in provider mod yet (#54, #56).
+    assert!(client.request::<Providers>(()).await.unwrap().is_empty());
+    let list = client
+        .request::<List>(ListSessionsParams::default())
+        .await
+        .unwrap();
+    assert!(list.sessions.is_empty());
+    assert!(env.data.join("coqo.db").exists());
+}
