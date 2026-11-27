@@ -812,9 +812,11 @@ async fn ask_answer_and_await_through_the_bridge() {
     let data = tempfile::tempdir().unwrap();
     let daemon = Daemon::start(data.path(), &ScriptedProvider::new()).await;
     let ui = daemon.ui().await;
-    let (dir, ws) = project(&ui).await;
+    let (_dir, ws) = project(&ui).await;
     let mut agent = Agent::start(daemon.agent(&ws, "s-1").await, &ws, "s-1").await;
-    let main_rs = dir.path().join("src/main.rs");
+    // Absolute paths are matched against the canonical root path, and macOS
+    // temp folders are under a symlink (`/var` → `/private/var`).
+    let main_rs = Path::new(&ws.roots[0].path).join("src/main.rs");
 
     // Asked without waiting: it is listed for the UI.
     let r = agent
