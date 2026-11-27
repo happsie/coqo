@@ -192,14 +192,22 @@ impl GitPane {
         ) else {
             return;
         };
-        let key = diff::key(&workspace, root, &entry.path, staged);
+        let key = diff::key(&workspace, root, staged);
+        let path = entry.path.clone();
         if let Some(open) = dock.read(cx).find_tab(diff::KIND, &key, cx) {
+            let view = dock
+                .read(cx)
+                .tab(open)
+                .and_then(|t| t.downcast::<DiffTab>())
+                .map(|tab| tab.read(cx).view().clone());
+            if let Some(view) = view {
+                view.update(cx, |v, cx| v.select_file(&path, cx));
+            }
             dock.update(cx, |dock, cx| dock.activate_tab(open, window, cx));
             return;
         }
-        let path = entry.path.clone();
         let tab: Entity<DiffTab> =
-            cx.new(|cx| DiffTab::new(workspace, root, path, staged, window, cx));
+            cx.new(|cx| DiffTab::new(workspace, root, staged, Some(path), window, cx));
         dock.update(cx, |dock, cx| dock.open_tab(AnyTab::new(tab), window, cx));
     }
 

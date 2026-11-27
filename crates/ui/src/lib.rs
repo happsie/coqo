@@ -9,6 +9,7 @@
 //! and never used directly elsewhere**, so they can be swapped without touching
 //! views or mods.
 
+pub mod diff;
 pub mod dock;
 pub mod editor;
 pub mod input;

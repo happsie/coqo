@@ -1,9 +1,9 @@
 # Git pane and diff tabs
 
-This page covers the Git sidebar pane (board 1's "Git" tab) and the minimal `git-diff` tab kind (with board 4's diff colours), from PLAN §7.7 and #91.
+This page covers the Git sidebar pane (board 1's "Git" tab) and the `git-diff` tab kind, from PLAN §7.7, #91 and #93.
 
 - **Code:** `crates/coqo/src/git/`. It moves into the git mod once the mod API carries UI contributions (#147).
-- **Data:** the daemon's `git/*` methods and `git/changes` (ADR 0019).
+- **Data:** the daemon's `git/*` methods and `git/changes` (ADR 0018).
 - **Screenshots:** offscreen renders from `git_screenshots`.
 
 ![The Git pane with a staged diff open](screenshots/git-dark.png)
@@ -36,12 +36,9 @@ The pane keeps itself current from `git/changes`, which covers edits, `git` runs
 
 ## Diff tab
 
-- **Label:** the `git-branch` icon, the file name, and `staged` or `changes` in `text_subtle`.
-- **Header:** the path in mono semibold, the sides (`HEAD → index` or `index → working tree`) in `text_subtle`, and `+a −d` on the right in `green` and `rose`.
-- **Lines:**
-  - Type: mono at 12.5 px on a 23 px line.
-  - Gutter: two 40 px line-number columns in `text_subtle`, then the sign.
-  - Line colours: added lines use `green` at 11%, removed lines use `rose` at 12%, and hunk headers are `blue` on `blue` at 8%.
-- **Updates:** the tab reloads when `git/changes` reports the sides it shows.
+The `git-diff` tab kind shows a root's changes in the review surface of board 4 ([diff.md](diff.md), #93): one tab for the unstaged changes (index → working tree, untracked files included) and one for the staged ones (`HEAD` → index).
 
-The full diff component (#93) replaces this body and keeps the tab kind.
+- **Opening:** clicking a file row in the pane opens its side's tab, or switches to it, and shows that file.
+- **Label:** the `git-branch` icon, "Changes" or "Staged changes", and `viewed/total` in `text_subtle`.
+- **Staging:** hunk buttons and line selections stage (in "Changes") or unstage (in "Staged changes") through `git/stage` / `git/unstage`.
+- **Updates:** the tab reloads when `git/changes` reports the sides it shows.

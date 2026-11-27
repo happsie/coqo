@@ -419,6 +419,12 @@ fn sync_component_theme(tokens: &Tokens, cx: &mut App) {
     theme.secondary = p.surface.hsla();
     theme.secondary_foreground = p.text.hsla();
     theme.ring = p.blue.hsla();
+    // Status colours: the diff body tints removed lines `danger` and added
+    // ones `success` (board 4: rose and green at 12%).
+    theme.danger = p.rose.hsla();
+    theme.success = p.green.hsla();
+    theme.warning = p.sand.hsla();
+    theme.info = p.blue.hsla();
     if let Some(highlight) = highlight_theme(tokens) {
         theme.highlight_theme = std::sync::Arc::new(highlight);
     }

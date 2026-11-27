@@ -11,6 +11,7 @@ mod activity;
 mod alerts;
 mod chat;
 mod daemon;
+mod diff;
 mod files;
 mod git;
 mod layout;
