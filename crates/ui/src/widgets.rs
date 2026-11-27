@@ -23,11 +23,15 @@ pub enum Icon {
     Columns,
     GitBranch,
     Folder,
+    X,
+    Rows,
+    Sparkles,
+    CircleAlert,
 }
 
 impl Icon {
     /// Every variant, for tests that check the bundle.
-    pub const ALL: [Icon; 9] = [
+    pub const ALL: [Icon; 13] = [
         Icon::Search,
         Icon::Zap,
         Icon::Bell,
@@ -37,6 +41,10 @@ impl Icon {
         Icon::Columns,
         Icon::GitBranch,
         Icon::Folder,
+        Icon::X,
+        Icon::Rows,
+        Icon::Sparkles,
+        Icon::CircleAlert,
     ];
 
     pub(crate) fn path(self) -> &'static str {
@@ -50,6 +58,10 @@ impl Icon {
             Icon::Columns => "icons/columns-2.svg",
             Icon::GitBranch => "icons/git-branch.svg",
             Icon::Folder => "icons/folder.svg",
+            Icon::X => "icons/x.svg",
+            Icon::Rows => "icons/rows-2.svg",
+            Icon::Sparkles => "icons/sparkles.svg",
+            Icon::CircleAlert => "icons/circle-alert.svg",
         }
     }
 }
@@ -130,10 +142,16 @@ pub fn tab(
     selected: bool,
     cx: &App,
 ) -> Stateful<Div> {
+    tab_frame(id, selected, cx).child(label.into())
+}
+
+/// An empty tab, for tabs with their own content (icon, title, close button).
+pub fn tab_frame(id: impl Into<ElementId>, selected: bool, cx: &App) -> Stateful<Div> {
     let t = cx.tokens();
     let p = &t.palette;
     let base = div()
         .flex()
+        .flex_none()
         .items_center()
         .gap_2()
         .px_3()
@@ -150,7 +168,7 @@ pub fn tab(
             .border_color(gpui_kit::transparent_black())
             .text_color(p.text_muted.hsla())
     };
-    base.id(id).child(label.into())
+    base.id(id)
 }
 
 /// A key cap such as `Ctrl K`.

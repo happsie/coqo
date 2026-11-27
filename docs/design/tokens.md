@@ -83,4 +83,4 @@ The UI font is **Inter** (400, 500, 600, 700) and the code font is **JetBrains M
 
 ![The empty workbench in the light appearance](screenshots/shell-light.png)
 
-To regenerate both screenshots, run `COQO_SHOT_DIR=docs/design/screenshots cargo test -p coqo -- --ignored shell_screenshots`. This renders offscreen and needs a GPU. The test writes 2× PNGs; the committed ones are downscaled to 1440×900.
+To regenerate the screenshots (these and the split ones in [workbench.md](workbench.md)), run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored shell_screenshots`. This renders offscreen and needs a GPU. The test writes 2× PNGs named `coqo-shell[-split]-<appearance>.png`; the committed ones are downscaled to 1440×900 as `shell[-split]-<appearance>.png`.

@@ -1073,6 +1073,7 @@ name = "coqo"
 version = "0.0.0"
 dependencies = [
  "coqo-ui",
+ "dirs 6.0.0",
 ]
 
 [[package]]
@@ -1154,6 +1155,8 @@ version = "0.0.0"
 dependencies = [
  "gpui-kit",
  "image",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

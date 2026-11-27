@@ -26,6 +26,10 @@ icons!(
     "columns-2",
     "git-branch",
     "folder",
+    "x",
+    "rows-2",
+    "sparkles",
+    "circle-alert",
 );
 
 /// Serves Coqo's bundled icons, then gpui-kit's defaults.
