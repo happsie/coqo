@@ -35,6 +35,8 @@ coqo-acp-host = { path = "../acp-host" }
 # host, which mods may not depend on).
 coqo-agent-claude = { path = "../agent-claude" }
 coqo-agents = { path = "../agents" }
+# Anchors of questions and notes pinned to code (`questions/*`).
+coqo-anchors = { path = "../anchors" }
 coqo-buffers = { path = "../buffers" }
 coqo-client = { path = "../client" }
 coqo-kernel = { path = "../kernel" }

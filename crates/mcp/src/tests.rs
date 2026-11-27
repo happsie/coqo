@@ -233,6 +233,9 @@ async fn initialize_list_and_call() {
     assert_eq!(
         names,
         [
+            "annotate",
+            "ask_question",
+            "await_answer",
             "editor_context",
             "editor_reveal",
             "file_outline",
@@ -321,7 +324,7 @@ async fn registry_changes_and_progress_reach_the_agent() {
     registry.register(Slow).unwrap();
     agent.notification("notifications/tools/list_changed").await;
     let list = agent.request("tools/list", json!({})).await;
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 9);
+    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 12);
 
     let r = agent
         .request(

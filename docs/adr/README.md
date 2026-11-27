@@ -19,3 +19,4 @@ Architecture decisions for Coqo, one file per decision. See [ADR 0001](0001-reco
 | [0013](0013-anchors.md) | Anchors: `coqo-anchors`, exact mapping first, fingerprint relocation after a gap | Accepted |
 | [0014](0014-editor-tools-and-mod-tools.md) | Editor MCP tools: core tools, editor context, and tools from mods | Accepted |
 | [0015](0015-agent-state-and-status.md) | Agent state machine and the agent's status (`set_status`) | Accepted |
+| [0016](0016-anchored-questions.md) | Anchored questions: the question store, the anchors service and the blocking tools | Accepted |

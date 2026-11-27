@@ -398,6 +398,9 @@ impl Transcript {
                     self.push(Entry::Notice { kind, text }, changes);
                 }
             }
+            // Questions and notes pinned to code: the chat's question cards
+            // are #74's. The waiting state already shows as a notice.
+            SessionUpdate::Question(_) => {}
             SessionUpdate::Closed => {
                 self.closed = true;
                 self.running = false;

@@ -1392,6 +1392,7 @@ dependencies = [
  "coqo-acp-host",
  "coqo-agent-claude",
  "coqo-agents",
+ "coqo-anchors",
  "coqo-buffers",
  "coqo-client",
  "coqo-kernel",

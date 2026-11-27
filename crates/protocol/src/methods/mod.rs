@@ -20,12 +20,15 @@
 //! - [`editor`]: `editor/*`, what the user's editor windows show (open tabs,
 //!   selections, visible lines) and reveal requests, for agents.
 //! - [`mcp`]: `mcp/*`, the MCP tools mods contribute, for `coqod mcp`.
+//! - [`questions`]: `questions/*`, questions and notes agents pin to code,
+//!   and the user's answers.
 
 pub mod agents;
 pub mod buffer;
 pub mod editor;
 pub mod fs;
 pub mod mcp;
+pub mod questions;
 pub mod syntax;
 pub mod terminal;
 pub mod workspace;
@@ -100,4 +103,9 @@ pub mod codes {
     /// No MCP tool has the given name (its mod was disabled, say): list the
     /// tools again.
     pub const UNKNOWN_TOOL: i64 = 1401;
+
+    /// No question has the given id, or it is not this agent session's.
+    pub const UNKNOWN_QUESTION: i64 = 1501;
+    /// The question was already answered or dismissed.
+    pub const QUESTION_CLOSED: i64 = 1502;
 }

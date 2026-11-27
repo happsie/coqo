@@ -82,6 +82,69 @@ export type AgentStatus = {
   updatedAt: number;
 };
 
+/** A spot in a text: 0-based line, byte column within the line and byte offset from the start (UTF-8, as in `buffer/*`). */
+export type AnchorPoint = {
+  /** Byte column within the line. */
+  col: number;
+  /** 0-based line. */
+  line: number;
+  /** Byte offset from the start of the text. */
+  offset: number;
+};
+
+/** Where an anchor is now. */
+export type AnchorResolution = {
+  /** The open buffer `range` is in, if the file is open; else `range` is in the file on disk. */
+  buffer?: BufferId | null;
+  /** Its range in the current text; absent when orphaned. */
+  range?: AnchorSpan | null;
+  /** That buffer's revision. */
+  rev?: number | null;
+  /** How well it was found. */
+  status: AnchorStatus;
+};
+
+/** A range of a text, `end` exclusive. */
+export type AnchorSpan = {
+  /** Where it ends (exclusive). */
+  end: AnchorPoint;
+  /** Where it starts. */
+  start: AnchorPoint;
+};
+
+/** How well an anchor was found in the current text. */
+export type AnchorStatus = {
+  kind: "exact";
+} | {
+  kind: "moved";
+} | {
+  /** How sure the match is. */
+  confidence: number;
+  kind: "fuzzy";
+} | {
+  kind: "orphaned";
+};
+
+/** The innermost symbol an anchor was in (tree-sitter, `coqo-syntax`). */
+export type AnchorSymbol = {
+  /** Its kind, as `syntax/*` names kinds (`method`, `function`, …). */
+  kind: string;
+  /** How many lines below the symbol's first line the anchor started. */
+  lineOffset?: number;
+  /** Its containers and name, outermost first: `["shapes", "Circle", "area"]`. */
+  path: Array<string>;
+};
+
+/** Params of [`Answer`]. */
+export type AnswerParams = {
+  /** The question. */
+  id: QuestionId;
+  /** The chosen option's id. Required for a confirmation and info; a decision takes an option, `text`, or both. */
+  option?: string | null;
+  /** A free-text reply (markdown). Required for a clarification. */
+  text?: string | null;
+};
+
 /** Where the agent's usage is billed (from ACP `auth/status`). */
 export type AuthKind = "account" | "api_key" | "gateway" | "external" | "none" | "unknown";
 
@@ -172,12 +235,44 @@ export type ChangesParams3 = {
   buffer: BufferId;
 };
 
+/** Params of the [`Changes`] topic. */
+export type ChangesParams4 = {
+  /** Only this workspace's questions. */
+  workspace?: WorkspaceId | null;
+};
+
 /** Params of [`Close`]. */
 export type CloseParams = {
   /** The buffer. */
   buffer: BufferId;
   /** The replica going away. */
   replica: ReplicaId;
+};
+
+/** Code a question is pinned to, as it was when the agent asked: where, and a fingerprint to find it again (ADR 0013). */
+export type CodeAnchor = {
+  /** Up to 3 lines after. */
+  contextAfter?: Array<string>;
+  /** Up to 3 lines before. */
+  contextBefore?: Array<string>;
+  /** `/`-separated path relative to the root. */
+  path: string;
+  /** The start of the first line, up to the range. */
+  prefix?: string;
+  /** Where the anchored text was. */
+  range: AnchorSpan;
+  /** The buffer revision `range` was taken at; absent for a file read from disk. */
+  rev?: number | null;
+  /** The root `path` is relative to. */
+  root: RootId;
+  /** The rest of the last line after the range. */
+  suffix?: string;
+  /** The enclosing symbol, if the file's language is known. */
+  symbol?: AnchorSymbol | null;
+  /** The anchored text as it was: what to show when it is orphaned. */
+  text: string;
+  /** FNV-1a 64 hash of `text`, in hex. */
+  textHash: string;
 };
 
 /** A cell colour. Indexed colours are resolved by the client's theme. */
@@ -226,6 +321,24 @@ export type Cost = {
   amount: number;
   /** ISO currency code, such as `USD`. */
   currency: string;
+};
+
+/** Params of [`Create`]. */
+export type CreateParams = {
+  /** The code it is about: 1 to [`MAX_ANCHORS`] locations, the files as they are now (open buffers with their unsaved edits). */
+  anchors: Array<NewAnchor>;
+  /** The question or note, in markdown. */
+  body: string;
+  /** What kind of answer it wants; `annotation` for a note. */
+  kind: QuestionKind;
+  /** A decision's options (at least 2). Confirmation and info get theirs from the daemon; the other kinds take none. */
+  options?: Array<NewOption>;
+  /** The asking agent session. */
+  session: string;
+  /** A note's severity (default `info`). */
+  severity?: Severity | null;
+  /** The asking session's workspace. */
+  workspace: WorkspaceId;
 };
 
 /** Params of `sessions/create`. */
@@ -505,6 +618,20 @@ export type ListDirResult = {
   entries: Array<DirEntry>;
 };
 
+/** Params of [`List`]. */
+export type ListParams = {
+  /** Answered and dismissed ones too (most recent first, up to 200). */
+  includeClosed?: boolean;
+  /** …and this file (`/`-separated, relative to `root`; in any root if `root` is omitted). */
+  path?: string | null;
+  /** Only questions with an anchor in this root… */
+  root?: RootId | null;
+  /** Only this session's. */
+  session?: SessionId | null;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
 /** Result of [`List`]: a snapshot of every known workspace. */
 export type ListResult = {
   /** The event-log `seq` this snapshot reflects. Subscribe to [`Events`] with `since` set to it to get every later change. */
@@ -533,6 +660,24 @@ export type Modes = {
   bracketedPaste?: boolean;
   /** The program asked for mouse reports. */
   mouse?: boolean;
+};
+
+/** A code location to pin a question to: whole lines of a file. */
+export type NewAnchor = {
+  /** The lines, 0-based, `end` inclusive. */
+  lines: LineRange;
+  /** `/`-separated path of a file relative to the root. */
+  path: string;
+  /** The root `path` is relative to. */
+  root: RootId;
+};
+
+/** An option as the agent offers it; the daemon numbers them. */
+export type NewOption = {
+  /** More detail, if any. */
+  description?: string | null;
+  /** The button text. */
+  label: string;
 };
 
 /** Params of [`Open`]. Give exactly one of `path` and `id`. */
@@ -817,6 +962,87 @@ export type PublishContextParams = {
   /** The workspace the window shows. */
   workspace: WorkspaceId;
 };
+
+/** A question or note, as the daemon keeps it. */
+export type Question = {
+  /** The code it is about, at least one. */
+  anchors: Array<QuestionAnchor>;
+  /** The answer, once answered. */
+  answer?: QuestionAnswer | null;
+  /** The question or note, in markdown. */
+  body: string;
+  /** Answered or dismissed, Unix milliseconds. */
+  closedAt?: number | null;
+  /** Asked, Unix milliseconds. */
+  createdAt: number;
+  /** Id. */
+  id: QuestionId;
+  /** What kind of answer it wants. */
+  kind: QuestionKind;
+  /** The answers it offers, in order (empty for a clarification or a note). */
+  options?: Array<QuestionOption>;
+  /** The `questions/changes` seq of this state. */
+  seq: number;
+  /** The agent session that asked. */
+  session: SessionId;
+  /** How important a note is (annotations only). */
+  severity?: Severity | null;
+  /** Open, answered or dismissed. */
+  status: QuestionStatus;
+  /** Whether the agent is blocked on it right now (a waiting `ask_question` or `await_answer`). */
+  waiting?: boolean;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** One code location of a question. */
+export type QuestionAnchor = {
+  /** The code as it was asked about. */
+  anchor: CodeAnchor;
+  /** Where it is now. */
+  resolution: AnchorResolution;
+};
+
+/** The user's answer. */
+export type QuestionAnswer = {
+  /** The chosen option's id. */
+  option?: string | null;
+  /** A free-text reply or comment (markdown). */
+  text?: string | null;
+};
+
+/** Identifies a question or note. Assigned by the daemon, never reused. */
+export type QuestionId = number;
+
+/** What kind of answer a question wants (PLAN §7.5), or a note. */
+export type QuestionKind = "decision" | "clarification" | "confirmation" | "info" | "annotation";
+
+/** Result of [`List`]. */
+export type QuestionList = {
+  /** Open questions oldest first, then (with `includeClosed`) closed ones, most recently closed first. */
+  questions: Array<Question>;
+  /** The `questions/changes` seq this list reflects; subscribe with `since: seq` to keep it current. */
+  seq: number;
+};
+
+/** One answer a question offers. */
+export type QuestionOption = {
+  /** More detail, if any. */
+  description?: string | null;
+  /** What [`AnswerParams::option`] names: `1`, `2`, … for a decision, `yes` / `no` for a confirmation, `ok` for info. */
+  id: string;
+  /** The button text. */
+  label: string;
+};
+
+/** Params of [`Get`] and [`Dismiss`]. */
+export type QuestionParams = {
+  /** The question. */
+  id: QuestionId;
+};
+
+/** Where a question is in its life. */
+export type QuestionStatus = "open" | "answered" | "dismissed";
 
 /** A range of a text. `start` is not after `end`; equal is an empty range. */
 export type Range = {
@@ -1179,7 +1405,7 @@ export type SessionUpdate = {
   /** Turn number. */
   turn: number;
   update: "turn_ended";
-} | {
+} | Question | {
   update: "closed";
 };
 
@@ -1212,6 +1438,9 @@ export type SetStatusParams = {
   /** One short line (whitespace is collapsed; cut at [`MAX_STATUS_CHARS`]). Must not be empty. */
   status: string;
 };
+
+/** How important a note is. */
+export type Severity = "info" | "warning";
 
 /** Params of `daemon/shutdown`. */
 export type ShutdownParams = {
@@ -1547,6 +1776,16 @@ export type Usage = {
   usedTokens?: number | null;
 };
 
+/** Params of the [`Watch`] topic. */
+export type WatchParams = {
+  /** The question. */
+  id: QuestionId;
+  /** The watching agent session: the one that asked. */
+  session: string;
+  /** The watching session's workspace. */
+  workspace: WorkspaceId;
+};
+
 /** Result of `coqo/hello`, sent by the server. */
 export type Welcome = {
   /** The server's build id. Equal builds are compatible by definition; different builds are compatible when the protocol versions are. */
@@ -1759,6 +1998,16 @@ export interface Requests {
   "mcp/tools": { params: ToolsParams; result: ToolsResult };
   /** Call a mod-contributed MCP tool for an agent session. (client→server) */
   "mcp/call": { params: CallParams; result: CallResult };
+  /** A workspace's questions and notes, anchors resolved now, with the changes seq. (client→server) */
+  "questions/list": { params: ListParams; result: QuestionList };
+  /** One question, anchors resolved now. (client→server) */
+  "questions/get": { params: QuestionParams; result: Question };
+  /** Answer an open question. (client→server) */
+  "questions/answer": { params: AnswerParams; result: Question };
+  /** Close a question without an answer, or a note. (client→server) */
+  "questions/dismiss": { params: QuestionParams; result: Question };
+  /** An agent asks a question or adds a note pinned to code. (client→server) */
+  "questions/create": { params: CreateParams; result: Question };
 }
 
 /** Notifications: method name → params. */
@@ -1793,6 +2042,10 @@ export interface Topics {
   "editor/reveals": { params: RevealsParams; event: RevealEvent };
   /** The mod-contributed MCP tools changed; list them again (live only). */
   "mcp/toolsChanged": { params: ToolsParams; event: ToolsChangedEvent };
+  /** Questions whose state changed, as their latest state (resumable). */
+  "questions/changes": { params: ChangesParams4; event: Question };
+  /** One question for the agent that asked: its state now, then every change. */
+  "questions/watch": { params: WatchParams; event: Question };
 }
 
 /** Encode one frame: u32 big-endian length, then the JSON payload. */

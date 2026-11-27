@@ -142,6 +142,38 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
             ALTER TABLE agent_sessions ADD COLUMN state_since INTEGER;
         ",
     },
+    Migration {
+        version: 6,
+        name: "questions",
+        // Questions and notes agents pin to code (#73, `questions/*`).
+        // `anchors` is a JSON array of `{ root, anchor, current }`: `anchor`
+        // is the `coqo-anchors` JSON as asked (kept for the original
+        // snippet), `current` the anchor last rebased onto the code (absent
+        // until it moves). `options` and `answer` are JSON. `change_seq`
+        // orders changes for the `questions/changes` topic and only grows.
+        // `workspace` and `session` are ids, not foreign keys, as for
+        // sessions. Timestamps are Unix milliseconds.
+        sql: "
+            CREATE TABLE questions (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace  TEXT    NOT NULL,
+                session    TEXT    NOT NULL,
+                kind       TEXT    NOT NULL,
+                severity   TEXT,
+                body       TEXT    NOT NULL,
+                options    TEXT    NOT NULL,
+                anchors    TEXT    NOT NULL,
+                status     TEXT    NOT NULL,
+                answer     TEXT,
+                created_at INTEGER NOT NULL,
+                closed_at  INTEGER,
+                change_seq INTEGER NOT NULL
+            );
+            CREATE INDEX questions_workspace ON questions (workspace, status, id);
+            CREATE INDEX questions_session ON questions (session, status);
+            CREATE UNIQUE INDEX questions_change_seq ON questions (change_seq);
+        ",
+    },
 ];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.

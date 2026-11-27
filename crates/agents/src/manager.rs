@@ -36,6 +36,7 @@ use coqo_protocol::methods::agents::{
     ProviderInfo, SessionId, SessionInfo, SessionList, SessionSnapshot, SessionUpdate,
     SetStatusParams, StatusProgress, StopReason, ToolCallUpdate,
 };
+use coqo_protocol::methods::questions::Question;
 use coqo_protocol::{ErrorObject, EventFeed, Sequenced};
 use coqo_storage::Timestamp;
 use tokio::sync::{broadcast, oneshot};
@@ -977,6 +978,20 @@ impl SessionManager {
         }
         inner.report(&s, &mut st, state, reason)?;
         Ok(st.info().clone())
+    }
+
+    /// Records a question or note the agent pinned to code (`questions/*`)
+    /// in the session's transcript: when it is asked, and again when it is
+    /// answered or dismissed. Nothing is recorded for a closed session.
+    pub fn record_question(&self, id: &SessionId, question: Question) -> Result<()> {
+        let inner = &self.inner;
+        let s = inner.session(id)?;
+        let mut st = lock(&s.state);
+        if st.info().closed {
+            return Ok(());
+        }
+        inner.record(&s, &mut st, SessionUpdate::Question(Box::new(question)))?;
+        Ok(())
     }
 
     /// Workspace `workspace`'s permission rules, oldest first.
