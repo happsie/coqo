@@ -22,6 +22,7 @@ use coqo_protocol::Router;
 
 use crate::buffers::{self, BufferConfig, BufferService};
 use crate::daemon::DaemonContext;
+use crate::editor::{self, EditorService};
 use crate::syntax::{self, SyntaxService};
 use crate::workspace::{self, WorkspaceService};
 use crate::{agents, methods, terminal};
@@ -34,6 +35,7 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     // Services, one line each.
     let workspaces = Arc::new(WorkspaceService::open(ctx.data.clone())?);
     let router = workspace::register(router, Arc::clone(&workspaces));
+    let router = editor::register(router, EditorService::new(Arc::clone(&workspaces)));
     let router = agents::register(router, agents::open(ctx)?);
     let buffers = BufferService::new(workspaces, ctx.data.clone(), BufferConfig::default());
     ctx.agent_fs

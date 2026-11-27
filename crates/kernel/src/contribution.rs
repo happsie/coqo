@@ -231,6 +231,7 @@ impl ContributionRegistry {
         self.declare::<points::LspServers>()?;
         self.declare::<points::DebugAdapters>()?;
         self.declare::<points::McpTools>()?;
+        self.declare::<points::McpToolHandlers>()?;
         self.declare::<points::AgentProviders>()?;
         self.declare::<points::SlashCommands>()?;
         self.declare::<points::ContextProviders>()?;

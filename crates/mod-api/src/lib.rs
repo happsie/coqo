@@ -66,7 +66,10 @@ pub use id::{
     ContributionId, ContributionPointId, IdError, ProviderId, ServiceId, ServiceRef, ServiceVersion,
 };
 pub use manifest::Manifest;
-pub use module::{CommandHandler, Mod, ModContext, ModHost, ResolvedService};
+pub use module::{
+    CommandHandler, McpToolCall, McpToolHandler, McpToolOutput, Mod, ModContext, ModHost,
+    ResolvedService,
+};
 pub use points::ContributionPoint;
 pub use service::Service;
 

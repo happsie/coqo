@@ -15,7 +15,7 @@ use rmcp::service::{NotificationContext, RequestContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 
 use crate::SERVER_NAME;
-use crate::registry::{ToolContext, ToolDefinition, ToolRegistry};
+use crate::registry::{ToolContext, ToolDefinition, ToolError, ToolRegistry};
 
 const INSTRUCTIONS: &str = "Coqo editor tools. They act on the Coqo workspace this agent session \
      belongs to, through the Coqo daemon, and see what the editor sees.";
@@ -118,8 +118,14 @@ impl ServerHandler for EditorServer {
             }));
         }
         let args = request.arguments.unwrap_or_default();
+        let definition = tool.definition();
+        let call = async {
+            crate::schema::validate_arguments(&definition.input_schema, &args)
+                .map_err(ToolError::InvalidArguments)?;
+            tool.call(&cx, args).await
+        };
         let result = tokio::select! {
-            result = tool.call(&cx, args) => result,
+            result = call => result,
             () = context.ct.cancelled() => {
                 return Err(ErrorData::internal_error("cancelled", None));
             }

@@ -9,9 +9,12 @@ use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
 use coqo_mod_api::manifest::{ActivationEvent, Tier};
-use coqo_mod_api::points::CommandHandlers;
+use coqo_mod_api::points::{CommandHandlers, McpToolHandlers};
 use coqo_mod_api::serde_json::Value;
-use coqo_mod_api::{BoxFuture, CommandHandler, Manifest, Mod, ModError, api_version, semver};
+use coqo_mod_api::{
+    BoxFuture, CommandHandler, Manifest, McpToolCall, McpToolHandler, McpToolOutput, Mod, ModError,
+    api_version, semver,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
@@ -467,6 +470,41 @@ impl ModManager {
             }
         };
         guarded(|| format!("command `{id}`"), || handler.run(args)).await
+    }
+
+    /// Calls MCP tool `name` through its registered handler.
+    ///
+    /// If no handler is registered, first activates the mods with the
+    /// `mcp_tool:<name>` activation event and waits for mods that are still
+    /// activating. A panicking handler returns [`ModError::Failed`].
+    pub async fn call_mcp_tool(
+        &self,
+        name: &ContributionId,
+        call: McpToolCall,
+    ) -> Result<McpToolOutput, ModError> {
+        let handler = match self.mcp_tool_handler(name)? {
+            Some(handler) => handler,
+            None => {
+                self.fire(&ActivationEvent::McpTool(name.clone())).await;
+                for slot in self.slots() {
+                    slot.settled().await;
+                }
+                self.mcp_tool_handler(name)?
+                    .ok_or_else(|| ModError::failed(format!("no handler for MCP tool `{name}`")))?
+            }
+        };
+        guarded(|| format!("MCP tool `{name}`"), || handler.call(call)).await
+    }
+
+    fn mcp_tool_handler(
+        &self,
+        name: &ContributionId,
+    ) -> Result<Option<Arc<dyn McpToolHandler>>, ModError> {
+        Ok(self
+            .host
+            .contributions()
+            .get_of::<McpToolHandlers>(name)?
+            .map(|c| Arc::clone(&*c.value)))
     }
 
     fn handler(&self, id: &ContributionId) -> Result<Option<Arc<dyn CommandHandler>>, ModError> {

@@ -38,7 +38,7 @@ use crate::erased::AnyArc;
 use crate::error::ModError;
 use crate::id::{ContributionId, ContributionPointId, ProviderId, ServiceId, ServiceRef};
 use crate::module::{ModContext, ModHost, ResolvedService};
-use crate::points::{CommandHandlers, ContributionPoint};
+use crate::points::{CommandHandlers, ContributionPoint, McpToolHandlers};
 
 /// One contribution, as [`TestHost::contributions`] returns it.
 #[derive(Debug, Clone)]
@@ -164,6 +164,27 @@ impl TestHost {
             .map(|c| Arc::clone(&c.value))
             .ok_or(ModError::UnknownCommand(id))?;
         block_on(handler.run(args))
+    }
+
+    /// Calls MCP tool `name` through its registered handler, as an agent
+    /// session `s-test` in workspace `ws-test`, and waits for it.
+    pub fn call_mcp_tool(
+        &self,
+        name: &str,
+        arguments: serde_json::Map<String, Value>,
+    ) -> Result<crate::McpToolOutput, ModError> {
+        let id: ContributionId = name.parse()?;
+        let handler = self
+            .contributions::<McpToolHandlers>()
+            .into_iter()
+            .find(|c| c.id == id)
+            .map(|c| Arc::clone(&c.value))
+            .ok_or_else(|| ModError::failed(format!("no handler for MCP tool `{id}`")))?;
+        block_on(handler.call(crate::McpToolCall {
+            workspace: "ws-test".into(),
+            session: "s-test".into(),
+            arguments,
+        }))
     }
 
     /// Removes everything `mod_id` registered, as a host does after

@@ -24,12 +24,12 @@
 
 use std::sync::Arc;
 
-use crate::CommandHandler;
 use crate::contrib::{
     AgentProviderInfo, AlertSource, Command, ContextProvider, DebugAdapter, Keybinding, Language,
     LspServer, McpTool, MenuItem, Setting, SlashCommand, StatusItem, Theme, View, ViewLocation,
 };
 use crate::id::ContributionPointId;
+use crate::{CommandHandler, McpToolHandler};
 
 /// A typed contribution point.
 pub trait ContributionPoint: 'static {
@@ -106,6 +106,10 @@ points! {
     DebugAdapters = "debug_adapters" => DebugAdapter;
     /// MCP tools for agents: `mcp_tools` takes [`McpTool`].
     McpTools = "mcp_tools" => McpTool;
+    /// MCP tool handlers of in-process mods, keyed by tool name:
+    /// `mcp_tool_handlers` takes `Arc<dyn McpToolHandler>`. WASM and process
+    /// hosts register a handler that forwards to the mod.
+    McpToolHandlers = "mcp_tool_handlers" => Arc<dyn McpToolHandler>;
     /// Agent providers: `agent_providers` takes [`AgentProviderInfo`].
     AgentProviders = "agent_providers" => AgentProviderInfo;
     /// Chat slash commands: `slash_commands` takes [`SlashCommand`].

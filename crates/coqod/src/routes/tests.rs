@@ -40,6 +40,8 @@ const SESSION_ROUTES: &[(&str, AccessKind)] = &[
     ("buffer/close", AccessKind::Check),
     ("buffer/edit", AccessKind::Check),
     ("buffer/open", AccessKind::Workspace),
+    ("editor/getContext", AccessKind::Workspace),
+    ("editor/reveal", AccessKind::Workspace),
     ("fs/changes", AccessKind::Workspace),
     ("fs/list", AccessKind::Workspace),
     ("fs/read", AccessKind::Workspace),
@@ -197,6 +199,12 @@ fn probes(
         ("fs/stat", RouteKind::Method, path(file)),
         ("fs/read", RouteKind::Method, path(file)),
         ("buffer/open", RouteKind::Method, path(file)),
+        (
+            "editor/getContext",
+            RouteKind::Method,
+            json!({ "workspace": ws.id }),
+        ),
+        ("editor/reveal", RouteKind::Method, path(file)),
         (
             "buffer/close",
             RouteKind::Method,

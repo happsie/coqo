@@ -262,7 +262,10 @@ async fn initialize_list_and_call() {
         (json!({ "path": "/etc/passwd" }), "outside the workspace"),
         (json!({ "path": "../b/x" }), "outside"),
         (json!({ "path": "logo.png" }), "not a UTF-8 text file"),
-        (json!({ "path": "x", "root": "zero" }), "root id"),
+        (
+            json!({ "path": "x", "root": "zero" }),
+            "`root` must be an integer",
+        ),
     ] {
         let r = agent.call("read_file", args.clone()).await;
         assert_eq!(r["result"]["isError"], true, "{args}: {r}");

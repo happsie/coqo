@@ -14,7 +14,10 @@
 //!   (the daemon connection, the workspace and session, progress
 //!   notifications). Adding or removing a tool sends
 //!   `notifications/tools/list_changed`.
-//! - [`tools`]: the core tools ([`tools::core`]).
+//! - [`schema`]: arguments are checked against the tool's input schema
+//!   before it runs; a mismatch is an `invalid arguments` tool error.
+//! - [`tools`]: the core tools ([`tools::core`]) and the proxies of the
+//!   tools mods contribute in the daemon ([`tools::daemon`]).
 //! - [`bridge`]: the MCP server over any reader and writer
 //!   ([`bridge::serve`]) and the `coqod mcp` entry point
 //!   ([`bridge::run_stdio`]).
@@ -24,6 +27,7 @@
 
 pub mod bridge;
 pub mod registry;
+pub mod schema;
 mod server;
 pub mod tools;
 

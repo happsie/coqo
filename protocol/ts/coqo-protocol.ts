@@ -39,6 +39,7 @@ export const ErrorCodes = {
   UNKNOWN_ROOT: 1002,
   UNKNOWN_SESSION: 1101,
   UNKNOWN_SUBSCRIPTION: -32004,
+  UNKNOWN_TOOL: 1401,
   UNKNOWN_WORKSPACE: 1001,
   UNSUPPORTED: 1106,
   UNSUPPORTED_ENCODING: 1202,
@@ -115,6 +116,28 @@ export type ByteRange = {
   end: number;
   /** First byte. */
   start: number;
+};
+
+/** Params of [`Call`]. */
+export type CallParams = {
+  /** Its arguments. */
+  arguments?: Record<string, unknown>;
+  /** The tool, as [`Tools`] names it. */
+  name: string;
+  /** The calling agent session. */
+  session: string;
+  /** The calling session's workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Result of [`Call`]: what the agent gets back. */
+export type CallResult = {
+  /** Whether the tool failed (invalid arguments, or the mod's error). The model sees `text` and can correct itself. */
+  isError?: boolean;
+  /** The result as JSON, if it has one. */
+  structured?: unknown;
+  /** Text for the model: the result, or what went wrong. */
+  text: string;
 };
 
 /** Params of the [`Changes`] topic. */
@@ -279,6 +302,30 @@ export type EditRejectedParams = {
   replica: ReplicaId;
 };
 
+/** Result of [`GetContext`]. */
+export type EditorContext = {
+  /** The windows that show it: the focused one first, then the most recently updated. Empty when no UI shows the workspace. */
+  windows: Array<WindowState>;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** A file tab open in a window. */
+export type EditorTab = {
+  /** Whether this is the tab the user works in: the active tab of the focused pane. At most one per window. */
+  active?: boolean;
+  /** Whether it has unsaved edits. */
+  dirty?: boolean;
+  /** `/`-separated path relative to the root. */
+  path: string;
+  /** The root the path is relative to. */
+  root: RootId;
+  /** Its selections and cursors, the primary one first. Empty if the tab shows no editor (not loaded yet, or a binary file). */
+  selections?: Array<Selection>;
+  /** The lines on screen, if the tab is visible. */
+  visible?: LineRange | null;
+};
+
 /** How a frame's payload is encoded.  JSON is mandatory and is always used for the handshake. MessagePack is optional and is switched on for the rest of the connection when both sides list it in the handshake; it is intended for hot paths (buffer ops, trace streams). */
 export type Encoding = "json" | "msgpack";
 
@@ -379,6 +426,12 @@ export type FsChanges = {
   root: RootId;
 };
 
+/** Params of [`GetContext`]. */
+export type GetContextParams = {
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
 /** Params of `coqo/hello`, sent by the client. */
 export type Hello = {
   /** The client's build id (version + commit), shown in errors and logs. */
@@ -423,6 +476,14 @@ export type InputParams = {
 
 /** The file's line-ending convention, detected from its first line break.  The buffer text keeps line breaks exactly as they are on disk (mixed files round-trip unchanged); this tells the editor which break to insert. */
 export type LineEnding = "lf" | "crlf";
+
+/** Lines shown in a tab's viewport: 0-based, `end` inclusive. */
+export type LineRange = {
+  /** Last visible line. */
+  end: number;
+  /** First visible line. */
+  start: number;
+};
 
 /** Result of [`ListDir`]. */
 export type ListDirResult = {
@@ -635,6 +696,14 @@ export type PlanEntryStatus = "pending" | "in_progress" | "completed";
 /** Priority of a plan entry. */
 export type PlanPriority = "high" | "medium" | "low";
 
+/** A place in a text: 0-based line and character (Unicode scalar values). */
+export type Position = {
+  /** 0-based character within the line. */
+  character: number;
+  /** 0-based line. */
+  line: number;
+};
+
 /** Params of `sessions/prompt`. */
 export type PromptParams = {
   /** The prompt: text, `@`-mentions as resource links, embedded selections. */
@@ -725,6 +794,24 @@ export type ProviderStatus = {
   signIn?: ProviderAction | null;
 };
 
+/** Params of [`PublishContext`]. */
+export type PublishContextParams = {
+  /** Its context; `null` when the window closes or stops showing the workspace. */
+  context?: WindowContext | null;
+  /** The window, unique within the publishing connection. */
+  window: string;
+  /** The workspace the window shows. */
+  workspace: WorkspaceId;
+};
+
+/** A range of a text. `start` is not after `end`; equal is an empty range. */
+export type Range = {
+  /** Where it ends (exclusive). */
+  end: Position;
+  /** Where it starts. */
+  start: Position;
+};
+
 /** Params of [`ReadFile`]. */
 export type ReadParams = {
   /** Fail with [`FILE_TOO_LARGE`](super::codes::FILE_TOO_LARGE) if the file is larger. Default [`DEFAULT_READ_LIMIT`], at most [`MAX_READ_LIMIT`]. */
@@ -794,6 +881,44 @@ export type ResumeGap = {
   needed: number;
   /** The oldest sequence number still available (`head + 1` if none). */
   oldest: number;
+};
+
+/** One event of the [`Reveals`] topic: open `path` and select `range`. */
+export type RevealEvent = {
+  /** `/`-separated path relative to the root. */
+  path: string;
+  /** What to show and select; the top of the file if omitted. */
+  range?: Range | null;
+  /** The root the path is relative to. */
+  root: RootId;
+  /** The agent session that asked, if an agent did. */
+  session?: string | null;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Params of [`Reveal`]. */
+export type RevealParams = {
+  /** `/`-separated path of a file relative to the root. */
+  path: string;
+  /** What to show and select; the top of the file if omitted. */
+  range?: Range | null;
+  /** The root the path is relative to. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Result of [`Reveal`]. */
+export type RevealResult = {
+  /** Whether a UI window shows the workspace, so someone will see it. */
+  delivered: boolean;
+};
+
+/** Params of the [`Reveals`] topic. */
+export type RevealsParams = {
+  /** Only reveals in this workspace; omit for every workspace. */
+  workspace?: WorkspaceId | null;
 };
 
 /** Params of [`RevertChange`]. */
@@ -879,6 +1004,16 @@ export type ScrollParams = {
 /** How to move a terminal's viewport through its scrollback. */
 export type ScrollTo = "pageUp" | "pageDown" | "top" | "bottom" | {
   lines: number;
+};
+
+/** A selection or cursor in a tab. */
+export type Selection = {
+  /** The selected range; empty for a cursor. */
+  range: Range;
+  /** The selected text, for a non-empty selection, at most [`MAX_SELECTION_TEXT`] bytes. */
+  text?: string | null;
+  /** Whether `text` was cut short. */
+  truncated?: boolean;
 };
 
 /** Identifies an agent session. Generated by the daemon; stable forever. */
@@ -1314,8 +1449,42 @@ export type ToolCallUpdate = {
   title?: string | null;
 };
 
+/** A mod-contributed tool. */
+export type ToolInfo = {
+  /** What it does, for the agent. */
+  description: string;
+  /** JSON Schema of the arguments (an object schema). */
+  inputSchema: Record<string, unknown>;
+  /** The mod that contributes it. */
+  mod: string;
+  /** The name agents see: 1 to 64 of `A-Z a-z 0-9 _ -`. */
+  name: string;
+  /** Whether it only reads. */
+  readOnly?: boolean;
+  /** Display name. */
+  title?: string | null;
+};
+
 /** What kind of tool a call is, for icons and grouping (ACP `ToolKind`). */
 export type ToolKind = "read" | "edit" | "delete" | "move" | "search" | "execute" | "think" | "fetch" | "switch_mode" | "other";
+
+/** One event of [`ToolsChanged`]: the set of tools changed; list again. */
+export type ToolsChangedEvent = {
+  /** How many times the set changed since the daemon started. */
+  generation: number;
+};
+
+/** Params of [`Tools`] and the [`ToolsChanged`] topic. */
+export type ToolsParams = {
+  /** The workspace the tools are for. */
+  workspace: WorkspaceId;
+};
+
+/** Result of [`Tools`]. */
+export type ToolsResult = {
+  /** The tools, by name. */
+  tools: Array<ToolInfo>;
+};
 
 /** Params of `coqo/unsubscribe`. */
 export type UnsubscribeParams = {
@@ -1351,6 +1520,26 @@ export type Welcome = {
   protocol: ProtocolVersion;
   /** What the server is, e.g. `coqod`. */
   server: string;
+};
+
+/** One window's editor context for the workspace it shows. */
+export type WindowContext = {
+  /** Whether the window has the keyboard focus. */
+  focused?: boolean;
+  /** Its file tabs, in tab order. */
+  tabs: Array<EditorTab>;
+};
+
+/** A window's context as the daemon keeps it. */
+export type WindowState = {
+  /** Whether the window has the keyboard focus. */
+  focused?: boolean;
+  /** Its file tabs, in tab order. */
+  tabs: Array<EditorTab>;
+  /** When it last published, in milliseconds since the Unix epoch. */
+  updatedAtMs: number;
+  /** The window, as its UI named it. */
+  window: string;
 };
 
 /** One event of the [`Events`] topic. */
@@ -1519,6 +1708,14 @@ export interface Requests {
   "terminal/scroll": { params: ScrollParams; result: null };
   /** Kill a terminal's process group and forget it. True if it existed. (client→server) */
   "terminal/close": { params: TerminalRef; result: boolean };
+  /** What the windows showing a workspace have open, focused window first. (client→server) */
+  "editor/getContext": { params: GetContextParams; result: EditorContext };
+  /** Ask the UI to open a file and select a range. (client→server) */
+  "editor/reveal": { params: RevealParams; result: RevealResult };
+  /** The MCP tools mods contribute, as the coqo-editor bridge offers them. (client→server) */
+  "mcp/tools": { params: ToolsParams; result: ToolsResult };
+  /** Call a mod-contributed MCP tool for an agent session. (client→server) */
+  "mcp/call": { params: CallParams; result: CallResult };
 }
 
 /** Notifications: method name → params. */
@@ -1531,6 +1728,8 @@ export interface Notifications {
   "buffer/edit": { params: EditParams };
   /** A buffer/edit the daemon could not apply; reopen the buffer. (server→client) */
   "buffer/editRejected": { params: EditRejectedParams };
+  /** A UI window's editor context (tabs, selections, visible lines) for its workspace. (client→server) */
+  "editor/context": { params: PublishContextParams };
 }
 
 /** Topics (`coqo/subscribe`): topic name → params and event. */
@@ -1547,6 +1746,10 @@ export interface Topics {
   "buffer/changes": { params: ChangesParams3; event: BufferChange };
   /** A terminal's changed rows (batched at ~60 Hz), title, cwd and exit. */
   "terminal/output": { params: TerminalRef; event: TerminalEvent };
+  /** Reveal requests for UIs to act on (live only). */
+  "editor/reveals": { params: RevealsParams; event: RevealEvent };
+  /** The mod-contributed MCP tools changed; list them again (live only). */
+  "mcp/toolsChanged": { params: ToolsParams; event: ToolsChangedEvent };
 }
 
 /** Encode one frame: u32 big-endian length, then the JSON payload. */
