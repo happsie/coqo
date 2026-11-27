@@ -39,7 +39,7 @@ use coqo_ui::{
 
 use crate::{
     daemon::Daemon,
-    files::preview::{self, FilePreview},
+    files::editor::{self, FileEditor},
     workspace::Workspaces,
 };
 
@@ -245,13 +245,13 @@ pub fn open_location(
         eprintln!("coqo: {} is outside the workspace", location.path);
         return;
     };
-    let key = preview::key(&workspace.id, root, &path);
-    if let Some(id) = dock.read(cx).find_tab(preview::KIND, &key, cx) {
+    let key = editor::key(&workspace.id, root, &path);
+    if let Some(id) = dock.read(cx).find_tab(editor::KIND, &key, cx) {
         dock.update(cx, |dock, cx| dock.activate_tab(id, window, cx));
         return;
     }
     let id = workspace.id.clone();
-    let tab = cx.new(|cx| FilePreview::new(workspaces.as_ref(), id, root, path, cx));
+    let tab = cx.new(|cx| FileEditor::new(id, root, path, window, cx));
     dock.update(cx, |dock, cx| {
         dock.open_tab(AnyTab::new(tab), window, cx);
     });

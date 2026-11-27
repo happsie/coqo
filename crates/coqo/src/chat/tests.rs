@@ -45,7 +45,7 @@ use super::{
 };
 use crate::{
     daemon::{self, DaemonConfig},
-    files::preview,
+    files::editor,
     shell::{DEFAULT_WORKSPACE, Shell},
     workspace::{self, Workspaces},
 };
@@ -407,11 +407,11 @@ fn tool_calls_show_their_diff_and_open_their_files() {
             .unwrap()
             .clone()
     });
-    let key = preview::key(&ws.id, ws.roots[0].id, "src/main.rs");
+    let key = editor::key(&ws.id, ws.roots[0].id, "src/main.rs");
     let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
     ui.wait_for("the file tab", |ui| {
         ui.cx
-            .read(|cx| dock.read(cx).find_tab(preview::KIND, &key, cx).is_some())
+            .read(|cx| dock.read(cx).find_tab(editor::KIND, &key, cx).is_some())
     });
 }
 

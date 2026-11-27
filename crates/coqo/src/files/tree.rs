@@ -30,7 +30,10 @@ use coqo_ui::{
     widgets::{Icon, TestSupportExt as _, icon, kbd, raised, section_label},
 };
 
-use super::{Collapse, Confirm, Expand, SelectNext, SelectPrev, preview::FilePreview};
+use super::{
+    Collapse, Confirm, Expand, SelectNext, SelectPrev,
+    editor::{self, FileEditor},
+};
 use crate::{
     daemon::{Daemon, DaemonError, DaemonEvent},
     welcome::shortcut,
@@ -496,11 +499,16 @@ impl FileTree {
             return;
         };
         let (workspace, root, path) = (workspace.id.clone(), row.root, row.path.clone());
-        let workspaces = self.workspaces.clone();
-        let preview: Entity<FilePreview> =
-            cx.new(|cx| FilePreview::new(workspaces.as_ref(), workspace, root, path, cx));
+        // Show an open tab instead of opening the buffer a second time.
+        let key = editor::key(&workspace, root, &path);
+        if let Some(open) = dock.read(cx).find_tab(editor::KIND, &key, cx) {
+            dock.update(cx, |dock, cx| dock.activate_tab(open, window, cx));
+            return;
+        }
+        let tab: Entity<FileEditor> =
+            cx.new(|cx| FileEditor::new(workspace, root, path, window, cx));
         dock.update(cx, |dock, cx| {
-            dock.open_tab(AnyTab::new(preview), window, cx);
+            dock.open_tab(AnyTab::new(tab), window, cx);
         });
     }
 

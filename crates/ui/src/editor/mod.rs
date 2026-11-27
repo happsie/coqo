@@ -16,20 +16,59 @@
 //!   actions are caught in the capture phase, before they reach the editor's
 //!   own history. Without a handler the built-in history is used; a remote edit
 //!   clears it, so it can never revert someone else's edit.
+//! - **Change highlights:** [`CodeEditor::highlight_changes`] tints ranges and
+//!   marks their lines in the gutter, so the user sees what an agent changed.
+//! - **Languages:** [`language_for_path`] picks the bundled tree-sitter grammar
+//!   for a file. Highlighting, folding, indent guides, line numbers and find
+//!   (`Ctrl F` / `Cmd F`) come from gpui-component.
 //!
 //! Offsets are UTF-8 byte offsets, as in the buffer protocol.
 
 use std::ops::Range;
 
-use gpui_kit::component::input::{Editor, EditorState, InputEditsEvent, Redo, Undo};
-use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Window, div,
+use gpui_kit::component::input::{
+    Editor, EditorState, GutterDecoration, GutterDecorationCollection, GutterStyle,
+    InputEditsEvent, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, Redo, Undo,
 };
+use gpui_kit::{
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Window, div, px,
+};
+
+use crate::theme::ActiveTokens as _;
+
+/// Code font size and line height, as on design board 2.
+const CODE_TEXT_SIZE: f32 = 13.;
+const CODE_LINE_HEIGHT: f32 = 23.;
+/// Space between the line numbers and the code.
+const GUTTER_GAP: f32 = 20.;
+/// Opacity of the tint behind highlighted changes.
+const CHANGE_TINT: f32 = 0.16;
 
 /// One edit: a UTF-8 byte range and the text that replaces it.
 pub type TextEdit = (Range<usize>, String);
+
+/// The tree-sitter language for a file path (by extension), if Coqo bundles a
+/// grammar for it. Other files are edited as plain text.
+pub fn language_for_path(path: &str) -> Option<&'static str> {
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    let (_, ext) = name.rsplit_once('.')?;
+    let language = match ext {
+        "rs" => "rust",
+        "ts" | "mts" | "cts" => "typescript",
+        "tsx" => "tsx",
+        "js" | "mjs" | "cjs" | "jsx" => "javascript",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "json" | "jsonc" => "json",
+        "toml" => "toml",
+        "md" | "markdown" | "mdx" => "markdown",
+        "yml" | "yaml" => "yaml",
+        _ => return None,
+    };
+    Some(language)
+}
 
 /// Who made an edit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +105,8 @@ pub type HistoryHandler =
 pub struct CodeEditor {
     state: Entity<EditorState>,
     history: Option<HistoryHandler>,
+    /// Change highlights (tints and gutter marks), created on first use.
+    highlights: Option<(RangeDecorationCollection, GutterDecorationCollection)>,
     _edits: Subscription,
 }
 
@@ -86,6 +127,8 @@ impl CodeEditor {
         let state = cx.new(|cx| {
             EditorState::new(window, cx)
                 .line_number(true)
+                .indent_guides(true)
+                .soft_wrap(false)
                 .default_value(text)
         });
         let edits = cx.subscribe(&state, |_, _, event: &InputEditsEvent, cx| {
@@ -105,6 +148,7 @@ impl CodeEditor {
         Self {
             state,
             history: None,
+            highlights: None,
             _edits: edits,
         }
     }
@@ -112,6 +156,24 @@ impl CodeEditor {
     /// The whole text.
     pub fn text(&self, cx: &App) -> String {
         self.state.read(cx).text().to_string()
+    }
+
+    /// Highlight `language` (a name from [`language_for_path`]); `None` is
+    /// plain text.
+    pub fn set_language(&mut self, language: Option<&str>, cx: &mut Context<Self>) {
+        let language = language.unwrap_or("text").to_owned();
+        self.state
+            .update(cx, |state, cx| state.set_highlighter(language, cx));
+    }
+
+    /// The highlighted language, `"text"` for none.
+    pub fn language(&self, cx: &App) -> SharedString {
+        self.state.read(cx).language_name()
+    }
+
+    /// Put the keyboard focus in the editor.
+    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// Every selection as a byte range, the primary one first. An empty range
@@ -167,6 +229,85 @@ impl CodeEditor {
         });
     }
 
+    /// Tint `ranges` (UTF-8 byte ranges of the current text) in `color` and
+    /// mark their lines in the gutter, on top of earlier highlights. The
+    /// ranges follow later edits. An empty range only marks the gutter (where
+    /// text was deleted).
+    pub fn highlight_changes(
+        &mut self,
+        ranges: &[Range<usize>],
+        color: Hsla,
+        cx: &mut Context<Self>,
+    ) {
+        if ranges.is_empty() {
+            return;
+        }
+        let fills: Vec<RangeDecoration> = ranges
+            .iter()
+            .filter(|range| !range.is_empty())
+            .map(|range| {
+                RangeDecoration::new(range.clone())
+                    .with_style(RangeDecorationStyle::Fill)
+                    .with_color(color.opacity(CHANGE_TINT))
+            })
+            .collect();
+        let marks: Vec<GutterDecoration> = ranges
+            .iter()
+            .map(|range| GutterDecoration::new(range.clone()).with_color(color))
+            .collect();
+        match &self.highlights {
+            Some((tints, gutter)) => {
+                tints.append(fills, cx);
+                gutter.append(marks, cx);
+            }
+            None => {
+                let collections = self.state.update(cx, |state, cx| {
+                    (
+                        state.create_range_decorations_collection(fills, cx),
+                        state.create_gutter_decorations_collection(marks, cx),
+                    )
+                });
+                self.highlights = Some(collections);
+            }
+        }
+    }
+
+    /// Remove every change highlight.
+    pub fn clear_change_highlights(&mut self, cx: &mut Context<Self>) {
+        if let Some((tints, gutter)) = self.highlights.take() {
+            tints.dispose(cx);
+            gutter.dispose(cx);
+        }
+    }
+
+    /// The tinted ranges of [`highlight_changes`](Self::highlight_changes), in
+    /// the current text.
+    pub fn change_highlights(&self, cx: &App) -> Vec<Range<usize>> {
+        self.highlights
+            .as_ref()
+            .map(|(tints, _)| tints.get_ranges(cx))
+            .unwrap_or_default()
+    }
+
+    /// Type `text` at every cursor, as the keyboard does. For tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn type_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::EntityInputHandler as _;
+        self.state.update(cx, |state, cx| {
+            state.replace_text_in_range(None, text, window, cx)
+        });
+    }
+
+    /// Start (or continue) an IME composition with `text` marked, as an input
+    /// method does. [`type_text`](Self::type_text) commits it. For tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn compose(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::EntityInputHandler as _;
+        self.state.update(cx, |state, cx| {
+            state.replace_and_mark_text_in_range(None, text, None, window, cx)
+        });
+    }
+
     /// Route `Undo` and `Redo` to `handler` instead of the editor's own history.
     pub fn set_history_handler(
         &mut self,
@@ -208,6 +349,11 @@ impl Focusable for CodeEditor {
 
 impl Render for CodeEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = &cx.tokens().palette;
+        let gutter = GutterStyle::default()
+            .with_gap(px(GUTTER_GAP))
+            .with_line_number_color(p.text_subtle.hsla())
+            .with_active_line_number_color(p.text_muted.hsla());
         div()
             .size_full()
             .capture_action(cx.listener(|this, _: &Undo, window, cx| {
@@ -216,7 +362,14 @@ impl Render for CodeEditor {
             .capture_action(cx.listener(|this, _: &Redo, window, cx| {
                 this.on_history(HistoryAction::Redo, window, cx)
             }))
-            .child(Editor::new(&self.state).h_full())
+            .child(
+                Editor::new(&self.state)
+                    .h_full()
+                    .bordered(false)
+                    .gutter_style(gutter)
+                    .text_size(px(CODE_TEXT_SIZE))
+                    .line_height(px(CODE_LINE_HEIGHT)),
+            )
     }
 }
 

@@ -419,6 +419,82 @@ fn sync_component_theme(tokens: &Tokens, cx: &mut App) {
     theme.secondary = p.surface.hsla();
     theme.secondary_foreground = p.text.hsla();
     theme.ring = p.blue.hsla();
+    if let Some(highlight) = highlight_theme(tokens) {
+        theme.highlight_theme = std::sync::Arc::new(highlight);
+    }
+}
+
+/// The code editor's colours: the editor surface and the tree-sitter syntax
+/// classes, as on design board 2 (keywords lavender, types bolt, functions
+/// blue, strings green, numbers peach, comments subtle italic).
+fn highlight_theme(tokens: &Tokens) -> Option<gpui_kit::component::highlighter::HighlightTheme> {
+    let p = &tokens.palette;
+    let hex = |c: Rgb| format!("#{:06x}", c.0);
+    let color = |c: Rgb| serde_json::json!({ "color": hex(c) });
+    let italic = |c: Rgb| serde_json::json!({ "color": hex(c), "font_style": "italic" });
+    let bold = |c: Rgb| serde_json::json!({ "color": hex(c), "font_weight": 600 });
+    let appearance = match tokens.appearance {
+        Appearance::Light => "light",
+        _ => "dark",
+    };
+    let syntax: serde_json::Map<String, serde_json::Value> = [
+        ("attribute", color(p.sand)),
+        ("boolean", color(p.peach)),
+        ("comment", italic(p.text_subtle)),
+        ("comment.doc", italic(p.text_subtle)),
+        ("constant", color(p.peach)),
+        ("constructor", color(p.bolt)),
+        ("embedded", color(p.text)),
+        ("emphasis", serde_json::json!({ "font_style": "italic" })),
+        ("emphasis.strong", serde_json::json!({ "font_weight": 700 })),
+        ("enum", color(p.bolt)),
+        ("function", color(p.blue)),
+        ("keyword", color(p.lavender)),
+        ("label", color(p.sand)),
+        ("link_text", color(p.blue)),
+        ("link_uri", italic(p.blue)),
+        ("number", color(p.peach)),
+        ("operator", color(p.text_muted)),
+        ("preproc", color(p.lavender)),
+        ("property", color(p.text)),
+        ("punctuation", color(p.text_muted)),
+        ("punctuation.bracket", color(p.text_muted)),
+        ("punctuation.delimiter", color(p.text_muted)),
+        ("punctuation.list_marker", color(p.sand)),
+        ("punctuation.special", color(p.lavender)),
+        ("string", color(p.green)),
+        ("string.escape", color(p.peach)),
+        ("string.regex", color(p.peach)),
+        ("string.special", color(p.peach)),
+        ("string.special.symbol", color(p.peach)),
+        ("tag", color(p.lavender)),
+        ("text.literal", color(p.green)),
+        ("text.code.span", color(p.green)),
+        ("title", bold(p.blue)),
+        ("type", color(p.bolt)),
+        ("variable", color(p.text)),
+        ("variable.special", color(p.lavender)),
+        ("variant", color(p.peach)),
+    ]
+    .into_iter()
+    .map(|(name, style)| (name.to_owned(), style))
+    .collect();
+    let value = serde_json::json!({
+        "name": "Coqo zen",
+        "appearance": appearance,
+        "style": {
+            "editor.background": hex(p.panel),
+            "editor.foreground": hex(p.text),
+            "editor.active_line.background": format!("#{:06x}80", p.surface.0),
+            "editor.line_number": hex(p.text_subtle),
+            "editor.active_line_number": hex(p.text_muted),
+            "editor.invisible": format!("#{:06x}66", p.text_subtle.0),
+            "syntax": syntax,
+        }
+    });
+    serde_json::from_value(value)
+        .inspect_err(|e| eprintln!("coqo-ui: invalid editor highlight theme: {e}"))
+        .ok()
 }
 
 #[cfg(test)]
@@ -453,6 +529,21 @@ mod tests {
         assert!((Rgb(0x000000).contrast(Rgb(0xFFFFFF)) - 21.0).abs() < 1e-9);
         assert!((Rgb(0x777777).contrast(Rgb(0xFFFFFF)) - 4.48).abs() < 0.01);
         assert_eq!(Rgb(0x123456).contrast(Rgb(0x123456)), 1.0);
+    }
+
+    #[test]
+    fn highlight_theme_parses_for_both_appearances() {
+        for appearance in [Appearance::Dark, Appearance::Light] {
+            let tokens = Tokens::new(appearance, appearance);
+            let theme = highlight_theme(&tokens).expect("a valid highlight theme");
+            let keyword = theme.style.syntax.keyword.expect("a keyword style");
+            let style: gpui_kit::HighlightStyle = keyword.into();
+            assert_eq!(style.color, Some(tokens.palette.lavender.hsla()));
+            assert_eq!(
+                theme.style.editor_background,
+                Some(tokens.palette.panel.hsla())
+            );
+        }
     }
 
     #[test]

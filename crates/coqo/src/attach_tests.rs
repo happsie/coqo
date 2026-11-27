@@ -30,7 +30,7 @@ use coqo_ui::{
 use crate::{
     daemon::{self, ConnectionState, Daemon, DaemonConfig},
     files::{
-        preview::{FilePreview, KIND},
+        editor::{FileEditor, KIND},
         tree::FileTree,
     },
     layout::{DaemonLayoutStore, LAYOUT_KEY, parse},
@@ -219,7 +219,7 @@ impl Ui {
         tab_kinds(&self.layout(ix))
     }
 
-    fn file_tabs(&self, ix: usize) -> Vec<Entity<FilePreview>> {
+    fn file_tabs(&self, ix: usize) -> Vec<Entity<FileEditor>> {
         let shell = self.shell(ix);
         self.cx.read(|cx| {
             let dock = shell.read(cx).dock().read(cx);
@@ -227,7 +227,7 @@ impl Ui {
                 .tabs()
                 .into_iter()
                 .filter(|t| t.kind == KIND)
-                .filter_map(|t| dock.tab(t.id)?.downcast::<FilePreview>())
+                .filter_map(|t| dock.tab(t.id)?.downcast::<FileEditor>())
                 .collect()
         })
     }
