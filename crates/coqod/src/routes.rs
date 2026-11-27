@@ -27,6 +27,7 @@ use crate::git::{self, GitService};
 use crate::mcp_tools::{self, McpToolService};
 use crate::questions::{self, QuestionService};
 use crate::syntax::{self, SyntaxService};
+use crate::threads::{self, ThreadService};
 use crate::walkthroughs::{self, WalkthroughService};
 use crate::workspace::{self, WorkspaceService};
 use crate::{agents, alerts, methods, terminal};
@@ -64,6 +65,14 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     )?;
     let router = questions::register(router, Arc::clone(&questions));
     let router = alerts::register(router, alerts::open(ctx, sessions.clone(), questions)?);
+    let router = threads::register(
+        router,
+        ThreadService::open(
+            &ctx.data.global_db(),
+            Arc::clone(&workspaces),
+            Arc::clone(&git_service),
+        )?,
+    );
     let router = walkthroughs::register(
         router,
         WalkthroughService::open(

@@ -413,6 +413,14 @@ impl Repo {
         }
     }
 
+    /// A file's contents on `side` (repository-relative `path`); `None` if
+    /// the side has no such file. For anchoring review comments to the
+    /// lines a diff side shows.
+    pub fn read_file(&self, side: &Side, path: &str) -> Result<Option<Vec<u8>>> {
+        check_path(path)?;
+        Ok(self.read_side(side, path)?.map(|b| b.data))
+    }
+
     /// The diff of one file from `base` to `head`, with `context` lines
     /// around changes (`git diff -U<context>`).
     pub fn diff(&self, path: &str, base: &Side, head: &Side, context: u32) -> Result<FileDiff> {

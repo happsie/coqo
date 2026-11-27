@@ -131,6 +131,29 @@ pub trait DiffOverlay: 'static {
     }
 
     fn on_add(&self, _range: &LineRange, _window: &mut Window, _cx: &mut App) {}
+
+    /// Content at the right of the header card, after the layout toggle (a
+    /// review's pending count and its send button).
+    fn header(&self, _window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
+        None
+    }
+
+    /// A badge on a file's row in the file list, before its counts
+    /// ("1 pending").
+    fn file_badge(&self, _path: &str, _cx: &App) -> Option<AnyElement> {
+        None
+    }
+
+    /// A note at the bottom of the file list, above the key hints.
+    fn files_note(&self, _cx: &App) -> Option<AnyElement> {
+        None
+    }
+
+    /// A line for the hint under the body ("Press + beside a line to
+    /// comment").
+    fn hint(&self, _cx: &App) -> Option<SharedString> {
+        None
+    }
 }
 
 /// What a [`DiffView`] reports.
@@ -142,6 +165,8 @@ pub enum DiffViewEvent {
     SelectionChanged(Option<LineRange>),
     /// A file was marked viewed or not.
     ViewedChanged,
+    /// The files were (re)loaded from the source.
+    Loaded,
 }
 
 /// Where the file list is.
@@ -371,7 +396,7 @@ impl DiffView {
         }));
     }
 
-    fn loaded(
+    pub(crate) fn loaded(
         &mut self,
         files: Vec<SourceFile>,
         diffs: Vec<Result<FileDiff, String>>,
@@ -420,6 +445,7 @@ impl DiffView {
             }
         }
         self.install(cx);
+        cx.emit(DiffViewEvent::Loaded);
         cx.notify();
     }
 
@@ -661,7 +687,12 @@ impl DiffView {
         self.staging
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_header(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let extra: Vec<AnyElement> = self
+            .overlays
+            .iter()
+            .filter_map(|o| o.header(window, cx))
+            .collect();
         let t = cx.tokens();
         let (p, m) = (&t.palette, &t.metrics);
         let (adds, dels) = self
@@ -737,6 +768,7 @@ impl DiffView {
                     .child(segment("diff-mode-split", "Side by side", DiffMode::Split))
                     .child(segment("diff-mode-unified", "Unified", DiffMode::Unified)),
             )
+            .children(extra)
     }
 
     fn render_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -765,6 +797,11 @@ impl DiffView {
                 } else {
                     name.to_owned()
                 };
+                let badges: Vec<AnyElement> = self
+                    .overlays
+                    .iter()
+                    .filter_map(|o| o.file_badge(&f.path, cx))
+                    .collect();
                 let path = f.path.clone();
                 let toggle_path = f.path.clone();
                 let letter = f.change.letter();
@@ -864,6 +901,7 @@ impl DiffView {
                             .items_center()
                             .gap(px(6.))
                             .text_size(px(11.))
+                            .children(badges)
                             .child(stats)
                             .child(
                                 div()
@@ -889,6 +927,11 @@ impl DiffView {
                 .child(kbd(keys, cx))
                 .child(what)
         };
+        let notes: Vec<AnyElement> = self
+            .overlays
+            .iter()
+            .filter_map(|o| o.files_note(cx))
+            .collect();
         div()
             .id("diff-files")
             .test_support()
@@ -928,6 +971,7 @@ impl DiffView {
                     .overflow_y_scroll()
                     .children(rows),
             )
+            .children(notes)
             .child(
                 div()
                     .flex()
@@ -1091,12 +1135,22 @@ impl DiffView {
                     cx.notify();
                 }))
         });
-        let hint = self.source.staging().filter(|_| file.is_some()).map(|s| {
+        let mut hints: Vec<SharedString> = Vec::new();
+        if let Some(s) = self.source.staging() {
             let verb = match s {
                 Staging::Stage => "stage",
                 Staging::Unstage => "unstage",
             };
+            hints.push(
+                format!("Drag line numbers to select lines, or use a hunk's button, to {verb}")
+                    .into(),
+            );
+        }
+        hints.extend(self.overlays.iter().filter_map(|o| o.hint(cx)));
+        let hint = (file.is_some() && !hints.is_empty()).then(|| {
             div()
+                .id("diff-hint")
+                .test_support()
                 .flex()
                 .flex_none()
                 .items_center()
@@ -1106,9 +1160,7 @@ impl DiffView {
                 .text_size(px(12.))
                 .text_color(p.text_subtle.hsla())
                 .child(div().flex_1().h(px(1.)).bg(p.surface.hsla()))
-                .child(format!(
-                    "Drag line numbers to select lines, or use a hunk's button, to {verb}"
-                ))
+                .child(hints.join(" · "))
                 .child(div().flex_1().h(px(1.)).bg(p.surface.hsla()))
         });
         div()
@@ -1266,7 +1318,7 @@ impl Render for DiffView {
             .flex_col()
             .gap(px(10.))
             .p(px(10.))
-            .child(self.render_header(cx))
+            .child(self.render_header(window, cx))
             .child(
                 div()
                     .flex_1()
@@ -1286,4 +1338,4 @@ impl coqo_ui::gpui::Focusable for DiffView {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

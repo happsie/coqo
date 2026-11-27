@@ -322,7 +322,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 ### 7.7 Git and native diff
 - **Git mod:** status, hunk/line staging, commit (with an agent-drafted message), branches, worktrees, stash, blame, log/graph.
 - **Diff view** (shared with PR review): side-by-side and unified, word-level highlights, collapsed unchanged regions, a file tree with a "viewed" checkbox per file, keyboard navigation, and walkthrough overlay mode. Any diff source can feed it, and other views add gutter markers, line slots and tints to it ([ADR 0021](adr/0021-diff-view.md)).
-- **Comment threads → agent:** select lines and comment. Comments build up as a *pending review*, and "Send to agent" sends the batch as one structured message (comments plus anchors plus diff context) to the session that made the change. Agent replies land in the threads, and threads can be resolved. The thread model is shared with GitHub (§7.8); only the backend differs.
+- **Comment threads → agent:** select lines and comment. Comments build up as a *pending review*, and "Send to agent" sends the batch as one structured message (comments plus anchors plus diff context) to the session that made the change. Agent replies land in the threads, and threads can be resolved. The thread model is shared with GitHub (§7.8); only the backend differs. Threads are pinned to a file version by anchor and re-resolved as the files change ([ADR 0022](adr/0022-review-threads.md)).
 
 ### 7.8 PR Inbox (GitHub)
 - **Auth:** reuse `gh auth token` when the GitHub CLI is installed and logged in. Otherwise use the GitHub OAuth device flow with the Coqo OAuth app. The token is kept in the keychain. GitHub Enterprise hosts are supported.
@@ -374,7 +374,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 
 | Location | Contents |
 |---|---|
-| Daemon data (`~/Library/Application Support/Coqo`, `$XDG_DATA_HOME/coqo`) | `coqo.db` (workspaces, sessions, transcripts, **event log**, alerts, anchored questions and notes, walkthroughs), per-workspace: `traces.db`, PR worktrees; installed mods |
+| Daemon data (`~/Library/Application Support/Coqo`, `$XDG_DATA_HOME/coqo`) | `coqo.db` (workspaces, sessions, transcripts, **event log**, alerts, anchored questions and notes, walkthroughs, review threads), per-workspace: `traces.db`, PR worktrees; installed mods |
 | UI data (`<data dir>/ui/`) | Workbench layouts saved while `coqod` was unreachable, and a window's no-workspace layout; the daemon keeps each workspace's layout in its state (`ui.layout`, [ADR 0004](adr/0004-workbench-layout.md)) |
 | Config (`~/.config/coqo`, macOS equivalent) | `settings.toml`, keymaps, themes |
 | OS keychain | API keys, GitHub token |

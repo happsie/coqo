@@ -831,6 +831,60 @@
       ],
       "type": "object"
     },
+    "Author": {
+      "description": "Who wrote a comment.",
+      "oneOf": [
+        {
+          "description": "The person using Coqo.",
+          "properties": {
+            "kind": {
+              "const": "user",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An agent session (its replies, #95).",
+          "properties": {
+            "kind": {
+              "const": "agent",
+              "type": "string"
+            },
+            "session": {
+              "$ref": "#/$defs/SessionId",
+              "description": "The session."
+            }
+          },
+          "required": [
+            "kind",
+            "session"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A GitHub user (the GitHub backend, M8).",
+          "properties": {
+            "kind": {
+              "const": "github",
+              "type": "string"
+            },
+            "login": {
+              "description": "Their login.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "login"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "AvailableCommand": {
       "description": "A slash command or skill the agent offers (ACP `available_commands`).",
       "properties": {
@@ -855,6 +909,21 @@
         "name"
       ],
       "type": "object"
+    },
+    "Backend": {
+      "description": "Where a thread lives besides Coqo.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Only in Coqo: a review of an agent's change, sent to the agent.",
+          "type": "string"
+        },
+        {
+          "const": "github",
+          "description": "A pull request review thread on GitHub (the PR inbox, M8).",
+          "type": "string"
+        }
+      ]
     },
     "BlameHunk": {
       "description": "Consecutive lines last changed by one commit.",
@@ -1306,6 +1375,23 @@
       },
       "type": "object"
     },
+    "ChangesParams8": {
+      "description": "Params of the [`Changes`] topic.",
+      "properties": {
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only this workspace's threads."
+        }
+      },
+      "type": "object"
+    },
     "CloseParams": {
       "description": "Params of [`Close`].",
       "properties": {
@@ -1459,6 +1545,66 @@
           "type": "object"
         }
       ]
+    },
+    "Comment": {
+      "description": "One comment of a thread.",
+      "properties": {
+        "author": {
+          "$ref": "#/$defs/Author",
+          "description": "Who wrote it."
+        },
+        "body": {
+          "description": "The comment, in markdown.",
+          "type": "string"
+        },
+        "createdAt": {
+          "description": "Written, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "editedAt": {
+          "description": "Last edited, Unix milliseconds.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/CommentId",
+          "description": "Id."
+        },
+        "pending": {
+          "description": "Part of the user's pending review: not sent yet.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "author",
+        "body",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "CommentId": {
+      "description": "Identifies a comment, across threads. Assigned by the daemon, never\nreused.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "CommentParams": {
+      "description": "Params of [`DeleteComment`].",
+      "properties": {
+        "comment": {
+          "$ref": "#/$defs/CommentId",
+          "description": "The comment: one of the user's."
+        }
+      },
+      "required": [
+        "comment"
+      ],
+      "type": "object"
     },
     "CommitInfo": {
       "description": "A commit blame points at.",
@@ -1833,6 +1979,66 @@
       ],
       "type": "object"
     },
+    "CreateParams3": {
+      "description": "Params of [`Create`].",
+      "properties": {
+        "body": {
+          "description": "The first comment, in markdown.",
+          "type": "string"
+        },
+        "diff": {
+          "description": "The diff source's identity, so the thread can be listed by diff.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lines": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadLines"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The lines (1-based, at most [`MAX_THREAD_LINES`]); omit to comment\non the whole file."
+        },
+        "path": {
+          "description": "`/`-separated path of the file, relative to the root.",
+          "type": "string"
+        },
+        "pending": {
+          "description": "Add it to the pending review (what the review UI does) rather than\nas a comment already made.",
+          "type": "boolean"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root `path` is relative to."
+        },
+        "side": {
+          "$ref": "#/$defs/ThreadSide",
+          "default": "new",
+          "description": "The diff side the user commented on."
+        },
+        "version": {
+          "$ref": "#/$defs/DiffSide",
+          "description": "The version of the file that side shows (see\n[`ThreadAnchor::version`])."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root",
+        "path",
+        "version",
+        "body"
+      ],
+      "type": "object"
+    },
     "CreateSessionParams": {
       "description": "Params of `sessions/create`.",
       "properties": {
@@ -2102,6 +2308,23 @@
       ],
       "type": "object"
     },
+    "DeleteCommentResult": {
+      "description": "Result of [`DeleteComment`].",
+      "properties": {
+        "thread": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Thread"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The thread without the comment; absent when it was the last one,\nand the thread went with it."
+        }
+      },
+      "type": "object"
+    },
     "DeleteParams": {
       "description": "Params of [`Delete`].",
       "properties": {
@@ -2317,6 +2540,21 @@
       ],
       "type": "object"
     },
+    "DiscardResult": {
+      "description": "Result of [`Discard`].",
+      "properties": {
+        "discarded": {
+          "description": "How many pending comments were deleted.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "discarded"
+      ],
+      "type": "object"
+    },
     "DismissAllParams": {
       "description": "Params of [`DismissAll`].",
       "properties": {
@@ -2369,6 +2607,24 @@
           "type": "string"
         }
       ]
+    },
+    "EditCommentParams": {
+      "description": "Params of [`EditComment`].",
+      "properties": {
+        "body": {
+          "description": "Its new text, in markdown.",
+          "type": "string"
+        },
+        "comment": {
+          "$ref": "#/$defs/CommentId",
+          "description": "The comment: one of the user's."
+        }
+      },
+      "required": [
+        "comment",
+        "body"
+      ],
+      "type": "object"
     },
     "EditParams": {
       "description": "Params of the [`Edit`] notification: one change made by a replica.",
@@ -3478,6 +3734,44 @@
       ],
       "type": "object"
     },
+    "ListParams4": {
+      "description": "Params of [`List`].",
+      "properties": {
+        "diff": {
+          "description": "Only threads started in this diff.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "…and this file (`/`-separated, relative to `root`; in any root if\n`root` is omitted).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RootId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only threads in this root…"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace"
+      ],
+      "type": "object"
+    },
     "ListResult": {
       "description": "Result of [`List`]: a snapshot of every known workspace.",
       "properties": {
@@ -4007,6 +4301,59 @@
       "required": [
         "workspace",
         "root"
+      ],
+      "type": "object"
+    },
+    "PendingComment": {
+      "description": "A comment of the pending review, with what it is about.",
+      "properties": {
+        "anchor": {
+          "$ref": "#/$defs/ThreadAnchor",
+          "description": "The code the thread is about, resolved now."
+        },
+        "comment": {
+          "$ref": "#/$defs/Comment",
+          "description": "The comment."
+        },
+        "diff": {
+          "description": "The diff the thread was started in.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thread": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "Its thread."
+        }
+      },
+      "required": [
+        "thread",
+        "anchor",
+        "comment"
+      ],
+      "type": "object"
+    },
+    "PendingReview": {
+      "description": "Result of [`Pending`].",
+      "properties": {
+        "comments": {
+          "description": "They, by thread (oldest first), then oldest first.",
+          "items": {
+            "$ref": "#/$defs/PendingComment"
+          },
+          "type": "array"
+        },
+        "count": {
+          "description": "How many comments are pending.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count",
+        "comments"
       ],
       "type": "object"
     },
@@ -5021,6 +5368,28 @@
       ],
       "type": "object"
     },
+    "ReplyParams2": {
+      "description": "Params of [`Reply`].",
+      "properties": {
+        "body": {
+          "description": "The comment, in markdown.",
+          "type": "string"
+        },
+        "pending": {
+          "description": "Add it to the pending review.",
+          "type": "boolean"
+        },
+        "thread": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "thread",
+        "body"
+      ],
+      "type": "object"
+    },
     "RepoInfo": {
       "description": "Where a root's repository is.",
       "properties": {
@@ -5266,6 +5635,26 @@
       },
       "required": [
         "rev"
+      ],
+      "type": "object"
+    },
+    "ReviewParams": {
+      "description": "Params of [`Pending`] and [`Discard`].",
+      "properties": {
+        "diff": {
+          "description": "Only comments on threads started in this diff.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace"
       ],
       "type": "object"
     },
@@ -7721,6 +8110,239 @@
         }
       ]
     },
+    "Thread": {
+      "description": "A comment thread.",
+      "properties": {
+        "anchor": {
+          "$ref": "#/$defs/ThreadAnchor",
+          "description": "The code it is about."
+        },
+        "backend": {
+          "$ref": "#/$defs/Backend",
+          "description": "Where it lives besides Coqo."
+        },
+        "comments": {
+          "description": "The comments, oldest first; at least one.",
+          "items": {
+            "$ref": "#/$defs/Comment"
+          },
+          "type": "array"
+        },
+        "createdAt": {
+          "description": "Started, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "diff": {
+          "description": "The diff it was started in (a diff source's identity, such as\n`git:0:index..worktree`), if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "Id."
+        },
+        "resolvedAt": {
+          "description": "Resolved, Unix milliseconds.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "seq": {
+          "description": "The `threads/changes` seq of this state.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/ThreadStatus",
+          "description": "Open or resolved."
+        },
+        "updatedAt": {
+          "description": "Last changed, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "id",
+        "workspace",
+        "backend",
+        "anchor",
+        "status",
+        "comments",
+        "createdAt",
+        "updatedAt",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "ThreadAnchor": {
+      "description": "The code a thread is about.",
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeAnchor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The lines as they were when the thread was started; absent for a\nthread on the whole file."
+        },
+        "lines": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadLines"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The lines now, 1-based; as they were when orphaned. Absent for a\nthread on the whole file."
+        },
+        "path": {
+          "description": "`/`-separated path of the file, relative to the root.",
+          "type": "string"
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnchorResolution"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where `code` is in `version` now (absent with `code`). Its range\nis never in an open buffer: it is in the version as git sees it."
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root `path` is relative to."
+        },
+        "side": {
+          "$ref": "#/$defs/ThreadSide",
+          "description": "The diff side it was started on."
+        },
+        "version": {
+          "$ref": "#/$defs/DiffSide",
+          "description": "The version of the file the lines are in: `worktree` for the new\nside of unstaged changes, `index` for their old side, `{\"rev\":\n\"HEAD\"}`, … A diff shows the thread on whichever side shows this\nversion."
+        }
+      },
+      "required": [
+        "root",
+        "path",
+        "side",
+        "version"
+      ],
+      "type": "object"
+    },
+    "ThreadEvent": {
+      "description": "An event of [`Changes`].",
+      "oneOf": [
+        {
+          "description": "A thread was created or changed: its state now.",
+          "properties": {
+            "thread": {
+              "$ref": "#/$defs/Thread",
+              "description": "The thread."
+            },
+            "type": {
+              "const": "changed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "thread"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A thread was deleted (its last comment was).",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/ThreadId",
+              "description": "Its id."
+            },
+            "type": {
+              "const": "deleted",
+              "type": "string"
+            },
+            "workspace": {
+              "$ref": "#/$defs/WorkspaceId",
+              "description": "Its workspace."
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "workspace"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ThreadId": {
+      "description": "Identifies a thread. Assigned by the daemon, never reused.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "ThreadLines": {
+      "description": "Lines of a file, 1-based, `end` inclusive (as diffs number them).",
+      "properties": {
+        "end": {
+          "description": "The last line.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "description": "The first line.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
+    "ThreadList": {
+      "description": "Result of [`List`].",
+      "properties": {
+        "seq": {
+          "description": "The `threads/changes` seq this list reflects; subscribe with\n`since: seq` to keep it current.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "threads": {
+          "description": "The threads, oldest first, open and resolved.",
+          "items": {
+            "$ref": "#/$defs/Thread"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "threads",
+        "seq"
+      ],
+      "type": "object"
+    },
     "ThreadMessage": {
       "description": "One message the user sent in a thread ([`Ask`], [`Reply`]).",
       "properties": {
@@ -7746,6 +8368,49 @@
         "at"
       ],
       "type": "object"
+    },
+    "ThreadParams": {
+      "description": "Params of [`Get`], [`Resolve`] and [`Reopen`].",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "ThreadSide": {
+      "description": "The side of a diff a thread was started on.",
+      "oneOf": [
+        {
+          "const": "old",
+          "description": "The base (removed lines, the old line numbers).",
+          "type": "string"
+        },
+        {
+          "const": "new",
+          "description": "The head (added lines, the new line numbers).",
+          "type": "string"
+        }
+      ]
+    },
+    "ThreadStatus": {
+      "description": "Whether a thread still needs attention.",
+      "oneOf": [
+        {
+          "const": "open",
+          "description": "Under discussion.",
+          "type": "string"
+        },
+        {
+          "const": "resolved",
+          "description": "Done with; shown collapsed.",
+          "type": "string"
+        }
+      ]
     },
     "ToolCall": {
       "description": "A tool call, as first reported.",
@@ -9303,6 +9968,7 @@
     "NOT_A_REPOSITORY": 1601,
     "NOT_FOUND": 1004,
     "NOT_INITIALIZED": -32002,
+    "NOT_YOUR_COMMENT": 1803,
     "NO_SUCH_TERMINAL": 1301,
     "PARSE_ERROR": -32700,
     "PATH_OUTSIDE_WORKSPACE": 1003,
@@ -9318,11 +9984,13 @@
     "STORAGE_ERROR": 1109,
     "UNAUTHORIZED": -32006,
     "UNKNOWN_BUFFER": 1201,
+    "UNKNOWN_COMMENT": 1802,
     "UNKNOWN_PERMISSION_REQUEST": 1105,
     "UNKNOWN_PROVIDER": 1102,
     "UNKNOWN_ROOT": 1002,
     "UNKNOWN_SESSION": 1101,
     "UNKNOWN_SUBSCRIPTION": -32004,
+    "UNKNOWN_THREAD": 1801,
     "UNKNOWN_TOOL": 1401,
     "UNKNOWN_WALKTHROUGH": 1701,
     "UNKNOWN_WORKSPACE": 1001,
@@ -10005,6 +10673,28 @@
         "$ref": "#/$defs/WatchParams"
       }
     },
+    "review/discard": {
+      "description": "Delete the pending review's comments.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ReviewParams"
+      },
+      "result": {
+        "$ref": "#/$defs/DiscardResult"
+      }
+    },
+    "review/pending": {
+      "description": "The user's pending review: the comments not sent yet.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ReviewParams"
+      },
+      "result": {
+        "$ref": "#/$defs/PendingReview"
+      }
+    },
     "sessions/cancel": {
       "description": "Cancel the running turn. Result is true if one was running.",
       "direction": "client→server",
@@ -10259,6 +10949,105 @@
       },
       "result": {
         "$ref": "#/$defs/TerminalInfo"
+      }
+    },
+    "threads/changes": {
+      "description": "Threads whose state changed, as their latest state, and deleted ones (resumable).",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/ThreadEvent"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/ChangesParams8"
+      }
+    },
+    "threads/create": {
+      "description": "Start a thread on lines of a file version (or the whole file).",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/CreateParams3"
+      },
+      "result": {
+        "$ref": "#/$defs/Thread"
+      }
+    },
+    "threads/deleteComment": {
+      "description": "Delete one of the user's comments; an empty thread goes with it.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/CommentParams"
+      },
+      "result": {
+        "$ref": "#/$defs/DeleteCommentResult"
+      }
+    },
+    "threads/editComment": {
+      "description": "Change one of the user's comments.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/EditCommentParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Thread"
+      }
+    },
+    "threads/get": {
+      "description": "One thread, anchors resolved now.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ThreadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Thread"
+      }
+    },
+    "threads/list": {
+      "description": "A workspace's comment threads, anchors resolved now, with the changes seq.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ListParams4"
+      },
+      "result": {
+        "$ref": "#/$defs/ThreadList"
+      }
+    },
+    "threads/reopen": {
+      "description": "Open a resolved thread again.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ThreadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Thread"
+      }
+    },
+    "threads/reply": {
+      "description": "Add the user's comment to a thread.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ReplyParams2"
+      },
+      "result": {
+        "$ref": "#/$defs/Thread"
+      }
+    },
+    "threads/resolve": {
+      "description": "Mark a thread resolved.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ThreadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Thread"
       }
     },
     "walkthroughs/changes": {

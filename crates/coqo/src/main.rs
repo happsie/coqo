@@ -20,6 +20,7 @@ mod questions;
 mod resume;
 mod shell;
 mod terminal;
+mod threads;
 mod walkthrough;
 mod welcome;
 mod windows;

@@ -94,7 +94,7 @@ The keys are plain letters because the body is read-only, and a focused text fie
 
 ## Consequences
 
-- #94 adds comment threads as an overlay: slots under the thread's last line and `on_add` for new threads. #95 reads the threads, and the `LineRef`s give the anchors. #100 adds step markers and tints as an overlay and drives `scroll_to`. #103 implements `DiffSource` over GitHub.
+- #94 adds comment threads as an overlay: slots under the thread's last line and `on_add` for new threads. It also added `DiffOverlay::header`, `file_badge`, `files_note` and `hint`, `DiffSource::versions` (the file versions of a diff's sides), and `DiffViewEvent::Loaded` ([ADR 0022](0022-review-threads.md)). #95 reads the threads, and the `LineRef`s give the anchors. #100 adds step markers and tints as an overlay and drives `scroll_to`. #103 implements `DiffSource` over GitHub.
 - No protocol change was needed.
 - Differences from board 4, recorded in `docs/design/diff.md`:
   - Rows are 13 px mono on gpui-component's 1.6 line height (20.8 px), not 12.5/23 px.

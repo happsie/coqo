@@ -21,6 +21,8 @@
 //!   (`questions/*`), their anchors kept on the code, and the answers.
 //! - [`walkthroughs`]: code walkthroughs agents publish (`walkthroughs/*`):
 //!   checked, anchored, stored locally or committed to the repository.
+//! - [`threads`]: comment threads on diff lines and the pending review
+//!   (`threads/*`, `review/*`), anchored to the file version a diff shows.
 //! - [`terminal`]: daemon-owned PTYs (`terminal/*`).
 //! - [`cli`]: command-line arguments.
 //! - [`git`]: `git/*`, everyday git on a root's repository, from the
@@ -51,6 +53,7 @@ pub mod questions;
 pub mod routes;
 pub mod syntax;
 pub mod terminal;
+pub mod threads;
 pub mod walkthroughs;
 pub mod workspace;
 

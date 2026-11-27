@@ -330,6 +330,26 @@ fn an_untracked_file_diffs_as_all_added() {
     assert!(d.hunks[0].lines.iter().all(|l| l.kind == LineKind::Added));
 }
 
+#[test]
+fn a_file_reads_as_each_side_has_it() {
+    let (_tmp, f) = fixture();
+    f.write("a.txt", "one\n");
+    f.commit_all("one");
+    f.write("a.txt", "two\n");
+    f.git(&["add", "a.txt"]);
+    f.write("a.txt", "three\n");
+    let repo = open(&f);
+    let read = |side: &Side| repo.read_file(side, "a.txt").unwrap();
+    assert_eq!(
+        read(&Side::Rev("HEAD".into())).as_deref(),
+        Some(&b"one\n"[..])
+    );
+    assert_eq!(read(&Side::Index).as_deref(), Some(&b"two\n"[..]));
+    assert_eq!(read(&Side::Worktree).as_deref(), Some(&b"three\n"[..]));
+    assert_eq!(repo.read_file(&Side::Index, "missing.txt").unwrap(), None);
+    assert!(repo.read_file(&Side::Index, "/etc/passwd").is_err());
+}
+
 /// `git diff --numstat args…` as `(path, "add\tdel")`.
 fn numstat(f: &Fixture, args: &[&str]) -> Vec<(String, String)> {
     let mut all = vec!["diff", "--numstat"];
