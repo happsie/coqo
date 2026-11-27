@@ -17,6 +17,8 @@ use coqo_protocol::methods::agents::{
     StopReason, ToolCall, ToolCallContent, ToolCallId, ToolCallUpdate, Usage,
 };
 
+use coqo_protocol::methods::questions::{Question, QuestionId};
+
 use super::diff::DiffPreview;
 
 /// How the daemon words a provider's sign-in error (`ProviderError::AuthRequired`).
@@ -139,6 +141,9 @@ pub enum Entry {
         kind: NoticeKind,
         text: String,
     },
+    /// A question or note the agent pinned to code, in its latest state
+    /// (asked, then answered or dismissed).
+    Question(Box<Question>),
 }
 
 /// What [`Transcript::apply`] changed.
@@ -176,6 +181,7 @@ pub struct Transcript {
     pub entries: Vec<Entry>,
     tools: HashMap<ToolCallId, usize>,
     permissions: HashMap<PermissionRequestId, usize>,
+    questions: HashMap<QuestionId, usize>,
     pub plan: Vec<PlanEntry>,
     pub modes: Option<SessionModes>,
     pub commands: Vec<AvailableCommand>,
@@ -398,9 +404,18 @@ impl Transcript {
                     self.push(Entry::Notice { kind, text }, changes);
                 }
             }
-            // Questions and notes pinned to code: the chat's question cards
-            // are #74's. The waiting state already shows as a notice.
-            SessionUpdate::Question(_) => {}
+            // A question card, updated in place when it is answered or
+            // dismissed. The waiting state already shows as a notice.
+            SessionUpdate::Question(question) => match self.questions.get(&question.id) {
+                Some(&ix) => {
+                    self.entries[ix] = Entry::Question(question);
+                    changes.update(ix);
+                }
+                None => {
+                    self.questions.insert(question.id, self.entries.len());
+                    self.push(Entry::Question(question), changes);
+                }
+            },
             SessionUpdate::Closed => {
                 self.closed = true;
                 self.running = false;
@@ -701,5 +716,46 @@ mod tests {
         assert_eq!(errors, 1, "{:?}", t.entries);
         assert_eq!(t.sign_in.as_deref(), Some(err.as_str()));
         assert_eq!(t.state, AgentState::Error);
+    }
+
+    #[test]
+    fn a_question_is_one_card_updated_as_it_is_answered() {
+        use coqo_protocol::methods::{
+            agents::SessionId,
+            questions::{QuestionAnswer, QuestionKind, QuestionStatus},
+            workspace::WorkspaceId,
+        };
+        let asked = Question {
+            id: QuestionId(4),
+            workspace: WorkspaceId("w".into()),
+            session: SessionId("s".into()),
+            kind: QuestionKind::Clarification,
+            severity: None,
+            body: "Which rounding mode?".into(),
+            options: vec![],
+            anchors: vec![],
+            status: QuestionStatus::Open,
+            answer: None,
+            waiting: true,
+            created_at: 0,
+            closed_at: None,
+            seq: 1,
+        };
+        let answered = Question {
+            status: QuestionStatus::Answered,
+            answer: Some(QuestionAnswer {
+                option: None,
+                text: Some("HALF_EVEN".into()),
+            }),
+            waiting: false,
+            seq: 2,
+            ..asked.clone()
+        };
+        let mut t = Transcript::default();
+        let c = t.apply_all([(1, SessionUpdate::Question(Box::new(asked)))]);
+        assert_eq!(c.appended_from, Some(0));
+        let c = t.apply_all([(2, SessionUpdate::Question(Box::new(answered.clone())))]);
+        assert_eq!((c.appended_from, c.updated), (None, vec![0]));
+        assert_eq!(t.entries, vec![Entry::Question(Box::new(answered))]);
     }
 }

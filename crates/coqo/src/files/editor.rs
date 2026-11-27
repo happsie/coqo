@@ -24,6 +24,12 @@
 //!   buffer with the same replica id and resyncs.
 //! - **Closing** the tab sends `buffer/close`.
 //!
+//! - **Questions** pinned to the file (PLAN §7.5, [`crate::questions`]):
+//!   a marker on each anchored line, and the question's popover anchored to
+//!   it (a click on the marker, F8, the Questions pane, a chat card). After
+//!   `buffer/open` the tab lists its file's questions again, so their ranges
+//!   are of the open buffer.
+//!
 //! Binary, non-UTF-8 and very large files show a message instead.
 
 use std::{
@@ -46,7 +52,10 @@ use coqo_protocol::{ErrorObject, Sequenced, codes as ProtocolCodes};
 use coqo_ui::{
     ActiveTokens as _, Rgb,
     dock::{AnyTab, TabItem},
-    editor::{self, CodeEditor, EditOrigin, EditorEdits, HistoryAction},
+    editor::{
+        self, CodeEditor, CodeMarker, EditOrigin, EditorEdits, HistoryAction, MarkerClicked,
+        OverlayAnchor,
+    },
     gpui::{
         AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, FontWeight,
         InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render, SharedString,
@@ -58,8 +67,13 @@ use coqo_ui::{
 
 use crate::{
     daemon::{Daemon, DaemonError, DaemonEvent, EventStream, ServerNotification},
+    questions::{
+        self, QuestionsEvent, WorkspaceQuestions,
+        popover::{PopoverEvent, QuestionPopover},
+    },
     workspace::{Workspaces, WorkspacesEvent},
 };
+use coqo_protocol::methods::questions::{Question, QuestionId, QuestionStatus};
 
 #[allow(unused_imports)]
 use coqo_ui::gpui; // The action derive spells its paths `gpui::…`.
@@ -136,6 +150,19 @@ struct Session {
     replica: ClientReplica,
     editor: Entity<CodeEditor>,
     _edits: Subscription,
+    _markers: Subscription,
+}
+
+/// Markers per question: one per anchor, `question * MARKERS_PER_QUESTION +
+/// anchor`.
+const MARKERS_PER_QUESTION: u64 = 16;
+
+/// A question to show once the file is open.
+#[derive(Clone, Copy, Debug)]
+struct PendingQuestion {
+    id: QuestionId,
+    focus: bool,
+    reveal: bool,
 }
 
 /// A file tab.
@@ -165,6 +192,12 @@ pub struct FileEditor {
     open_queued: bool,
     /// A reveal waiting for the file to open.
     pending_reveal: Option<Option<coqo_protocol::methods::editor::Range>>,
+    /// The workspace's questions.
+    questions: Option<Entity<WorkspaceQuestions>>,
+    /// The open question popover.
+    popover: Option<(Entity<QuestionPopover>, Subscription)>,
+    /// A question to show once the file is open (and its markers placed).
+    pending_question: Option<PendingQuestion>,
     _opening: Option<Task<()>>,
     _changes: Option<Task<()>>,
     _saving: Option<Task<()>>,
@@ -251,6 +284,18 @@ impl FileEditor {
             ));
         }
         subscriptions.push(cx.on_release(|this, cx| this.close(cx)));
+        let questions = questions::questions_for(&workspace, cx);
+        if let Some(store) = &questions {
+            subscriptions.push(cx.subscribe_in(
+                store,
+                window,
+                |this, _, event: &QuestionsEvent, window, cx| {
+                    if *event == QuestionsEvent::Changed {
+                        this.questions_changed(window, cx);
+                    }
+                },
+            ));
+        }
         let mut this = Self {
             workspace,
             root,
@@ -267,6 +312,9 @@ impl FileEditor {
             resync_pending: false,
             open_queued: false,
             pending_reveal: None,
+            questions,
+            popover: None,
+            pending_question: None,
             _opening: None,
             _changes: None,
             _saving: None,
@@ -527,6 +575,14 @@ impl FileEditor {
                 let edits = cx.subscribe_in(&editor, window, |this, _, event, window, cx| {
                     this.editor_edited(event, window, cx)
                 });
+                let markers = cx.subscribe_in(
+                    &editor,
+                    window,
+                    |this, _, clicked: &MarkerClicked, window, cx| {
+                        let id = QuestionId(clicked.0 / MARKERS_PER_QUESTION);
+                        this.show_question(id, true, false, window, cx);
+                    },
+                );
                 if self.focus.is_focused(window) {
                     editor.update(cx, |editor, cx| editor.focus(window, cx));
                 }
@@ -534,6 +590,7 @@ impl FileEditor {
                     replica: ClientReplica::new(&open),
                     editor,
                     _edits: edits,
+                    _markers: markers,
                 });
                 self.content = Content::Text;
             }
@@ -564,6 +621,14 @@ impl FileEditor {
         if let Some(range) = self.pending_reveal.take() {
             self.reveal(range, window, cx);
         }
+        // The ranges of a list taken before the buffer opened are of the
+        // file on disk; list this file again for the open buffer's.
+        self.sync_markers(cx);
+        let (root, path) = (self.root, self.path.clone());
+        if let Some(store) = self.questions.clone() {
+            store.update(cx, |store, cx| store.relist_file(root, &path, cx));
+        }
+        self.show_pending_question(window, cx);
         cx.notify();
     }
 
@@ -1038,6 +1103,219 @@ impl FileEditor {
                 replica: session.replica.replica().clone(),
             }));
         }
+    }
+
+    // ---- questions ----------------------------------------------------------
+
+    /// The open questions and notes pinned to this file.
+    fn file_questions(&self, cx: &App) -> Vec<Question> {
+        self.questions
+            .as_ref()
+            .map(|store| {
+                store
+                    .read(cx)
+                    .open_in(self.root, &self.path)
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn questions_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_markers(cx);
+        // Close the popover of a question answered or dismissed elsewhere.
+        let closed = self.popover.as_ref().is_some_and(|(popover, _)| {
+            let id = popover.read(cx).question_id();
+            self.questions
+                .as_ref()
+                .and_then(|s| s.read(cx).get(id).map(|q| q.status != QuestionStatus::Open))
+                .unwrap_or(false)
+        });
+        if closed {
+            self.close_popover(window, cx);
+        } else if let Some(editor) = self.editor().cloned()
+            && let Some((popover, _)) = &self.popover
+        {
+            // The question's anchor in this file may have appeared or gone.
+            let anchor = self.overlay_anchor(popover.read(cx).question_id(), cx);
+            let view = popover.clone();
+            editor.update(cx, |editor, cx| {
+                if editor.overlay_anchor() != Some(anchor) {
+                    editor.set_overlay(anchor, view.into(), cx);
+                }
+            });
+        }
+        self.show_pending_question(window, cx);
+    }
+
+    /// Place a marker on every anchor in this file of its open questions.
+    fn sync_markers(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        let questions = self.file_questions(cx);
+        let editor = session.editor.clone();
+        let buffer = session.replica.buffer();
+        let exact_rev = session.replica.is_synced().then(|| session.replica.rev());
+        let mut markers = Vec::new();
+        {
+            let code = editor.read(cx);
+            for q in &questions {
+                let color = questions::marker_color(q, cx).hsla();
+                for (ix, a) in q.anchors.iter().enumerate() {
+                    if a.anchor.root != self.root || a.anchor.path != self.path {
+                        continue;
+                    }
+                    let Some(span) = a.resolution.range else {
+                        continue; // Orphaned: shown in the popover only.
+                    };
+                    let id = q.id.0 * MARKERS_PER_QUESTION + ix as u64;
+                    let ours = a.resolution.buffer == Some(buffer);
+                    let range =
+                        if ours && a.resolution.rev.is_some() && a.resolution.rev == exact_rev {
+                            // In this very text.
+                            span.start.offset as usize..span.end.offset as usize
+                        } else if let Some(tracked) = code.marker_range(id, cx).filter(|_| ours) {
+                            // Edits since: the marker followed them.
+                            tracked
+                        } else {
+                            let lines = questions::span_lines(&span);
+                            code.line_start(lines.start as usize, cx)
+                                ..code.line_start(lines.end as usize, cx)
+                        };
+                    markers.push(CodeMarker {
+                        id,
+                        range,
+                        color,
+                        pulse: q.waiting,
+                    });
+                }
+            }
+        }
+        if editor.read(cx).markers() != markers {
+            editor.update(cx, |editor, cx| editor.set_markers(markers, cx));
+        }
+    }
+
+    /// Where the popover of question `id` goes: at its first marker in this
+    /// file, else (orphaned) at the top.
+    fn overlay_anchor(&self, id: QuestionId, cx: &App) -> OverlayAnchor {
+        let Some(editor) = self.editor() else {
+            return OverlayAnchor::Top;
+        };
+        let first = id.0 * MARKERS_PER_QUESTION;
+        editor
+            .read(cx)
+            .markers()
+            .iter()
+            .map(|m| m.id)
+            .filter(|m| (first..first + MARKERS_PER_QUESTION).contains(m))
+            .min()
+            .map_or(OverlayAnchor::Top, OverlayAnchor::Marker)
+    }
+
+    /// Show question `id`'s popover at its code (scrolled into view with
+    /// `reveal`), with the keyboard in it with `focus`. Waits for the file to
+    /// open.
+    pub fn show_question(
+        &mut self,
+        id: QuestionId,
+        focus: bool,
+        reveal: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_question = Some(PendingQuestion { id, focus, reveal });
+        self.show_pending_question(window, cx);
+    }
+
+    fn show_pending_question(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_question else {
+            return;
+        };
+        let (Some(editor), Some(store)) = (self.editor().cloned(), self.questions.clone()) else {
+            return;
+        };
+        // Wait for the question (a fresh one may not be listed yet).
+        if store.read(cx).get(pending.id).is_none() {
+            return;
+        }
+        self.pending_question = None;
+        self.sync_markers(cx);
+        let reused = self
+            .popover
+            .as_ref()
+            .filter(|(p, _)| p.read(cx).question_id() == pending.id)
+            .map(|(p, _)| p.clone());
+        let popover = match reused {
+            Some(popover) => popover,
+            None => {
+                let (root, path) = (self.root, self.path.clone());
+                let popover = cx.new(|cx| {
+                    QuestionPopover::new(pending.id, store.clone(), root, path, window, cx)
+                });
+                let closed =
+                    cx.subscribe_in(&popover, window, |this, _, event, window, cx| match event {
+                        PopoverEvent::Close => this.close_popover(window, cx),
+                    });
+                self.popover = Some((popover.clone(), closed));
+                popover
+            }
+        };
+        let anchor = self.overlay_anchor(pending.id, cx);
+        let view = popover.clone();
+        editor.update(cx, |editor, cx| {
+            editor.set_overlay(anchor, view.into(), cx);
+            if pending.reveal
+                && let OverlayAnchor::Marker(marker) = anchor
+                && let Some(range) = editor.marker_range(marker, cx)
+            {
+                editor.reveal(range.start..range.start, window, cx);
+                editor.scroll_marker_to_top(marker, cx);
+            }
+        });
+        if pending.focus {
+            popover.update(cx, |popover, cx| popover.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Close the popover; the keyboard goes back to the code if it was in it.
+    pub fn close_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((popover, _)) = self.popover.take() else {
+            return;
+        };
+        let focused = popover.read(cx).contains_focus(window, cx);
+        if let Some(editor) = self.editor().cloned() {
+            editor.update(cx, |editor, cx| {
+                editor.clear_overlay(cx);
+                if focused {
+                    editor.focus(window, cx);
+                }
+            });
+        }
+        cx.notify();
+    }
+
+    /// The question whose popover is open.
+    pub fn popover_question(&self, cx: &App) -> Option<QuestionId> {
+        self.popover
+            .as_ref()
+            .map(|(popover, _)| popover.read(cx).question_id())
+    }
+
+    /// The popover, if open.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn popover(&self) -> Option<&Entity<QuestionPopover>> {
+        self.popover.as_ref().map(|(popover, _)| popover)
+    }
+
+    /// The 0-based line of the primary cursor, once open.
+    pub fn cursor_line(&self, cx: &App) -> Option<u32> {
+        let editor = self.editor()?.read(cx);
+        let cursor = editor.selections(cx).first()?.start;
+        u32::try_from(editor.line_of(cursor, cx)).ok()
     }
 
     // ---- rendering --------------------------------------------------------

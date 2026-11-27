@@ -343,3 +343,150 @@ fn disjoint_allows_touching_and_rejects_overlap() {
     assert!(disjoint(&[e(5..9), e(0..2)]));
     assert!(!disjoint(&[e(0..3), e(2..4)]));
 }
+
+// ---- markers and the anchored overlay ---------------------------------------
+
+/// A plain view to anchor.
+struct Card(f32);
+
+impl Render for Card {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().id("card").h(px(self.0)).w_full()
+    }
+}
+
+impl Harness {
+    fn find(&mut self, id: impl Into<gpui_kit::ElementId>) -> Option<Bounds<gpui_kit::Pixels>> {
+        let id = id.into();
+        self.cx
+            .update_window(self.window, |_, window, _| {
+                window.try_find(id).map(|e| e.bounds())
+            })
+            .unwrap()
+    }
+
+    fn marker(&mut self, id: u64) -> Option<Bounds<gpui_kit::Pixels>> {
+        self.find(gpui_kit::ElementId::NamedInteger("code-marker".into(), id))
+    }
+
+    fn marker_lines(&mut self) -> Vec<(u64, Range<usize>)> {
+        self.cx.read(|cx| self.editor.read(cx).marker_lines(cx))
+    }
+}
+
+fn beta_marker(text: &str) -> CodeMarker {
+    let start = at(text, "    let beta");
+    CodeMarker {
+        id: 7,
+        range: start..at(text, "    let gamma"),
+        color: gpui_kit::red(),
+        pulse: false,
+    }
+}
+
+#[test]
+fn markers_sit_on_their_lines_and_follow_edits() {
+    let mut h = open(TEXT);
+    h.with(|editor, _, cx| editor.set_markers(vec![beta_marker(TEXT)], cx));
+    h.frame();
+    let marker = h.marker(7).expect("the marker's diamond is drawn");
+    // The diamond is on line 2, where the cursor is drawn when it is there.
+    let beta = at(TEXT, "    let beta");
+    h.with(|editor, _, cx| editor.set_selections(&[beta..beta], cx));
+    let cursor = h.cx.read(|cx| {
+        h.editor
+            .read(cx)
+            .state
+            .read(cx)
+            .cursor_layout()
+            .map(|(bounds, _)| bounds)
+            .expect("a laid-out cursor")
+    });
+    assert!(
+        (cursor.center().y - marker.center().y).abs() < px(3.),
+        "cursor {cursor:?}, marker {marker:?}"
+    );
+    assert_eq!(h.marker_lines(), vec![(7, 2..3)]);
+
+    // A line typed above moves it down a line.
+    h.with(|editor, _, cx| editor.set_selections(&[0..0], cx));
+    h.type_text("// one more\n");
+    h.frame();
+    let moved = h.marker(7).expect("still drawn");
+    assert_eq!(moved.origin.y - marker.origin.y, px(CODE_LINE_HEIGHT));
+    assert_eq!(h.marker_lines(), vec![(7, 3..4)]);
+
+    // Clearing the markers removes the diamond.
+    h.with(|editor, _, cx| editor.set_markers(Vec::new(), cx));
+    h.frame();
+    assert!(h.marker(7).is_none());
+}
+
+#[test]
+fn clicking_a_marker_reports_it() {
+    let mut h = open(TEXT);
+    let clicked: Rc<RefCell<Vec<u64>>> = Rc::default();
+    let sink = clicked.clone();
+    let editor = h.editor.clone();
+    let _sub = h.cx.update(|cx| {
+        cx.subscribe(&editor, move |_, event: &MarkerClicked, _| {
+            sink.borrow_mut().push(event.0)
+        })
+    });
+    h.with(|editor, _, cx| editor.set_markers(vec![beta_marker(TEXT)], cx));
+    h.frame();
+    h.cx.update_window(h.window, |_, window, cx| {
+        window.click(
+            gpui_kit::ElementId::NamedInteger("code-marker".into(), 7),
+            cx,
+        )
+    })
+    .unwrap();
+    assert_eq!(*clicked.borrow(), vec![7]);
+}
+
+#[test]
+fn the_overlay_sits_below_its_marker_or_at_the_top() {
+    let mut h = open(TEXT);
+    let card = h.cx.update(|cx| cx.new(|_| Card(100.)));
+    let view = card.clone();
+    h.with(move |editor, _, cx| {
+        editor.set_markers(vec![beta_marker(TEXT)], cx);
+        editor.set_overlay(OverlayAnchor::Marker(7), view.into(), cx);
+    });
+    h.frame();
+    h.frame();
+    let marker = h.marker(7).unwrap();
+    let overlay = h.find("code-overlay").expect("the overlay is drawn");
+    assert!(
+        overlay.origin.y >= marker.bottom() && overlay.origin.y < marker.bottom() + px(20.),
+        "marker {marker:?}, overlay {overlay:?}"
+    );
+    assert_eq!(overlay.size.height, px(100.));
+    assert_eq!(
+        h.cx.read(|cx| h.editor.read(cx).overlay_anchor()),
+        Some(OverlayAnchor::Marker(7))
+    );
+
+    let view = card.clone();
+    h.with(move |editor, _, cx| editor.set_overlay(OverlayAnchor::Top, view.into(), cx));
+    h.frame();
+    let top = h.find("code-overlay").unwrap();
+    assert!(top.origin.y < marker.origin.y, "{top:?}");
+
+    // Taller than the room on either side: it scrolls, and leaves the
+    // marked lines visible.
+    let tall = h.cx.update(|cx| cx.new(|_| Card(5000.)));
+    h.with(move |editor, _, cx| editor.set_overlay(OverlayAnchor::Marker(7), tall.into(), cx));
+    h.frame();
+    h.frame();
+    let overlay = h.find("code-overlay").unwrap();
+    assert!(
+        overlay.bottom() <= marker.origin.y || overlay.origin.y >= marker.bottom(),
+        "marker {marker:?}, overlay {overlay:?}"
+    );
+
+    h.with(|editor, _, cx| editor.clear_overlay(cx));
+    h.frame();
+    assert!(h.find("code-overlay").is_none());
+}

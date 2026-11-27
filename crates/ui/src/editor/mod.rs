@@ -18,6 +18,10 @@
 //!   clears it, so it can never revert someone else's edit.
 //! - **Change highlights:** [`CodeEditor::highlight_changes`] tints ranges and
 //!   marks their lines in the gutter, so the user sees what an agent changed.
+//! - **Markers and an anchored overlay:** [`CodeEditor::set_markers`] marks
+//!   lines (gutter bar, band, a clickable diamond) and
+//!   [`CodeEditor::set_overlay`] draws a view over the code next to a marker,
+//!   for anchored questions (`markers`).
 //! - **Languages:** [`language_for_path`] and [`language_for`] pick the
 //!   bundled tree-sitter grammar for a file from `coqo-syntax`'s registry.
 //!   Highlighting, folding, indent guides, line numbers and find
@@ -38,6 +42,10 @@ use gpui_kit::{
 };
 
 use crate::theme::ActiveTokens as _;
+
+mod markers;
+
+pub use markers::{CodeMarker, MarkerClicked, OverlayAnchor};
 
 /// Code font size and line height, as on design board 2.
 const CODE_TEXT_SIZE: f32 = 13.;
@@ -132,6 +140,8 @@ pub struct CodeEditor {
     history: Option<HistoryHandler>,
     /// Change highlights (tints and gutter marks), created on first use.
     highlights: Option<(RangeDecorationCollection, GutterDecorationCollection)>,
+    /// Markers and the anchored overlay.
+    overlays: markers::Overlays,
     _edits: Subscription,
 }
 
@@ -144,6 +154,7 @@ impl std::fmt::Debug for CodeEditor {
 }
 
 impl EventEmitter<EditorEdits> for CodeEditor {}
+impl EventEmitter<MarkerClicked> for CodeEditor {}
 
 impl CodeEditor {
     /// An editor with line numbers, showing `text`.
@@ -174,6 +185,7 @@ impl CodeEditor {
             state,
             history: None,
             highlights: None,
+            overlays: markers::Overlays::default(),
             _edits: edits,
         }
     }
@@ -414,14 +426,17 @@ impl Focusable for CodeEditor {
 }
 
 impl Render for CodeEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let overlays = self.render_overlays(window, cx);
         let p = &cx.tokens().palette;
         let gutter = GutterStyle::default()
             .with_gap(px(GUTTER_GAP))
             .with_line_number_color(p.text_subtle.hsla())
             .with_active_line_number_color(p.text_muted.hsla());
         div()
+            .relative()
             .size_full()
+            .overflow_hidden()
             .capture_action(cx.listener(|this, _: &Undo, window, cx| {
                 this.on_history(HistoryAction::Undo, window, cx)
             }))
@@ -436,6 +451,7 @@ impl Render for CodeEditor {
                     .text_size(px(CODE_TEXT_SIZE))
                     .line_height(px(CODE_LINE_HEIGHT)),
             )
+            .children(overlays)
     }
 }
 

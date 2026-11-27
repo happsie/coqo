@@ -626,6 +626,7 @@ impl ChatTab {
                 cx,
             ),
             Entry::Notice { kind, text } => self.render_notice(ix, kind, text, cx),
+            Entry::Question(question) => self.render_question(ix, &question, cx),
         };
         let top = if ix == 0 { px(18.) } else { px(0.) };
         column(body).pt(top).pb(px(14.)).into_any_element()
@@ -1043,6 +1044,109 @@ impl ChatTab {
             .text_color(color)
             .child(div().pt(px(2.)).child(icon(glyph, px(13.), color)))
             .child(div().flex_1().child(text))
+            .into_any_element()
+    }
+
+    /// A question or note the agent pinned to code: where, what, and the
+    /// answer once given. A click shows it in the editor.
+    fn render_question(
+        &self,
+        ix: usize,
+        q: &coqo_protocol::methods::questions::Question,
+        cx: &App,
+    ) -> AnyElement {
+        use coqo_protocol::methods::questions::QuestionStatus;
+
+        use crate::questions::{self, OpenQuestion};
+
+        let t = cx.tokens();
+        let (p, m) = (&t.palette, &t.metrics);
+        let color = questions::kind_color(q, cx);
+        let place = questions::primary_anchor(q)
+            .map(questions::location)
+            .unwrap_or_default();
+        let verb = if q.kind.is_question() {
+            "Asked about"
+        } else {
+            "Note on"
+        };
+        let title = q
+            .body
+            .trim()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim_start_matches('#')
+            .trim()
+            .to_owned();
+        let (outcome, outcome_color) = match q.status {
+            QuestionStatus::Answered => (
+                format!(
+                    "Answered: {}",
+                    questions::answer_text(q).unwrap_or_default()
+                ),
+                p.sage,
+            ),
+            QuestionStatus::Dismissed => ("Dismissed".to_owned(), p.text_subtle),
+            QuestionStatus::Open if q.kind.is_question() => {
+                ("Waiting for your answer".to_owned(), p.sand)
+            }
+            QuestionStatus::Open => ("Open".to_owned(), p.text_subtle),
+        };
+        let id = q.id.0;
+        div()
+            .id(("chat-question", ix))
+            .test_support()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .px(px(14.))
+            .py(px(12.))
+            .rounded(px(14.))
+            .bg(p.surface.hsla())
+            .cursor_pointer()
+            .on_click(move |_, window, cx| {
+                window.dispatch_action(Box::new(OpenQuestion { id }), cx)
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(8.))
+                    .text_size(m.text_sm)
+                    .text_color(p.text_muted.hsla())
+                    .child(icon(Icon::MarkerDiamond, px(9.), color.hsla()))
+                    .child(
+                        div()
+                            .text_size(m.text_label)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(color.hsla())
+                            .child(questions::kind_label(q)),
+                    )
+                    .child(format!("{verb} "))
+                    .child(
+                        div()
+                            .font_family(m.font_mono.clone())
+                            .text_size(m.text_xs)
+                            .child(place),
+                    )
+                    .child("·")
+                    .child(
+                        div()
+                            .id(("chat-question-open", ix))
+                            .test_support()
+                            .text_color(p.blue.hsla())
+                            .child("Open in editor"),
+                    ),
+            )
+            .child(div().line_height(px(20.)).child(title))
+            .child(
+                div()
+                    .text_size(m.text_sm)
+                    .text_color(outcome_color.hsla())
+                    .child(outcome),
+            )
             .into_any_element()
     }
 
