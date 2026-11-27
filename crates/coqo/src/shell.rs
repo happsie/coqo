@@ -805,6 +805,32 @@ fn file_target(location: &FileLocation) -> (RootId, String, Option<Range>) {
     (location.root, location.path.clone(), range)
 }
 
+/// The chats the window showing `workspace` has open: the active tab first,
+/// then the other groups' visible tabs, then the rest. To ask about code
+/// (#229) in the chat the user is looking at.
+pub fn shown_chats(
+    workspace: &WorkspaceId,
+    cx: &App,
+) -> Vec<coqo_protocol::methods::agents::SessionId> {
+    let Some((_, shell)) = ShellWindows::showing(workspace, cx) else {
+        return Vec::new();
+    };
+    let dock = shell.read(cx).dock().read(cx);
+    let tree = dock.tree();
+    let mut tabs: Vec<_> = dock.active_tab().into_iter().collect();
+    let visible = tree.groups().into_iter().filter_map(|g| g.active_tab());
+    let rest = tree.tabs().into_iter().map(|t| t.id);
+    for id in visible.chain(rest) {
+        if !tabs.contains(&id) {
+            tabs.push(id);
+        }
+    }
+    tabs.into_iter()
+        .filter_map(|id| dock.tab(id)?.downcast::<chat::tab::ChatTab>())
+        .map(|chat| chat.read(cx).session().clone())
+        .collect()
+}
+
 /// Every workbench window, to open an alert in the one that shows its
 /// workspace.
 #[derive(Default)]

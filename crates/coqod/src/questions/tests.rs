@@ -764,7 +764,10 @@ async fn a_thread_the_user_starts_prompts_the_session_with_the_code() {
     assert_eq!(q.status, QuestionStatus::Open);
     assert_eq!(q.anchors[0].anchor.range.start.line, 4);
     assert_eq!(
-        q.thread.iter().map(|m| (m.text.as_str(), m.turn)).collect::<Vec<_>>(),
+        q.thread
+            .iter()
+            .map(|m| (m.text.as_str(), m.turn))
+            .collect::<Vec<_>>(),
         [("Why **3.14**?", 1)]
     );
     let prompts = || -> Vec<Vec<ContentBlock>> {
@@ -786,7 +789,10 @@ async fn a_thread_the_user_starts_prompts_the_session_with_the_code() {
     let ContentBlock::Resource { uri, text, .. } = &first[1] else {
         panic!("{first:?}")
     };
-    assert!(uri.starts_with("file://") && uri.ends_with("src/main.rs#L5-L5"), "{uri}");
+    assert!(
+        uri.starts_with("file://") && uri.ends_with("src/main.rs#L5-L5"),
+        "{uri}"
+    );
     assert_eq!(text, "        3.14 * self.r * self.r\n");
     idle(&ui).await;
 
@@ -817,16 +823,16 @@ async fn a_thread_the_user_starts_prompts_the_session_with_the_code() {
         })
         .await
         .unwrap();
-    assert_eq!(
-        q.thread.iter().map(|m| m.turn).collect::<Vec<_>>(),
-        [1, 2]
-    );
+    assert_eq!(q.thread.iter().map(|m| m.turn).collect::<Vec<_>>(), [1, 2]);
     let second = &prompts()[1];
     assert_eq!(second.len(), 1);
     let ContentBlock::Text { text } = &second[0] else {
         panic!("{second:?}")
     };
-    assert!(text.starts_with(&format!("Follow-up on thread #{}", q.id)), "{text}");
+    assert!(
+        text.starts_with(&format!("Follow-up on thread #{}", q.id)),
+        "{text}"
+    );
     idle(&ui).await;
 
     // The chat records the thread as it grows; the turns hold the replies.
@@ -860,6 +866,45 @@ async fn a_thread_the_user_starts_prompts_the_session_with_the_code() {
             ContentBlock::text("Twice the area.")
         ]
     );
+    drop(updates);
+
+    // The thread survives a restart, and finds its code below lines added
+    // meanwhile; the replies are still in the chat.
+    daemon.stop().await;
+    let main = dir.path().join("src/main.rs");
+    std::fs::write(&main, format!("// shapes\n\n{MAIN_RS}")).unwrap();
+    let daemon = Daemon::start(data.path(), &provider).await;
+    let ui = daemon.ui().await;
+    let again = ui
+        .request::<qm::Get>(QuestionParams { id: q.id })
+        .await
+        .unwrap();
+    assert_eq!(again.author, QuestionAuthor::User);
+    assert_eq!(again.status, QuestionStatus::Open);
+    assert_eq!(again.thread, q.thread);
+    assert_eq!(again.anchors[0].resolution.status, AnchorStatus::Moved);
+    assert_eq!(again.anchors[0].resolution.range.unwrap().start.line, 6);
+    let mut updates = ui
+        .subscribe::<agm::Updates>(
+            SessionParams {
+                session: id.clone(),
+            },
+            Some(0),
+        )
+        .await
+        .unwrap();
+    let mut replies = Vec::new();
+    while replies.len() < 2 {
+        let u = tokio::time::timeout(TIMEOUT, updates.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        if let SessionUpdate::AgentMessageChunk { content } = u.event {
+            replies.push(content);
+        }
+    }
+    drop(updates);
 
     // An agent's question is answered, not replied to; a dismissed thread
     // takes no more replies.

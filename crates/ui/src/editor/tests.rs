@@ -490,3 +490,54 @@ fn the_overlay_sits_below_its_marker_or_at_the_top() {
     h.frame();
     assert!(h.find("code-overlay").is_none());
 }
+
+#[test]
+fn the_ask_button_asks_about_the_selected_lines() {
+    let mut h = open(TEXT);
+    let asked: Rc<RefCell<Vec<Range<usize>>>> = Rc::default();
+    let sink = asked.clone();
+    let editor = h.editor.clone();
+    let _sub = h.cx.update(|cx| {
+        cx.subscribe(&editor, move |_, event: &AskClicked, _| {
+            sink.borrow_mut().push(event.lines.clone())
+        })
+    });
+    // Off until enabled.
+    h.with(|editor, window, cx| {
+        editor.focus(window, cx);
+        editor.set_selections(&[at(TEXT, "alpha")..at(TEXT, "gamma")], cx);
+    });
+    h.frame();
+    assert!(h.find("code-ask").is_none());
+
+    // On the first selected line; a click asks about all of them.
+    h.with(|editor, _, cx| editor.set_ask_enabled(true, cx));
+    h.frame();
+    h.frame();
+    let line2 = h.find("code-ask").expect("the ask button").origin.y;
+    // It follows the selection's first line.
+    h.with(|editor, _, cx| editor.set_selections(&[at(TEXT, "beta")..at(TEXT, "beta")], cx));
+    h.frame();
+    let line3 = h.find("code-ask").unwrap().origin.y;
+    assert_eq!(line3 - line2, px(23.));
+    h.with(|editor, _, cx| editor.set_selections(&[at(TEXT, "alpha")..at(TEXT, "gamma")], cx));
+    h.frame();
+    h.cx.update_window(h.window, |_, window, cx| window.click("code-ask", cx))
+        .unwrap();
+    assert_eq!(*asked.borrow(), vec![1..4]);
+    assert_eq!(h.cx.read(|cx| h.editor.read(cx).selected_lines(cx)), 1..4);
+
+    // An overlay at those lines hides it, and sits below them.
+    let card = h.cx.update(|cx| cx.new(|_| Card(100.)));
+    h.with(move |editor, _, cx| {
+        editor.set_overlay(OverlayAnchor::Lines { start: 1, end: 4 }, card.into(), cx)
+    });
+    h.frame();
+    h.frame();
+    assert!(h.find("code-ask").is_none());
+    let overlay = h.find("code-overlay").unwrap();
+    assert!(
+        overlay.origin.y >= line2 + px(3. * 23.),
+        "{overlay:?} below line 4"
+    );
+}

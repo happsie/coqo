@@ -712,7 +712,9 @@ impl QuestionService {
             return Err(invalid("the reply is empty"));
         }
         if body.len() > MAX_BODY {
-            return Err(invalid(format!("the reply is longer than {MAX_BODY} bytes")));
+            return Err(invalid(format!(
+                "the reply is longer than {MAX_BODY} bytes"
+            )));
         }
         let question = self.questions(vec![record]).await.remove(0);
         let content = self.prompt_for(&question, &body, false).await;

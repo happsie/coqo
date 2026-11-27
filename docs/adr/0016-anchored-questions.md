@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-27
-- **Issue:** #73. Builds on ADR 0012 (bridge), 0013 (anchors) and 0014 (where tools go).
+- **Issue:** #73. Builds on ADR 0012 (bridge), 0013 (anchors) and 0014 (where tools go). Amended by #229 (threads the user starts, below).
 
 ## Context
 
@@ -36,6 +36,13 @@ PLAN §7.5 lets an agent ask the user a question pinned to code and get the answ
 *Waiting* is a `questions/watch` subscription, not a long poll: the call sends MCP progress every 10 s while it waits, returns the answer (or the dismissal) when it comes, and when its time runs out returns that the question is still open, for `await_answer`. A cancelled call (`notifications/cancelled`) drops the subscription, which unsubscribes, so the daemon stops the wait at once; the question stays open. While a watch is followed the question is `waiting`, which the UI and alerts can show ("Claude is waiting"). *Alternative:* a bounded long-poll method; its daemon side would run on after a cancel until the poll's bound.
 
 **Sessions.** While a session has an open question (not a note) its state is `needs_input`, with the reason "Waiting for your answer: <first line>", which the rail and chat badges already show; when its last open question is answered or dismissed it goes back to `working` while a turn runs, else `done`. A waiting permission request is not overridden. Every question and note is also recorded in the session's transcript as a new `SessionUpdate::Question` when asked and again when answered or dismissed, so the chat can show the answer linked to its code (#74 renders it). The session manager gained `record_question` for this; the state goes through `SessionManager::report_state` and the state machine of ADR 0015, which keeps `needs_input` across the end of a turn. Only a session left in `needs_input` is moved on when its last question closes, so an error or `blocked` stays.
+
+**Threads the user starts (#229).** The user can ask too: select lines, ask a chat session about them, and keep the conversation pinned there. This reuses the store rather than adding one, because such a thread needs everything a question has (anchors that follow edits and restarts, the markers, the popover, the pane, the transcript card). A question gains an `author`, `agent` (the default, left off the wire) or `user`, and a `thread` of the user's messages, each `{text, turn, at}`: the session turn it prompted. Global migration 11 adds the columns `author` (default `'agent'`) and `thread` (JSON). Two UI routes (daemon token only):
+
+- `questions/ask {workspace, session, body, anchors}` pins a `clarification` with `author: user` and prompts the session (`SessionManager::prompt`) with the message, where it is pinned and the thread id, and one `resource` block per anchor (`file://…#Lstart-Lend` with the anchored text), asking it to answer in the chat and, if useful, `annotate` the lines. If the prompt fails (`SESSION_BUSY`, a closed session, …) the thread is dismissed and the error returned, so nothing is left pinned.
+- `questions/reply {id, body}` prompts the same session with a follow-up ("Follow-up on thread #id about …", without the code again) and appends it to the thread. Replying to an agent's question is `INVALID_PARAMS`; to a closed thread `QUESTION_CLOSED`.
+
+The agent's replies are not stored on the question: they are the agent messages of each message's `turn` in the session's updates, which are persisted, so the popover streams them from `sessions/updates` and they survive a restart. A user's thread never makes the session `needs_input`, never shows as `waiting`, is not counted by `open_count` or the alerts, and cannot be answered (`questions/answer` is `INVALID_PARAMS`); closing it is `questions/dismiss` ("Resolve"). It is recorded in the transcript like a question, once with its first message and again as it grows or closes.
 
 ## Consequences
 

@@ -22,10 +22,20 @@
 //!
 //! Answering calls `questions/answer`, "Dismiss" `questions/dismiss`; the
 //! answer reaches the agent as its tool result.
+//!
+//! **The user asks too** (#229): the ask button in a file tab's gutter, or
+//! [`AskAboutCode`] (`Ctrl/Cmd+Shift+/`), opens the [`ask`] popover on the
+//! selected lines. Sending pins a thread to them (`questions/ask`): a
+//! question with `author: user` whose first message prompts the chosen chat
+//! session with the code attached. Its popover shows the agent's replies as
+//! they stream ([`thread`]) and takes follow-ups (`questions/reply`). User
+//! threads are blue, never block an agent, and F8 skips them.
 
+pub mod ask;
 pub mod navigate;
 pub mod panel;
 pub mod popover;
+pub mod thread;
 
 use std::{
     collections::HashMap,
@@ -66,8 +76,17 @@ coqo_ui::gpui::actions!(
         NextQuestion,
         /// Show the previous open question (Shift+F8).
         PreviousQuestion,
+        /// Ask an agent about the selected lines (Ctrl/Cmd+Shift+/).
+        AskAboutCode,
     ]
 );
+
+#[cfg(target_os = "macos")]
+const ASK_KEYS: [&str; 2] = ["cmd-shift-/", "cmd-?"];
+#[cfg(not(target_os = "macos"))]
+const ASK_KEYS: [&str; 2] = ["ctrl-shift-/", "ctrl-?"];
+/// Where [`AskAboutCode`] is bound: a file tab.
+pub const FILE_KEY_CONTEXT: &str = "FileEditor";
 
 /// Show question `id` in its file, with its popover open and focused.
 #[derive(Clone, Debug, PartialEq, Eq, Action)]
@@ -81,6 +100,8 @@ pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("f8", NextQuestion, None),
         KeyBinding::new("shift-f8", PreviousQuestion, None),
+        KeyBinding::new(ASK_KEYS[0], AskAboutCode, Some(FILE_KEY_CONTEXT)),
+        KeyBinding::new(ASK_KEYS[1], AskAboutCode, Some(FILE_KEY_CONTEXT)),
     ]);
     popover::init(cx);
     SidebarPanes::register(
@@ -228,11 +249,14 @@ impl WorkspaceQuestions {
             .collect()
     }
 
-    /// Open questions (not notes): what needs the user. For badges and
-    /// alerts (#76).
+    /// Open questions (not notes, not the user's threads): what needs the
+    /// user. For badges and alerts (#76).
     #[allow(dead_code)]
     pub fn open_count(&self) -> usize {
-        self.open().iter().filter(|q| q.kind.is_question()).count()
+        self.open()
+            .iter()
+            .filter(|q| q.kind.is_question() && q.author.is_agent())
+            .count()
     }
 
     /// Open questions an agent is blocked on right now.
@@ -355,6 +379,7 @@ impl WorkspaceQuestions {
         let mut items: Vec<NavItem> = self
             .open()
             .into_iter()
+            .filter(|q| q.author.is_agent())
             .map(|q| {
                 let anchor = primary_anchor(q);
                 NavItem {
@@ -465,6 +490,9 @@ pub fn location(a: &QuestionAnchor) -> String {
 
 /// The badge text of a question's kind.
 pub fn kind_label(q: &Question) -> &'static str {
+    if !q.author.is_agent() {
+        return "YOU ASKED";
+    }
     match q.kind {
         QuestionKind::Decision => "DECISION",
         QuestionKind::Clarification => "CLARIFICATION",
@@ -481,6 +509,9 @@ pub fn kind_label(q: &Question) -> &'static str {
 /// clarification blue, confirm sage).
 pub fn kind_color(q: &Question, cx: &App) -> Rgb {
     let p = &cx.tokens().palette;
+    if !q.author.is_agent() {
+        return p.blue;
+    }
     match q.kind {
         QuestionKind::Decision => p.sand,
         QuestionKind::Clarification => p.blue,
@@ -491,9 +522,11 @@ pub fn kind_color(q: &Question, cx: &App) -> Rgb {
 }
 
 /// The colour of a question's markers: sand for a question that needs the
-/// user, blue for a note, rose for a warning.
+/// user, blue for a note or a thread the user started, rose for a warning.
 pub fn marker_color(q: &Question, cx: &App) -> Rgb {
-    if q.kind.is_question() {
+    if !q.author.is_agent() {
+        cx.tokens().palette.blue
+    } else if q.kind.is_question() {
         cx.tokens().palette.sand
     } else {
         note_color(q, cx)
@@ -570,6 +603,47 @@ pub fn answer(
         return Task::ready(Err(DaemonError::NotConnected));
     };
     let call = daemon.read(cx).request::<qm::Answer>(params);
+    let store = store.downgrade();
+    cx.spawn(async move |cx| {
+        let q = call.await?;
+        store
+            .update(cx, |store, cx| store.merge(vec![q.clone()], cx))
+            .ok();
+        Ok(q)
+    })
+}
+
+/// Ask `session` about code: pin a thread (`questions/ask`); the store
+/// takes it in.
+pub fn ask(
+    store: &Entity<WorkspaceQuestions>,
+    params: qm::AskParams,
+    cx: &mut App,
+) -> Task<Result<Question, DaemonError>> {
+    let Some(daemon) = Daemon::global(cx) else {
+        return Task::ready(Err(DaemonError::NotConnected));
+    };
+    let call = daemon.read(cx).request::<qm::Ask>(params);
+    let store = store.downgrade();
+    cx.spawn(async move |cx| {
+        let q = call.await?;
+        store
+            .update(cx, |store, cx| store.merge(vec![q.clone()], cx))
+            .ok();
+        Ok(q)
+    })
+}
+
+/// Follow up in a thread the user started (`questions/reply`).
+pub fn reply(
+    store: &Entity<WorkspaceQuestions>,
+    params: qm::ReplyParams,
+    cx: &mut App,
+) -> Task<Result<Question, DaemonError>> {
+    let Some(daemon) = Daemon::global(cx) else {
+        return Task::ready(Err(DaemonError::NotConnected));
+    };
+    let call = daemon.read(cx).request::<qm::Reply>(params);
     let store = store.downgrade();
     cx.spawn(async move |cx| {
         let q = call.await?;
