@@ -71,6 +71,26 @@ impl AgentWrites {
         after: &Rope,
         ttl: Duration,
     ) -> Option<String> {
+        let idx = self.find(path, before, after, ttl)?;
+        Some(self.pending.remove(idx).session)
+    }
+
+    /// Whether an announced write explains `before` → `after`, without
+    /// consuming it.
+    pub fn explains(&mut self, path: &Path, before: &Rope, after: &Rope, ttl: Duration) -> bool {
+        self.find(path, before, after, ttl).is_some()
+    }
+
+    /// Whether a write of some text to `path` is announced and not yet seen:
+    /// an empty file there is then the writer's truncation, not its result.
+    pub fn awaits_text(&mut self, path: &Path, ttl: Duration) -> bool {
+        self.pending.retain(|e| e.at.elapsed() < ttl);
+        self.pending
+            .iter()
+            .any(|e| e.path == path && !e.new_text.is_empty())
+    }
+
+    fn find(&mut self, path: &Path, before: &Rope, after: &Rope, ttl: Duration) -> Option<usize> {
         self.pending.retain(|e| e.at.elapsed() < ttl);
         if !self.pending.iter().any(|e| e.path == path) {
             return None;
@@ -80,11 +100,9 @@ impl AgentWrites {
         let (before, after) = (before.to_string(), after.to_string());
         let removed = edit.start..edit.end;
         let added = edit.start..edit.start + edit.text.len();
-        let idx = self
-            .pending
+        self.pending
             .iter()
-            .position(|e| e.path == path && matches(e, &before, &after, &removed, &added))?;
-        Some(self.pending.remove(idx).session)
+            .position(|e| e.path == path && matches(e, &before, &after, &removed, &added))
     }
 }
 
@@ -178,5 +196,27 @@ mod tests {
             w.take_match(&p, &rope("x"), &rope("y"), Duration::ZERO),
             None
         );
+    }
+
+    #[test]
+    fn a_pending_write_awaits_its_text() {
+        let p = PathBuf::from("/w/a.rs");
+        let mut w = AgentWrites::default();
+        assert!(!w.awaits_text(&p, TTL));
+        w.expect("s1".into(), p.clone(), Some("x".into()), "y".into());
+        assert!(w.awaits_text(&p, TTL));
+        assert!(!w.awaits_text(Path::new("/w/b.rs"), TTL));
+        // The truncation is not the write; asking does not consume it.
+        assert!(!w.explains(&p, &rope("x\n"), &rope(""), TTL));
+        assert!(w.explains(&p, &rope("x"), &rope("y"), TTL));
+        assert_eq!(
+            w.take_match(&p, &rope("x"), &rope("y"), TTL),
+            Some("s1".into())
+        );
+        assert!(!w.awaits_text(&p, TTL), "consumed");
+        // An announced write of an empty file explains the empty file.
+        w.expect("s2".into(), p.clone(), None, String::new());
+        assert!(!w.awaits_text(&p, TTL));
+        assert!(w.explains(&p, &rope("x"), &rope(""), TTL));
     }
 }
