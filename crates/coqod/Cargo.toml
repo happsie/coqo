@@ -20,6 +20,7 @@ doc = false
 [dependencies]
 anyhow = "1"
 coqo-agents = { path = "../agents" }
+coqo-buffers = { path = "../buffers" }
 coqo-client = { path = "../client" }
 coqo-kernel = { path = "../kernel" }
 coqo-mod-api = { path = "../mod-api" }
@@ -33,6 +34,7 @@ ignore = "0.4"
 nix = { version = "0.30", default-features = false, features = ["fs", "process"] }
 notify = "8"
 rusqlite = "0.43"
+serde = "1"
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
@@ -41,6 +43,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 nix = { version = "0.30", default-features = false, features = ["fs", "process", "signal"] }
+proptest = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
 

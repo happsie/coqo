@@ -11,6 +11,7 @@ export const ErrorCodes = {
   FORBIDDEN: -32007,
   INCOMPATIBLE_PROTOCOL: -32001,
   INTERNAL_ERROR: -32603,
+  INVALID_EDIT: 1204,
   INVALID_PARAMS: -32602,
   INVALID_REQUEST: -32600,
   IO_ERROR: 1009,
@@ -24,10 +25,13 @@ export const ErrorCodes = {
   PROVIDER_ERROR: 1108,
   REQUEST_CANCELLED: -32005,
   RESUME_GAP: -32003,
+  REVISION_GONE: 1203,
+  SAVE_CONFLICT: 1205,
   SESSION_BUSY: 1103,
   SESSION_CLOSED: 1104,
   STORAGE_ERROR: 1109,
   UNAUTHORIZED: -32006,
+  UNKNOWN_BUFFER: 1201,
   UNKNOWN_PERMISSION_REQUEST: 1105,
   UNKNOWN_PROVIDER: 1102,
   UNKNOWN_ROOT: 1002,
@@ -35,6 +39,7 @@ export const ErrorCodes = {
   UNKNOWN_SUBSCRIPTION: -32004,
   UNKNOWN_WORKSPACE: 1001,
   UNSUPPORTED: 1106,
+  UNSUPPORTED_ENCODING: 1202,
   WORKSPACE_CLOSED: 1008,
 } as const;
 
@@ -83,6 +88,25 @@ export type AvailableCommand = {
   name: string;
 };
 
+/** One event of the [`Changes`] topic: a committed change. The event's subscription `seq` equals `rev`. */
+export type BufferChange = {
+  /** The replica's `client_seq` for client changes, else 0. */
+  clientSeq?: number;
+  /** A disk or agent change that overlapped unsaved edits; both were kept, and the user should look at the result. */
+  conflict?: boolean;
+  /** Whether the text differs from the file on disk after this change. */
+  dirty: boolean;
+  /** The edits, sorted and non-overlapping, against the text at `rev - 1`. */
+  edits: Array<TextEdit>;
+  /** Who made it. */
+  origin: Origin;
+  /** The revision this change produced (the previous one plus 1). */
+  rev: number;
+};
+
+/** Identifies an open buffer in the running daemon. Not stable across daemon restarts or after a buffer is unloaded: reopen by path then. */
+export type BufferId = number;
+
 /** Params of the [`Changes`] topic. */
 export type ChangesParams = {
   /** The workspace to watch. It must be open. */
@@ -93,6 +117,20 @@ export type ChangesParams = {
 export type ChangesParams2 = {
   /** Only this workspace's sessions. */
   workspace?: string | null;
+};
+
+/** Params of the [`Changes`] topic. */
+export type ChangesParams3 = {
+  /** The buffer. */
+  buffer: BufferId;
+};
+
+/** Params of [`Close`]. */
+export type CloseParams = {
+  /** The buffer. */
+  buffer: BufferId;
+  /** The replica going away. */
+  replica: ReplicaId;
 };
 
 /** A piece of message content (ACP `ContentBlock`). */
@@ -186,6 +224,32 @@ export type DirEntry = {
   size: number;
   /** Whether the entry itself is a symlink. */
   symlink: boolean;
+};
+
+/** Params of the [`Edit`] notification: one change made by a replica. */
+export type EditParams = {
+  /** The revision the edits were made against. */
+  baseRev: number;
+  /** The buffer. */
+  buffer: BufferId;
+  /** Per-replica sequence number, strictly increasing from 1. Resending a change keeps its seq; the daemon ignores seqs it has committed. */
+  clientSeq: number;
+  /** The edits, sorted and non-overlapping, against the text at `base_rev`. */
+  edits: Array<TextEdit>;
+  /** The replica that made the change. */
+  replica: ReplicaId;
+};
+
+/** Params of the [`EditRejected`] notification. */
+export type EditRejectedParams = {
+  /** The buffer. */
+  buffer: BufferId;
+  /** The rejected change's seq. */
+  clientSeq: number;
+  /** Why, e.g. [`REVISION_GONE`](super::codes::REVISION_GONE) or [`INVALID_EDIT`](super::codes::INVALID_EDIT). */
+  error: ErrorObject;
+  /** The replica whose change was rejected. */
+  replica: ReplicaId;
 };
 
 /** How a frame's payload is encoded.  JSON is mandatory and is always used for the handshake. MessagePack is optional and is switched on for the rest of the connection when both sides list it in the handshake; it is intended for hot paths (buffer ops, trace streams). */
@@ -287,6 +351,9 @@ export type IncompatibleProtocol = {
   protocol: ProtocolVersion;
 };
 
+/** The file's line-ending convention, detected from its first line break.  The buffer text keeps line breaks exactly as they are on disk (mixed files round-trip unchanged); this tells the editor which break to insert. */
+export type LineEnding = "lf" | "crlf";
+
 /** Result of [`ListDir`]. */
 export type ListDirResult = {
   /** Entries: directories first, then files, each sorted by name. */
@@ -318,6 +385,51 @@ export type OpenParams = {
   /** Open the workspace for this folder, creating it if needed. A workspace whose first root is this folder (after canonicalising the path) is reused, so opening the same folder twice is idempotent. */
   path?: string | null;
 };
+
+/** Params of [`Open`]. */
+export type OpenParams2 = {
+  /** `/`-separated path of a file relative to the root. */
+  path: string;
+  /** Reuse this replica id (when reopening after a reconnect or a resume gap), so the daemon reports which of its changes it already has. */
+  replica?: ReplicaId | null;
+  /** The root the path is relative to. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Result of [`Open`]: a snapshot of the buffer. */
+export type OpenResult = {
+  /** The buffer. The same file opened twice (from two windows, or through a symlink) is the same buffer. */
+  buffer: BufferId;
+  /** Whether the text differs from the file on disk. */
+  dirty: boolean;
+  /** Encoding on disk. */
+  encoding: TextEncoding;
+  /** The highest `client_seq` of `replica` the daemon has committed (0 if none): a pending change with a seq at or below it is already in `text`. */
+  lastSeq: number;
+  /** Line-ending convention. */
+  lineEnding: LineEnding;
+  /** This replica's id: the one asked for, or a new one. */
+  replica: ReplicaId;
+  /** The revision `text` reflects. Subscribe to [`Changes`] with `since` set to it. */
+  rev: number;
+  /** Revision of the last save or reload from disk. */
+  savedRev: number;
+  /** The buffer text, including unsaved edits. */
+  text: string;
+};
+
+/** Who made a change, with an id whose meaning depends on the kind. */
+export type Origin = {
+  /** The source's id, if it has one. */
+  id?: string | null;
+  /** What kind of source. */
+  kind: OriginKind;
+};
+
+/** Who made a change. */
+export type OriginKind = "client" | "agent" | "disk" | "format" | "revert" | "save";
 
 /** Params naming a path in a workspace. */
 export type PathParams = {
@@ -477,6 +589,9 @@ export type RenameParams = {
   name: string;
 };
 
+/** Identifies one replica of a buffer (one editor in one window), e.g. `r-3f2a9c1d0b7e4a65`. Assigned by [`Open`]; a replica keeps it across reconnects and reopens so the daemon can recognise its changes. */
+export type ReplicaId = string;
+
 /** Params of `sessions/respondPermission`. */
 export type RespondPermissionParams = {
   /** The answer. */
@@ -497,8 +612,36 @@ export type ResumeGap = {
   oldest: number;
 };
 
+/** Params of [`RevertChange`]. */
+export type RevertParams = {
+  /** The buffer. */
+  buffer: BufferId;
+  /** The revision whose change to undo. */
+  rev: number;
+};
+
+/** Result of [`RevertChange`]. */
+export type RevertResult = {
+  /** The revision of the reverting change. */
+  rev: number;
+};
+
 /** Identifies a root within its workspace. Stable for the root's lifetime and never reused within the workspace. */
 export type RootId = number;
+
+/** Params of [`Save`]. */
+export type SaveParams = {
+  /** The buffer. */
+  buffer: BufferId;
+  /** Overwrite the file even if it changed on disk since it was last read. */
+  force?: boolean;
+};
+
+/** Result of [`Save`]. */
+export type SaveResult = {
+  /** The revision of the save event; the file holds the text as of it. */
+  savedRev: number;
+};
 
 /** Identifies an agent session. Generated by the daemon; stable forever. */
 export type SessionId = string;
@@ -708,6 +851,19 @@ export type SubscriptionEndedParams = {
 
 /** Identifies a subscription on one connection. */
 export type SubscriptionId = number;
+
+/** Replace the bytes `start..end` with `text`. */
+export type TextEdit = {
+  /** One past the last byte replaced; `start` for a pure insert. */
+  end: number;
+  /** First byte replaced (UTF-8 offset, on a character boundary). */
+  start: number;
+  /** The replacement. */
+  text: string;
+};
+
+/** The file's text encoding. Only UTF-8 is supported for now; other files fail to open with [`UNSUPPORTED_ENCODING`](super::codes::UNSUPPORTED_ENCODING). */
+export type TextEncoding = "utf8" | "utf8Bom";
 
 /** A tool call, as first reported. */
 export type ToolCall = {
@@ -947,6 +1103,14 @@ export interface Requests {
   "sessions/setMode": { params: SetModeParams; result: null };
   /** End a session; its transcript stays readable. Result is true if it was open. (client→server) */
   "sessions/close": { params: SessionParams; result: boolean };
+  /** Open (or join) the buffer of a file: text, rev and a replica id. (client→server) */
+  "buffer/open": { params: OpenParams2; result: OpenResult };
+  /** Undo one change (typically an agent's), transformed past later changes. (client→server) */
+  "buffer/revertChange": { params: RevertParams; result: RevertResult };
+  /** Write the buffer to its file atomically. (client→server) */
+  "buffer/save": { params: SaveParams; result: SaveResult };
+  /** A replica is done with a buffer; it unloads once unsubscribed. (client→server) */
+  "buffer/close": { params: CloseParams; result: null };
 }
 
 /** Notifications: method name → params. */
@@ -955,6 +1119,10 @@ export interface Notifications {
   "coqo/event": { params: EventParams };
   /** The server ended a subscription, with an error if abnormal. (server→client) */
   "coqo/subscriptionEnded": { params: SubscriptionEndedParams };
+  /** A replica's change against base_rev; acknowledged by its own buffer/changes event. (client→server) */
+  "buffer/edit": { params: EditParams };
+  /** A buffer/edit the daemon could not apply; reopen the buffer. (server→client) */
+  "buffer/editRejected": { params: EditRejectedParams };
 }
 
 /** Topics (`coqo/subscribe`): topic name → params and event. */
@@ -967,6 +1135,8 @@ export interface Topics {
   "sessions/updates": { params: SessionParams; event: SessionUpdate };
   /** The latest info of each session whose state, title or mode changed (resumable). */
   "sessions/changes": { params: ChangesParams2; event: SessionInfo };
+  /** Every committed change of a buffer; seq is the buffer rev (resumable with since). */
+  "buffer/changes": { params: ChangesParams3; event: BufferChange };
 }
 
 /** Encode one frame: u32 big-endian length, then the JSON payload. */

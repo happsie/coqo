@@ -13,8 +13,10 @@
 //!   live change events.
 //! - [`agents`]: `agents/*` and `sessions/*`, agent providers and the
 //!   daemon-owned agent sessions (`coqo.agents@1`, PLAN §7.3).
+//! - [`buffer`]: `buffer/*`, replicated text buffers (open, edit, save).
 
 pub mod agents;
+pub mod buffer;
 pub mod fs;
 pub mod workspace;
 
@@ -64,4 +66,19 @@ pub mod codes {
     pub const PROVIDER_ERROR: i64 = 1108;
     /// Reading or writing the session store failed.
     pub const STORAGE_ERROR: i64 = 1109;
+
+    /// No open buffer has the given id (it was unloaded, or the daemon
+    /// restarted): open it again by path.
+    pub const UNKNOWN_BUFFER: i64 = 1201;
+    /// The file is not valid UTF-8; other encodings are not supported yet.
+    pub const UNSUPPORTED_ENCODING: i64 = 1202;
+    /// The revision is no longer in the buffer's log (an edit's `base_rev`,
+    /// or a change to revert): reopen the buffer.
+    pub const REVISION_GONE: i64 = 1203;
+    /// Edits that are unsorted, overlapping, out of range or not on
+    /// character boundaries.
+    pub const INVALID_EDIT: i64 = 1204;
+    /// The file changed on disk since it was read. The change was merged
+    /// into the buffer; review it and save again, or save with `force`.
+    pub const SAVE_CONFLICT: i64 = 1205;
 }

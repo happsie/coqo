@@ -21,7 +21,7 @@ use crate::daemon;
 use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
-use crate::methods::{self, agents, fs, workspace};
+use crate::methods::{self, agents, buffer, fs, workspace};
 use crate::subscription::ResumeGap;
 
 struct Entry {
@@ -221,6 +221,40 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             g,
             "The latest info of each session whose state, title or mode changed (resumable).",
         ),
+        request::<buffer::Open>(
+            g,
+            "client→server",
+            "Open (or join) the buffer of a file: text, rev and a replica id.",
+        ),
+        notification::<buffer::Edit>(
+            g,
+            "client→server",
+            "A replica's change against base_rev; acknowledged by its own buffer/changes event.",
+        ),
+        notification::<buffer::EditRejected>(
+            g,
+            "server→client",
+            "A buffer/edit the daemon could not apply; reopen the buffer.",
+        ),
+        topic::<buffer::Changes>(
+            g,
+            "Every committed change of a buffer; seq is the buffer rev (resumable with since).",
+        ),
+        request::<buffer::RevertChange>(
+            g,
+            "client→server",
+            "Undo one change (typically an agent's), transformed past later changes.",
+        ),
+        request::<buffer::Save>(
+            g,
+            "client→server",
+            "Write the buffer to its file atomically.",
+        ),
+        request::<buffer::Close>(
+            g,
+            "client→server",
+            "A replica is done with a buffer; it unloads once unsubscribed.",
+        ),
     ]
 }
 
@@ -256,6 +290,11 @@ fn error_codes() -> Value {
         "AUTH_REQUIRED": methods::codes::AUTH_REQUIRED,
         "PROVIDER_ERROR": methods::codes::PROVIDER_ERROR,
         "STORAGE_ERROR": methods::codes::STORAGE_ERROR,
+        "UNKNOWN_BUFFER": methods::codes::UNKNOWN_BUFFER,
+        "UNSUPPORTED_ENCODING": methods::codes::UNSUPPORTED_ENCODING,
+        "REVISION_GONE": methods::codes::REVISION_GONE,
+        "INVALID_EDIT": methods::codes::INVALID_EDIT,
+        "SAVE_CONFLICT": methods::codes::SAVE_CONFLICT,
     })
 }
 
@@ -534,6 +573,11 @@ fn schema_covers_every_builtin_method() {
         agents::Prompt::NAME,
         agents::Updates::NAME,
         agents::Changes::NAME,
+        buffer::Open::NAME,
+        buffer::Edit::NAME,
+        buffer::EditRejected::NAME,
+        buffer::Changes::NAME,
+        buffer::Save::NAME,
     ] {
         assert!(methods.contains_key(name), "{name} missing from the schema");
     }

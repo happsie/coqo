@@ -61,6 +61,16 @@ const MAX_STATE_KEY: usize = 128;
 /// Largest accepted state value, serialized.
 const MAX_STATE_VALUE: usize = 1024 * 1024;
 
+/// A file in a workspace, resolved by [`WorkspaceService::resolve_file`].
+#[derive(Clone, Debug)]
+pub(crate) struct ResolvedFile {
+    /// The canonical path.
+    pub real: PathBuf,
+    /// `(root, root-relative path)` pairs under which `fs/changes` reports
+    /// changes to the file.
+    pub watch_keys: Vec<(RootId, String)>,
+}
+
 /// The daemon's workspaces. Create one with [`WorkspaceService::open`] and
 /// serve it with [`register`].
 #[derive(Debug)]
@@ -540,6 +550,48 @@ impl WorkspaceService {
     ) -> Result<fsm::ReadResult, ErrorObject> {
         self.with_root(p.workspace, p.root, move |_, roots| {
             fs::read(roots, &p.path, p.max_bytes)
+        })
+        .await
+    }
+
+    /// Resolve a file for the buffer service: confined to the workspace's
+    /// roots like `fs/read`, and with every `(root, path)` the watcher may
+    /// report it under (the path as named, and its real path if that is
+    /// under a root, e.g. through a symlink).
+    pub(crate) async fn resolve_file(
+        self: &Arc<Self>,
+        workspace: WorkspaceId,
+        root: RootId,
+        rel: String,
+    ) -> Result<ResolvedFile, ErrorObject> {
+        self.blocking(move |s| {
+            let roots = s.roots_of(&workspace)?;
+            let all: Vec<PathBuf> = roots.iter().map(|(_, p)| p.clone()).collect();
+            let root_path = roots
+                .iter()
+                .find(|(id, _)| *id == root)
+                .map(|(_, p)| p.as_path())
+                .ok_or_else(|| error::unknown_root(&workspace, root))?;
+            let (comps, r) = paths::resolve(root_path, &all, &rel)?;
+            if !r.meta.is_file() {
+                return Err(error::not_a_file(&rel));
+            }
+            let mut watch_keys = vec![(root, comps.join("/"))];
+            for (id, path) in &roots {
+                if let Ok(rest) = r.real.strip_prefix(path)
+                    && let Some(rest) = rest.to_str()
+                    && !rest.is_empty()
+                {
+                    let key = (*id, rest.replace(std::path::MAIN_SEPARATOR, "/"));
+                    if !watch_keys.contains(&key) {
+                        watch_keys.push(key);
+                    }
+                }
+            }
+            Ok(ResolvedFile {
+                real: r.real,
+                watch_keys,
+            })
         })
         .await
     }

@@ -1,0 +1,21 @@
+[package]
+name = "coqo-buffers"
+description = "Replicated text buffers: operations, the daemon's authoritative buffer and the UI replica (ADR 0006)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+coqo-protocol = { path = "../protocol" }
+# The same rope gpui-component's editor uses (UTF-8 byte offsets).
+ropey = { version = "=2.0.0-beta.1", default-features = false, features = ["metric_lines_lf"] }
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true

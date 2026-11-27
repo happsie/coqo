@@ -112,18 +112,52 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.
 ///
-/// Version 1 only holds a key/value `meta` table; annotations, walkthroughs
-/// and the like add their tables as later migrations.
-pub const WORKSPACE_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "workspace meta",
-    sql: "
-        CREATE TABLE meta (
-            key   TEXT PRIMARY KEY NOT NULL,
-            value TEXT NOT NULL
-        ) WITHOUT ROWID;
-    ",
-}];
+/// Version 1 holds a key/value `meta` table and version 2 the buffer
+/// journal; annotations, walkthroughs and the like add their tables as later
+/// migrations.
+pub const WORKSPACE_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "workspace meta",
+        sql: "
+            CREATE TABLE meta (
+                key   TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL
+            ) WITHOUT ROWID;
+        ",
+    },
+    Migration {
+        version: 2,
+        name: "buffer journal",
+        // Unsaved buffer edits (#40), so they survive daemon restarts. One
+        // snapshot per file with unsaved edits (keyed by its canonical path):
+        // the file as last read or written (`disk`), the unsaved edits
+        // against it as JSON, and the highest committed seq per replica.
+        // Changes since the snapshot are appended to `buffer_journal_edits`
+        // as JSON `buffer/changes` events. A rowid table for the snapshots,
+        // since their rows are large.
+        sql: "
+            CREATE TABLE buffer_journal (
+                id          INTEGER PRIMARY KEY,
+                path        TEXT    NOT NULL UNIQUE,
+                rev         INTEGER NOT NULL,
+                saved_rev   INTEGER NOT NULL,
+                disk        TEXT    NOT NULL,
+                unsaved     TEXT    NOT NULL,
+                encoding    TEXT    NOT NULL,
+                line_ending TEXT    NOT NULL,
+                replicas    TEXT    NOT NULL,
+                updated_at  INTEGER NOT NULL
+            );
+            CREATE TABLE buffer_journal_edits (
+                path   TEXT    NOT NULL REFERENCES buffer_journal (path) ON DELETE CASCADE,
+                rev    INTEGER NOT NULL,
+                change TEXT    NOT NULL,
+                PRIMARY KEY (path, rev)
+            ) WITHOUT ROWID;
+        ",
+    },
+];
 
 /// Open (or create) the SQLite file at `path`, apply Coqo's connection
 /// settings and bring it up to date with `migrations`.

@@ -236,6 +236,27 @@ Service `coqo.agents@1` (PLAN §7.3; types in `coqo_protocol::methods::agents`, 
 
 **Reattach** (chat tab): `sessions/get`, then `coqo/subscribe` to `sessions/updates` with `since: 0` for the whole transcript or `since: <last seq seen>`; on `RESUME_GAP`, take a fresh snapshot.
 
+### Buffers (`buffer/*`)
+
+Replicated text buffers ([ADR 0006](../docs/adr/0006-buffer-replication.md), details in [ADR 0010](../docs/adr/0010-replicated-buffers.md); types in `coqo_protocol::methods::buffer`, replica in `coqo-buffers`). The daemon owns one buffer per open file (one per canonical path, so two windows or a symlink share it). Replicas apply their own edits at once and send them against a revision; the daemon transforms them past anything committed since and broadcasts every change. Offsets are UTF-8 byte offsets; `TextEdit` lists (`{start, end, text}`) are sorted, non-overlapping and in pre-edit coordinates, like LSP `TextEdit[]`.
+
+| Method | Kind | Params → result |
+|---|---|---|
+| `buffer/open` | request | `{workspace, root, path, replica?}` → `{buffer, replica, rev, text, lineEnding, encoding, savedRev, dirty, lastSeq}`. Pass `replica` again when reopening so `lastSeq` says which of its changes are in `text`. Only UTF-8 files (with or without BOM) open. |
+| `buffer/edit` | notification, client → server | `{buffer, replica, baseRev, clientSeq, edits}`. At most one unacknowledged change per replica; `clientSeq` increases from 1 and a resend keeps it (the daemon drops seqs it has committed). |
+| `buffer/editRejected` | notification, server → client | `{buffer, replica, clientSeq, error}`: the edit could not be applied (`REVISION_GONE`, `INVALID_EDIT`, `UNKNOWN_BUFFER`). Reopen and resync. |
+| `buffer/revertChange` | request | `{buffer, rev}` → `{rev}`: commit the inverse of one change (typically an agent's), transformed past every later change. |
+| `buffer/save` | request | `{buffer, force?}` → `{savedRev}`. Atomic write (temp file + rename, permissions kept, BOM kept). If the file changed on disk since it was read, the change is merged in first and the save fails with `SAVE_CONFLICT` unless `force`. |
+| `buffer/close` | request | `{buffer, replica}` → `null`. |
+
+| Topic | Params | Events |
+|---|---|---|
+| `buffer/changes` | `{buffer}` | `{rev, origin: {kind, id?}, clientSeq, edits, dirty, conflict?}`. **`seq` equals `rev`.** `origin.kind` is `client` (`id` = replica), `agent` (`id` = session), `disk`, `format`, `revert` (`id` = reverted rev) or `save` (no edits). A replica's own change coming back is its acknowledgement. `conflict` marks a disk or agent change that overlapped unsaved edits (both were kept). Subscribers keep the buffer loaded; unsaved edits are journaled and survive daemon restarts. |
+
+**Flow:** `buffer/open`, then subscribe to `buffer/changes` with `since: rev`. Reconnect: subscribe with `since: <last rev>` and resend the change in flight. On `RESUME_GAP` or `UNKNOWN_BUFFER` (the buffer was unloaded or the daemon restarted), reopen with the same `replica` and rebase pending edits onto the new snapshot (`ClientReplica::resync`).
+
+**Disk changes:** while a buffer is open the daemon follows the workspace's `fs/changes`. A changed file is diffed against the text last read or written (not the live buffer) and merged around unsaved edits; it is attributed to an agent session when it matches a tool-call diff the agent host announced, else `origin.kind` is `disk`. A clean buffer simply reloads.
+
 | Code | Name | Meaning |
 |---|---|---|
 | 1001 | `UNKNOWN_WORKSPACE` | No workspace has that id. |
@@ -256,3 +277,8 @@ Service `coqo.agents@1` (PLAN §7.3; types in `coqo_protocol::methods::agents`, 
 | 1107 | `AUTH_REQUIRED` | The agent needs the user to sign in, in the agent's own tool. Coqo never handles the login. |
 | 1108 | `PROVIDER_ERROR` | The provider failed. |
 | 1109 | `STORAGE_ERROR` | The session store failed. |
+| 1201 | `UNKNOWN_BUFFER` | No open buffer has that id; open the file again. |
+| 1202 | `UNSUPPORTED_ENCODING` | The file is not UTF-8. |
+| 1203 | `REVISION_GONE` | The revision is no longer in the buffer's log (or is ahead of it); reopen. |
+| 1204 | `INVALID_EDIT` | Unsorted, overlapping or out-of-range edits, or a split UTF-8 character. |
+| 1205 | `SAVE_CONFLICT` | The file changed on disk; the change was merged, review and save again (or `force`). |
