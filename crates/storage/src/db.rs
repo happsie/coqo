@@ -108,6 +108,28 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
             ) WITHOUT ROWID;
         ",
     },
+    Migration {
+        version: 4,
+        name: "agent permission rules",
+        // Per-workspace auto-approve and auto-reject rules for agent
+        // permission requests (#65, `coqo-agents`). `tool` is a `ToolKind`
+        // (`execute`, `edit`, `read`), `pattern` a command prefix or a
+        // root-relative path glob, `decision` `allow` or `reject`. One rule
+        // per (workspace, tool, pattern): remembering the other decision
+        // replaces it. Rules go with their workspace. Timestamps are Unix
+        // milliseconds.
+        sql: "
+            CREATE TABLE agent_permission_rules (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace  TEXT    NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+                tool       TEXT    NOT NULL,
+                pattern    TEXT    NOT NULL,
+                decision   TEXT    NOT NULL,
+                created_at INTEGER NOT NULL,
+                UNIQUE (workspace, tool, pattern)
+            );
+        ",
+    },
 ];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.

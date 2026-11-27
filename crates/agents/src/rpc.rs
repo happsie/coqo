@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The protocol routes of `coqo.agents@1` (`agents/*`, `sessions/*`).
+//! The protocol routes of `coqo.agents@1` (`agents/*`, `sessions/*`), with
+//! the workspaces' permission rules (`agents/permissionRules`,
+//! `agents/deletePermissionRule`).
 
 use coqo_protocol::Router;
 use coqo_protocol::methods::agents::{
-    Cancel, Changes, Close, Create, Get, List, Prompt, Providers, RespondPermission, SetMode,
-    Updates,
+    Cancel, Changes, Close, Create, DeletePermissionRule, Get, List, PermissionRules, Prompt,
+    Providers, RespondPermission, SetMode, Updates,
 };
 
 use crate::manager::SessionManager;
@@ -22,6 +24,8 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
     let respond = m.clone();
     let set_mode = m.clone();
     let close = m.clone();
+    let rules = m.clone();
+    let delete_rule = m.clone();
     let updates = m.clone();
     let changes = m;
     router
@@ -51,7 +55,7 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
         })
         .method::<RespondPermission, _, _>(move |_, p| {
             let r = respond
-                .respond_permission(&p.session, p.request_id, p.outcome)
+                .answer_permission(&p.session, p.request_id, p.outcome, p.remember)
                 .map_err(Into::into);
             async move { r }
         })
@@ -62,6 +66,14 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
         .method::<Close, _, _>(move |_, p| {
             let m = close.clone();
             async move { m.close(&p.session).await.map_err(Into::into) }
+        })
+        .method::<PermissionRules, _, _>(move |_, p| {
+            let r = rules.rules(&p.workspace).map_err(Into::into);
+            async move { r }
+        })
+        .method::<DeletePermissionRule, _, _>(move |_, p| {
+            let r = delete_rule.delete_rule(p.id).map_err(Into::into);
+            async move { r }
         })
         .topic::<Updates, _, _>(move |_, p, since| {
             let r = updates.updates(&p.session, since);

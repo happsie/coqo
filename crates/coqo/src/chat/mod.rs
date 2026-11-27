@@ -11,6 +11,11 @@
 //! - [`NewChat`] (`Ctrl/Cmd+Shift+N`, and the **+** next to CHATS): a session
 //!   in the open workspace with the first available provider.
 //!
+//! A permission request shows as a card with one button per option, Enter
+//! and Esc for "allow once" and "deny", and "remember for this workspace",
+//! which stores a rule in the daemon; the session panel lists the rules
+//! (`tab::permission`).
+//!
 //! Coqo never signs anyone in: when a provider needs a login, the chat says
 //! how to sign in to the agent's own tool ([`SIGN_IN_HELP`]).
 //!
@@ -64,6 +69,10 @@ coqo_ui::gpui::actions!(
         /// A chat tab now shows another session (a provider switch): save
         /// the layout, since the tab's key changed.
         SessionSwitched,
+        /// Allow the focused permission request once (Enter).
+        AllowPermission,
+        /// Deny the focused permission request once (Esc).
+        RejectPermission,
     ]
 );
 
@@ -86,6 +95,8 @@ pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new(NEW_CHAT_KEY, NewChat, None),
         KeyBinding::new("escape", CancelTurn, Some("ChatTab")),
+        KeyBinding::new("enter", AllowPermission, Some("ChatPermission")),
+        KeyBinding::new("escape", RejectPermission, Some("ChatPermission")),
     ]);
     register_tab_kind(cx, KIND, |state, window, cx| {
         tab::restore(state, window, cx).map(AnyTab::new)

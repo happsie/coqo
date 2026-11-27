@@ -13,6 +13,8 @@
 //!   ([`SessionStore`]) and streamed; the agent state machine
 //!   (`idle · working · needs_input · needs_permission · blocked · error ·
 //!   done`) lives here.
+//! - `rules`: per-workspace permission rules that answer a permission
+//!   request before it reaches the UI (an allowlist: default is ask).
 //! - [`rpc::register`]: the protocol routes (`agents/providers`,
 //!   `sessions/*`, topics `sessions/updates` and `sessions/changes`). The
 //!   wire types are in [`coqo_protocol::methods::agents`].
@@ -58,6 +60,7 @@ mod manager;
 mod provider;
 mod registry;
 pub mod rpc;
+mod rules;
 mod store;
 pub mod testing;
 

@@ -12,6 +12,11 @@
 //! - When the daemon starts, sessions whose stored state says a turn was
 //!   running get their turn ended as `interrupted` and their state set to
 //!   `error`. Their provider session is resumed on the next prompt.
+//! - A permission request first meets the workspace's permission rules
+//!   ([`crate::rules`]): one that a rule answers is recorded as requested and
+//!   resolved at once (`byRule`) and never waits for the user. Every other
+//!   request waits, in `needs_permission`, for `sessions/respondPermission`;
+//!   with `remember` the answer also stores the request's suggested rule.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -22,8 +27,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use coqo_mod_api::BoxFuture;
 use coqo_protocol::methods::agents::{
     AgentState, CreateSessionParams, ListSessionsParams, PermissionOutcome, PermissionRequest,
-    PermissionRequestId, PromptResult, ProviderInfo, SessionId, SessionInfo, SessionList,
-    SessionSnapshot, SessionUpdate, StopReason,
+    PermissionRequestId, PermissionRule, PermissionRuleId, PromptResult, ProviderInfo, SessionId,
+    SessionInfo, SessionList, SessionSnapshot, SessionUpdate, StopReason, ToolCallUpdate,
 };
 use coqo_protocol::{ErrorObject, EventFeed, Sequenced};
 use coqo_storage::Timestamp;
@@ -37,6 +42,7 @@ use crate::provider::{
     ResumeRequest, SessionContext, SessionEvents,
 };
 use crate::registry::ProviderRegistry;
+use crate::rules::{self, Subject};
 use crate::store::{SessionStore, StoredSession};
 
 type Result<T> = std::result::Result<T, AgentError>;
@@ -209,6 +215,7 @@ impl Inner {
         st: &mut SessionState,
         request_id: PermissionRequestId,
         outcome: PermissionOutcome,
+        remembered: Option<PermissionRule>,
     ) -> Result<()> {
         if let Some(waiter) = st.waiters.remove(&request_id) {
             let _ = waiter.send(outcome.clone());
@@ -219,16 +226,45 @@ impl Inner {
             SessionUpdate::PermissionResolved {
                 request_id,
                 outcome,
+                by_rule: None,
+                remembered,
             },
         )?;
         Ok(())
+    }
+
+    /// The session's workspace and what a permission request about
+    /// `tool_call` does, if a rule may answer it (see [`crate::rules`]).
+    fn rule_subject(
+        &self,
+        st: &SessionState,
+        tool_call: Option<&ToolCallUpdate>,
+    ) -> Option<(String, Subject)> {
+        let workspace = st.info().workspace.clone()?;
+        let tool_call = tool_call?;
+        let mut facts = st
+            .fold
+            .tools
+            .get(&tool_call.id)
+            .cloned()
+            .unwrap_or_default();
+        facts.apply(tool_call);
+        let roots = match self.store.workspace_roots(&workspace) {
+            Ok(roots) => rules::canonical_roots(roots),
+            Err(e) => {
+                tracing::warn!(%workspace, error = %e, "cannot read the workspace's roots");
+                return None;
+            }
+        };
+        let subject = Subject::of(&facts, &roots, Path::new(&st.info().cwd))?;
+        Some((workspace, subject))
     }
 
     /// Resolves every pending permission request as cancelled.
     fn cancel_pending(&self, s: &Session, st: &mut SessionState) -> Result<()> {
         let pending: Vec<_> = st.fold.pending.keys().copied().collect();
         for id in pending {
-            self.resolve(s, st, id, PermissionOutcome::Cancelled)?;
+            self.resolve(s, st, id, PermissionOutcome::Cancelled, None)?;
         }
         Ok(())
     }
@@ -462,13 +498,48 @@ impl EventSink for Sink {
         if st.replaying || st.info().closed {
             return cancelled();
         }
+        let subject = inner.rule_subject(&st, ask.tool_call.as_ref());
         let request = PermissionRequest {
             id: PermissionRequestId(st.fold.last_permission + 1),
             title: ask.title,
             tool_call: ask.tool_call,
             options: ask.options,
+            suggested_rule: subject.as_ref().and_then(|(_, subject)| subject.suggest()),
         };
         let id = request.id;
+        let answer = subject.and_then(|(workspace, subject)| {
+            let rules = inner
+                .store
+                .rules(&workspace)
+                .inspect_err(
+                    |e| tracing::warn!(%workspace, error = %e, "cannot read permission rules"),
+                )
+                .ok()?;
+            let (rule, option_id) = rules::decide(&rules, &subject, &request.options)?;
+            Some((rule.clone(), option_id))
+        });
+        if let Some((rule, option_id)) = answer {
+            let outcome = PermissionOutcome::Selected { option_id };
+            let result = inner
+                .record(s, &mut st, SessionUpdate::PermissionRequested(request))
+                .and_then(|_| {
+                    inner.record(
+                        s,
+                        &mut st,
+                        SessionUpdate::PermissionResolved {
+                            request_id: id,
+                            outcome: outcome.clone(),
+                            by_rule: Some(rule),
+                            remembered: None,
+                        },
+                    )
+                });
+            if let Err(e) = result {
+                tracing::error!(session = %s.id, error = %e, "cannot record a rule's answer");
+                return cancelled();
+            }
+            return Box::pin(std::future::ready(outcome));
+        }
         let (tx, rx) = oneshot::channel();
         let result = inner
             .record(s, &mut st, SessionUpdate::PermissionRequested(request))
@@ -704,6 +775,20 @@ impl SessionManager {
         request_id: PermissionRequestId,
         outcome: PermissionOutcome,
     ) -> Result<()> {
+        self.answer_permission(id, request_id, outcome, false)
+    }
+
+    /// Answers a pending permission request. With `remember`, also stores
+    /// the request's suggested rule in the session's workspace, allowing or
+    /// rejecting as the chosen option does; the option goes to the agent
+    /// unchanged either way.
+    pub fn answer_permission(
+        &self,
+        id: &SessionId,
+        request_id: PermissionRequestId,
+        outcome: PermissionOutcome,
+        remember: bool,
+    ) -> Result<()> {
         let inner = &self.inner;
         let s = inner.session(id)?;
         let mut st = lock(&s.state);
@@ -712,16 +797,47 @@ impl SessionManager {
             .pending
             .get(&request_id)
             .ok_or_else(|| AgentError::unknown_permission(id, request_id))?;
-        if let PermissionOutcome::Selected { option_id } = &outcome
-            && !request.options.iter().any(|o| &o.id == option_id)
-        {
-            return Err(AgentError::unknown_permission(id, request_id));
-        }
-        inner.resolve(&s, &mut st, request_id, outcome)?;
+        let option = match &outcome {
+            PermissionOutcome::Selected { option_id } => Some(
+                request
+                    .options
+                    .iter()
+                    .find(|o| &o.id == option_id)
+                    .ok_or_else(|| AgentError::unknown_permission(id, request_id))?,
+            ),
+            PermissionOutcome::Cancelled => None,
+        };
+        let remembered = if remember {
+            let option = option.ok_or_else(|| {
+                AgentError::InvalidParams("only a chosen option can be remembered".into())
+            })?;
+            let (Some(spec), Some(workspace)) = (&request.suggested_rule, &st.info().workspace)
+            else {
+                return Err(AgentError::InvalidParams(format!(
+                    "permission request {} of session {id} cannot be remembered",
+                    request_id.0
+                )));
+            };
+            let decision = rules::decision_of(option.kind);
+            Some(inner.store.put_rule(workspace, spec, decision, now())?)
+        } else {
+            None
+        };
+        inner.resolve(&s, &mut st, request_id, outcome, remembered)?;
         if st.fold.pending.is_empty() && st.info().state == AgentState::NeedsPermission {
             inner.set_state(&s, &mut st, AgentState::Working, None)?;
         }
         Ok(())
+    }
+
+    /// Workspace `workspace`'s permission rules, oldest first.
+    pub fn rules(&self, workspace: &str) -> Result<Vec<PermissionRule>> {
+        Ok(self.inner.store.rules(workspace)?)
+    }
+
+    /// Deletes a permission rule. Returns whether it existed.
+    pub fn delete_rule(&self, id: PermissionRuleId) -> Result<bool> {
+        Ok(self.inner.store.delete_rule(id)?)
     }
 
     /// Switches the session's mode.

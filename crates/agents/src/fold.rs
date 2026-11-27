@@ -4,12 +4,14 @@
 //! commands, usage, turns, open permission requests). Rebuilt from the
 //! transcript when a session is loaded.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use coqo_protocol::methods::agents::{
     AuthStatus, AvailableCommand, PermissionRequest, PermissionRequestId, PlanEntry, SessionModes,
-    SessionUpdate, Usage,
+    SessionUpdate, ToolCallId, Usage,
 };
+
+use crate::rules::ToolFacts;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Fold {
@@ -26,6 +28,8 @@ pub(crate) struct Fold {
     pub commands: Vec<AvailableCommand>,
     pub usage: Option<Usage>,
     pub auth: Option<AuthStatus>,
+    /// What each tool call is, for permission rules.
+    pub tools: HashMap<ToolCallId, ToolFacts>,
 }
 
 impl Fold {
@@ -57,12 +61,16 @@ impl Fold {
             }
             SessionUpdate::Usage(u) => self.usage = Some(u.clone()),
             SessionUpdate::AuthStatus(a) => self.auth = Some(a.clone()),
+            SessionUpdate::ToolCall(c) => {
+                self.tools.insert(c.id.clone(), ToolFacts::of_call(c));
+            }
+            SessionUpdate::ToolCallUpdate(u) => {
+                self.tools.entry(u.id.clone()).or_default().apply(u);
+            }
             SessionUpdate::UserMessage { .. }
             | SessionUpdate::UserMessageChunk { .. }
             | SessionUpdate::AgentMessageChunk { .. }
             | SessionUpdate::AgentThoughtChunk { .. }
-            | SessionUpdate::ToolCall(_)
-            | SessionUpdate::ToolCallUpdate(_)
             | SessionUpdate::State { .. }
             | SessionUpdate::Closed => {}
         }
@@ -89,6 +97,7 @@ mod tests {
             title: "Write".into(),
             tool_call: Some(ToolCallUpdate::default()),
             options: vec![],
+            suggested_rule: None,
         };
         for u in [
             SessionUpdate::Modes(SessionModes {
@@ -114,6 +123,8 @@ mod tests {
         f.apply(&SessionUpdate::PermissionResolved {
             request_id: req.id,
             outcome: PermissionOutcome::Cancelled,
+            by_rule: None,
+            remembered: None,
         });
         f.apply(&SessionUpdate::TurnEnded {
             turn: 1,

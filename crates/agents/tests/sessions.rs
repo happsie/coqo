@@ -321,6 +321,7 @@ async fn a_fake_provider_drives_a_session_end_to_end() {
             outcome: PermissionOutcome::Selected {
                 option_id: "nope".into(),
             },
+            remember: false,
         })
         .await
         .unwrap_err();
@@ -333,6 +334,7 @@ async fn a_fake_provider_drives_a_session_end_to_end() {
             outcome: PermissionOutcome::Selected {
                 option_id: "allow-once".into(),
             },
+            remember: false,
         })
         .await
         .unwrap();
@@ -548,6 +550,8 @@ async fn cancel_resolves_pending_permissions_and_ends_the_turn() {
         == SessionUpdate::PermissionResolved {
             request_id: PermissionRequestId(1),
             outcome: PermissionOutcome::Cancelled,
+            by_rule: None,
+            remembered: None,
         }));
     assert!(events.iter().any(|e| matches!(
         e.event,
@@ -871,4 +875,240 @@ async fn manager_shutdown_interrupts_running_turns() {
     assert_eq!(snap.info.state, AgentState::Error);
     assert!(!snap.running);
     assert_eq!(d.busy.held(), 0);
+}
+
+/// Workspace `ws-rules` with one root, as the workspace service stores it.
+fn add_workspace(db: &std::path::Path, root: &std::path::Path) {
+    let conn = rusqlite::Connection::open(db).unwrap();
+    conn.execute(
+        "INSERT INTO workspaces (id, name, created_at, last_opened_at)
+         VALUES ('ws-rules', 'app', 0, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO workspace_roots (workspace, root_id, position, path, name)
+         VALUES ('ws-rules', 1, 0, ?1, 'app')",
+        [root.to_string_lossy()],
+    )
+    .unwrap();
+}
+
+/// A permission request to run `command`, as an ACP agent sends it.
+fn run(id: &str, command: &str) -> Step {
+    Step::Permission(PermissionAsk {
+        title: format!("`{command}`"),
+        tool_call: Some(ToolCallUpdate {
+            id: ToolCallId(id.into()),
+            kind: Some(ToolKind::Execute),
+            raw_input: Some(serde_json::json!({ "command": command })),
+            ..ToolCallUpdate::default()
+        }),
+        options: ask("").options,
+    })
+}
+
+async fn create_in(client: &Client, root: &std::path::Path) -> SessionId {
+    client
+        .request::<Create>(CreateSessionParams {
+            provider: "fake".into(),
+            cwd: root.to_string_lossy().into_owned(),
+            workspace: Some("ws-rules".into()),
+            title: None,
+            mode: None,
+        })
+        .await
+        .unwrap()
+        .id
+}
+
+async fn rules_of(client: &Client) -> Vec<PermissionRule> {
+    client
+        .request::<PermissionRules>(WorkspaceRulesParams {
+            workspace: "ws-rules".into(),
+        })
+        .await
+        .unwrap()
+}
+
+fn allow_once() -> PermissionOutcome {
+    PermissionOutcome::Selected {
+        option_id: "allow-once".into(),
+    }
+}
+
+fn reject() -> PermissionOutcome {
+    PermissionOutcome::Selected {
+        option_id: "reject".into(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remembered_rules_answer_matching_requests_and_survive_a_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("app");
+    std::fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let db = tmp.path().join("coqo.db");
+    let store = SessionStore::open(&db).unwrap();
+    add_workspace(&db, &root);
+
+    let stop = || Step::Stop(StopReason::EndTurn);
+    let provider = ScriptedProvider::new()
+        .turn([run("t1", "cargo test -p shop"), stop()])
+        .turn([run("t2", "cargo test"), stop()])
+        .turn([run("t3", "cargo build"), stop()])
+        .turn([run("t4", "cargo test; rm -rf /"), stop()]);
+    let rule = {
+        let d = daemon(store, &provider);
+        let client = d.connect().await;
+        let id = create_in(&client, &root).await;
+        let mut sub = subscribe(&client, &id, Some(0)).await;
+
+        // Asked, with the rule "remember" would create.
+        prompt(&client, &id, "test").await.unwrap();
+        let events = until(&mut sub, |u| {
+            matches!(u, SessionUpdate::PermissionRequested(_))
+        })
+        .await;
+        let SessionUpdate::PermissionRequested(request) = &events.last().unwrap().event else {
+            unreachable!()
+        };
+        assert_eq!(
+            request.suggested_rule,
+            Some(PermissionRuleSpec {
+                tool: ToolKind::Execute,
+                pattern: "cargo test".into(),
+            })
+        );
+        wait_for(&client, &id, |s| {
+            s.info.state == AgentState::NeedsPermission
+        })
+        .await;
+        client
+            .request::<RespondPermission>(RespondPermissionParams {
+                session: id.clone(),
+                request_id: request.id,
+                outcome: allow_once(),
+                remember: true,
+            })
+            .await
+            .unwrap();
+        let events = until(&mut sub, turn_ended).await;
+        let remembered = events
+            .iter()
+            .find_map(|e| match &e.event {
+                SessionUpdate::PermissionResolved { remembered, .. } => remembered.clone(),
+                _ => None,
+            })
+            .expect("the answer says which rule it created");
+        assert_eq!(
+            (
+                remembered.tool,
+                remembered.pattern.as_str(),
+                remembered.decision
+            ),
+            (ToolKind::Execute, "cargo test", RuleDecision::Allow)
+        );
+        assert_eq!(rules_of(&client).await, std::slice::from_ref(&remembered));
+
+        // The next matching request is answered by the rule: never pending.
+        prompt(&client, &id, "test again").await.unwrap();
+        let events = until(&mut sub, turn_ended).await;
+        let kinds: Vec<_> = events.iter().map(|e| kind(&e.event)).collect();
+        assert!(
+            kinds
+                .windows(2)
+                .any(|w| w == ["permission_requested", "permission_resolved"]),
+            "{kinds:?}"
+        );
+        assert!(events.iter().any(|e| matches!(
+            &e.event,
+            SessionUpdate::PermissionResolved { by_rule: Some(r), outcome, .. }
+                if r.id == remembered.id && *outcome == allow_once()
+        )));
+        assert!(
+            !events.iter().any(|e| matches!(
+                e.event,
+                SessionUpdate::State {
+                    state: AgentState::NeedsPermission,
+                    ..
+                }
+            )),
+            "no needs_permission for a rule's answer"
+        );
+
+        // Anything else is still asked: another command, or one a rule may
+        // not answer (which has no suggestion either).
+        for command in ["cargo build", "cargo test; rm -rf /"] {
+            prompt(&client, &id, command).await.unwrap();
+            let events = until(&mut sub, |u| {
+                matches!(u, SessionUpdate::PermissionRequested(_))
+            })
+            .await;
+            let SessionUpdate::PermissionRequested(request) = &events.last().unwrap().event else {
+                unreachable!()
+            };
+            assert_eq!(
+                request.suggested_rule.is_some(),
+                command == "cargo build",
+                "{command}"
+            );
+            wait_for(&client, &id, |s| {
+                s.info.state == AgentState::NeedsPermission
+            })
+            .await;
+            let bad = client
+                .request::<RespondPermission>(RespondPermissionParams {
+                    session: id.clone(),
+                    request_id: request.id,
+                    outcome: PermissionOutcome::Cancelled,
+                    remember: true,
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(app_error(bad), codes::INVALID_PARAMS);
+            client
+                .request::<RespondPermission>(RespondPermissionParams {
+                    session: id.clone(),
+                    request_id: request.id,
+                    outcome: reject(),
+                    remember: false,
+                })
+                .await
+                .unwrap();
+            until(&mut sub, turn_ended).await;
+        }
+        assert_eq!(
+            provider.outcomes(),
+            [allow_once(), allow_once(), reject(), reject()]
+        );
+        remembered
+    };
+
+    // A new daemon on the same database still has the rule.
+    let provider = ScriptedProvider::new()
+        .turn([run("t1", "cargo test --release"), stop()])
+        .turn([run("t2", "cargo test"), stop()]);
+    let d = daemon(SessionStore::open(&db).unwrap(), &provider);
+    let client = d.connect().await;
+    assert_eq!(rules_of(&client).await, std::slice::from_ref(&rule));
+    let id = create_in(&client, &root).await;
+    let mut sub = subscribe(&client, &id, Some(0)).await;
+    prompt(&client, &id, "test").await.unwrap();
+    until(&mut sub, turn_ended).await;
+    assert_eq!(provider.outcomes(), [allow_once()]);
+
+    // Deleted, it asks again.
+    let deleted = client
+        .request::<DeletePermissionRule>(RuleParams { id: rule.id })
+        .await
+        .unwrap();
+    assert!(deleted);
+    assert!(rules_of(&client).await.is_empty());
+    prompt(&client, &id, "test").await.unwrap();
+    wait_for(&client, &id, |s| {
+        s.info.state == AgentState::NeedsPermission
+    })
+    .await;
 }
