@@ -20,6 +20,7 @@ export const ErrorCodes = {
   NOT_A_FILE: 1007,
   NOT_FOUND: 1004,
   NOT_INITIALIZED: -32002,
+  NO_SUCH_TERMINAL: 1301,
   PARSE_ERROR: -32700,
   PATH_OUTSIDE_WORKSPACE: 1003,
   PROVIDER_ERROR: 1108,
@@ -29,6 +30,7 @@ export const ErrorCodes = {
   SAVE_CONFLICT: 1205,
   SESSION_BUSY: 1103,
   SESSION_CLOSED: 1104,
+  SPAWN_FAILED: 1302,
   STORAGE_ERROR: 1109,
   UNAUTHORIZED: -32006,
   UNKNOWN_BUFFER: 1201,
@@ -133,6 +135,13 @@ export type CloseParams = {
   replica: ReplicaId;
 };
 
+/** A cell colour. Indexed colours are resolved by the client's theme. */
+export type Color = "default" | {
+  indexed: number;
+} | {
+  rgb: [number, number, number];
+};
+
 /** A piece of message content (ACP `ContentBlock`). */
 export type ContentBlock = {
   /** The text. */
@@ -187,6 +196,16 @@ export type CreateSessionParams = {
   /** The workspace it belongs to. */
   workspace?: string | null;
 };
+
+/** The cursor, in screen coordinates. */
+export type Cursor = {
+  col: number;
+  row: number;
+  shape?: CursorShape;
+};
+
+/** Cursor shapes. */
+export type CursorShape = "block" | "underline" | "beam" | "hollowBlock";
 
 /** Result of `daemon/status`. */
 export type DaemonStatus = {
@@ -306,6 +325,19 @@ export type FileTooLarge = {
   size: number;
 };
 
+/** What changed on screen since the previous frame. */
+export type Frame = {
+  cursor?: Cursor | null;
+  display_offset?: number;
+  /** The screen starts over (after a resize): rows left out are blank. */
+  full?: boolean;
+  history_size?: number;
+  modes?: Modes;
+  /** The changed rows. */
+  rows?: Array<RowUpdate>;
+  size: TermSize;
+};
+
 /** One event of the [`Changes`] topic: paths under one root that changed during a debounce window (about 100 ms).  Paths are reported, not operations: the client re-lists or re-stats them (a path that no longer exists was removed). Changes deep inside ignored directories (such as `target/` or `node_modules/`) and inside `.git` are not reported, but an ignored entry appearing or disappearing directly in a non-ignored directory is. */
 export type FsChanges = {
   /** Changed paths, sorted and without duplicates. Empty when `rescan`. */
@@ -351,6 +383,13 @@ export type IncompatibleProtocol = {
   protocol: ProtocolVersion;
 };
 
+/** Params of [`Input`]. */
+export type InputParams = {
+  /** Bytes for the PTY, as text: typed characters, escape sequences for keys, or pasted text (already wrapped for bracketed paste). */
+  data: string;
+  id: TerminalId;
+};
+
 /** The file's line-ending convention, detected from its first line break.  The buffer text keeps line breaks exactly as they are on disk (mixed files round-trip unchanged); this tells the editor which break to insert. */
 export type LineEnding = "lf" | "crlf";
 
@@ -374,6 +413,20 @@ export type ListSessionsParams = {
   includeClosed?: boolean;
   /** Only this workspace's sessions. */
   workspace?: string | null;
+};
+
+/** Terminal modes that change how a client encodes input. */
+export type Modes = {
+  /** The alternate screen is active (full-screen programs such as `top`); it has no scrollback, so a client turns wheel scrolling into arrow keys. */
+  altScreen?: boolean;
+  /** DECCKM: arrow keys send `ESC O A` instead of `ESC [ A`. */
+  appCursor?: boolean;
+  /** DECKPAM: application keypad. */
+  appKeypad?: boolean;
+  /** Wrap pasted text in `ESC [200~` … `ESC [201~`. */
+  bracketedPaste?: boolean;
+  /** The program asked for mouse reports. */
+  mouse?: boolean;
 };
 
 /** Params of [`Open`]. Give exactly one of `path` and `id`. */
@@ -592,6 +645,12 @@ export type RenameParams = {
 /** Identifies one replica of a buffer (one editor in one window), e.g. `r-3f2a9c1d0b7e4a65`. Assigned by [`Open`]; a replica keeps it across reconnects and reopens so the daemon can recognise its changes. */
 export type ReplicaId = string;
 
+/** Params of [`Resize`]. */
+export type ResizeParams = {
+  id: TerminalId;
+  size: TermSize;
+};
+
 /** Params of `sessions/respondPermission`. */
 export type RespondPermissionParams = {
   /** The answer. */
@@ -629,6 +688,18 @@ export type RevertResult = {
 /** Identifies a root within its workspace. Stable for the root's lifetime and never reused within the workspace. */
 export type RootId = number;
 
+/** One row of the screen, as sparse spans in column order. */
+export type Row = {
+  spans?: Array<Span>;
+};
+
+/** One row of a [`Frame`]. */
+export type RowUpdate = {
+  /** Row index, 0 at the top of the viewport. */
+  row: number;
+  spans?: Array<Span>;
+};
+
 /** Params of [`Save`]. */
 export type SaveParams = {
   /** The buffer. */
@@ -641,6 +712,31 @@ export type SaveParams = {
 export type SaveResult = {
   /** The revision of the save event; the file holds the text as of it. */
   savedRev: number;
+};
+
+/** The rows in view, the cursor and the modes: what a client draws. */
+export type Screen = {
+  /** `None` when hidden or scrolled out of view. */
+  cursor?: Cursor | null;
+  /** How many lines the viewport is scrolled up into the scrollback. */
+  display_offset?: number;
+  /** Lines of scrollback above the screen. */
+  history_size?: number;
+  modes?: Modes;
+  /** Exactly `size.rows` rows, top to bottom. */
+  rows: Array<Row>;
+  size: TermSize;
+};
+
+/** Params of [`Scroll`]. */
+export type ScrollParams = {
+  id: TerminalId;
+  scroll: ScrollTo;
+};
+
+/** How to move a terminal's viewport through its scrollback. */
+export type ScrollTo = "pageUp" | "pageDown" | "top" | "bottom" | {
+  lines: number;
 };
 
 /** Identifies an agent session. Generated by the daemon; stable forever. */
@@ -820,8 +916,41 @@ export type ShutdownResult = {
   stopping: boolean;
 };
 
+/** A run of cells with one style, starting at column `col`. Each character of `text` takes one cell, or two in a `wide` span (CJK, emoji). Blank default-styled cells are left out. */
+export type Span = {
+  col: number;
+  style?: Style;
+  text: string;
+  /** Every character is two cells wide. */
+  wide?: boolean;
+};
+
+/** Params of [`Spawn`]. */
+export type SpawnParams = {
+  /** Arguments to `program`. */
+  args?: Array<string>;
+  /** Working directory. Omit for the user's home directory. */
+  cwd?: string | null;
+  /** Extra environment variables, on top of the daemon's environment. */
+  env?: Record<string, unknown>;
+  /** The program to run. Omit for the user's login shell. */
+  program?: string | null;
+  /** Initial size. */
+  size?: TermSize;
+  /** Tab title until the program sets one. Defaults to the program name. */
+  title?: string | null;
+};
+
 /** Why a turn ended (ACP `StopReason`, plus Coqo's own). */
 export type StopReason = "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled" | "error" | "interrupted";
+
+/** How a run of cells is drawn. */
+export type Style = {
+  bg?: Color;
+  fg?: Color;
+  /** Bits from [`flags`]. */
+  flags?: number;
+};
 
 /** Params of `coqo/subscribe`. */
 export type SubscribeParams = {
@@ -851,6 +980,70 @@ export type SubscriptionEndedParams = {
 
 /** Identifies a subscription on one connection. */
 export type SubscriptionId = number;
+
+/** A terminal's size in cells. */
+export type TermSize = {
+  cols: number;
+  rows: number;
+};
+
+/** An event of [`Output`]. */
+export type TerminalEvent = Frame | {
+  title: string;
+  type: "title";
+} | {
+  cwd: string;
+  type: "cwd";
+} | {
+  code?: number | null;
+  type: "commandFinished";
+} | {
+  type: "bell";
+} | {
+  code?: number | null;
+  type: "exited";
+};
+
+/** Identifies a terminal for the lifetime of the daemon. */
+export type TerminalId = number;
+
+/** What the daemon knows about a terminal. */
+export type TerminalInfo = {
+  /** The working directory: as reported by the shell (OSC 7), else the process's own (where the OS can tell), else the spawn directory. */
+  cwd?: string | null;
+  id: TerminalId;
+  /** Exit code of the last shell command, if the shell reports it (OSC 133;D). */
+  last_command_exit?: number | null;
+  /** Process id of the program (also its process group). */
+  pid?: number | null;
+  /** The program that was started. */
+  program: string;
+  size: TermSize;
+  status: TerminalStatus;
+  /** The title: set by the program (OSC 0/2), else the spawn title. */
+  title: string;
+};
+
+/** Names one terminal. */
+export type TerminalRef = {
+  id: TerminalId;
+};
+
+/** The result of [`Snapshot`]. */
+export type TerminalSnapshot = {
+  info: TerminalInfo;
+  screen: Screen;
+  /** The [`Output`] seq this snapshot reflects: subscribe with `since: seq`. */
+  seq: number;
+};
+
+/** Whether a terminal's process is still running. */
+export type TerminalStatus = {
+  state: "running";
+} | {
+  code?: number | null;
+  state: "exited";
+};
 
 /** Replace the bytes `start..end` with `text`. */
 export type TextEdit = {
@@ -1111,6 +1304,20 @@ export interface Requests {
   "buffer/save": { params: SaveParams; result: SaveResult };
   /** A replica is done with a buffer; it unloads once unsubscribed. (client→server) */
   "buffer/close": { params: CloseParams; result: null };
+  /** Start a program (or the login shell) in a new daemon-owned PTY. (client→server) */
+  "terminal/spawn": { params: SpawnParams; result: TerminalInfo };
+  /** Every terminal, running or exited. (client→server) */
+  "terminal/list": { params: null; result: Array<TerminalInfo> };
+  /** A terminal's screen and the terminal/output seq it reflects. (client→server) */
+  "terminal/snapshot": { params: TerminalRef; result: TerminalSnapshot };
+  /** Write to a terminal's PTY. Send the next one after this one's response. (client→server) */
+  "terminal/input": { params: InputParams; result: null };
+  /** Resize a terminal, in cells. (client→server) */
+  "terminal/resize": { params: ResizeParams; result: null };
+  /** Move a terminal's viewport through its scrollback. (client→server) */
+  "terminal/scroll": { params: ScrollParams; result: null };
+  /** Kill a terminal's process group and forget it. True if it existed. (client→server) */
+  "terminal/close": { params: TerminalRef; result: boolean };
 }
 
 /** Notifications: method name → params. */
@@ -1137,6 +1344,8 @@ export interface Topics {
   "sessions/changes": { params: ChangesParams2; event: SessionInfo };
   /** Every committed change of a buffer; seq is the buffer rev (resumable with since). */
   "buffer/changes": { params: ChangesParams3; event: BufferChange };
+  /** A terminal's changed rows (batched at ~60 Hz), title, cwd and exit. */
+  "terminal/output": { params: TerminalRef; event: TerminalEvent };
 }
 
 /** Encode one frame: u32 big-endian length, then the JSON payload. */

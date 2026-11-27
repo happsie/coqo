@@ -21,7 +21,7 @@ use crate::daemon;
 use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
-use crate::methods::{self, agents, buffer, fs, workspace};
+use crate::methods::{self, agents, buffer, fs, terminal, workspace};
 use crate::subscription::ResumeGap;
 
 struct Entry {
@@ -255,6 +255,37 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "A replica is done with a buffer; it unloads once unsubscribed.",
         ),
+        request::<terminal::Spawn>(
+            g,
+            "client→server",
+            "Start a program (or the login shell) in a new daemon-owned PTY.",
+        ),
+        request::<terminal::List>(g, "client→server", "Every terminal, running or exited."),
+        request::<terminal::Snapshot>(
+            g,
+            "client→server",
+            "A terminal's screen and the terminal/output seq it reflects.",
+        ),
+        request::<terminal::Input>(
+            g,
+            "client→server",
+            "Write to a terminal's PTY. Send the next one after this one's response.",
+        ),
+        request::<terminal::Resize>(g, "client→server", "Resize a terminal, in cells."),
+        request::<terminal::Scroll>(
+            g,
+            "client→server",
+            "Move a terminal's viewport through its scrollback.",
+        ),
+        request::<terminal::Close>(
+            g,
+            "client→server",
+            "Kill a terminal's process group and forget it. True if it existed.",
+        ),
+        topic::<terminal::Output>(
+            g,
+            "A terminal's changed rows (batched at ~60 Hz), title, cwd and exit.",
+        ),
     ]
 }
 
@@ -295,6 +326,8 @@ fn error_codes() -> Value {
         "REVISION_GONE": methods::codes::REVISION_GONE,
         "INVALID_EDIT": methods::codes::INVALID_EDIT,
         "SAVE_CONFLICT": methods::codes::SAVE_CONFLICT,
+        "NO_SUCH_TERMINAL": methods::codes::NO_SUCH_TERMINAL,
+        "SPAWN_FAILED": methods::codes::SPAWN_FAILED,
     })
 }
 

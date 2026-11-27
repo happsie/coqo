@@ -33,6 +33,8 @@ The visual language from PLAN §14, as implemented in [`crates/ui/src/theme.rs`]
 | `peach` | `#E69875` | `#94461F` | Java, syntax |
 | `green` | `#A7C080` | `#4A6721` | Added lines, passing tests |
 
+Terminal colours (`TerminalPalette`, `tokens.terminal()`) are derived from these tokens rather than defined separately. [terminal.md](terminal.md) gives the mapping.
+
 Attention colours (`sand`, `bolt`, `rose`) appear only when something needs the user. The empty shell, for example, shows the bolt in `text_muted`.
 
 ## Contrast

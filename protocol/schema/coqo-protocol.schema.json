@@ -260,6 +260,67 @@
       ],
       "type": "object"
     },
+    "Color": {
+      "description": "A cell colour. Indexed colours are resolved by the client's theme.",
+      "oneOf": [
+        {
+          "const": "default",
+          "description": "The default foreground or background.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The 256-colour palette: 0–15 are the ANSI colours.",
+          "properties": {
+            "indexed": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "indexed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "True colour.",
+          "properties": {
+            "rgb": {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            }
+          },
+          "required": [
+            "rgb"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ContentBlock": {
       "description": "A piece of message content (ACP `ContentBlock`).",
       "oneOf": [
@@ -439,6 +500,41 @@
         "cwd"
       ],
       "type": "object"
+    },
+    "Cursor": {
+      "description": "The cursor, in screen coordinates.",
+      "properties": {
+        "col": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "row": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "shape": {
+          "$ref": "#/$defs/CursorShape"
+        }
+      },
+      "required": [
+        "row",
+        "col"
+      ],
+      "type": "object"
+    },
+    "CursorShape": {
+      "description": "Cursor shapes.",
+      "enum": [
+        "block",
+        "underline",
+        "beam",
+        "hollowBlock"
+      ],
+      "type": "string"
     },
     "DaemonStatus": {
       "description": "Result of `daemon/status`.",
@@ -775,6 +871,55 @@
       ],
       "type": "object"
     },
+    "Frame": {
+      "description": "What changed on screen since the previous frame.",
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "display_offset": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "full": {
+          "description": "The screen starts over (after a resize): rows left out are blank.",
+          "type": "boolean"
+        },
+        "history_size": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "modes": {
+          "$ref": "#/$defs/Modes",
+          "default": {}
+        },
+        "rows": {
+          "description": "The changed rows.",
+          "items": {
+            "$ref": "#/$defs/RowUpdate"
+          },
+          "type": "array"
+        },
+        "size": {
+          "$ref": "#/$defs/TermSize"
+        }
+      },
+      "required": [
+        "size"
+      ],
+      "type": "object"
+    },
     "FsChanges": {
       "description": "One event of the [`Changes`] topic: paths under one root that changed\nduring a debounce window (about 100 ms).\n\nPaths are reported, not operations: the client re-lists or re-stats them\n(a path that no longer exists was removed). Changes deep inside ignored\ndirectories (such as `target/` or `node_modules/`) and inside `.git` are\nnot reported, but an ignored entry appearing or disappearing directly in\na non-ignored directory is.",
       "properties": {
@@ -912,6 +1057,23 @@
       ],
       "type": "object"
     },
+    "InputParams": {
+      "description": "Params of [`Input`].",
+      "properties": {
+        "data": {
+          "description": "Bytes for the PTY, as text: typed characters, escape sequences for\nkeys, or pasted text (already wrapped for bracketed paste).",
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/TerminalId"
+        }
+      },
+      "required": [
+        "id",
+        "data"
+      ],
+      "type": "object"
+    },
     "LineEnding": {
       "description": "The file's line-ending convention, detected from its first line break.\n\nThe buffer text keeps line breaks exactly as they are on disk (mixed\nfiles round-trip unchanged); this tells the editor which break to insert.",
       "oneOf": [
@@ -980,6 +1142,32 @@
             "string",
             "null"
           ]
+        }
+      },
+      "type": "object"
+    },
+    "Modes": {
+      "description": "Terminal modes that change how a client encodes input.",
+      "properties": {
+        "altScreen": {
+          "description": "The alternate screen is active (full-screen programs such as `top`);\nit has no scrollback, so a client turns wheel scrolling into arrow keys.",
+          "type": "boolean"
+        },
+        "appCursor": {
+          "description": "DECCKM: arrow keys send `ESC O A` instead of `ESC [ A`.",
+          "type": "boolean"
+        },
+        "appKeypad": {
+          "description": "DECKPAM: application keypad.",
+          "type": "boolean"
+        },
+        "bracketedPaste": {
+          "description": "Wrap pasted text in `ESC [200~` … `ESC [201~`.",
+          "type": "boolean"
+        },
+        "mouse": {
+          "description": "The program asked for mouse reports.",
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -1640,6 +1828,22 @@
       "description": "Identifies one replica of a buffer (one editor in one window), e.g.\n`r-3f2a9c1d0b7e4a65`. Assigned by [`Open`]; a replica keeps it across\nreconnects and reopens so the daemon can recognise its changes.",
       "type": "string"
     },
+    "ResizeParams": {
+      "description": "Params of [`Resize`].",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/TerminalId"
+        },
+        "size": {
+          "$ref": "#/$defs/TermSize"
+        }
+      },
+      "required": [
+        "id",
+        "size"
+      ],
+      "type": "object"
+    },
     "RespondPermissionParams": {
       "description": "Params of `sessions/respondPermission`.",
       "properties": {
@@ -1733,6 +1937,40 @@
       "minimum": 0,
       "type": "integer"
     },
+    "Row": {
+      "description": "One row of the screen, as sparse spans in column order.",
+      "properties": {
+        "spans": {
+          "items": {
+            "$ref": "#/$defs/Span"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "RowUpdate": {
+      "description": "One row of a [`Frame`].",
+      "properties": {
+        "row": {
+          "description": "Row index, 0 at the top of the viewport.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "spans": {
+          "items": {
+            "$ref": "#/$defs/Span"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "row"
+      ],
+      "type": "object"
+    },
     "SaveParams": {
       "description": "Params of [`Save`].",
       "properties": {
@@ -1764,6 +2002,99 @@
         "savedRev"
       ],
       "type": "object"
+    },
+    "Screen": {
+      "description": "The rows in view, the cursor and the modes: what a client draws.",
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cursor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`None` when hidden or scrolled out of view."
+        },
+        "display_offset": {
+          "default": 0,
+          "description": "How many lines the viewport is scrolled up into the scrollback.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "history_size": {
+          "default": 0,
+          "description": "Lines of scrollback above the screen.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "modes": {
+          "$ref": "#/$defs/Modes",
+          "default": {}
+        },
+        "rows": {
+          "description": "Exactly `size.rows` rows, top to bottom.",
+          "items": {
+            "$ref": "#/$defs/Row"
+          },
+          "type": "array"
+        },
+        "size": {
+          "$ref": "#/$defs/TermSize"
+        }
+      },
+      "required": [
+        "size",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "ScrollParams": {
+      "description": "Params of [`Scroll`].",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/TerminalId"
+        },
+        "scroll": {
+          "$ref": "#/$defs/ScrollTo"
+        }
+      },
+      "required": [
+        "id",
+        "scroll"
+      ],
+      "type": "object"
+    },
+    "ScrollTo": {
+      "description": "How to move a terminal's viewport through its scrollback.",
+      "oneOf": [
+        {
+          "enum": [
+            "pageUp",
+            "pageDown",
+            "top",
+            "bottom"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Up into the scrollback by this many lines (negative: down).",
+          "properties": {
+            "lines": {
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "lines"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "SessionId": {
       "description": "Identifies an agent session. Generated by the daemon; stable forever.",
@@ -2426,6 +2757,81 @@
       ],
       "type": "object"
     },
+    "Span": {
+      "description": "A run of cells with one style, starting at column `col`. Each character\nof `text` takes one cell, or two in a `wide` span (CJK, emoji). Blank\ndefault-styled cells are left out.",
+      "properties": {
+        "col": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "style": {
+          "$ref": "#/$defs/Style"
+        },
+        "text": {
+          "type": "string"
+        },
+        "wide": {
+          "description": "Every character is two cells wide.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "col",
+        "text"
+      ],
+      "type": "object"
+    },
+    "SpawnParams": {
+      "description": "Params of [`Spawn`].",
+      "properties": {
+        "args": {
+          "description": "Arguments to `program`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cwd": {
+          "description": "Working directory. Omit for the user's home directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra environment variables, on top of the daemon's environment.",
+          "type": "object"
+        },
+        "program": {
+          "description": "The program to run. Omit for the user's login shell.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "$ref": "#/$defs/TermSize",
+          "default": {
+            "cols": 80,
+            "rows": 24
+          },
+          "description": "Initial size."
+        },
+        "title": {
+          "description": "Tab title until the program sets one. Defaults to the program name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "StopReason": {
       "description": "Why a turn ended (ACP `StopReason`, plus Coqo's own).",
       "oneOf": [
@@ -2465,6 +2871,25 @@
           "type": "string"
         }
       ]
+    },
+    "Style": {
+      "description": "How a run of cells is drawn.",
+      "properties": {
+        "bg": {
+          "$ref": "#/$defs/Color"
+        },
+        "fg": {
+          "$ref": "#/$defs/Color"
+        },
+        "flags": {
+          "description": "Bits from [`flags`].",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
     },
     "SubscribeParams": {
       "description": "Params of `coqo/subscribe`.",
@@ -2541,6 +2966,269 @@
       "format": "uint64",
       "minimum": 0,
       "type": "integer"
+    },
+    "TermSize": {
+      "description": "A terminal's size in cells.",
+      "properties": {
+        "cols": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rows": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cols",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "TerminalEvent": {
+      "description": "An event of [`Output`].",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Frame",
+          "description": "The screen changed.",
+          "properties": {
+            "type": {
+              "const": "frame",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The program set the title (OSC 0/2), or reset it.",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "title"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The shell reported a new working directory (OSC 7).",
+          "properties": {
+            "cwd": {
+              "type": "string"
+            },
+            "type": {
+              "const": "cwd",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "cwd"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The shell reported a finished command (OSC 133;D).",
+          "properties": {
+            "code": {
+              "default": null,
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "commandFinished",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The bell rang.",
+          "properties": {
+            "type": {
+              "const": "bell",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The process exited. The terminal stays until [`Close`] so its last\noutput can still be read.",
+          "properties": {
+            "code": {
+              "default": null,
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "exited",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TerminalId": {
+      "description": "Identifies a terminal for the lifetime of the daemon.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "TerminalInfo": {
+      "description": "What the daemon knows about a terminal.",
+      "properties": {
+        "cwd": {
+          "description": "The working directory: as reported by the shell (OSC 7), else the\nprocess's own (where the OS can tell), else the spawn directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/TerminalId"
+        },
+        "last_command_exit": {
+          "description": "Exit code of the last shell command, if the shell reports it (OSC 133;D).",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pid": {
+          "description": "Process id of the program (also its process group).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "program": {
+          "description": "The program that was started.",
+          "type": "string"
+        },
+        "size": {
+          "$ref": "#/$defs/TermSize"
+        },
+        "status": {
+          "$ref": "#/$defs/TerminalStatus"
+        },
+        "title": {
+          "description": "The title: set by the program (OSC 0/2), else the spawn title.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "program",
+        "size",
+        "status"
+      ],
+      "type": "object"
+    },
+    "TerminalRef": {
+      "description": "Names one terminal.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/TerminalId"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "TerminalSnapshot": {
+      "description": "The result of [`Snapshot`].",
+      "properties": {
+        "info": {
+          "$ref": "#/$defs/TerminalInfo"
+        },
+        "screen": {
+          "$ref": "#/$defs/Screen"
+        },
+        "seq": {
+          "description": "The [`Output`] seq this snapshot reflects: subscribe with `since: seq`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seq",
+        "info",
+        "screen"
+      ],
+      "type": "object"
+    },
+    "TerminalStatus": {
+      "description": "Whether a terminal's process is still running.",
+      "oneOf": [
+        {
+          "properties": {
+            "state": {
+              "const": "running",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The process exited. `code` is `None` when a signal ended it.",
+          "properties": {
+            "code": {
+              "default": null,
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "state": {
+              "const": "exited",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "TextEdit": {
       "description": "Replace the bytes `start..end` with `text`.",
@@ -3201,6 +3889,7 @@
     "NOT_A_FILE": 1007,
     "NOT_FOUND": 1004,
     "NOT_INITIALIZED": -32002,
+    "NO_SUCH_TERMINAL": 1301,
     "PARSE_ERROR": -32700,
     "PATH_OUTSIDE_WORKSPACE": 1003,
     "PROVIDER_ERROR": 1108,
@@ -3210,6 +3899,7 @@
     "SAVE_CONFLICT": 1205,
     "SESSION_BUSY": 1103,
     "SESSION_CLOSED": 1104,
+    "SPAWN_FAILED": 1302,
     "STORAGE_ERROR": 1109,
     "UNAUTHORIZED": -32006,
     "UNKNOWN_BUFFER": 1201,
@@ -3533,6 +4223,97 @@
       "kind": "topic",
       "params": {
         "$ref": "#/$defs/SessionParams"
+      }
+    },
+    "terminal/close": {
+      "description": "Kill a terminal's process group and forget it. True if it existed.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/TerminalRef"
+      },
+      "result": {
+        "type": "boolean"
+      }
+    },
+    "terminal/input": {
+      "description": "Write to a terminal's PTY. Send the next one after this one's response.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/InputParams"
+      },
+      "result": {
+        "type": "null"
+      }
+    },
+    "terminal/list": {
+      "description": "Every terminal, running or exited.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "type": "null"
+      },
+      "result": {
+        "items": {
+          "$ref": "#/$defs/TerminalInfo"
+        },
+        "type": "array"
+      }
+    },
+    "terminal/output": {
+      "description": "A terminal's changed rows (batched at ~60 Hz), title, cwd and exit.",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/TerminalEvent"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/TerminalRef"
+      }
+    },
+    "terminal/resize": {
+      "description": "Resize a terminal, in cells.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ResizeParams"
+      },
+      "result": {
+        "type": "null"
+      }
+    },
+    "terminal/scroll": {
+      "description": "Move a terminal's viewport through its scrollback.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ScrollParams"
+      },
+      "result": {
+        "type": "null"
+      }
+    },
+    "terminal/snapshot": {
+      "description": "A terminal's screen and the terminal/output seq it reflects.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/TerminalRef"
+      },
+      "result": {
+        "$ref": "#/$defs/TerminalSnapshot"
+      }
+    },
+    "terminal/spawn": {
+      "description": "Start a program (or the login shell) in a new daemon-owned PTY.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SpawnParams"
+      },
+      "result": {
+        "$ref": "#/$defs/TerminalInfo"
       }
     },
     "workspace/addRoot": {

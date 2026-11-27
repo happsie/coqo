@@ -12,4 +12,5 @@ Architecture decisions for Coqo, one file per decision. See [ADR 0001](0001-reco
 | [0006](0006-buffer-replication.md) | Buffer replication: daemon-authoritative op-log with optimistic local apply | Accepted |
 | [0007](0007-daemon-lifecycle.md) | Daemon lifecycle: socket, single-instance lock, spawn-on-demand, idle policy and socket security | Accepted |
 | [0008](0008-editor-remote-edits-patch.md) | Editor remote edits: a vendored, patched gpui-base behind `coqo_ui::editor` | Accepted |
+| [0009](0009-daemon-terminals.md) | Daemon terminals: PTY and emulator in `coqod`, the UI mirrors rows | Accepted |
 | [0010](0010-replicated-buffers.md) | Replicated buffers: protocol details, disk merges and the journal (refines 0006) | Accepted |

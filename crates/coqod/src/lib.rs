@@ -11,6 +11,7 @@
 //! - [`mods`]: **where built-in mods are listed**; loaded and activated at
 //!   startup, deactivated at shutdown.
 //! - [`agents`]: daemon-owned agent sessions (`agents/*`, `sessions/*`).
+//! - [`terminal`]: daemon-owned PTYs (`terminal/*`).
 //! - [`cli`]: command-line arguments.
 //! - [`buffers`]: replicated text buffers (`buffer/*`): open, edit, save,
 //!   disk changes and the unsaved-edit journal.
@@ -28,6 +29,7 @@ pub mod lifecycle;
 pub mod methods;
 pub mod mods;
 pub mod routes;
+pub mod terminal;
 pub mod workspace;
 
 pub use daemon::DaemonContext;

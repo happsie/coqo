@@ -14,9 +14,10 @@ coqo-protocol = { path = "../protocol" }
 coqo-ui = { path = "../ui" }
 # The per-user data directory for saved layouts (PLAN §8).
 dirs = "6"
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Inline diffs of agent edits in the chat.
 similar = "2"
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # The daemon connection runs on its own tokio runtime; GPUI is not tokio.
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 

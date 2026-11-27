@@ -268,8 +268,10 @@ impl Dock {
     /// Close a tab. An emptied group closes and its split collapses.
     pub fn close_tab(&mut self, id: TabId, cx: &mut Context<Self>) {
         if self.tree.remove(id).is_some() {
-            self.tabs.remove(&id);
             self.observers.remove(&id);
+            if let Some(tab) = self.tabs.remove(&id) {
+                tab.on_close(cx);
+            }
             self.changed(cx);
         }
     }
@@ -281,8 +283,10 @@ impl Dock {
             return;
         }
         for tab in closed {
-            self.tabs.remove(&tab.id);
             self.observers.remove(&tab.id);
+            if let Some(tab) = self.tabs.remove(&tab.id) {
+                tab.on_close(cx);
+            }
         }
         self.changed(cx);
     }

@@ -97,6 +97,20 @@ impl Render for WelcomeTab {
                     .child(row("Split down", "Ctrl Alt \\"))
                     .child(row("Close tab", "Ctrl W"))
                     .child(row("Close group", "Ctrl Alt W"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .w(px(180.))
+                                    .text_color(p.text_muted.hsla())
+                                    .child("New terminal"),
+                            )
+                            // Ctrl on every platform, like other editors.
+                            .child(kbd(crate::terminal::NEW_TERMINAL_KEYS, cx)),
+                    )
                     .child(row("Command palette", "Ctrl K")),
             )
     }

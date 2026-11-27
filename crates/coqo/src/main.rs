@@ -13,6 +13,7 @@ mod files;
 mod layout;
 mod resume;
 mod shell;
+mod terminal;
 mod welcome;
 mod windows;
 mod workspace;
@@ -100,14 +101,19 @@ fn run(folder: Option<PathBuf>) {
     let app = coqo_ui::application().with_quit_mode(QuitMode::LastWindowClosed);
     app.run(move |cx| {
         coqo_ui::init(Appearance::System, cx);
-        match daemon::DaemonConfig::from_env() {
-            Ok(config) => {
-                daemon::init(config, cx);
+        let daemon = match daemon::DaemonConfig::from_env() {
+            Ok(config) => Some(daemon::init(config, cx)),
+            Err(err) => {
+                eprintln!("coqo: {err}");
+                None
             }
-            Err(err) => eprintln!("coqo: {err}"),
-        }
+        };
         workspace::init(folder, cx);
         shell::init(cx);
+        if let Some(daemon) = daemon {
+            let handle = daemon.read(cx).handle();
+            terminal::init(Rc::new(terminal::DaemonBackend::new(handle)), cx);
+        }
         let fallback = Rc::new(JsonFileLayoutStore::new(layout_dir()));
         let store = layout::DaemonLayoutStore::install(fallback, shell::DEFAULT_WORKSPACE, cx);
         windows::init(store, cx);

@@ -22,6 +22,16 @@ impl Rgb {
         self.hsla().opacity(alpha)
     }
 
+    /// This colour moved `t` (0 to 1) of the way towards `other`.
+    pub fn mix(self, other: Rgb, t: f32) -> Rgb {
+        let channel = |shift: u32| {
+            let a = ((self.0 >> shift) & 0xFF) as f32;
+            let b = ((other.0 >> shift) & 0xFF) as f32;
+            ((a + (b - a) * t.clamp(0.0, 1.0)).round() as u32).min(255)
+        };
+        Rgb(channel(16) << 16 | channel(8) << 8 | channel(0))
+    }
+
     /// WCAG 2.x relative luminance.
     pub fn luminance(self) -> f64 {
         let channel = |shift: u32| {
@@ -196,6 +206,76 @@ impl Palette {
     }
 }
 
+/// Terminal colours, derived from a [`Palette`]: the ANSI colours are the zen
+/// accents, the bright ones lean towards the text colour, and the rest of the
+/// 256-colour palette (the 6×6×6 cube and the grey ramp) is computed as xterm
+/// does.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerminalPalette {
+    pub foreground: Rgb,
+    pub background: Rgb,
+    pub cursor: Rgb,
+    /// Selection highlight, drawn at [`TerminalPalette::SELECTION_ALPHA`].
+    pub selection: Rgb,
+    /// Black, red, green, yellow, blue, magenta, cyan, white, then the bright ones.
+    pub ansi: [Rgb; 16],
+}
+
+impl TerminalPalette {
+    pub const SELECTION_ALPHA: f32 = 0.35;
+
+    /// Derive the terminal colours of `appearance` from `palette`.
+    pub fn new(palette: &Palette, appearance: Appearance) -> Self {
+        let p = palette;
+        let light = appearance == Appearance::Light;
+        let (black, white, bright_white) = if light {
+            (p.text, p.border_strong, p.surface_strong)
+        } else {
+            (p.border_strong, p.text_muted, p.text)
+        };
+        let base = [
+            black,
+            p.rose,
+            p.green,
+            p.sand,
+            p.blue,
+            p.lavender,
+            p.blue.mix(p.sage, 0.5),
+            white,
+        ];
+        let mut ansi = [Rgb(0); 16];
+        for (i, c) in base.iter().enumerate() {
+            ansi[i] = *c;
+            ansi[i + 8] = c.mix(p.text, 0.3);
+        }
+        ansi[8] = p.text_subtle;
+        ansi[15] = bright_white;
+        Self {
+            foreground: p.text,
+            background: p.panel,
+            cursor: p.text,
+            selection: p.blue,
+            ansi,
+        }
+    }
+
+    /// A colour of the 256-colour palette.
+    pub fn indexed(&self, index: u8) -> Rgb {
+        match index {
+            0..=15 => self.ansi[usize::from(index)],
+            16..=231 => {
+                let i = u32::from(index - 16);
+                let level = |v: u32| if v == 0 { 0 } else { 55 + v * 40 };
+                Rgb(level(i / 36) << 16 | level(i / 6 % 6) << 8 | level(i % 6))
+            }
+            232..=255 => {
+                let v = 8 + 10 * u32::from(index - 232);
+                Rgb(v << 16 | v << 8 | v)
+            }
+        }
+    }
+}
+
 /// Spacing, radii and type scale shared by both appearances.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Metrics {
@@ -258,6 +338,11 @@ pub struct Tokens {
 }
 
 impl Tokens {
+    /// The terminal colours for this appearance.
+    pub fn terminal(&self) -> TerminalPalette {
+        TerminalPalette::new(&self.palette, self.appearance)
+    }
+
     pub fn new(choice: Appearance, resolved: Appearance) -> Self {
         let appearance = match resolved {
             Appearance::Light => Appearance::Light,
@@ -384,6 +469,30 @@ mod tests {
             Appearance::Light.resolve(WindowAppearance::Dark),
             Appearance::Light
         );
+    }
+
+    #[test]
+    fn terminal_colours_come_from_the_palette_and_stay_readable() {
+        for appearance in [Appearance::Dark, Appearance::Light] {
+            let t = Tokens::new(appearance, appearance).terminal();
+            assert_eq!(
+                t.background,
+                Tokens::new(appearance, appearance).palette.panel
+            );
+            // Red to cyan, plain and bright, are readable on the background.
+            for i in (1..=6).chain(9..=14) {
+                let ratio = t.ansi[i].contrast(t.background);
+                assert!(ratio >= 4.5, "{appearance:?} ansi {i}: {ratio:.2}:1");
+            }
+            assert!(t.ansi[0].contrast(t.ansi[7]) > 1.5);
+        }
+        let t = Tokens::new(Appearance::Dark, Appearance::Dark).terminal();
+        assert_eq!(t.indexed(16), Rgb(0x000000));
+        assert_eq!(t.indexed(196), Rgb(0xFF0000));
+        assert_eq!(t.indexed(231), Rgb(0xFFFFFF));
+        assert_eq!(t.indexed(232), Rgb(0x080808));
+        assert_eq!(t.indexed(255), Rgb(0xEEEEEE));
+        assert_eq!(Rgb(0x000000).mix(Rgb(0xFFFFFF), 0.5), Rgb(0x808080));
     }
 
     #[test]

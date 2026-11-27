@@ -180,7 +180,7 @@ Rules:
 | `editor` | Code editor: multi-cursor, splits, folding, sticky scroll, minimap (optional), vim mode (optional) |
 | `files` | File tree, fuzzy finder, file operations |
 | `search` | Project search/replace, symbol search |
-| `terminal` | Integrated terminal tabs |
+| `terminal` | Integrated terminal tabs (daemon-owned PTYs; in `coqod` and `coqo` until the mod API can host it, see [ADR 0009](adr/0009-daemon-terminals.md)) |
 | `lsp` | Generic LSP client (diagnostics, completion, hover, nav, rename, code actions, inlay hints, semantic tokens, formatting) + ⚡ bolt lifecycle (`coqo.intellisense@1`) |
 | `syntax` | tree-sitter highlighting, folding, outline, symbol tags, which are always on (§7.1.1) |
 | `lang-web` | TS/JS/React (vtsls), ESLint, Prettier, HTML/CSS/JSON servers, Emmet |

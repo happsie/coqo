@@ -14,10 +14,12 @@
 //! - [`agents`]: `agents/*` and `sessions/*`, agent providers and the
 //!   daemon-owned agent sessions (`coqo.agents@1`, PLAN §7.3).
 //! - [`buffer`]: `buffer/*`, replicated text buffers (open, edit, save).
+//! - [`terminal`]: `terminal/*`, daemon-owned PTYs.
 
 pub mod agents;
 pub mod buffer;
 pub mod fs;
+pub mod terminal;
 pub mod workspace;
 
 /// Error codes of the application methods.
@@ -81,4 +83,9 @@ pub mod codes {
     /// The file changed on disk since it was read. The change was merged
     /// into the buffer; review it and save again, or save with `force`.
     pub const SAVE_CONFLICT: i64 = 1205;
+
+    /// No terminal has the given id.
+    pub const NO_SUCH_TERMINAL: i64 = 1301;
+    /// The PTY or the process could not be started.
+    pub const SPAWN_FAILED: i64 = 1302;
 }

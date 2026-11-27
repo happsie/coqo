@@ -30,7 +30,7 @@ pub mod gpui {
     pub use gpui_kit::*;
 }
 
-pub use theme::{ActiveTokens, Appearance, Palette, Rgb, Tokens};
+pub use theme::{ActiveTokens, Appearance, Palette, Rgb, TerminalPalette, Tokens};
 
 /// Test helpers: GPUI's headless test context and window queries.
 #[cfg(feature = "test-support")]
