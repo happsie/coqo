@@ -873,3 +873,38 @@ proptest! {
         prop_assert_eq!(char_counts(&text), expected, "characters lost or duplicated");
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn acp_file_traffic_reaches_open_buffers_through_the_agent_fs_bridge() {
+    use coqo_acp_host::AgentFs;
+    use coqo_protocol::methods::agents::SessionId;
+
+    let d = Daemon::new(&[("a.rs", "fn a() {}\n")]).await;
+    let bridge = crate::agents::BufferFs(Arc::clone(&d.buffers));
+    let session = SessionId("s-1".into());
+    let mut w = d.window("a.rs").await;
+    w.edit(TextEdit::insert(0, "// mine\n")).await;
+    w.sync_to(1).await;
+    // fs/read_text_file sees the unsaved edit.
+    assert_eq!(
+        bridge.open_text(&d.path("a.rs")).as_deref(),
+        Some("// mine\nfn a() {}\n")
+    );
+    // A tool-call diff, then the agent's own disk write: the agent's change.
+    bridge.expect_write(
+        &session,
+        &d.path("a.rs"),
+        Some("fn a() {}".into()),
+        "fn b() {}".into(),
+    );
+    fs::write(d.path("a.rs"), "fn b() {}\n").unwrap();
+    let c = w.wait_for(|c| c.origin.kind == OriginKind::Agent).await;
+    assert_eq!(c.origin.id.as_deref(), Some("s-1"));
+    assert_eq!(w.editor, "// mine\nfn b() {}\n");
+    // fs/write_text_file into the open buffer.
+    assert!(bridge.replace_open(&session, &d.path("a.rs"), "fn c() {}\n"));
+    w.wait_for(|c| c.origin.kind == OriginKind::Agent && c.rev > 2)
+        .await;
+    assert_eq!(w.editor, "fn c() {}\n");
+    assert!(!bridge.replace_open(&session, &d.path("closed.rs"), "x"));
+}

@@ -22,6 +22,7 @@ doc = false
 # crate Alacritty and Zed use.
 alacritty_terminal = "0.26"
 anyhow = "1"
+coqo-acp-host = { path = "../acp-host" }
 coqo-agents = { path = "../agents" }
 coqo-buffers = { path = "../buffers" }
 coqo-client = { path = "../client" }
