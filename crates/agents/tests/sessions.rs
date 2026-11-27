@@ -232,6 +232,7 @@ async fn a_fake_provider_drives_a_session_end_to_end() {
     let diff = ToolCall {
         id: ToolCallId("t1".into()),
         title: "Write pong.txt".into(),
+        name: None,
         kind: ToolKind::Edit,
         status: ToolCallStatus::Pending,
         content: vec![ToolCallContent::Diff {

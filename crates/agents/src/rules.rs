@@ -872,6 +872,7 @@ mod tests {
         let mut facts = ToolFacts::of_call(&ToolCall {
             id: Default::default(),
             title: "Bash".into(),
+            name: None,
             kind: ToolKind::Execute,
             status: Default::default(),
             content: vec![],

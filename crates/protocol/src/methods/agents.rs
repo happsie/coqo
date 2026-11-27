@@ -372,6 +372,11 @@ pub struct ToolCall {
     pub id: ToolCallId,
     /// Human-readable title, such as `Write pong.txt`.
     pub title: String,
+    /// The tool's name as the agent calls it, if the agent says (`Read`,
+    /// `mcp__coqo-editor__ask_question`). The Claude adapter sends it as
+    /// `_meta.claudeCode.toolName`. Tool-use stats count by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Tool kind.
     #[serde(default)]
     pub kind: ToolKind,
@@ -831,6 +836,38 @@ pub struct CriterionEvidence {
     pub line: Option<u32>,
 }
 
+/// Which kind of tool a call used, for tool-use stats.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ToolGroup {
+    /// A core tool of Coqo's `coqo-editor` MCP server (`editor_context`,
+    /// `ask_question`, ...; [`super::mcp::CORE_TOOLS`]).
+    Coqo,
+    /// A tool a Coqo mod contributes through `coqo-editor`.
+    Mod,
+    /// A tool of another MCP server (the user's own).
+    Mcp,
+    /// The agent's own tool (Claude Code's `Read`, `Edit`, `Bash`, ...).
+    Agent,
+}
+
+/// How often a session called one tool.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ToolUse {
+    /// The tool: its own name for `coqo-editor` tools (`ask_question`),
+    /// else the name the agent calls it by (`Read`,
+    /// `mcp__github__get_issue`). Tool calls whose agent gives no name
+    /// count by their kind (`edit`).
+    pub name: String,
+    /// Which kind of tool it is.
+    pub group: ToolGroup,
+    /// Tool calls so far.
+    pub count: u64,
+}
+
 /// One acceptance criterion of a session's task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -1023,6 +1060,10 @@ pub struct SessionInfo {
     /// The task's acceptance criteria, in order (`sessions/setCriteria`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub criteria: Vec<AcceptanceCriterion>,
+    /// The tools the agent called this session and how often, in order of
+    /// first use, counted from its tool calls (live ones, not replays).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_use: Vec<ToolUse>,
     /// Current mode id, if the provider has modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
@@ -1437,6 +1478,7 @@ mod tests {
         let update = SessionUpdate::ToolCall(ToolCall {
             id: ToolCallId("t1".into()),
             title: "Write pong.txt".into(),
+            name: None,
             kind: ToolKind::Edit,
             status: ToolCallStatus::Pending,
             content: vec![ToolCallContent::Diff {

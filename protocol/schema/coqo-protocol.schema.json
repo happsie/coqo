@@ -5338,6 +5338,13 @@
             "null"
           ]
         },
+        "toolUse": {
+          "description": "The tools the agent called this session and how often, in order of\nfirst use, counted from its tool calls (live ones, not replays).",
+          "items": {
+            "$ref": "#/$defs/ToolUse"
+          },
+          "type": "array"
+        },
         "updatedAt": {
           "description": "Last change to this info, Unix milliseconds.",
           "format": "int64",
@@ -7121,6 +7128,13 @@
           },
           "type": "array"
         },
+        "name": {
+          "description": "The tool's name as the agent calls it, if the agent says (`Read`,\n`mcp__coqo-editor__ask_question`). The Claude adapter sends it as\n`_meta.claudeCode.toolName`. Tool-use stats count by it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "rawInput": {
           "description": "The tool's raw input, provider-specific."
         },
@@ -7333,6 +7347,31 @@
       ],
       "type": "object"
     },
+    "ToolGroup": {
+      "description": "Which kind of tool a call used, for tool-use stats.",
+      "oneOf": [
+        {
+          "const": "coqo",
+          "description": "A core tool of Coqo's `coqo-editor` MCP server (`editor_context`,\n`ask_question`, ...; [`super::mcp::CORE_TOOLS`]).",
+          "type": "string"
+        },
+        {
+          "const": "mod",
+          "description": "A tool a Coqo mod contributes through `coqo-editor`.",
+          "type": "string"
+        },
+        {
+          "const": "mcp",
+          "description": "A tool of another MCP server (the user's own).",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "The agent's own tool (Claude Code's `Read`, `Edit`, `Bash`, ...).",
+          "type": "string"
+        }
+      ]
+    },
     "ToolInfo": {
       "description": "A mod-contributed tool.",
       "properties": {
@@ -7427,6 +7466,31 @@
           "type": "string"
         }
       ]
+    },
+    "ToolUse": {
+      "description": "How often a session called one tool.",
+      "properties": {
+        "count": {
+          "description": "Tool calls so far.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "group": {
+          "$ref": "#/$defs/ToolGroup",
+          "description": "Which kind of tool it is."
+        },
+        "name": {
+          "description": "The tool: its own name for `coqo-editor` tools (`ask_question`),\nelse the name the agent calls it by (`Read`,\n`mcp__github__get_issue`). Tool calls whose agent gives no name\ncount by their kind (`edit`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "group",
+        "count"
+      ],
+      "type": "object"
     },
     "ToolsChangedEvent": {
       "description": "One event of [`ToolsChanged`]: the set of tools changed; list again.",

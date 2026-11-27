@@ -1,0 +1,24 @@
+[package]
+name = "coqo-evals"
+description = "Agent evals: does Claude use Coqo's editor tools at the right moments? Runs against the user's real Claude Code; manual, never in CI (docs/evals.md)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# `cargo run -p coqo-evals`. CI builds it and runs its unit tests (the
+# checks), never the evals themselves: they need a signed-in `claude` and
+# spend real usage.
+
+[dependencies]
+anyhow = "1"
+coqo-client = { path = "../client" }
+coqo-protocol = { path = "../protocol" }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

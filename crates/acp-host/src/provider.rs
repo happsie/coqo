@@ -109,6 +109,12 @@ pub struct AcpOptions {
     pub client_name: String,
     /// `clientInfo.version`.
     pub client_version: String,
+    /// Text appended to the agent's own system prompt (ACP `systemPrompt`,
+    /// mode `append`) on `session/new`, `session/resume` and
+    /// `session/load`, if the agent advertises
+    /// `sessionCapabilities.systemPrompt`. Never `override`: the agent keeps
+    /// its own instructions and the user's settings. `None` sends nothing.
+    pub system_prompt: Option<String>,
 }
 
 impl AcpOptions {
@@ -129,6 +135,7 @@ impl AcpOptions {
             request_timeout: Duration::from_secs(120),
             client_name: "coqo".into(),
             client_version: env!("CARGO_PKG_VERSION").into(),
+            system_prompt: None,
         }
     }
 }
@@ -155,6 +162,19 @@ impl Inner {
                 self.options.terminals.clone(),
             ))
         }))
+    }
+
+    /// The `systemPrompt` for a session on `conn`: the configured text in
+    /// `append` mode, if there is any and the agent takes one.
+    fn system_prompt(&self, conn: &Conn) -> Option<acp::SystemPrompt> {
+        let text = self.options.system_prompt.as_deref()?.trim();
+        if text.is_empty() || !conn.caps.system_prompt {
+            return None;
+        }
+        Some(
+            acp::SystemPrompt::new(vec![acp::ContentBlock::Text(acp::TextContent::new(text))])
+                .mode(acp::SystemPromptMode::Append),
+        )
     }
 
     async fn connection(&self, host: &Host, cwd: &Path) -> Result<Arc<Conn>, ProviderError> {
@@ -211,7 +231,8 @@ impl Inner {
                     conn.cx
                         .send_request(
                             acp::ResumeSessionRequest::new(session_id.clone(), cx.cwd.clone())
-                                .mcp_servers(mcp.clone()),
+                                .mcp_servers(mcp.clone())
+                                .system_prompt(self.system_prompt(conn)),
                         )
                         .block_task(),
                 )
@@ -240,7 +261,9 @@ impl Inner {
                 "session/load",
                 conn.cx
                     .send_request(
-                        acp::LoadSessionRequest::new(session_id, cx.cwd.clone()).mcp_servers(mcp),
+                        acp::LoadSessionRequest::new(session_id, cx.cwd.clone())
+                            .mcp_servers(mcp)
+                            .system_prompt(self.system_prompt(conn)),
                     )
                     .block_task(),
             )
@@ -338,7 +361,11 @@ impl AgentProvider for AcpProvider {
                 .request(
                     "session/new",
                     conn.cx
-                        .send_request(acp::NewSessionRequest::new(cx.cwd.clone()).mcp_servers(mcp))
+                        .send_request(
+                            acp::NewSessionRequest::new(cx.cwd.clone())
+                                .mcp_servers(mcp)
+                                .system_prompt(inner.system_prompt(&conn)),
+                        )
                         .block_task(),
                 )
                 .await;

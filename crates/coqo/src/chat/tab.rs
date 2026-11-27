@@ -2,8 +2,8 @@
 
 //! The chat tab (design board 1): a centred reading column with the
 //! transcript in a virtual list and the composer below it, and the session
-//! panel (state and the agent's status, plan, acceptance criteria, changed
-//! files) on the right.
+//! panel (state and the agent's status, the Coqo tools it used, plan,
+//! acceptance criteria, changed files) on the right.
 //!
 //! The tab attaches with `sessions/get` (info, title, provider) and
 //! `sessions/updates` from seq 0, so a restored tab replays the whole
@@ -27,8 +27,8 @@ use coqo_protocol::{
         AgentState, AuthKind, Cancel, ContentBlock, Get, PermissionOptionKind, PermissionOutcome,
         PermissionRequest, PermissionRequestId, PlanEntryStatus, ProviderActionRun, ProviderInfo,
         Providers, RespondPermission, RespondPermissionParams, SessionId, SessionInfo,
-        SessionParams, SessionSnapshot, SessionUpdate, ToolCallContent, ToolCallStatus, ToolKind,
-        Updates,
+        SessionParams, SessionSnapshot, SessionUpdate, ToolCallContent, ToolCallStatus, ToolGroup,
+        ToolKind, ToolUse, Updates,
     },
 };
 use coqo_ui::{
@@ -409,6 +409,13 @@ impl ChatTab {
     #[cfg(test)]
     pub fn status_line(&self, cx: &App) -> Option<String> {
         self.latest_info(cx).and_then(super::status_line)
+    }
+
+    /// The session panel's tool-use line ([`tool_use_label`]).
+    #[cfg(test)]
+    pub fn tool_use_line(&self, cx: &App) -> Option<String> {
+        self.latest_info(cx)
+            .and_then(|i| tool_use_label(&i.tool_use))
     }
 
     /// Why the session is in its state (`error`, `blocked`, `needs_input`).
@@ -1348,6 +1355,20 @@ impl ChatTab {
                     ),
             );
         }
+        if let Some(label) = self
+            .latest_info(cx)
+            .and_then(|i| tool_use_label(&i.tool_use))
+        {
+            card = card.child(
+                div()
+                    .id("chat-tool-use")
+                    .test_support()
+                    .px_1()
+                    .text_size(m.text_label)
+                    .text_color(p.text_muted.hsla())
+                    .child(label),
+            );
+        }
         card.into_any_element()
     }
 
@@ -1494,6 +1515,26 @@ fn resolved_label(request: &PermissionRequest, outcome: Option<&PermissionOutcom
             ),
         Some(PermissionOutcome::Cancelled) | None => "Cancelled before an answer".into(),
     }
+}
+
+/// The status card's tool-use line: the Coqo tools (core and mod) the agent
+/// called, most used first ("Coqo tools: set_status 5 · ask_question 2"),
+/// or `None` before it called any.
+pub(crate) fn tool_use_label(stats: &[ToolUse]) -> Option<String> {
+    let mut coqo: Vec<&ToolUse> = stats
+        .iter()
+        .filter(|u| matches!(u.group, ToolGroup::Coqo | ToolGroup::Mod))
+        .collect();
+    if coqo.is_empty() {
+        return None;
+    }
+    // Stable: ties keep the order of first use.
+    coqo.sort_by_key(|u| std::cmp::Reverse(u.count));
+    let parts: Vec<String> = coqo
+        .iter()
+        .map(|u| format!("{} {}", u.name, u.count))
+        .collect();
+    Some(format!("Coqo tools: {}", parts.join(" · ")))
 }
 
 /// Where usage is billed, from the provider's auth status.

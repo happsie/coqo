@@ -557,6 +557,7 @@ async fn the_daemon_injects_the_server_by_default() {
         state_since: None,
         status: None,
         criteria: Vec::new(),
+        tool_use: Vec::new(),
         mode: None,
         closed: false,
         created_at: 0,

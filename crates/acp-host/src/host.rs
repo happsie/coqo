@@ -522,6 +522,10 @@ pub(crate) struct AgentCaps {
     pub load: bool,
     pub resume: bool,
     pub close: bool,
+    /// `sessionCapabilities.systemPrompt`: the agent takes a client system
+    /// prompt (`append` mode at least) on `session/new`, `load` and
+    /// `resume`.
+    pub system_prompt: bool,
 }
 
 /// One live ACP connection.
@@ -875,6 +879,7 @@ async fn connect(
                     load: caps.load_session,
                     resume: caps.session_capabilities.resume.is_some(),
                     close: caps.session_capabilities.close.is_some(),
+                    system_prompt: caps.session_capabilities.system_prompt.is_some(),
                 },
             });
             tracing::debug!(generation, caps = ?conn.caps, "agent initialized");

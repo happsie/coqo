@@ -222,6 +222,15 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
             );
         ",
     },
+    Migration {
+        version: 9,
+        name: "agent session tool use",
+        // Tool-use stats (#216, `coqo-agents`): the JSON array of `ToolUse`
+        // (tool name, group, count), NULL when the agent called no tool.
+        sql: "
+            ALTER TABLE agent_sessions ADD COLUMN tool_use TEXT;
+        ",
+    },
 ];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.

@@ -27,6 +27,16 @@ const LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// store lands (#26).
 pub const CLAUDE_PLAN_LOGINS_ENV: &str = "COQO_CLAUDE_PLAN_LOGINS";
 
+/// Overrides the setting "Append Coqo's operating guide to Claude's system
+/// prompt" (`claude.guide`) with `0`, `false` or `off` until the settings
+/// store lands (#26).
+pub const CLAUDE_GUIDE_ENV: &str = "COQO_CLAUDE_GUIDE";
+
+/// Whether an override variable's value turns its setting off.
+fn env_off(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| matches!(v.trim(), "0" | "false" | "off"))
+}
+
 /// The core mods linked into the daemon, and the contribution points their
 /// crates own. `data` is the daemon's data directory (Claude's ACP adapter
 /// is installed under it); agents read and write files through `agent_fs`
@@ -41,8 +51,8 @@ pub fn builtins(
     // The adapter (0.113.0) runs its Bash tool itself and never asks for a
     // client terminal; other ACP agents built on these options would.
     claude.acp.terminals = agent_terminals.clone();
-    claude.plan_logins = std::env::var(CLAUDE_PLAN_LOGINS_ENV)
-        .map_or(true, |v| !matches!(v.trim(), "0" | "false" | "off"));
+    claude.plan_logins = !env_off(CLAUDE_PLAN_LOGINS_ENV);
+    claude.guide = !env_off(CLAUDE_GUIDE_ENV);
     BuiltinMods::new()
         .with_point::<coqo_agents::AgentProviderImpls>()
         .with(coqo_mod_hello::MANIFEST, coqo_mod_hello::Hello::new())

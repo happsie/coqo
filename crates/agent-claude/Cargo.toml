@@ -29,6 +29,7 @@ tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "rt-m
 tracing = "0.1"
 
 [dev-dependencies]
+coqo-protocol = { path = "../protocol" }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tempfile = "3"
 

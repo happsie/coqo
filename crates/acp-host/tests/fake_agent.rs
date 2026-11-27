@@ -84,6 +84,15 @@ impl Env {
     }
 
     fn provider(&self, env: &[(&str, &str)]) -> AcpProvider {
+        self.provider_with(env, |_| {})
+    }
+
+    /// [`Self::provider`] with `options` changed by `change`.
+    fn provider_with(
+        &self,
+        env: &[(&str, &str)],
+        change: impl FnOnce(&mut AcpOptions),
+    ) -> AcpProvider {
         let mut command = AgentCommand::new(FAKE).env("FAKE_ACP_LOG", &self.log);
         for (k, v) in env {
             command = command.env(*k, *v);
@@ -104,6 +113,7 @@ impl Env {
             max_restarts: Some(3),
             reset_after: Duration::from_secs(1),
         };
+        change(&mut options);
         AcpProvider::command(command, options)
     }
 
@@ -738,4 +748,109 @@ async fn adapter_shaped_permission_requests_get_a_suggested_rule() {
         ]
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "fn a() {}");
+}
+
+const GUIDE: &str = "# Coqo operating guide (v1)\n\nUse editor_context first.";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_system_prompt_is_appended_on_new_resume_and_load_when_advertised() {
+    let with_guide = |o: &mut AcpOptions| o.system_prompt = Some(GUIDE.into());
+    let expected = serde_json::json!({
+        "mode": "append",
+        "content": [{"type": "text", "text": GUIDE}],
+    });
+    for no_resume in [false, true] {
+        let env = Env::new();
+        let agent_env: &[(&str, &str)] = if no_resume {
+            &[("FAKE_ACP_NO_RESUME", "1")]
+        } else {
+            &[]
+        };
+        let id = {
+            let manager = env.manager(env.provider_with(agent_env, with_guide));
+            let id = manager.create(env.params("ws-1")).await.unwrap().id;
+            manager.shutdown().await;
+            id
+        };
+        assert_eq!(env.logged("session/new")[0]["systemPrompt"], expected);
+
+        // A new daemon reattaches with the same prompt.
+        let manager = env.manager(env.provider_with(agent_env, with_guide));
+        let since = head(&manager, &id);
+        prompt(&manager, &id, "say again").await;
+        until(&manager, &id, since, turn_ended).await;
+        let reattached = if no_resume {
+            env.logged("session/load")
+        } else {
+            env.logged("session/resume")
+        };
+        assert_eq!(reattached.len(), 1, "no_resume={no_resume}");
+        assert_eq!(reattached[0]["systemPrompt"], expected);
+        manager.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_system_prompt_when_not_advertised_or_not_set() {
+    // The agent does not take one.
+    let env = Env::new();
+    let manager = env.manager(
+        env.provider_with(&[("FAKE_ACP_NO_SYSTEM_PROMPT", "1")], |o| {
+            o.system_prompt = Some(GUIDE.into());
+        }),
+    );
+    manager.create(env.params("ws-1")).await.unwrap();
+    let created = env.logged("session/new");
+    assert!(created[0].get("systemPrompt").is_none(), "{}", created[0]);
+    manager.shutdown().await;
+
+    // None set (the guide turned off), or only whitespace.
+    for prompt in [None, Some("  \n")] {
+        let env = Env::new();
+        let manager =
+            env.manager(env.provider_with(&[], |o| o.system_prompt = prompt.map(Into::into)));
+        manager.create(env.params("ws-1")).await.unwrap();
+        let created = env.logged("session/new");
+        assert!(created[0].get("systemPrompt").is_none(), "{}", created[0]);
+        manager.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_use_is_counted_per_session_by_name_and_group_and_persisted() {
+    let env = Env::new();
+    let script = "tool mcp__coqo-editor__editor_context\n\
+                  tool Read\n\
+                  tool mcp__coqo-editor__set_status\n\
+                  tool mcp__coqo-editor__set_status\n\
+                  tool mcp__coqo-editor__maven_test\n\
+                  tool mcp__github__get_issue";
+    let id = {
+        let manager = env.manager(env.provider(&[]));
+        let id = manager.create(env.params("ws-1")).await.unwrap().id;
+        prompt(&manager, &id, script).await;
+        until(&manager, &id, 0, turn_ended).await;
+        manager.shutdown().await;
+        id
+    };
+    // Each call is reported twice with one id: counted once.
+    let manager = env.manager(env.provider(&[]));
+    let info = manager.snapshot(&id).unwrap().info;
+    let got: Vec<_> = info
+        .tool_use
+        .iter()
+        .map(|u| (u.name.as_str(), u.group, u.count))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("editor_context", ToolGroup::Coqo, 1),
+            ("Read", ToolGroup::Agent, 1),
+            ("set_status", ToolGroup::Coqo, 2),
+            ("maven_test", ToolGroup::Mod, 1),
+            ("mcp__github__get_issue", ToolGroup::Mcp, 1),
+        ]
+    );
+    let listed = manager.list(&ListSessionsParams::default()).unwrap();
+    assert_eq!(listed.sessions[0].tool_use, info.tool_use);
 }

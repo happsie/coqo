@@ -42,6 +42,8 @@ Environment:
   COQO_LOG          Log filter, e.g. `debug` or `coqod=debug,info`.
   COQO_EDITOR_MCP   `0` to leave the coqo-editor MCP server (`coqod mcp`)
                     out of agent sessions, for debugging. On by default.
+  COQO_CLAUDE_GUIDE `0` to leave Coqo's operating guide out of Claude
+                    Code's system prompt (setting `claude.guide`).
 ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

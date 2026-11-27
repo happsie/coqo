@@ -396,6 +396,7 @@ fn info(state: AgentState) -> SessionInfo {
         mode: None,
         closed: false,
         criteria: Vec::new(),
+        tool_use: Vec::new(),
         created_at: 0,
         updated_at: 0,
     }

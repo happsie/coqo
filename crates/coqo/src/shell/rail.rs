@@ -1009,6 +1009,7 @@ mod screenshots {
             state_since: None,
             status: None,
             criteria: Vec::new(),
+            tool_use: Vec::new(),
             mode: None,
             closed: false,
             created_at: 0,
