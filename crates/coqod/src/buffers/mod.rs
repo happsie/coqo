@@ -32,6 +32,10 @@
 //!   baseline, so the watcher seeing Coqo's own write is a no-op. If the file
 //!   changed on disk since it was read, the change is merged first and the
 //!   save fails with `SAVE_CONFLICT` (unless `force`).
+//! - **Session replicas.** A session-scoped connection (`coqod mcp`) may
+//!   edit and close only the replicas it opened (`SessionReplicas`), may
+//!   reopen only those by id, and its replicas are released when the
+//!   connection closes (#198). The daemon token is not restricted.
 //! - **Journal.** A buffer with unsaved edits has a snapshot plus the
 //!   changes since in the workspace database ([`journal`]); after a daemon
 //!   restart, opening the file restores the unsaved text and the revision
@@ -44,7 +48,7 @@ mod journal;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -60,7 +64,7 @@ use coqo_protocol::methods::buffer::{
 use coqo_protocol::methods::codes;
 use coqo_protocol::methods::fs::{FileTooLarge, MAX_READ_LIMIT};
 use coqo_protocol::methods::workspace::{RootId, WorkspaceId};
-use coqo_protocol::{Access, ErrorObject, EventFeed, Peer, Router, Scope, SeqLog};
+use coqo_protocol::{Access, ErrorObject, EventFeed, Peer, RequestContext, Router, Scope, SeqLog};
 use coqo_storage::DataDirs;
 use futures_util::StreamExt;
 use tokio::sync::watch;
@@ -223,6 +227,76 @@ pub struct BufferService {
     open_lock: tokio::sync::Mutex<()>,
     next_id: AtomicU64,
     agent_writes: Mutex<AgentWrites>,
+    sessions: Mutex<SessionReplicas>,
+}
+
+/// The replicas session-scoped connections opened (#198). A session token
+/// may edit and close only these, and reopen only these by id: replica ids
+/// show up in every change's `origin`, so naming one is no proof of owning
+/// it. Daemon-token replicas (the UI's) are never recorded here.
+#[derive(Debug, Default)]
+struct SessionReplicas {
+    owned: HashMap<ReplicaId, Owned>,
+}
+
+#[derive(Debug)]
+struct Owned {
+    /// The connection that opened the replica.
+    connection: u64,
+    /// The buffers it has joined and not closed.
+    buffers: HashSet<BufferId>,
+}
+
+impl SessionReplicas {
+    fn owns_replica(&self, connection: u64, replica: &ReplicaId) -> bool {
+        self.owned
+            .get(replica)
+            .is_some_and(|o| o.connection == connection)
+    }
+
+    fn owns(&self, connection: u64, replica: &ReplicaId, buffer: BufferId) -> bool {
+        self.owned
+            .get(replica)
+            .is_some_and(|o| o.connection == connection && o.buffers.contains(&buffer))
+    }
+
+    /// Record `replica` joining `buffer` for `connection`. True if it is the
+    /// connection's first replica (so nobody watches the connection yet).
+    fn record(&mut self, connection: u64, replica: &ReplicaId, buffer: BufferId) -> bool {
+        let first = !self.owned.values().any(|o| o.connection == connection);
+        self.owned
+            .entry(replica.clone())
+            .or_insert_with(|| Owned {
+                connection,
+                buffers: HashSet::new(),
+            })
+            .buffers
+            .insert(buffer);
+        first
+    }
+
+    fn closed(&mut self, replica: &ReplicaId, buffer: BufferId) {
+        if let Some(o) = self.owned.get_mut(replica) {
+            o.buffers.remove(&buffer);
+        }
+    }
+
+    /// Forget `connection`'s replicas; returns the buffers each still joined.
+    fn release(&mut self, connection: u64) -> Vec<(ReplicaId, BufferId)> {
+        let mut released = Vec::new();
+        self.owned.retain(|replica, o| {
+            if o.connection != connection {
+                return true;
+            }
+            released.extend(o.buffers.iter().map(|b| (replica.clone(), *b)));
+            false
+        });
+        released
+    }
+}
+
+fn forbidden(message: impl Into<String>) -> ErrorObject {
+    ErrorObject::new(coqo_protocol::codes::FORBIDDEN, message)
 }
 
 impl BufferService {
@@ -242,11 +316,16 @@ impl BufferService {
             open_lock: tokio::sync::Mutex::new(()),
             next_id: AtomicU64::new(1),
             agent_writes: Mutex::default(),
+            sessions: Mutex::default(),
         })
     }
 
     fn registry(&self) -> MutexGuard<'_, Registry> {
         self.registry.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn sessions(&self) -> MutexGuard<'_, SessionReplicas> {
+        self.sessions.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn get(&self, id: BufferId) -> Result<Arc<OpenBuffer>, ErrorObject> {
@@ -351,6 +430,80 @@ impl BufferService {
         };
         self.schedule_unload(&b);
         Ok(result)
+    }
+
+    /// `buffer/open` on a connection: [`open`](Self::open), plus the
+    /// session-replica rules. A session token may name only a replica its
+    /// connection opened; the replica it gets is recorded as its own and
+    /// released when the connection closes.
+    pub async fn open_as(
+        self: &Arc<Self>,
+        ctx: &RequestContext,
+        p: OpenParams,
+    ) -> Result<OpenResult, ErrorObject> {
+        if *ctx.scope == Scope::Daemon {
+            return self.open(p).await;
+        }
+        let connection = ctx.peer.connection();
+        if let Some(replica) = &p.replica
+            && !self.sessions().owns_replica(connection, replica)
+        {
+            return Err(forbidden(format!(
+                "replica {replica} was not opened on this connection; open without `replica` to get one"
+            )));
+        }
+        let result = self.open(p).await?;
+        let first = self
+            .sessions()
+            .record(connection, &result.replica, result.buffer);
+        if first {
+            let svc = Arc::downgrade(self);
+            let peer = ctx.peer.clone();
+            tokio::spawn(async move {
+                peer.closed().await;
+                if let Some(svc) = svc.upgrade() {
+                    svc.release_connection(connection);
+                }
+            });
+        }
+        Ok(result)
+    }
+
+    /// The handler's check for routes that act as a replica (`buffer/edit`,
+    /// `buffer/close`): a session token must have opened `replica` in
+    /// `buffer` on this connection.
+    pub(crate) fn require_replica(
+        &self,
+        ctx: &RequestContext,
+        buffer: BufferId,
+        replica: &ReplicaId,
+    ) -> Result<(), ErrorObject> {
+        if *ctx.scope == Scope::Daemon
+            || self.sessions().owns(ctx.peer.connection(), replica, buffer)
+        {
+            Ok(())
+        } else {
+            Err(forbidden(format!(
+                "replica {replica} of buffer {buffer} was not opened on this connection; a session token may edit and close only its own replicas"
+            )))
+        }
+    }
+
+    /// Release the replicas a closed session connection opened.
+    fn release_connection(self: &Arc<Self>, connection: u64) {
+        let released = self.sessions().release(connection);
+        for (replica, buffer) in &released {
+            if let Ok(b) = self.get(*buffer) {
+                self.leave(&b, replica);
+            }
+        }
+        if !released.is_empty() {
+            tracing::debug!(
+                connection,
+                replicas = released.len(),
+                "released a closed session connection's replicas"
+            );
+        }
     }
 
     /// Load a file (and its journal) into a new open buffer.
@@ -681,6 +834,16 @@ impl BufferService {
 
     // ---- buffer/edit, revertChange, save, close -------------------------------
 
+    /// `buffer/edit` on a connection: [`edit`](Self::edit) if the replica
+    /// may edit ([`require_replica`](Self::require_replica)), else
+    /// `buffer/editRejected` with `FORBIDDEN`.
+    pub async fn edit_as(&self, ctx: &RequestContext, p: EditParams) {
+        match self.require_replica(ctx, p.buffer, &p.replica) {
+            Ok(()) => self.edit(&ctx.peer, p).await,
+            Err(error) => reject_edit(&ctx.peer, &p, error).await,
+        }
+    }
+
     /// `buffer/edit`: apply a replica's change, or tell it why not.
     pub async fn edit(&self, peer: &Peer, p: EditParams) {
         let result = self.get(p.buffer).and_then(|b| {
@@ -698,16 +861,7 @@ impl BufferService {
             }
         });
         if let Err(error) = result {
-            tracing::debug!(buffer = %p.buffer, replica = %p.replica, %error, "rejecting buffer/edit");
-            let note = EditRejectedParams {
-                buffer: p.buffer,
-                replica: p.replica,
-                client_seq: p.client_seq,
-                error,
-            };
-            if let Err(e) = peer.notify::<bufm::EditRejected>(note).await {
-                tracing::debug!(error = %e, "cannot send buffer/editRejected");
-            }
+            reject_edit(peer, &p, error).await;
         }
     }
 
@@ -777,14 +931,34 @@ impl BufferService {
         Ok(SaveResult { saved_rev })
     }
 
+    /// `buffer/close` on a connection: [`close`](Self::close) if the
+    /// replica may ([`require_replica`](Self::require_replica)).
+    pub async fn close_as(
+        self: &Arc<Self>,
+        ctx: &RequestContext,
+        p: CloseParams,
+    ) -> Result<(), ErrorObject> {
+        self.require_replica(ctx, p.buffer, &p.replica)?;
+        self.close(p.clone()).await?;
+        if *ctx.scope != Scope::Daemon {
+            self.sessions().closed(&p.replica, p.buffer);
+        }
+        Ok(())
+    }
+
     /// `buffer/close`.
     pub async fn close(self: &Arc<Self>, p: CloseParams) -> Result<(), ErrorObject> {
         let b = self.get(p.buffer)?;
-        b.lock().buf.leave(&p.replica);
-        if b.subscribers.load(Ordering::Acquire) == 0 {
-            self.schedule_unload(&b);
-        }
+        self.leave(&b, &p.replica);
         Ok(())
+    }
+
+    /// `replica` is done with `b`.
+    fn leave(self: &Arc<Self>, b: &Arc<OpenBuffer>, replica: &ReplicaId) {
+        b.lock().buf.leave(replica);
+        if b.subscribers.load(Ordering::Acquire) == 0 {
+            self.schedule_unload(b);
+        }
     }
 
     /// The `buffer/changes` topic. The subscription keeps the buffer loaded.
@@ -948,6 +1122,19 @@ pub struct SyntaxView {
     pub text: Option<String>,
 }
 
+async fn reject_edit(peer: &Peer, p: &EditParams, error: ErrorObject) {
+    tracing::debug!(buffer = %p.buffer, replica = %p.replica, %error, "rejecting buffer/edit");
+    let note = EditRejectedParams {
+        buffer: p.buffer,
+        replica: p.replica.clone(),
+        client_seq: p.client_seq,
+        error,
+    };
+    if let Err(e) = peer.notify::<bufm::EditRejected>(note).await {
+        tracing::debug!(error = %e, "cannot send buffer/editRejected");
+    }
+}
+
 /// Rebuild a buffer from its journal: the buffer, the replayed changes (for
 /// the replay log) and the snapshot's revision.
 fn restore(entry: journal::Entry) -> Result<(ServerBuffer, Vec<BufferChange>, u64), BufferError> {
@@ -1009,9 +1196,10 @@ fn own_buffer<P: 'static>(svc: &Arc<BufferService>, buffer: fn(&P) -> BufferId) 
 
 /// Register every `buffer/*` method and topic on `router`.
 ///
-/// A session token (`coqod mcp`) may open, edit, follow and close buffers
-/// of its own workspace. Saving and reverting a change are the user's
-/// review actions and need the daemon token.
+/// A session token (`coqod mcp`) may open and follow buffers of its own
+/// workspace, and edit and close the replicas it opened there (#198).
+/// Saving and reverting a change are the user's review actions and need the
+/// daemon token.
 pub fn register(router: Router, svc: Arc<BufferService>) -> Router {
     let open = Arc::clone(&svc);
     let edit = Arc::clone(&svc);
@@ -1020,15 +1208,15 @@ pub fn register(router: Router, svc: Arc<BufferService>) -> Router {
     let close = Arc::clone(&svc);
     let changes = Arc::clone(&svc);
     router
-        .method_with::<bufm::Open, _, _>(Access::workspace(|p| &p.workspace.0), move |_ctx, p| {
+        .method_with::<bufm::Open, _, _>(Access::workspace(|p| &p.workspace.0), move |ctx, p| {
             let s = Arc::clone(&open);
-            async move { s.open(p).await }
+            async move { s.open_as(&ctx, p).await }
         })
         .notification_with::<bufm::Edit, _, _>(
             own_buffer(&svc, |p: &EditParams| p.buffer),
             move |ctx, p| {
                 let s = Arc::clone(&edit);
-                async move { s.edit(&ctx.peer, p).await }
+                async move { s.edit_as(&ctx, p).await }
             },
         )
         .method_with::<bufm::RevertChange, _, _>(Access::daemon(), move |_ctx, p| {
@@ -1041,9 +1229,9 @@ pub fn register(router: Router, svc: Arc<BufferService>) -> Router {
         })
         .method_with::<bufm::Close, _, _>(
             own_buffer(&svc, |p: &CloseParams| p.buffer),
-            move |_ctx, p| {
+            move |ctx, p| {
                 let s = Arc::clone(&close);
-                async move { s.close(p).await }
+                async move { s.close_as(&ctx, p).await }
             },
         )
         .topic_with::<bufm::Changes, _, _>(

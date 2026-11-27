@@ -385,6 +385,12 @@ impl Peer {
         self.outgoing.is_closed()
     }
 
+    /// Resolves once the client is gone: the connection closed (or its
+    /// scope was revoked). For releasing what a connection holds.
+    pub async fn closed(&self) {
+        self.outgoing.closed().await;
+    }
+
     /// Send a typed notification to the client.
     pub async fn notify<N: NotificationMethod>(
         &self,
