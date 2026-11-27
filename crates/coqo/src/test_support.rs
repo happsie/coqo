@@ -284,6 +284,8 @@ impl AgentDaemon {
             Arc::clone(&workspaces),
             Arc::clone(&buffers),
             Some(manager.clone()),
+            // No git mod here: coverage says so.
+            None,
         )
         .unwrap();
         let alerts = coqod::alerts::AlertService::open(&db, None).unwrap();

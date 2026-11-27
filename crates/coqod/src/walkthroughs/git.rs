@@ -72,6 +72,22 @@ pub(crate) fn rev_parse(root: &Path, rev: &str) -> Result<String, RevError> {
     }
 }
 
+/// The best common ancestor of commits `a` and `b` (full hashes), where a
+/// pull request's diff starts.
+pub(crate) fn merge_base(root: &Path, a: &str, b: &str) -> Option<String> {
+    let hex = |s: &str| !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_hexdigit());
+    if !hex(a) || !hex(b) {
+        return None;
+    }
+    let out = git(root)
+        // Hashes only, so neither can be read as an option.
+        .args(["merge-base", a, b])
+        .output()
+        .ok()?;
+    let hash = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (out.status.success() && hex(&hash)).then_some(hash)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

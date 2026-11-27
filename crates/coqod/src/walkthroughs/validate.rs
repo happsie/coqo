@@ -63,7 +63,14 @@ pub(crate) fn index(path: &str, i: usize) -> String {
 
 /// Fields Coqo fills in; an agent that sends them is told to leave them
 /// out.
-const FILLED: &[&str] = &["id", "created_by", "created_at", "workspace", "storage"];
+const FILLED: &[&str] = &[
+    "id",
+    "created_by",
+    "created_at",
+    "workspace",
+    "storage",
+    "coverage",
+];
 
 fn type_name(v: &Value) -> &'static str {
     match v {
@@ -206,6 +213,19 @@ impl<'a> Obj<'a> {
         }
     }
 
+    fn boolean(&self, name: &str, pr: &mut Problems) -> Option<bool> {
+        match self.get(name)? {
+            Value::Bool(b) => Some(*b),
+            v => {
+                pr.add(
+                    self.at(name),
+                    format!("must be true or false, not {}", type_name(v)),
+                );
+                None
+            }
+        }
+    }
+
     fn root(&self, pr: &mut Problems) -> Option<RootId> {
         self.integer("root", 0, pr).map(RootId)
     }
@@ -321,6 +341,7 @@ pub(crate) fn parse(v: &Value, pr: &mut Problems) -> WalkthroughDraft {
         acceptance_criteria: None,
         steps: Vec::new(),
         trivial_hunks: Vec::new(),
+        require_coverage: false,
     };
     let Some(top) = Obj::new(
         v,
@@ -333,6 +354,7 @@ pub(crate) fn parse(v: &Value, pr: &mut Problems) -> WalkthroughDraft {
             "acceptance_criteria",
             "steps",
             "trivial_hunks",
+            "require_coverage",
         ],
         FILLED,
         pr,
@@ -405,6 +427,7 @@ pub(crate) fn parse(v: &Value, pr: &mut Problems) -> WalkthroughDraft {
             .filter_map(|(i, v)| parse_trivial(v, &index("trivial_hunks", i), pr))
             .collect();
     }
+    draft.require_coverage = top.boolean("require_coverage", pr).unwrap_or(false);
     draft
 }
 
@@ -1074,7 +1097,8 @@ mod tests {
 
     #[test]
     fn a_good_draft_parses_as_serde_reads_it() {
-        let v = draft();
+        let mut v = draft();
+        v["require_coverage"] = json!(true);
         let mut pr = Problems::default();
         let d = parse(&v, &mut pr);
         let criteria = check(&d, &[criterion("AC1")], &mut pr);
@@ -1083,6 +1107,7 @@ mod tests {
         assert_eq!(d, serde);
         assert_eq!(criteria[0].text, "criterion AC1");
         assert_eq!(criteria[0].status, Some(CriterionStatus::Met));
+        assert!(d.require_coverage);
     }
 
     #[test]
@@ -1098,9 +1123,13 @@ mod tests {
         v["steps"][1]["anchors"] = json!([]);
         v["steps"][1]["why"] = json!(3);
         v["scope"] = json!({ "kind": "branch" });
+        v["coverage"] = json!({});
+        v["require_coverage"] = json!("yes");
         let got = problems(&v, &[criterion("AC1")]);
         let want = [
             "id: is filled in by Coqo; leave it out",
+            "coverage: is filled in by Coqo; leave it out",
+            "require_coverage: must be true or false, not a string",
             "title: is empty",
             "scope.kind: `branch` is not a scope kind; use one of worktree, commits, pr",
             "steps[0].dependsOn: unknown field; did you mean `depends_on`?",

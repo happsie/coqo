@@ -358,6 +358,10 @@
         "null"
       ]
     },
+    "require_coverage": {
+      "description": "Refuse to publish while a changed hunk of the scope is neither in a\nstep's anchors nor in `trivial_hunks` (each is listed). Default:\npublish, and list the uncovered hunks in the result and to the\nreader.",
+      "type": "boolean"
+    },
     "scope": {
       "$ref": "#/$defs/ScopeDraft",
       "description": "What the walkthrough covers."

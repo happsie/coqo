@@ -937,3 +937,105 @@ async fn publish_walkthrough_end_to_end() {
     assert!(list.walkthroughs.is_empty());
     drop(a_dir);
 }
+
+#[tokio::test]
+async fn publish_walkthrough_lists_uncovered_hunks() {
+    let h = Harness::start();
+    h.ctx.mods.start().await;
+    let ui = h.ui().await;
+    let (dir, a) = project(&ui).await;
+    // The project as a repository, then a change: a function added at the
+    // end (lines 10-13).
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "first"]);
+    let main = dir.path().join("src/main.rs");
+    let mut source = std::fs::read_to_string(&main).unwrap();
+    source.push_str("\nfn perimeter(r: f64) -> f64 {\n    2.0 * 3.14 * r\n}\n");
+    std::fs::write(&main, source).unwrap();
+
+    let session = ui
+        .request::<agm::Create>(CreateSessionParams {
+            provider: "fake".into(),
+            cwd: dir.path().to_str().unwrap().to_owned(),
+            workspace: Some(a.id.0.clone()),
+            title: Some("Perimeter".into()),
+            mode: None,
+        })
+        .await
+        .unwrap()
+        .id;
+    let token = h
+        .ctx
+        .auth
+        .mint_session(a.id.0.clone(), session.0.clone())
+        .unwrap();
+    let mut agent = Agent::start_as(h.connect(token).await, &a, &session.0).await;
+    let walkthrough = |strict: bool| {
+        json!({
+            "title": "Perimeter",
+            "summary": "Circles compute their perimeter.",
+            "scope": { "kind": "worktree" },
+            "steps": [{
+                "id": "area",
+                "title": "The area",
+                "kind": "logic",
+                "anchors": [{ "path": "src/main.rs", "start_line": 4, "end_line": 6 }],
+                "what": "pi r squared.",
+                "why": "Geometry.",
+            }],
+            "require_coverage": strict,
+        })
+    };
+
+    // Published, with the hunk no step explains first in the result.
+    let r = agent.ok("publish_walkthrough", walkthrough(false)).await;
+    let t = text(&r);
+    assert!(
+        t.starts_with(
+            "COVERAGE INCOMPLETE: 0 of 1 changed hunk covered (0 by steps, 0 trivial). 1 hunk is not explained by any step and not in trivial_hunks"
+        ),
+        "{t}"
+    );
+    assert!(
+        t.contains("\n- src/main.rs:10-13 (+4)\n    +fn perimeter(r: f64) -> f64 {"),
+        "{t}"
+    );
+    assert!(t.contains("call publish_walkthrough again"), "{t}");
+    assert!(t.contains("\n\nPublished walkthrough `perimeter-"), "{t}");
+    let coverage = &r["structuredContent"]["coverage"];
+    assert_eq!(coverage["total"], 1, "{r}");
+    assert_eq!(coverage["uncovered"][0]["path"], "src/main.rs", "{r}");
+    assert_eq!(
+        coverage["uncovered"][0]["newRange"],
+        json!({ "start": 9, "end": 12 }),
+        "{r}"
+    );
+
+    // Strict: refused, saying which hunk.
+    let e = agent.error("publish_walkthrough", walkthrough(true)).await;
+    assert!(
+        e.starts_with("the walkthrough was not published: 1 problem."),
+        "{e}"
+    );
+    assert!(
+        e.contains("\n- require_coverage: src/main.rs:10-13 (+4, `+fn perimeter(r: f64) -> f64 {`) is not explained by any step"),
+        "{e}"
+    );
+    drop(dir);
+}

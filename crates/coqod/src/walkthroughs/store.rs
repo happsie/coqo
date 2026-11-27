@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use coqo_protocol::methods::agents::SessionId;
-use coqo_protocol::methods::walkthroughs::{StepState, Walkthrough, WalkthroughId};
+use coqo_protocol::methods::walkthroughs::{
+    StepState, Walkthrough, WalkthroughCoverage, WalkthroughId,
+};
 use coqo_protocol::methods::workspace::WorkspaceId;
 use coqo_storage::{GlobalDb, StorageError};
 use rusqlite::{OptionalExtension, Row, params};
@@ -120,6 +122,32 @@ impl Store {
         let n = self.db.connection().execute(
             "UPDATE walkthroughs SET step_states = ?2, updated_at = ?3 WHERE id = ?1",
             params![id.0, serde_json::to_string(states)?, now],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Replace a walkthrough's coverage. Returns whether it exists.
+    pub fn set_coverage(
+        &self,
+        id: &WalkthroughId,
+        coverage: Option<&WalkthroughCoverage>,
+    ) -> Result<bool> {
+        let conn = self.db.connection();
+        let document: Option<String> = conn
+            .query_row(
+                "SELECT document FROM walkthroughs WHERE id = ?1",
+                params![id.0],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(document) = document else {
+            return Ok(false);
+        };
+        let mut w: Walkthrough = serde_json::from_str(&document)?;
+        w.coverage = coverage.cloned();
+        let n = conn.execute(
+            "UPDATE walkthroughs SET document = ?2 WHERE id = ?1",
+            params![id.0, serde_json::to_string(&w)?],
         )?;
         Ok(n > 0)
     }

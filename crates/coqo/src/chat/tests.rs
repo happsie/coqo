@@ -1531,12 +1531,11 @@ fn chat_screenshots() {
             by_rule: Some(rules[0].clone()),
             remembered: None,
         },
-        SessionUpdate::Walkthrough(Box::new(walkthrough_summary(
-            "s1",
-            "Free shipping threshold",
-            "src/shipping.rs",
-            5,
-        ))),
+        SessionUpdate::Walkthrough(Box::new({
+            let mut w = walkthrough_summary("s1", "Free shipping threshold", "src/shipping.rs", 5);
+            w.coverage = Some(incomplete_coverage("src/shipping.rs"));
+            w
+        })),
         SessionUpdate::Plan {
             entries: vec![
                 step("Threshold in ShippingPolicy", PlanEntryStatus::Completed),
@@ -1769,6 +1768,105 @@ fn acceptance_criteria_show_in_the_panel_and_the_user_can_mark_them() {
     ui.wait_for("the end of the turn", |ui| !running(ui, &chat));
 }
 
+#[test]
+fn uncovered_hunks_are_flagged_and_open_their_lines() {
+    use coqo_ui::gpui::SharedString;
+
+    let next = Arc::new(Notify::new());
+    let provider =
+        ScriptedProvider::new().turn([Step::Wait(next.clone()), Step::Stop(StopReason::EndTurn)]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.send(&chat, "Add the volume discount");
+    ui.wait_for("the turn", |ui| running(ui, &chat));
+    let id = ui.listed()[0].id.clone();
+    let ws = ui.cx.read(|cx| {
+        Workspaces::global(cx)
+            .unwrap()
+            .read(cx)
+            .current()
+            .unwrap()
+            .clone()
+    });
+    let mut summary = walkthrough_summary(&id.0, "Volume discount", "src/other.rs", 0);
+    summary.start.as_mut().unwrap().root = ws.roots[0].id;
+    let mut coverage = incomplete_coverage("src/main.rs");
+    for h in &mut coverage.uncovered {
+        h.root = ws.roots[0].id;
+    }
+    summary.coverage = Some(coverage.clone());
+    fixture
+        .daemon
+        .manager
+        .record_walkthrough(&id, summary.clone())
+        .unwrap();
+    ui.wait_for("the card", |ui| {
+        ui.cx
+            .read(|cx| chat.read(cx).transcript().walkthroughs.len())
+            == 1
+    });
+    let card = ui
+        .cx
+        .read(|cx| {
+            chat.read(cx)
+                .transcript()
+                .entries
+                .iter()
+                .position(|e| matches!(e, Entry::Walkthrough(_)))
+        })
+        .unwrap();
+    assert_eq!(super::tab::coverage_label(&coverage), "Coverage 7/9 hunks");
+    let hunk = |k: usize| SharedString::from(format!("chat-walkthrough-hunk-{card}-{k}"));
+    ui.frame(|window, _| {
+        assert!(
+            window
+                .try_find(("chat-walkthrough-coverage", card))
+                .is_some()
+        );
+        assert!(
+            window
+                .try_find(("chat-walkthrough-coverage-row", 0usize))
+                .is_some()
+        );
+        assert!(window.try_find(hunk(1)).is_some());
+        assert!(window.try_find("chat-walkthrough-row-hunk-0-0").is_some());
+    });
+
+    // "Ask … to explain it" during a turn: the request waits in the
+    // composer for the user to send.
+    ui.frame(|window, cx| window.click(("chat-walkthrough-ask", card), cx));
+    let text = ui.composer_text(&chat);
+    assert!(
+        text.starts_with("Your walkthrough \"Volume discount\""),
+        "{text}"
+    );
+    assert!(text.contains("\n- src/main.rs:1 (+1)"), "{text}");
+    assert!(
+        text.contains("\n- src/main.rs:3-4 (+2 \u{2212}1)"),
+        "{text}"
+    );
+
+    // A hunk opens its lines (not the walkthrough's start).
+    ui.frame(|window, cx| window.click(hunk(0), cx));
+    let key = editor::key(&ws.id, ws.roots[0].id, "src/main.rs");
+    let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
+    ui.wait_for("the hunk's file", |ui| {
+        ui.cx
+            .read(|cx| dock.read(cx).find_tab(editor::KIND, &key, cx).is_some())
+    });
+    let player = crate::walkthrough::player::key(&summary.id);
+    assert!(
+        ui.cx.read(|cx| dock
+            .read(cx)
+            .find_tab(crate::walkthrough::player::KIND, &player, cx)
+            .is_none()),
+        "the card did not open the player too"
+    );
+    next.notify_one();
+    ui.wait_for("the end of the turn", |ui| !running(ui, &chat));
+}
+
 /// A published walkthrough as the transcript carries it.
 fn walkthrough_summary(
     session: &str,
@@ -1799,7 +1897,33 @@ fn walkthrough_summary(
             },
         }),
         storage: StorageMode::Local,
+        coverage: None,
         created_at: 1,
+    }
+}
+
+/// Coverage with two hunks of `path` (in root 0) uncovered.
+fn incomplete_coverage(path: &str) -> coqo_protocol::methods::walkthroughs::WalkthroughCoverage {
+    use coqo_protocol::methods::editor::LineRange;
+    use coqo_protocol::methods::walkthroughs::{UncoveredHunk, WalkthroughCoverage};
+    use coqo_protocol::methods::workspace::RootId;
+    let hunk = |start: u32, end: u32, added: u32, removed: u32| UncoveredHunk {
+        root: RootId(0),
+        path: path.into(),
+        new_range: LineRange { start, end },
+        old_range: None,
+        added,
+        removed,
+        whole_file: None,
+        renamed_from: None,
+        excerpt: "+fn free_from() -> u32 {".into(),
+    };
+    WalkthroughCoverage {
+        total: 9,
+        covered: 6,
+        trivial: 1,
+        uncovered: vec![hunk(0, 0, 1, 0), hunk(2, 3, 2, 1)],
+        unavailable: None,
     }
 }
 

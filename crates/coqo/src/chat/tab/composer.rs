@@ -532,7 +532,7 @@ impl ChatTab {
     }
 
     /// The session's provider, as `agents/providers` lists it.
-    fn provider(&self) -> Option<&ProviderInfo> {
+    pub(super) fn provider(&self) -> Option<&ProviderInfo> {
         let id = self.info.as_ref()?.provider.as_str();
         self.providers.iter().find(|p| p.id == id)
     }

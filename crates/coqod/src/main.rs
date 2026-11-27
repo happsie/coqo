@@ -101,7 +101,12 @@ fn mcp(args: &Args) -> Result<ExitCode> {
         .enable_all()
         .build()
         .context("cannot start the async runtime")?;
-    let exit = runtime.block_on(editor_mcp::run(mcp))?;
+    let exit = runtime.block_on(editor_mcp::run(mcp));
+    // Do not wait for the blocking stdin read: with the daemon gone the
+    // agent may keep stdin open, and dropping the runtime would wait for it
+    // forever.
+    runtime.shutdown_background();
+    let exit = exit?;
     tracing::debug!(?exit, "coqod mcp stopped");
     Ok(match exit {
         coqo_mcp::Exit::StdinClosed => ExitCode::SUCCESS,

@@ -15,6 +15,16 @@
 //! [`INVALID_WALKTHROUGH`](super::codes::INVALID_WALKTHROUGH), whose `data`
 //! ([`WalkthroughProblems`]) lists every problem with its JSON path.
 //!
+//! # Coverage
+//!
+//! Coqo computes the scope's diff itself (the git mod's, in the daemon) and
+//! checks every changed hunk: covered by a step's anchor, listed in
+//! `trivial_hunks`, or uncovered. The result is the walkthrough's
+//! [`WalkthroughCoverage`], also in its summary, and the agent reads the
+//! uncovered hunks in `publish_walkthrough`'s result. A published
+//! walkthrough may leave hunks uncovered (they are flagged to the reader);
+//! a draft with `require_coverage` is refused instead.
+//!
 //! # Storage
 //!
 //! Every walkthrough is kept in the daemon (`coqo.db`), private to the
@@ -74,6 +84,10 @@ pub const MAX_TEXT: usize = 16 * 1024;
 pub const MAX_NOTE: usize = 2000;
 /// Longest step id, in characters.
 pub const MAX_STEP_ID: usize = 32;
+/// Most uncovered hunks a walkthrough lists (the counts include them all).
+pub const MAX_UNCOVERED: usize = 100;
+/// Most uncovered hunks a [`WalkthroughSummary`] lists.
+pub const SUMMARY_UNCOVERED: usize = 10;
 
 /// Identifies a walkthrough: a slug of its title and a random suffix, e.g.
 /// `volume-discount-3f2a9c1b`. Assigned by the daemon; also the committed
@@ -254,6 +268,12 @@ pub struct WalkthroughDraft {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(test, schemars(length(max = 500)))]
     pub trivial_hunks: Vec<TrivialHunkDraft>,
+    /// Refuse to publish while a changed hunk of the scope is neither in a
+    /// step's anchors nor in `trivial_hunks` (each is listed). Default:
+    /// publish, and list the uncovered hunks in the result and to the
+    /// reader.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_coverage: bool,
 }
 
 /// What a walkthrough covers.
@@ -526,6 +546,11 @@ pub struct Walkthrough {
     /// Hunks that need no explanation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trivial_hunks: Vec<TrivialHunk>,
+    /// How much of the scope's diff the steps cover. Computed when
+    /// published, and again by `get` for a worktree scope (the work tree
+    /// changes); absent from walkthroughs published before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<WalkthroughCoverage>,
     /// Who published it.
     pub created_by: WalkthroughAuthor,
     /// Published, Unix milliseconds.
@@ -579,8 +604,154 @@ pub struct WalkthroughSummary {
     pub start: Option<WalkthroughLocation>,
     /// Local or committed.
     pub storage: StorageMode,
+    /// How much of the diff the steps cover, with at most
+    /// [`SUMMARY_UNCOVERED`] of the uncovered hunks listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<WalkthroughCoverage>,
     /// Published, Unix milliseconds.
     pub created_at: i64,
+}
+
+// ---- coverage ---------------------------------------------------------------------
+
+/// A changed file a hunk stands for as a whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum WholeFile {
+    /// The file is new (all its lines are one hunk).
+    Added,
+    /// The file is gone: only `trivial_hunks` can cover it.
+    Deleted,
+    /// Either side is binary (no lines): only `trivial_hunks` can cover it.
+    Binary,
+    /// Moved, contents unchanged; `renamedFrom` has the old path.
+    Renamed,
+}
+
+/// A changed hunk no step covers and no trivial hunk lists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct UncoveredHunk {
+    /// The root.
+    pub root: RootId,
+    /// `/`-separated path relative to the root (the new path of a rename).
+    pub path: String,
+    /// Where it is in the new file, 0-based, `end` inclusive: its lines,
+    /// or for lines only removed, the line before them (the first line
+    /// when they were at the top). This is where to open it; `{0, 0}` for
+    /// a deleted file.
+    pub new_range: LineRange,
+    /// The removed lines in the old file, 0-based, `end` inclusive; absent
+    /// when lines were only added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_range: Option<LineRange>,
+    /// Lines added.
+    pub added: u32,
+    /// Lines removed.
+    pub removed: u32,
+    /// Set when the hunk is a whole file (added, deleted, binary, renamed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whole_file: Option<WholeFile>,
+    /// The old path of a rename.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renamed_from: Option<String>,
+    /// The first changed lines, `+` added and `-` removed, a few at most.
+    pub excerpt: String,
+}
+
+/// How much of a walkthrough scope's diff its steps cover.
+///
+/// Every changed hunk of the scope (`git diff` without context, so each run
+/// of changed lines is one hunk; untracked files count for a worktree
+/// scope) is **covered** when a step's anchor overlaps its lines in the new
+/// file (lines only removed: an anchor on the line before or after them),
+/// else **trivial** when `trivial_hunks` lists it (by the same overlap, or
+/// the whole file), else **uncovered**.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct WalkthroughCoverage {
+    /// Changed hunks in the scope.
+    pub total: u32,
+    /// Hunks a step's anchor covers.
+    pub covered: u32,
+    /// Hunks `trivial_hunks` lists (and no step covers).
+    pub trivial: u32,
+    /// The uncovered hunks (`total - covered - trivial` of them), at most
+    /// [`MAX_UNCOVERED`] (a summary: [`SUMMARY_UNCOVERED`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uncovered: Vec<UncoveredHunk>,
+    /// Why the diff could not be computed (not a git repository, git
+    /// unavailable, no commits yet); the counts are 0 then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+}
+
+impl WalkthroughCoverage {
+    /// Coverage that could not be computed, and why.
+    pub fn unavailable(why: impl Into<String>) -> Self {
+        Self {
+            unavailable: Some(why.into()),
+            ..Self::default()
+        }
+    }
+
+    /// How many hunks are uncovered (the list may be shorter).
+    pub fn uncovered_count(&self) -> u32 {
+        self.total.saturating_sub(self.covered + self.trivial)
+    }
+
+    /// Every hunk is covered or trivial (and the diff was computed).
+    pub fn is_complete(&self) -> bool {
+        self.unavailable.is_none() && self.uncovered_count() == 0
+    }
+
+    /// This, listing at most `n` uncovered hunks.
+    pub fn truncated(&self, n: usize) -> Self {
+        let mut c = self.clone();
+        c.uncovered.truncate(n);
+        c
+    }
+}
+
+impl UncoveredHunk {
+    /// `path:12-14` (1-based) as a reader would name it; a deleted, binary
+    /// or renamed file is its path alone.
+    pub fn location(&self) -> String {
+        match self.whole_file {
+            Some(WholeFile::Deleted | WholeFile::Binary | WholeFile::Renamed) => self.path.clone(),
+            _ if self.added == 0 => format!("{}:{}", self.path, self.new_range.start + 1),
+            _ if self.new_range.start == self.new_range.end => {
+                format!("{}:{}", self.path, self.new_range.start + 1)
+            }
+            _ => format!(
+                "{}:{}-{}",
+                self.path,
+                self.new_range.start + 1,
+                self.new_range.end + 1
+            ),
+        }
+    }
+
+    /// What changed, in a few words: "+3 −1", "file deleted", "binary".
+    pub fn change(&self) -> String {
+        match self.whole_file {
+            Some(WholeFile::Deleted) => "file deleted".into(),
+            Some(WholeFile::Binary) => "binary file".into(),
+            Some(WholeFile::Renamed) => match &self.renamed_from {
+                Some(from) => format!("renamed from {from}"),
+                None => "renamed".into(),
+            },
+            Some(WholeFile::Added) => format!("new file, {} lines", self.added),
+            None => match (self.added, self.removed) {
+                (a, 0) => format!("+{a}"),
+                (0, r) => format!("\u{2212}{r} removed"),
+                (a, r) => format!("+{a} \u{2212}{r}"),
+            },
+        }
+    }
 }
 
 // ---- params and results ---------------------------------------------------------
@@ -856,6 +1027,23 @@ mod tests {
                 lines: Some(LineRange { start: 0, end: 2 }),
                 reason: None,
             }],
+            coverage: Some(WalkthroughCoverage {
+                total: 3,
+                covered: 1,
+                trivial: 1,
+                uncovered: vec![UncoveredHunk {
+                    root: RootId(0),
+                    path: "b.rs".into(),
+                    new_range: LineRange { start: 9, end: 9 },
+                    old_range: Some(LineRange { start: 9, end: 11 }),
+                    added: 0,
+                    removed: 3,
+                    whole_file: None,
+                    renamed_from: None,
+                    excerpt: "-old".into(),
+                }],
+                unavailable: None,
+            }),
             created_by: WalkthroughAuthor {
                 session: SessionId("s-1".into()),
                 agent: "claude-code".into(),
@@ -880,6 +1068,15 @@ mod tests {
                 "acceptanceCriteria": [{ "id": "AC1", "text": "t", "status": "met" }],
                 "steps": [],
                 "trivialHunks": [{ "root": 0, "path": "a.rs", "lines": { "start": 0, "end": 2 } }],
+                "coverage": {
+                    "total": 3, "covered": 1, "trivial": 1,
+                    "uncovered": [{
+                        "root": 0, "path": "b.rs",
+                        "newRange": { "start": 9, "end": 9 },
+                        "oldRange": { "start": 9, "end": 11 },
+                        "added": 0, "removed": 3, "excerpt": "-old",
+                    }],
+                },
                 "createdBy": { "session": "s-1", "agent": "claude-code" },
                 "createdAt": 5,
                 "storage": { "mode": "committed", "path": ".coqo/walkthroughs/volume-discount-3f2a9c1b.json" },
@@ -887,6 +1084,13 @@ mod tests {
             })
         );
         assert_eq!(serde_json::from_value::<Walkthrough>(v).unwrap(), w);
+        let c = w.coverage.unwrap();
+        assert_eq!(c.uncovered_count(), 1);
+        assert!(!c.is_complete());
+        assert_eq!(c.uncovered[0].location(), "b.rs:10");
+        assert_eq!(c.uncovered[0].change(), "\u{2212}3 removed");
+        assert!(WalkthroughCoverage::default().is_complete());
+        assert!(!WalkthroughCoverage::unavailable("no git").is_complete());
     }
 
     #[test]
