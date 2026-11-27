@@ -370,6 +370,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 | Location | Contents |
 |---|---|
 | Daemon data (`~/Library/Application Support/Coqo`, `$XDG_DATA_HOME/coqo`) | `coqo.db` (workspaces, sessions, transcripts, **event log**, alerts), per-workspace: annotations, walkthroughs (local), `traces.db`, PR worktrees; installed mods |
+| UI data (`<data dir>/ui/`) | Workbench layouts per workspace, until the daemon stores them (#140, [ADR 0004](adr/0004-workbench-layout.md)) |
 | Config (`~/.config/coqo`, macOS equivalent) | `settings.toml`, keymaps, themes |
 | OS keychain | API keys, GitHub token |
 | Repo `.coqo/` | `settings.toml` (workspace settings incl. review skill), `run.toml` (launch/trace configs), `walkthroughs/` (only if opted in) |

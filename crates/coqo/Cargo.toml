@@ -10,6 +10,8 @@ publish = false
 
 [dependencies]
 coqo-ui = { path = "../ui" }
+# The per-user data directory for saved layouts (PLAN §8).
+dirs = "6"
 
 [dev-dependencies]
 coqo-ui = { path = "../ui", features = ["test-support"] }

@@ -1,28 +1,205 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The empty workbench frame: design board 1's chrome (top bar, workspace rail,
-//! sidebar panel, main tab panel, status bar) with honest empty states. Docking,
-//! tabs and real content arrive with the workbench issues (#24 onwards).
+//! The workbench window (design board 1): top bar, workspace rail, sidebar
+//! panel, the main tab area ([`Dock`]) and the status bar.
+//!
+//! The chrome is filled through registries in `coqo_ui::slots`: top bar and
+//! status bar items ([`Slots`]) and sidebar panes ([`SidebarPanes`]). The
+//! built-in items registered by [`init`] are honest placeholders until the
+//! daemon, git and language mods exist. The layout (sidebar width and pane,
+//! splits and tabs) is saved through a [`LayoutStore`] and restored on start.
+
+use std::{collections::HashMap, rc::Rc, time::Duration};
 
 use coqo_ui::{
     ActiveTokens as _,
+    dock::{
+        Dock, DockEvent,
+        store::{LAYOUT_VERSION, LayoutStore, SidebarLayout, WorkbenchLayout},
+    },
     gpui::{
-        App, BoxShadow, Context, Div, FontWeight, InteractiveElement as _, IntoElement,
-        ParentElement as _, Render, SharedString, Stateful, Styled as _, Window, div, hsla, point,
+        AnyElement, AnyView, App, AppContext as _, BoxShadow, Context, Div, DragMoveEvent,
+        ElementId, Empty, Entity, Focusable as _, FontWeight, InteractiveElement as _, IntoElement,
+        ParentElement as _, Pixels, Render, SharedString, Stateful,
+        StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, hsla, point,
         px,
     },
+    slots::{PaneBuilder, SidebarPane, SidebarPanes, Slot, Slots},
     widgets::{
         Icon, TestSupportExt as _, icon, kbd, panel, raised, section_label, status_dot, tab,
     },
 };
 
+use crate::welcome::{self, shortcut};
+
+/// The workspace key layouts are saved under until workspaces exist.
+pub const DEFAULT_WORKSPACE: &str = "default";
+
+const SAVE_DELAY: Duration = Duration::from_millis(300);
+const SIDEBAR_MIN: Pixels = px(180.);
+const SIDEBAR_MAX: Pixels = px(520.);
+
+/// Register the built-in tab kinds, chrome items and sidebar panes. Call once
+/// after `coqo_ui::init`.
+pub fn init(cx: &mut App) {
+    welcome::register(cx);
+    register_builtin_slots(cx);
+    SidebarPanes::register(
+        cx,
+        SidebarPane::new("files", "Files", 0, |_, _, cx| {
+            cx.new(|_| NotePane::new("sidebar-files-pane", "Explorer", "No folder open"))
+                .into()
+        }),
+    );
+    SidebarPanes::register(
+        cx,
+        SidebarPane::new("git", "Git", 10, |_, _, cx| {
+            cx.new(|_| NotePane::new("sidebar-git-pane", "Changes", "No repository"))
+                .into()
+        }),
+    );
+}
+
+/// The drag payload of the sidebar's resize edge.
+#[derive(Clone, Copy, Debug)]
+struct DraggedSidebarEdge;
+
 /// The root view of a workbench window.
-pub struct Shell;
+pub struct Shell {
+    dock: Entity<Dock>,
+    store: Rc<dyn LayoutStore>,
+    workspace: SharedString,
+    sidebar_width: Pixels,
+    sidebar_pane: Option<SharedString>,
+    /// Built pane views, with the builder that made them: a pane registered
+    /// again gets a fresh view.
+    pane_views: HashMap<SharedString, (PaneBuilder, AnyView)>,
+    pending_save: Option<Task<()>>,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl std::fmt::Debug for Shell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Shell")
+            .field("workspace", &self.workspace)
+            .field("sidebar_width", &self.sidebar_width)
+            .field("sidebar_pane", &self.sidebar_pane)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Shell {
+    /// Open the workbench for `workspace`, restoring its saved layout.
+    pub fn new(
+        store: Rc<dyn LayoutStore>,
+        workspace: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let workspace = workspace.into();
+        let saved = store.load(&workspace).unwrap_or_else(|err| {
+            eprintln!("coqo: couldn't load the saved layout, using the default: {err}");
+            None
+        });
+        let dock = cx.new(|cx| {
+            let mut dock = match &saved {
+                Some(layout) => Dock::restore(layout.dock.clone(), window, cx),
+                None => Dock::new(cx),
+            };
+            dock.set_empty_state(empty_state);
+            dock.set_new_tab(|_, cx| welcome::new(cx));
+            dock
+        });
+        let subscriptions = vec![
+            cx.subscribe(&dock, |this, _, _: &DockEvent, cx| this.schedule_save(cx)),
+            cx.observe_global::<Slots>(|_, cx| cx.notify()),
+            cx.observe_global::<SidebarPanes>(|_, cx| cx.notify()),
+            cx.on_app_quit(|this, cx| {
+                this.save_now(cx);
+                async {}
+            }),
+        ];
+        let focus = dock.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+        let sidebar = saved.map(|l| l.sidebar);
+        Self {
+            dock,
+            store,
+            workspace,
+            sidebar_width: sidebar.as_ref().map_or_else(
+                || cx.tokens().metrics.sidebar_width,
+                |s| px(s.width).clamp(SIDEBAR_MIN, SIDEBAR_MAX),
+            ),
+            sidebar_pane: sidebar.and_then(|s| s.pane).map(Into::into),
+            pane_views: HashMap::new(),
+            pending_save: None,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    /// The main tab area, for opening and arranging tabs.
+    #[allow(dead_code)] // Used by tests now; by the file tree and chat list next.
+    pub fn dock(&self) -> &Entity<Dock> {
+        &self.dock
+    }
+
+    /// The current layout, as it would be saved.
+    pub fn layout(&self, cx: &App) -> WorkbenchLayout {
+        WorkbenchLayout {
+            version: LAYOUT_VERSION,
+            sidebar: SidebarLayout {
+                width: self.sidebar_width.as_f32(),
+                pane: self.sidebar_pane.as_ref().map(ToString::to_string),
+            },
+            dock: self.dock.read(cx).snapshot(cx),
+        }
+    }
+
+    /// Save shortly, coalescing bursts such as a resize drag.
+    fn schedule_save(&mut self, cx: &mut Context<Self>) {
+        self.pending_save = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_DELAY).await;
+            this.update(cx, |this, cx| this.save_now(cx)).ok();
+        }));
+    }
+
+    /// Save the layout now.
+    pub fn save_now(&mut self, cx: &mut Context<Self>) {
+        self.pending_save = None;
+        let layout = self.layout(cx);
+        if let Err(err) = self.store.save(&self.workspace, &layout) {
+            eprintln!("coqo: couldn't save the layout: {err}");
+        }
+    }
+
+    fn select_pane(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        if self.sidebar_pane.as_ref() != Some(&id) {
+            self.sidebar_pane = Some(id);
+            self.schedule_save(cx);
+            cx.notify();
+        }
+    }
+
+    fn resize_sidebar(&mut self, e: &DragMoveEvent<DraggedSidebarEdge>, cx: &mut Context<Self>) {
+        let m = &cx.tokens().metrics;
+        let sidebar_left = e.bounds.left() + m.rail_width + m.gap;
+        let width =
+            (e.event.position.x - sidebar_left - m.gap / 2.).clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+        if width != self.sidebar_width {
+            self.sidebar_width = width;
+            self.schedule_save(cx);
+            cx.notify();
+        }
+    }
+}
 
 impl Render for Shell {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.tokens();
-        let (p, m) = (&t.palette, &t.metrics);
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let top = top_bar(window, cx);
+        let sidebar = self.render_sidebar(window, cx);
+        let status = status_bar(window, cx);
         div()
             .id("workbench")
             .size_full()
@@ -34,34 +211,123 @@ impl Render for Shell {
             .font_family(m.font_ui.clone())
             .text_size(m.text_md)
             .text_color(p.text.hsla())
-            .child(top_bar(cx))
+            .child(top)
             .child(
                 div()
+                    .id("body")
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .gap(m.gap)
+                    .on_drag_move(cx.listener(
+                        |this, e: &DragMoveEvent<DraggedSidebarEdge>, _, cx| {
+                            this.resize_sidebar(e, cx)
+                        },
+                    ))
                     .child(rail(cx))
-                    .child(sidebar(cx))
-                    .child(main_panel(cx)),
+                    .child(div().w(m.gap).flex_none())
+                    .child(sidebar)
+                    .child(
+                        div()
+                            .id("sidebar-handle")
+                            .test_support()
+                            .w(m.gap)
+                            .h_full()
+                            .flex_none()
+                            .cursor_col_resize()
+                            .on_drag(DraggedSidebarEdge, |_, _, _, cx| cx.new(|_| EmptyDrag)),
+                    )
+                    .child(
+                        div()
+                            .id("main")
+                            .test_support()
+                            .flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(self.dock.clone()),
+                    ),
             )
-            .child(status_bar(cx))
+            .child(status)
     }
 }
 
-fn region(id: &'static str, el: Div) -> impl IntoElement {
-    el.id(id).test_support()
-}
+impl Shell {
+    fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let panes = SidebarPanes::all(cx);
+        let active = self
+            .sidebar_pane
+            .clone()
+            .filter(|id| panes.iter().any(|p| &p.id == id))
+            .or_else(|| panes.first().map(|p| p.id.clone()));
 
-fn shortcut(key: &str) -> SharedString {
-    if cfg!(target_os = "macos") {
-        format!("⌘{key}").into()
-    } else {
-        format!("Ctrl {key}").into()
+        let mut strip = div().flex().gap_1().p(m.gap);
+        for pane in &panes {
+            let id = pane.id.clone();
+            let selected = active.as_ref() == Some(&id);
+            strip = strip.child(
+                tab(
+                    ElementId::Name(format!("sidebar-{id}").into()),
+                    pane.title.clone(),
+                    selected,
+                    cx,
+                )
+                .test_support()
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| this.select_pane(id.clone(), cx))),
+            );
+        }
+
+        let content = active.and_then(|id| {
+            let pane = panes.iter().find(|p| p.id == id)?;
+            let fresh = self
+                .pane_views
+                .get(&id)
+                .is_some_and(|(build, _)| Rc::ptr_eq(build, &pane.build));
+            if !fresh {
+                let view = (pane.build)(self.dock.downgrade(), window, cx);
+                self.pane_views
+                    .insert(id.clone(), (pane.build.clone(), view));
+            }
+            self.pane_views.get(&id).map(|(_, view)| view.clone())
+        });
+
+        panel(p.panel_raised, cx)
+            .id("sidebar")
+            .test_support()
+            .w(self.sidebar_width)
+            .flex_none()
+            .child(strip)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .px(m.gap)
+                    .children(content),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .px(m.gap)
+                    .pb(px(14.))
+                    .gap_1()
+                    .child(section_label("Chats", cx))
+                    .child(empty_note("No chats yet", cx)),
+            )
+            .into_any_element()
     }
 }
 
-fn top_bar(cx: &App) -> impl IntoElement {
+fn region(id: &'static str, el: Div) -> AnyElement {
+    el.id(id).test_support().into_any_element()
+}
+
+fn top_bar(window: &mut Window, cx: &mut App) -> AnyElement {
+    let start = Slots::render(Slot::TopBarStart, window, cx);
+    let end = Slots::render(Slot::TopBarEnd, window, cx);
     let t = cx.tokens();
     let (p, m) = (&t.palette, &t.metrics);
 
@@ -81,7 +347,8 @@ fn top_bar(cx: &App) -> impl IntoElement {
             div()
                 .text_color(p.text_subtle.hsla())
                 .child("No workspace open"),
-        );
+        )
+        .children(start);
 
     let search = div()
         .id("command-search")
@@ -113,40 +380,7 @@ fn top_bar(cx: &App) -> impl IntoElement {
                 .flex_1()
                 .child("Search files, symbols, commands, agents"),
         )
-        .child(kbd(shortcut("K"), cx));
-
-    // Nothing needs attention yet, so the bolt is calm (no sand glow).
-    let bolt = raised(
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .px(px(14.))
-            .py(px(7.))
-            .rounded(m.radius_field)
-            .text_size(m.text_sm)
-            .text_color(p.text_muted.hsla()),
-        cx,
-    )
-    .id("bolt")
-    .test_support()
-    .child(icon(Icon::Zap, px(15.), p.text_muted.hsla()))
-    .child("Intellisense · off");
-
-    let daemon = div()
-        .id("daemon-status")
-        .test_support()
-        .flex()
-        .items_center()
-        .gap(px(7.))
-        .px(px(12.))
-        .py(px(7.))
-        .rounded(m.radius_field)
-        .bg(p.panel_raised.hsla())
-        .text_size(px(12.))
-        .text_color(p.text_muted.hsla())
-        .child(status_dot(p.text_subtle, false))
-        .child("coqod · not connected");
+        .child(kbd(shortcut("Ctrl K"), cx));
 
     region(
         "top-bar",
@@ -160,13 +394,107 @@ fn top_bar(cx: &App) -> impl IntoElement {
             .child(search)
             .child(
                 div()
+                    .id("top-bar-end")
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .child(bolt)
-                    .child(daemon),
+                    .children(end),
             ),
     )
+}
+
+fn status_bar(window: &mut Window, cx: &mut App) -> AnyElement {
+    let start = Slots::render(Slot::StatusBarStart, window, cx);
+    let end = Slots::render(Slot::StatusBarEnd, window, cx);
+    let t = cx.tokens();
+    let (p, m) = (&t.palette, &t.metrics);
+    region(
+        "status-bar",
+        div()
+            .flex()
+            .items_center()
+            .gap(px(18.))
+            .px(px(8.))
+            .text_size(m.text_xs)
+            .text_color(p.text_muted.hsla())
+            .children(start)
+            .child(div().flex_1())
+            .children(end),
+    )
+}
+
+/// The chrome items that exist before any mod does. The bolt, daemon, git and
+/// agent items are replaced by their mods as those land.
+fn register_builtin_slots(cx: &mut App) {
+    Slots::register(cx, Slot::TopBarEnd, "bolt", 0, |_, cx| {
+        let t = cx.tokens();
+        let (p, m) = (&t.palette, &t.metrics);
+        // Nothing needs attention yet, so the bolt is calm (no sand glow).
+        raised(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px(px(14.))
+                .py(px(7.))
+                .rounded(m.radius_field)
+                .text_size(m.text_sm)
+                .text_color(p.text_muted.hsla()),
+            cx,
+        )
+        .id("bolt")
+        .test_support()
+        .child(icon(Icon::Zap, px(15.), p.text_muted.hsla()))
+        .child("Intellisense · off")
+        .into_any_element()
+    });
+    Slots::register(cx, Slot::TopBarEnd, "daemon-status", 100, |_, cx| {
+        let t = cx.tokens();
+        let (p, m) = (&t.palette, &t.metrics);
+        div()
+            .id("daemon-status")
+            .test_support()
+            .flex()
+            .items_center()
+            .gap(px(7.))
+            .px(px(12.))
+            .py(px(7.))
+            .rounded(m.radius_field)
+            .bg(p.panel_raised.hsla())
+            .text_size(px(12.))
+            .text_color(p.text_muted.hsla())
+            .child(status_dot(p.text_subtle, false))
+            .child("coqod · not connected")
+            .into_any_element()
+    });
+    Slots::register(cx, Slot::StatusBarStart, "branch", 0, |_, cx| {
+        let p = &cx.tokens().palette;
+        div()
+            .id("status-branch")
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(icon(Icon::GitBranch, px(12.), p.text_muted.hsla()))
+            .child("No repository")
+            .into_any_element()
+    });
+    Slots::register(cx, Slot::StatusBarStart, "problems", 10, |_, cx| {
+        let p = &cx.tokens().palette;
+        div()
+            .id("status-problems")
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(status_dot(p.sage, false))
+            .child("0 problems")
+            .into_any_element()
+    });
+    Slots::register(cx, Slot::StatusBarEnd, "agents", 0, |_, _| {
+        div()
+            .id("status-agents")
+            .child("0 agents")
+            .into_any_element()
+    });
 }
 
 fn rail_button(id: &'static str, cx: &App) -> Stateful<Div> {
@@ -181,7 +509,7 @@ fn rail_button(id: &'static str, cx: &App) -> Stateful<Div> {
         .rounded(m.radius_rail)
 }
 
-fn rail(cx: &App) -> impl IntoElement {
+fn rail(cx: &App) -> AnyElement {
     let t = cx.tokens();
     let (p, m) = (&t.palette, &t.metrics);
     let muted = p.text_muted.hsla();
@@ -208,244 +536,108 @@ fn rail(cx: &App) -> impl IntoElement {
     )
 }
 
-fn empty_note(text: &'static str, cx: &App) -> Div {
+fn empty_note(text: impl Into<SharedString>, cx: &App) -> Div {
     let t = cx.tokens();
     div()
         .px_2()
         .py_1()
         .text_size(t.metrics.text_sm)
         .text_color(t.palette.text_subtle.hsla())
-        .child(text)
+        .child(text.into())
 }
 
-fn sidebar(cx: &App) -> impl IntoElement {
+/// What an empty tab area shows.
+fn empty_state(_: &mut Window, cx: &mut App) -> AnyElement {
     let t = cx.tokens();
     let (p, m) = (&t.palette, &t.metrics);
-    region(
-        "sidebar",
-        panel(p.panel_raised, cx)
-            .w(m.sidebar_width)
-            .flex_none()
-            .child(
-                div()
-                    .flex()
-                    .gap_1()
-                    .p(m.gap)
-                    .child(tab("sidebar-files", "Files", true, cx))
-                    .child(tab("sidebar-git", "Git", false, cx)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .px(m.gap)
-                    .gap_1()
-                    .child(section_label("Explorer", cx))
-                    .child(empty_note("No folder open", cx)),
-            )
-            .child(div().flex_1())
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .px(m.gap)
-                    .pb(px(14.))
-                    .gap_1()
-                    .child(section_label("Chats", cx))
-                    .child(empty_note("No chats yet", cx)),
-            ),
-    )
-}
-
-fn main_panel(cx: &App) -> impl IntoElement {
-    let t = cx.tokens();
-    let (p, m) = (&t.palette, &t.metrics);
-    let tab_strip = div()
-        .id("tab-strip")
+    div()
+        .id("empty-state")
         .test_support()
+        .size_full()
         .flex()
+        .flex_col()
         .items_center()
-        .gap(px(6.))
-        .p(px(8.))
-        .min_h(px(48.))
-        .child(div().flex_1())
+        .justify_center()
+        .gap_3()
+        .child(icon(Icon::MessageCircle, px(28.), p.text_subtle.hsla()))
         .child(
             div()
-                .id("split")
-                .size(px(32.))
+                .text_size(px(15.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("Nothing open yet"),
+        )
+        .child(
+            div().text_color(p.text_muted.hsla()).child(
+                "Open a folder to start a workspace, then chat with an agent or open a file.",
+            ),
+        )
+        .child(
+            div()
                 .flex()
                 .items_center()
-                .justify_center()
-                .rounded(m.radius_control)
-                .child(icon(Icon::Columns, px(16.), p.text_muted.hsla())),
-        );
-    let empty =
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap_3()
-            .child(icon(Icon::MessageCircle, px(28.), p.text_subtle.hsla()))
-            .child(
-                div()
-                    .text_size(px(15.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Nothing open yet"),
-            )
-            .child(div().text_color(p.text_muted.hsla()).child(
-                "Open a folder to start a workspace, then chat with an agent or open a file.",
-            ))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_size(m.text_sm)
-                    .text_color(p.text_subtle.hsla())
-                    .child("Command palette")
-                    .child(kbd(shortcut("K"), cx)),
-            );
-    region(
-        "main",
-        panel(p.panel, cx)
-            .flex_1()
-            .min_w_0()
-            .child(tab_strip)
-            .child(empty),
-    )
+                .gap_2()
+                .text_size(m.text_sm)
+                .text_color(p.text_subtle.hsla())
+                .child("Command palette")
+                .child(kbd(shortcut("Ctrl K"), cx)),
+        )
+        .into_any_element()
 }
 
-fn status_bar(cx: &App) -> impl IntoElement {
-    let t = cx.tokens();
-    let (p, m) = (&t.palette, &t.metrics);
-    region(
-        "status-bar",
+/// A sidebar pane with a section label and a note, for panes whose content
+/// hasn't been built yet.
+struct NotePane {
+    id: &'static str,
+    label: &'static str,
+    note: &'static str,
+}
+
+impl NotePane {
+    fn new(id: &'static str, label: &'static str, note: &'static str) -> Self {
+        Self { id, label, note }
+    }
+}
+
+impl Render for NotePane {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .id(self.id)
+            .test_support()
             .flex()
-            .items_center()
-            .gap(px(18.))
-            .px(px(8.))
-            .text_size(m.text_xs)
-            .text_color(p.text_muted.hsla())
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(icon(Icon::GitBranch, px(12.), p.text_muted.hsla()))
-                    .child("No repository"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(status_dot(p.sage, false))
-                    .child("0 problems"),
-            )
-            .child(div().flex_1())
-            .child("0 agents"),
-    )
+            .flex_col()
+            .gap_1()
+            .child(section_label(self.label, cx))
+            .child(empty_note(self.note, cx))
+    }
+}
+
+struct EmptyDrag;
+
+impl Render for EmptyDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use coqo_ui::{
-        Appearance, Palette, Tokens,
-        gpui::{AppContext as _, Bounds, Point, WindowBounds, WindowOptions, px, size},
-        test::{TestAppContext, TestWindowExt as _},
-    };
-
-    use super::Shell;
-
-    fn open(appearance: Appearance) -> (TestAppContext, coqo_ui::gpui::AnyWindowHandle) {
-        let cx = TestAppContext::single();
-        let handle = cx.update(|cx| {
-            coqo_ui::init(appearance, cx);
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds {
-                    origin: Point::default(),
-                    size: size(px(1440.), px(900.)),
-                })),
-                ..Default::default()
-            };
-            coqo_ui::open_window(options, cx, |_, cx| cx.new(|_| Shell))
-                .expect("open shell window")
-                .0
-        });
-        (cx, handle)
-    }
-
-    #[test]
-    fn renders_board_one_chrome() {
-        let (mut cx, handle) = open(Appearance::Dark);
-        cx.update_window(handle, |_, window, cx| {
-            window.render_frame(cx);
-            for id in [
-                "top-bar",
-                "command-search",
-                "bolt",
-                "daemon-status",
-                "workspace-rail",
-                "sidebar",
-                "main",
-                "tab-strip",
-                "status-bar",
-            ] {
-                let el = window.find(id);
-                assert!(el.visible(), "{id} is not visible");
-                assert!(el.bounds().size.width > px(0.), "{id} has no width");
-            }
-
-            let top = window.find("top-bar").bounds();
-            let rail = window.find("workspace-rail").bounds();
-            let sidebar = window.find("sidebar").bounds();
-            let main = window.find("main").bounds();
-            let status = window.find("status-bar").bounds();
-
-            // Rail, sidebar and main sit left to right, 10 px apart.
-            assert_eq!(sidebar.left() - rail.right(), px(10.));
-            assert_eq!(main.left() - sidebar.right(), px(10.));
-            // The top bar is above the panels and the status bar below them.
-            assert_eq!(rail.top() - top.bottom(), px(10.));
-            assert_eq!(status.top() - main.bottom(), px(10.));
-            // 10 px window padding, fixed rail and sidebar widths, main takes the rest.
-            assert_eq!(rail.left(), px(10.));
-            assert_eq!(rail.size.width, px(52.));
-            assert_eq!(sidebar.size.width, px(250.));
-            assert_eq!(main.right(), px(1430.));
-            assert!(main.size.width > px(1000.));
-        })
-        .unwrap();
-    }
-
-    #[test]
-    fn explicit_appearance_selects_its_palette() {
-        let (cx, _) = open(Appearance::Light);
-        cx.update(|cx| {
-            let tokens = cx.global::<Tokens>();
-            assert_eq!(tokens.choice, Appearance::Light);
-            assert_eq!(tokens.palette, Palette::LIGHT);
-        });
-        let (cx, _) = open(Appearance::Dark);
-        cx.update(|cx| assert_eq!(cx.global::<Tokens>().palette, Palette::DARK));
-    }
-}
+mod tests;
 
 /// Renders the shell offscreen to PNGs for visual review against board 1.
 /// Needs a GPU: `cargo test -p coqo -- --ignored shell_screenshots`.
 /// Writes to `$COQO_SHOT_DIR` (default: the system temp dir).
 #[cfg(test)]
 mod screenshots {
+    use std::rc::Rc;
+
     use coqo_ui::{
         Appearance,
+        dock::{Edge, store::MemoryLayoutStore},
         gpui::{AppContext as _, size},
         test::render_offscreen,
     };
 
-    use super::Shell;
+    use super::{DEFAULT_WORKSPACE, Shell};
+    use crate::welcome;
 
     #[test]
     #[ignore = "needs a GPU; run manually"]
@@ -453,12 +645,29 @@ mod screenshots {
         let dir = std::env::var_os("COQO_SHOT_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
-        for (name, appearance) in [("dark", Appearance::Dark), ("light", Appearance::Light)] {
-            let image = render_offscreen(appearance, size(1440., 900.), |_, cx| cx.new(|_| Shell))
+        for split in [false, true] {
+            for (name, appearance) in [("dark", Appearance::Dark), ("light", Appearance::Light)] {
+                let image = render_offscreen(appearance, size(1440., 900.), |window, cx| {
+                    super::init(cx);
+                    let store = Rc::new(MemoryLayoutStore::default());
+                    cx.new(|cx| {
+                        let shell = Shell::new(store, DEFAULT_WORKSPACE, window, cx);
+                        if split {
+                            shell.dock().update(cx, |dock, cx| {
+                                dock.open_tab(welcome::new(cx), window, cx);
+                                dock.split(Edge::Right, window, cx);
+                                dock.split(Edge::Bottom, window, cx);
+                            });
+                        }
+                        shell
+                    })
+                })
                 .expect("offscreen render");
-            let path = dir.join(format!("coqo-shell-{name}.png"));
-            image.save(&path).expect("save png");
-            println!("wrote {}", path.display());
+                let suffix = if split { "-split" } else { "" };
+                let path = dir.join(format!("coqo-shell{suffix}-{name}.png"));
+                image.save(&path).expect("save png");
+                println!("wrote {}", path.display());
+            }
         }
     }
 }

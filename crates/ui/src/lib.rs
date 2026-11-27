@@ -9,6 +9,8 @@
 //! and never used directly elsewhere**, so they can be swapped without touching
 //! views or mods.
 
+pub mod dock;
+pub mod slots;
 pub mod theme;
 pub mod widgets;
 
@@ -16,6 +18,9 @@ mod assets;
 mod fonts;
 
 pub use assets::CoqoAssets;
+
+/// JSON values, for tab state ([`dock::TabItem::save`]).
+pub use serde_json;
 
 /// GPUI: elements, layout, styling, entities and windows.
 pub mod gpui {
@@ -86,6 +91,9 @@ pub fn init(appearance: Appearance, cx: &mut App) {
     gpui_kit::init(cx);
     fonts::register(cx);
     theme::apply(appearance, None, cx);
+    dock::init(cx);
+    cx.default_global::<slots::Slots>();
+    cx.default_global::<slots::SidebarPanes>();
 }
 
 /// Open a window whose root view is built by `build`. The view is wrapped in the
