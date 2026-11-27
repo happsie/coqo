@@ -44,6 +44,9 @@ const SESSION_ROUTES: &[(&str, AccessKind)] = &[
     ("fs/list", AccessKind::Workspace),
     ("fs/read", AccessKind::Workspace),
     ("fs/stat", AccessKind::Workspace),
+    ("syntax/folding", AccessKind::Check),
+    ("syntax/outline", AccessKind::Check),
+    ("syntax/symbols", AccessKind::Check),
     ("workspace/events", AccessKind::Check),
     ("workspace/get", AccessKind::Workspace),
     ("workspace/getState", AccessKind::Workspace),
@@ -212,6 +215,21 @@ fn probes(
         (
             "buffer/changes",
             RouteKind::Topic,
+            json!({ "buffer": buffer }),
+        ),
+        (
+            "syntax/symbols",
+            RouteKind::Method,
+            json!({ "buffer": buffer }),
+        ),
+        (
+            "syntax/outline",
+            RouteKind::Method,
+            json!({ "buffer": buffer }),
+        ),
+        (
+            "syntax/folding",
+            RouteKind::Method,
             json!({ "buffer": buffer }),
         ),
     ]

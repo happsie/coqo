@@ -1,0 +1,29 @@
+# language: css
+
+# outline (kind name [lines])
+rule :root [2-4]
+rule body, html [6-9]
+rule (max-width: 600px) [11-15]
+  rule .rail [12-14]
+rule fade [17-24]
+  rule from [18-20]
+  rule to [21-23]
+
+# symbols (kind qualified name)
+rule :root
+rule body, html
+rule (max-width: 600px)
+rule (max-width: 600px)..rail
+rule fade
+rule fade.from
+rule fade.to
+
+# folds (lines kind)
+2-4 region
+6-7 region
+7-9 region
+11-15 region
+12-14 region
+17-24 region
+18-20 region
+21-23 region

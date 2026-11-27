@@ -18,8 +18,9 @@
 //!   clears it, so it can never revert someone else's edit.
 //! - **Change highlights:** [`CodeEditor::highlight_changes`] tints ranges and
 //!   marks their lines in the gutter, so the user sees what an agent changed.
-//! - **Languages:** [`language_for_path`] picks the bundled tree-sitter grammar
-//!   for a file. Highlighting, folding, indent guides, line numbers and find
+//! - **Languages:** [`language_for_path`] and [`language_for`] pick the
+//!   bundled tree-sitter grammar for a file from `coqo-syntax`'s registry.
+//!   Highlighting, folding, indent guides, line numbers and find
 //!   (`Ctrl F` / `Cmd F`) come from gpui-component.
 //!
 //! Offsets are UTF-8 byte offsets, as in the buffer protocol.
@@ -49,25 +50,47 @@ const CHANGE_TINT: f32 = 0.16;
 /// One edit: a UTF-8 byte range and the text that replaces it.
 pub type TextEdit = (Range<usize>, String);
 
-/// The tree-sitter language for a file path (by extension), if Coqo bundles a
-/// grammar for it. Other files are edited as plain text.
+/// The tree-sitter language for a file path (by file name or extension), if
+/// Coqo bundles a grammar for it. Other files are edited as plain text. The
+/// languages are `coqo-syntax`'s, so the editor and the daemon agree.
 pub fn language_for_path(path: &str) -> Option<&'static str> {
-    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
-    let (_, ext) = name.rsplit_once('.')?;
-    let language = match ext {
-        "rs" => "rust",
-        "ts" | "mts" | "cts" => "typescript",
-        "tsx" => "tsx",
-        "js" | "mjs" | "cjs" | "jsx" => "javascript",
-        "java" => "java",
-        "kt" | "kts" => "kotlin",
-        "json" | "jsonc" => "json",
-        "toml" => "toml",
-        "md" | "markdown" | "mdx" => "markdown",
-        "yml" | "yaml" => "yaml",
-        _ => return None,
-    };
-    Some(language)
+    coqo_syntax::Language::for_path(path).map(coqo_syntax::Language::id)
+}
+
+/// Like [`language_for_path`], falling back to the `#!` line of `text` (a
+/// script without an extension).
+pub fn language_for(path: &str, text: &str) -> Option<&'static str> {
+    coqo_syntax::Language::detect(path, text).map(coqo_syntax::Language::id)
+}
+
+/// Languages whose gpui-component configuration Coqo replaces with
+/// coqo-syntax's: gpui-component 0.11 highlights TSX with TypeScript's query
+/// alone, which leaves JavaScript keywords, strings and JSX plain.
+const REPLACED_LANGUAGES: &[&str] = &["tsx"];
+
+/// Make every `coqo-syntax` language known to gpui-component's highlighter.
+/// Most are bundled with it (the `tree-sitter-*` features); the rest (XML),
+/// and those in [`REPLACED_LANGUAGES`], are registered with coqo-syntax's
+/// grammar and highlight query.
+pub(crate) fn register_languages() {
+    use gpui_kit::component::highlighter::{LanguageConfig, LanguageRegistry};
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    REGISTERED.call_once(|| {
+        let registry = LanguageRegistry::singleton();
+        for lang in coqo_syntax::languages() {
+            if registry.language(lang.id()).is_none() || REPLACED_LANGUAGES.contains(&lang.id()) {
+                let config = LanguageConfig::new(
+                    lang.id(),
+                    lang.grammar(),
+                    Vec::new(),
+                    &lang.highlights_query(),
+                    "",
+                    "",
+                );
+                registry.register(lang.id(), &config);
+            }
+        }
+    });
 }
 
 /// Who made an edit.
@@ -161,6 +184,7 @@ impl CodeEditor {
     /// Highlight `language` (a name from [`language_for_path`]); `None` is
     /// plain text.
     pub fn set_language(&mut self, language: Option<&str>, cx: &mut Context<Self>) {
+        register_languages();
         let language = language.unwrap_or("text").to_owned();
         self.state
             .update(cx, |state, cx| state.set_highlighter(language, cx));

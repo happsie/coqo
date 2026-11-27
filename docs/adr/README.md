@@ -14,3 +14,4 @@ Architecture decisions for Coqo, one file per decision. See [ADR 0001](0001-reco
 | [0008](0008-editor-remote-edits-patch.md) | Editor remote edits: a vendored, patched gpui-base behind `coqo_ui::editor` | Accepted |
 | [0009](0009-daemon-terminals.md) | Daemon terminals: PTY and emulator in `coqod`, the UI mirrors rows | Accepted |
 | [0010](0010-replicated-buffers.md) | Replicated buffers: protocol details, disk merges and the journal (refines 0006) | Accepted |
+| [0011](0011-syntax-layer.md) | Syntax layer: `coqo-syntax`, shared by the daemon and the UI | Accepted |

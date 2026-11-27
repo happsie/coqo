@@ -1,0 +1,22 @@
+# language: tsx
+
+# outline (kind name [lines])
+interface Props [3-5]
+  field title [4-4]
+function Card [7-13]
+function List [15-21]
+
+# symbols (kind qualified name)
+interface Props
+field Props.title
+function Card
+function List
+
+# folds (lines kind)
+3-5 region
+7-13 region
+8-12 region
+9-11 region
+15-21 region
+16-20 region
+17-19 region

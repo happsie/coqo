@@ -219,7 +219,7 @@ JDT LS and kotlin-lsp alone can use 1–3 GB, and often you only want to read co
 
 | Layer | Always on? | Provided by | Features |
 |---|---|---|---|
-| **Syntax** | ✅ always | tree-sitter (in the UI, no server process) | Highlighting, folding, bracket matching, indentation, outline/breadcrumbs, tree-sitter symbol search, word completion, and anchors/walkthrough/trace structure |
+| **Syntax** | ✅ always | tree-sitter via `coqo-syntax`, in the UI and the daemon (`syntax/*`), no server process ([ADR 0011](adr/0011-syntax-layer.md)) | Highlighting, folding, bracket matching, indentation, outline/breadcrumbs, tree-sitter symbol search, word completion, and anchors/walkthrough/trace structure |
 | **Intellisense** | ⚡ opt-in per language | LSP servers in the daemon | Semantic completion, go to definition/references, rename, diagnostics, code actions, inlay hints, formatting |
 
 - **The bolt button** in the top bar shows how many languages have intellisense on ("1 of 3"). Its popover lists each language in the workspace with its server, its state (`sleeping · starting · indexing · ready`), live memory use, and a switch. The status bar shows the same state in short form, and a tab shows a small ⚡ badge when its language has intellisense on.
@@ -397,6 +397,7 @@ crates/mod-host-wasm/    wasmtime host + WIT world (wit/coqo-mod.wit)
 crates/mod-host-proc/    Coqo Mod Protocol host
 crates/ui/               coqo-ui facade over GPUI + gpui-component, declarative view renderer
 crates/anchors/          anchor model + re-anchoring
+crates/syntax/           coqo-syntax: languages, tree-sitter parsing, symbols, outline, folding (UI + daemon)
 crates/storage/          SQLite + migrations
 crates/lsp-client/ crates/dap-client/ crates/acp-host/ crates/mcp/
 mods/<name>/             built-in core mods (§6)

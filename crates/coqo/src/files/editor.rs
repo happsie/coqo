@@ -465,7 +465,7 @@ impl FileEditor {
             None => {
                 let editor = cx.new(|cx| {
                     let mut editor = CodeEditor::new(open.text.clone(), window, cx);
-                    editor.set_language(editor::language_for_path(&self.path), cx);
+                    editor.set_language(editor::language_for(&self.path, &open.text), cx);
                     editor
                 });
                 let weak = cx.entity().downgrade();

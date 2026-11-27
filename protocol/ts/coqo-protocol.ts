@@ -109,6 +109,14 @@ export type BufferChange = {
 /** Identifies an open buffer in the running daemon. Not stable across daemon restarts or after a buffer is unloaded: reopen by path then. */
 export type BufferId = number;
 
+/** A byte range of the buffer text. */
+export type ByteRange = {
+  /** One past the last byte. */
+  end: number;
+  /** First byte. */
+  start: number;
+};
+
 /** Params of the [`Changes`] topic. */
 export type ChangesParams = {
   /** The workspace to watch. It must be open. */
@@ -325,6 +333,29 @@ export type FileTooLarge = {
   size: number;
 };
 
+/** What a fold holds (LSP's `FoldingRangeKind`). */
+export type FoldKind = "region" | "comment" | "imports";
+
+/** Lines that can be folded: `start_line` stays visible, the lines after it through `end_line` are hidden. */
+export type FoldingRange = {
+  /** Last line folded (0-based, inclusive). */
+  endLine: number;
+  /** What the fold holds. */
+  kind: FoldKind;
+  /** First line (0-based). */
+  startLine: number;
+};
+
+/** Result of [`Folding`]. */
+export type FoldingResult = {
+  /** The language id, or `null` for plain text. */
+  language?: string | null;
+  /** The ranges, sorted by start line, at most one per line. */
+  ranges: Array<FoldingRange>;
+  /** The revision the ranges describe. */
+  rev: number;
+};
+
 /** What changed on screen since the previous frame. */
 export type Frame = {
   cursor?: Cursor | null;
@@ -483,6 +514,34 @@ export type Origin = {
 
 /** Who made a change. */
 export type OriginKind = "client" | "agent" | "disk" | "format" | "revert" | "save";
+
+/** A symbol and the symbols inside it. */
+export type OutlineItem = {
+  /** The symbols directly inside it, in document order. */
+  children?: Array<OutlineItem>;
+  /** Last line (0-based, inclusive). */
+  endLine: number;
+  /** What it is. */
+  kind: SymbolKind;
+  /** The name. */
+  name: string;
+  /** The name. */
+  nameRange: ByteRange;
+  /** The whole definition. */
+  range: ByteRange;
+  /** First line (0-based). */
+  startLine: number;
+};
+
+/** Result of [`Outline`]. */
+export type OutlineResult = {
+  /** The top-level symbols. */
+  items: Array<OutlineItem>;
+  /** The language id, or `null` for plain text. */
+  language?: string | null;
+  /** The revision the outline describes. */
+  rev: number;
+};
 
 /** Params naming a path in a workspace. */
 export type PathParams = {
@@ -1068,6 +1127,43 @@ export type SubscriptionEndedParams = {
 /** Identifies a subscription on one connection. */
 export type SubscriptionId = number;
 
+/** A named definition: a function, method, type, module, heading, key, … */
+export type Symbol = {
+  /** Names of the symbols that contain this one, outermost first: a method `area` in `impl Circle` inside `mod shapes` has `["shapes", "Circle"]`. */
+  container?: Array<string>;
+  /** Last line of the definition (0-based, inclusive). */
+  endLine: number;
+  /** What it is. */
+  kind: SymbolKind;
+  /** The name, with runs of whitespace collapsed to one space. */
+  name: string;
+  /** The name. */
+  nameRange: ByteRange;
+  /** The whole definition. */
+  range: ByteRange;
+  /** First line of the definition (0-based). */
+  startLine: number;
+};
+
+/** What a symbol is. */
+export type SymbolKind = "module" | "class" | "interface" | "trait" | "struct" | "enum" | "enumMember" | "typeAlias" | "impl" | "function" | "method" | "constructor" | "field" | "constant" | "variable" | "macro" | "heading" | "key" | "table" | "element" | "rule";
+
+/** Result of [`Symbols`]. */
+export type SymbolsResult = {
+  /** The language id (`rust`, `tsx`, …), or `null` for plain text. */
+  language?: string | null;
+  /** The revision the symbols describe. */
+  rev: number;
+  /** Every symbol, in document order (a container before what it holds). */
+  symbols: Array<Symbol>;
+};
+
+/** Params of every `syntax/*` method. */
+export type SyntaxParams = {
+  /** An open buffer ([`buffer/open`](super::buffer::Open)). */
+  buffer: BufferId;
+};
+
 /** A terminal's size in cells. */
 export type TermSize = {
   cols: number;
@@ -1403,6 +1499,12 @@ export interface Requests {
   "buffer/save": { params: SaveParams; result: SaveResult };
   /** A replica is done with a buffer; it unloads once unsubscribed. (client→server) */
   "buffer/close": { params: CloseParams; result: null };
+  /** Every symbol of an open buffer (tree-sitter tags), flat, with container paths. (client→server) */
+  "syntax/symbols": { params: SyntaxParams; result: SymbolsResult };
+  /** The symbols of an open buffer as a tree. (client→server) */
+  "syntax/outline": { params: SyntaxParams; result: OutlineResult };
+  /** The foldable line ranges of an open buffer. (client→server) */
+  "syntax/folding": { params: SyntaxParams; result: FoldingResult };
   /** Start a program (or the login shell) in a new daemon-owned PTY. (client→server) */
   "terminal/spawn": { params: SpawnParams; result: TerminalInfo };
   /** Every terminal, running or exited. (client→server) */

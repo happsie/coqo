@@ -9,11 +9,17 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+# The bundled languages, by path or `#!` line (no GPUI in it).
+coqo-syntax = { path = "../syntax" }
 # Pinned exactly: gpui-kit pins its `gpui-pre` snapshot of Zed's GPUI, and any
 # release may change APIs. Upgrade deliberately (ADR 0002).
-# The tree-sitter features bundle the grammars the editor highlights
-# (`editor::language_for_path`); JSON comes with `tree-sitter` itself.
+# The tree-sitter features bundle the grammars the editor highlights with
+# gpui-component's own queries; JSON comes with `tree-sitter` itself. The
+# languages are coqo-syntax's (`editor::language_for_path`); one it has that
+# gpui-component lacks (XML) is registered from coqo-syntax's grammar.
 gpui-kit = { version = "=0.11.0", features = [
+    "tree-sitter-css",
+    "tree-sitter-html",
     "tree-sitter-java",
     "tree-sitter-javascript",
     "tree-sitter-kotlin",

@@ -15,6 +15,8 @@
 //! - [`cli`]: command-line arguments.
 //! - [`buffers`]: replicated text buffers (`buffer/*`): open, edit, save,
 //!   disk changes and the unsaved-edit journal.
+//! - [`syntax`]: symbols, outline and folding of open buffers
+//!   (`syntax/*`, tree-sitter via `coqo-syntax`).
 //! - [`workspace`]: workspaces (folder roots), their persisted state, and
 //!   read-only file-system access with live change events.
 //!
@@ -29,6 +31,7 @@ pub mod lifecycle;
 pub mod methods;
 pub mod mods;
 pub mod routes;
+pub mod syntax;
 pub mod terminal;
 pub mod workspace;
 

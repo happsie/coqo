@@ -1,0 +1,23 @@
+# language: markdown
+
+# outline (kind name [lines])
+heading Coqo [1-23]
+  heading Install [5-16]
+    heading From source [13-16]
+  heading Usage [18-23]
+    heading Setext heading [20-21]
+
+# symbols (kind qualified name)
+heading Coqo
+heading Coqo.Install
+heading Coqo.Install.From source
+heading Coqo.Usage
+heading Coqo.Usage.Setext heading
+
+# folds (lines kind)
+1-23 region
+5-16 region
+9-11 region
+13-16 region
+15-16 region
+18-23 region

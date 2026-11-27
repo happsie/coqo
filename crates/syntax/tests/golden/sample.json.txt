@@ -1,0 +1,24 @@
+# language: json
+
+# outline (kind name [lines])
+key name [2-2]
+key version [3-3]
+key scripts [4-7]
+  key build [5-5]
+  key test [6-6]
+key keywords [8-11]
+key private [12-12]
+
+# symbols (kind qualified name)
+key name
+key version
+key scripts
+key scripts.build
+key scripts.test
+key keywords
+key private
+
+# folds (lines kind)
+1-13 region
+4-7 region
+8-11 region

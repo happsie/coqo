@@ -1,0 +1,33 @@
+# language: javascript
+
+# outline (kind name [lines])
+variable LIMIT [3-3]
+class Counter [5-20]
+  field count [6-6]
+  constructor constructor [8-10]
+  method increment [12-15]
+  method zero [17-19]
+function greet [22-24]
+function shout [26-28]
+function App [30-34]
+
+# symbols (kind qualified name)
+variable LIMIT
+class Counter
+field Counter.count
+constructor Counter.constructor
+method Counter.increment
+method Counter.zero
+function greet
+function shout
+function App
+
+# folds (lines kind)
+5-20 region
+8-10 region
+12-15 region
+17-19 region
+22-24 region
+26-28 region
+30-34 region
+31-33 region

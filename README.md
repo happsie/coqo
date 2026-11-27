@@ -24,6 +24,7 @@ crates/mod-host-wasm/  wasmtime host + WIT world
 crates/mod-host-proc/  Coqo Mod Protocol host
 crates/ui/             coqo-ui facade over GPUI + gpui-component
 crates/anchors/        anchor model + re-anchoring
+crates/syntax/         coqo-syntax: languages, tree-sitter parsing, symbols, folding (no GPUI)
 crates/storage/        SQLite + migrations
 crates/lsp-client/  crates/dap-client/  crates/acp-host/  crates/mcp/
 mods/                  built-in core mods

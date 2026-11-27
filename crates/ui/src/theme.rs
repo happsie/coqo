@@ -546,6 +546,167 @@ mod tests {
         }
     }
 
+    /// A fixture file, its language, and `(token, palette colour)` pairs.
+    type HighlightFixture = (
+        &'static str,
+        &'static str,
+        &'static [(&'static str, &'static str)],
+    );
+
+    /// The highlight fixture of each bundled language (`coqo-syntax`'s golden
+    /// fixtures) and tokens in it with the palette colour they must get.
+    const HIGHLIGHT_FIXTURES: &[HighlightFixture] = &[
+        (
+            "sample.rs",
+            "rust",
+            &[
+                ("pub mod", "lavender"),
+                ("Circle", "bolt"),
+                ("\"coqo\"", "green"),
+                ("//! A small", "text_subtle"),
+            ],
+        ),
+        (
+            "sample.ts",
+            "typescript",
+            &[
+                ("interface", "lavender"),
+                ("Shape", "bolt"),
+                ("\"fs\"", "green"),
+            ],
+        ),
+        (
+            "sample.tsx",
+            "tsx",
+            &[("return", "lavender"), ("\"card\"", "green")],
+        ),
+        (
+            "sample.js",
+            "javascript",
+            &[("class", "lavender"), ("\"path\"", "green")],
+        ),
+        (
+            "Sample.java",
+            "java",
+            &[("public class", "lavender"), ("\"Hello \"", "green")],
+        ),
+        (
+            "Sample.kt",
+            "kotlin",
+            &[("interface", "lavender"), ("\"hi\"", "green")],
+        ),
+        (
+            "sample.json",
+            "json",
+            &[("\"coqo\"", "green"), ("true", "peach")],
+        ),
+        (
+            "sample.toml",
+            "toml",
+            &[("\"coqo\"", "green"), ("# A Cargo", "text_subtle")],
+        ),
+        (
+            "sample.md",
+            "markdown",
+            &[
+                ("# Coqo", "lavender"),
+                ("Coqo", "blue"),
+                ("- clone", "sand"),
+            ],
+        ),
+        ("sample.yaml", "yaml", &[("# CI", "text_subtle")]),
+        (
+            "sample.html",
+            "html",
+            &[("head", "lavender"), ("en\"", "green"), ("log(", "blue")],
+        ),
+        (
+            "sample.css",
+            "css",
+            &[("/* Zen", "text_subtle"), ("600", "peach")],
+        ),
+        (
+            "pom.xml",
+            "xml",
+            &[
+                ("<!-- A Maven", "text_subtle"),
+                ("<project", "text_muted"),
+                ("modelVersion", "lavender"),
+            ],
+        ),
+    ];
+
+    fn palette_name(p: &Palette, color: gpui_kit::Hsla) -> &'static str {
+        let named = [
+            ("text", p.text),
+            ("text_muted", p.text_muted),
+            ("text_subtle", p.text_subtle),
+            ("lavender", p.lavender),
+            ("bolt", p.bolt),
+            ("blue", p.blue),
+            ("green", p.green),
+            ("peach", p.peach),
+            ("sand", p.sand),
+        ];
+        named
+            .into_iter()
+            .find(|(_, c)| c.hsla() == color)
+            .map_or("?", |(n, _)| n)
+    }
+
+    #[test]
+    fn every_bundled_language_highlights_its_fixture() {
+        use gpui_kit::component::Rope;
+        use gpui_kit::component::highlighter::SyntaxHighlighter;
+
+        crate::editor::register_languages();
+        let tokens = Tokens::new(Appearance::Dark, Appearance::Dark);
+        let theme = highlight_theme(&tokens).unwrap();
+        let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../syntax/tests/fixtures");
+        for lang in coqo_syntax::languages() {
+            assert!(
+                HIGHLIGHT_FIXTURES.iter().any(|&(_, id, _)| id == lang.id()),
+                "{} has no highlight fixture",
+                lang.id()
+            );
+        }
+        for &(file, language, expected) in HIGHLIGHT_FIXTURES {
+            let text = std::fs::read_to_string(format!("{fixtures}/{file}")).unwrap();
+            assert_eq!(crate::editor::language_for_path(file), Some(language));
+            let mut highlighter = SyntaxHighlighter::new(language);
+            assert_eq!(highlighter.language().as_ref(), language, "{file}");
+            highlighter.update(None, &Rope::from(text.as_str()), None);
+            let styles = highlighter.styles(&(0..text.len()), &theme);
+            let color_at = |offset: usize| {
+                styles
+                    .iter()
+                    .find(|(r, s)| r.contains(&offset) && s.color.is_some())
+                    .and_then(|(_, s)| s.color)
+                    .map_or("none", |c| palette_name(&tokens.palette, c))
+            };
+            let dump = || {
+                styles
+                    .iter()
+                    .filter_map(|(r, s)| {
+                        let c = s.color?;
+                        Some(format!(
+                            "{:?}={}",
+                            &text[r.clone()],
+                            palette_name(&tokens.palette, c)
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            for &(token, color) in expected {
+                let at = text
+                    .find(token)
+                    .unwrap_or_else(|| panic!("{token} not in {file}"));
+                assert_eq!(color_at(at), color, "{token:?} in {file}: {}", dump());
+            }
+        }
+    }
+
     #[test]
     fn system_resolves_against_the_window() {
         assert_eq!(

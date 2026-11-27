@@ -1,0 +1,15 @@
+# A Cargo-like manifest.
+[package]
+name = "coqo"
+version = "0.0.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tree-sitter = "0.26"
+
+[profile.release]
+lto = "thin"
+
+[[bin]]
+name = "coqod"
+path = "src/main.rs"

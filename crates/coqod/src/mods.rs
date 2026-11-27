@@ -39,6 +39,10 @@ pub fn builtins(data: &DataDirs, agent_fs: &FsHandle) -> BuiltinMods {
         .with_point::<coqo_agents::AgentProviderImpls>()
         .with(coqo_mod_hello::MANIFEST, coqo_mod_hello::Hello::new())
         .with(
+            coqo_syntax::builtin::MANIFEST,
+            coqo_syntax::builtin::SyntaxMod::new(),
+        )
+        .with(
             coqo_agent_claude::MANIFEST,
             coqo_agent_claude::ClaudeMod::new(claude),
         )
@@ -132,6 +136,21 @@ pub(crate) mod tests {
         assert_eq!(
             mods.manager.run_command(&greet, Value::Null).await.unwrap(),
             "Hello, world!"
+        );
+        // The syntax mod is always on and makes the bundled languages known.
+        assert!(
+            status
+                .iter()
+                .any(|s| s.id.as_str() == "coqo.syntax" && s.state == ModState::Active),
+            "{status:?}"
+        );
+        let languages = mods
+            .contributions
+            .contributions_of::<points::Languages>()
+            .unwrap();
+        assert!(
+            languages.iter().any(|l| l.id.as_str() == "kotlin"),
+            "{languages:?}"
         );
         // Claude Code is a built-in provider, whether or not it is set up.
         assert!(

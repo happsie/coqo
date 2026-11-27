@@ -15,10 +15,13 @@
 //!   daemon-owned agent sessions (`coqo.agents@1`, PLAN §7.3).
 //! - [`buffer`]: `buffer/*`, replicated text buffers (open, edit, save).
 //! - [`terminal`]: `terminal/*`, daemon-owned PTYs.
+//! - [`syntax`]: `syntax/*`, symbols, outline and folding of open buffers
+//!   (tree-sitter, always on).
 
 pub mod agents;
 pub mod buffer;
 pub mod fs;
+pub mod syntax;
 pub mod terminal;
 pub mod workspace;
 

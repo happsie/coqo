@@ -1,0 +1,35 @@
+# language: yaml
+
+# outline (kind name [lines])
+key name [2-2]
+key on [3-5]
+  key push [4-5]
+    key branches [5-5]
+key jobs [6-12]
+  key test [7-12]
+    key runs-on [8-8]
+    key steps [9-12]
+      key uses [10-10]
+      key name [11-11]
+      key run [12-12]
+
+# symbols (kind qualified name)
+key name
+key on
+key on.push
+key on.push.branches
+key jobs
+key jobs.test
+key jobs.test.runs-on
+key jobs.test.steps
+key jobs.test.steps.uses
+key jobs.test.steps.name
+key jobs.test.steps.run
+
+# folds (lines kind)
+3-5 region
+4-5 region
+6-12 region
+7-12 region
+9-12 region
+11-12 region

@@ -1,0 +1,27 @@
+# language: xml
+
+# outline (kind name [lines])
+element project [3-13]
+  element modelVersion [4-4]
+  element groupId [5-5]
+  element dependencies [6-11]
+    element dependency [7-10]
+      element groupId [8-8]
+      element artifactId [9-9]
+  element build [12-12]
+
+# symbols (kind qualified name)
+element project
+element project.modelVersion
+element project.groupId
+element project.dependencies
+element project.dependencies.dependency
+element project.dependencies.dependency.groupId
+element project.dependencies.dependency.artifactId
+element project.build
+
+# folds (lines kind)
+1-2 region
+3-13 region
+6-11 region
+7-10 region
