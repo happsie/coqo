@@ -125,16 +125,21 @@ fn scrollback_is_kept_in_the_daemon() {
 fn resize_changes_the_grid_and_the_pty() {
     let terminals = Terminals::new();
     let term = terminals.spawn(sh()).unwrap();
+    eventually("the prompt", || {
+        term.screen().text().lines().any(|l| l == "$").then_some(())
+    });
     term.resize(TermSize::new(33, 7));
     assert_eq!(term.info().size, TermSize::new(33, 7));
     term.write("stty size\n");
-    eventually("stty to see the new size", || {
-        term.screen()
-            .text()
-            .lines()
-            .any(|l| l == "7 33")
-            .then_some(())
-    });
+    let start = Instant::now();
+    while !term.screen().text().lines().any(|l| l == "7 33") {
+        assert!(
+            start.elapsed() < TIMEOUT,
+            "stty didn't see the new size; screen is:\n{}",
+            term.screen().text()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     terminals.close(term.id());
 }
 
@@ -360,15 +365,16 @@ async fn a_terminal_outlives_its_client_and_reattaches() {
     // Still live: top keeps redrawing (its clock ticks) and takes input.
     let before = screen.text();
     follow(&mut screen, &mut sub, |s| s.text() != before).await;
-    for data in ["q", "echo after-$((1+1))\n"] {
-        second
-            .request::<proto::Input>(InputParams {
-                id,
-                data: data.into(),
-            })
-            .await
-            .unwrap();
-    }
+    let input = |data: &str| {
+        second.request::<proto::Input>(InputParams {
+            id,
+            data: data.into(),
+        })
+    };
+    input("q").await.unwrap();
+    // top flushes pending input as it exits, so wait for the prompt.
+    follow(&mut screen, &mut sub, |s| has_line(s, "$")).await;
+    input("echo after-$((1+1))\n").await.unwrap();
     follow(&mut screen, &mut sub, |s| has_line(s, "after-2")).await;
     terminals.shutdown();
 }
