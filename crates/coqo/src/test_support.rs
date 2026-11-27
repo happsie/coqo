@@ -5,12 +5,17 @@
 
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
-use coqo_client::{DaemonPaths, connect};
+use coqo_agents::{
+    ManagerOptions, SessionManager, SessionStore, StaticProviders, testing::ScriptedProvider,
+};
+use coqo_client::{DaemonPaths, RuntimeDir, connect};
+use coqo_mod_api::contrib::{AgentProviderInfo, AgentProviderKind};
 use coqo_protocol::{
-    Client, ClientConfig,
+    Client, ClientConfig, Router, Server, ServerConfig,
     daemon::{Shutdown, ShutdownParams},
 };
 use coqo_storage::{DataDirs, GlobalDb, NewEvent, Retention, Timestamp};
@@ -119,6 +124,62 @@ impl Drop for TestDaemon {
         if let Some(serving) = self.serving.take() {
             serving.abort();
         }
+    }
+}
+
+/// The daemon's workspace service and session manager, served on a socket,
+/// with scripted agents as the providers (no language servers, buffers or
+/// terminals).
+pub struct ScriptedDaemon {
+    pub runtime: Runtime,
+    pub paths: DaemonPaths,
+}
+
+impl ScriptedDaemon {
+    /// Serve `providers`, as `(id, name, agent)`, with state under `dir`.
+    pub fn start(dir: &Path, providers: &[(&str, &str, &ScriptedProvider)]) -> Self {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let paths = DaemonPaths::at(dir.join("run"));
+        let data = DataDirs::at(dir.join("data"));
+        std::fs::create_dir_all(data.root()).unwrap();
+        let entered = runtime.enter();
+        let mut registry = StaticProviders::new();
+        for (id, name, provider) in providers {
+            let info = AgentProviderInfo {
+                id: id.parse().unwrap(),
+                name: (*name).into(),
+                kind: AgentProviderKind::Acp,
+                description: None,
+            };
+            registry = registry.with(info, Arc::new((*provider).clone()));
+        }
+        let store = SessionStore::open(&data.global_db()).unwrap();
+        let manager =
+            SessionManager::open(store, Arc::new(registry), ManagerOptions::default()).unwrap();
+        let workspaces = Arc::new(coqod::workspace::WorkspaceService::open(data).unwrap());
+        let router = coqod::workspace::register(Router::new(), workspaces);
+        let router = coqo_agents::rpc::register(router, manager);
+        let server = Server::new(router, ServerConfig::new("coqod", "test"));
+        RuntimeDir::create(paths.runtime_dir()).unwrap();
+        let listener = tokio::net::UnixListener::bind(paths.socket()).unwrap();
+        runtime.spawn(coqo_protocol::unix::serve_unix(server, listener));
+        drop(entered);
+        Self { runtime, paths }
+    }
+
+    /// Run `f` with a client of its own (another UI, the CLI).
+    pub fn with_client<R>(&self, f: impl AsyncFnOnce(Client) -> R) -> R {
+        let paths = self.paths.clone();
+        self.runtime.block_on(async move {
+            let (client, _) = connect(&paths, ClientConfig::new("coqo-tests", "test"))
+                .await
+                .unwrap();
+            f(client).await
+        })
     }
 }
 

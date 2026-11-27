@@ -7,6 +7,7 @@
 //! `coqod`, starting it if needed (PLAN §4.3). More windows share the
 //! connection (`windows`). CLI subcommands arrive in later issues (PLAN §12).
 
+mod activity;
 mod chat;
 mod daemon;
 mod files;

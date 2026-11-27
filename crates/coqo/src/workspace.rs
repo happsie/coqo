@@ -11,6 +11,9 @@
 //!   forwards `fs/changes` for it as [`WorkspacesEvent::FsChanged`], so the
 //!   window's views share one subscription. A workspace is shown in at most
 //!   one window: opening one that another window shows focuses that window.
+//! - The rail (`shell::rail`) lists [`KnownWorkspaces::in_rail_order`];
+//!   `Ctrl/Cmd+1..9` ([`SwitchToWorkspace`]) switch the window to one of
+//!   them, and [`rename`] and [`remove`] change the list for every window.
 
 use std::{
     collections::BTreeMap,
@@ -20,14 +23,15 @@ use std::{
 use coqo_protocol::methods::{
     fs::{self, ChangesParams, FsChanges},
     workspace::{
-        self, EventsParams, ListResult, OpenParams, SetStateParams, WorkspaceEvent, WorkspaceId,
-        WorkspaceInfo, WorkspaceParams,
+        self, EventsParams, ListResult, OpenParams, RenameParams, SetStateParams, WorkspaceEvent,
+        WorkspaceId, WorkspaceInfo, WorkspaceParams,
     },
 };
 use coqo_ui::{
     gpui::{
-        AnyWindowHandle, App, AppContext as _, AsyncApp, Context, Entity, EntityId, EventEmitter,
-        Global, KeyBinding, PathPromptOptions, Subscription, Task, WeakEntity, Window,
+        Action, AnyWindowHandle, App, AppContext as _, AsyncApp, Context, Entity, EntityId,
+        EventEmitter, Global, KeyBinding, PathPromptOptions, Subscription, Task, WeakEntity,
+        Window,
     },
     serde_json::Value,
 };
@@ -48,10 +52,26 @@ coqo_ui::gpui::actions!(
     ]
 );
 
+/// Switch the window to the rail's `index`th workspace (from 0), as
+/// `Ctrl/Cmd+1..9` do.
+#[derive(Clone, Debug, PartialEq, Eq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct SwitchToWorkspace {
+    pub index: usize,
+}
+
 #[cfg(target_os = "macos")]
 const OPEN_FOLDER_KEY: &str = "cmd-o";
 #[cfg(not(target_os = "macos"))]
 const OPEN_FOLDER_KEY: &str = "ctrl-o";
+#[cfg(target_os = "macos")]
+const SWITCH_KEYS: [&str; 9] = [
+    "cmd-1", "cmd-2", "cmd-3", "cmd-4", "cmd-5", "cmd-6", "cmd-7", "cmd-8", "cmd-9",
+];
+#[cfg(not(target_os = "macos"))]
+const SWITCH_KEYS: [&str; 9] = [
+    "ctrl-1", "ctrl-2", "ctrl-3", "ctrl-4", "ctrl-5", "ctrl-6", "ctrl-7", "ctrl-8", "ctrl-9",
+];
 
 /// What to open once the daemon is reachable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +150,12 @@ impl Global for WindowWorkspaces {}
 /// [`daemon::init`](crate::daemon::init).
 pub fn init(path: Option<PathBuf>, cx: &mut App) -> Entity<KnownWorkspaces> {
     cx.bind_keys([KeyBinding::new(OPEN_FOLDER_KEY, OpenFolder, None)]);
+    cx.bind_keys(
+        SWITCH_KEYS
+            .iter()
+            .enumerate()
+            .map(|(index, key)| KeyBinding::new(key, SwitchToWorkspace { index }, None)),
+    );
     let first = match path {
         Some(path) => FirstWindow::Open(path),
         None => FirstWindow::RestoreLast,
@@ -170,7 +196,29 @@ impl KnownWorkspaces {
         &self.list
     }
 
-    /// Open workspaces (the rail), most recently opened first.
+    /// Every known workspace in the rail's order: the order they were added,
+    /// so the buttons and their `Ctrl/Cmd+1..9` stay put while switching.
+    pub fn in_rail_order(&self) -> Vec<WorkspaceInfo> {
+        let mut list = self.list.clone();
+        list.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        list
+    }
+
+    /// Replace the list, for screenshots without a daemon.
+    #[cfg(test)]
+    pub fn set_for_tests(&mut self, list: Vec<WorkspaceInfo>, cx: &mut Context<Self>) {
+        self.list = list;
+        self.loaded = true;
+        cx.notify();
+    }
+
+    /// A known workspace.
+    pub fn get(&self, id: &WorkspaceId) -> Option<&WorkspaceInfo> {
+        self.list.iter().find(|w| &w.id == id)
+    }
+
+    /// Open workspaces (watched by the daemon), most recently opened first.
+    #[allow(dead_code)] // Tests use it.
     pub fn open_workspaces(&self) -> impl Iterator<Item = &WorkspaceInfo> {
         self.list.iter().filter(|w| w.open)
     }
@@ -388,6 +436,13 @@ impl Workspaces {
         self.current.as_ref()
     }
 
+    /// Show `info` without asking the daemon, for screenshots.
+    #[cfg(test)]
+    pub fn set_current_for_tests(&mut self, info: WorkspaceInfo, cx: &mut Context<Self>) {
+        self.current = Some(info);
+        cx.notify();
+    }
+
     /// An entry of the current workspace's state document.
     pub fn state(&self, key: &str) -> Option<&Value> {
         self.state.get(key)
@@ -466,6 +521,16 @@ impl Workspaces {
             return;
         };
         match event {
+            // Forgotten (here or by another client): show no workspace.
+            WorkspaceEvent::Removed { id } if *id == current.id => {
+                self.current = None;
+                self.state.clear();
+                self._changes = None;
+                cx.emit(WorkspacesEvent::CurrentChanged);
+                if let Some(known) = KnownWorkspaces::global(cx) {
+                    known.update(cx, |_, cx| cx.emit(WindowWorkspaceChanged));
+                }
+            }
             WorkspaceEvent::Changed { workspace } if workspace.id == current.id => {
                 self.current = Some(workspace.clone());
                 cx.emit(WorkspacesEvent::CurrentChanged);
@@ -580,23 +645,19 @@ impl Workspaces {
             let Ok(Some(daemon)) = this.update(cx, |_, cx| Daemon::global(cx)) else {
                 return;
             };
-            // Subscribe before views list, so no change slips between.
-            let changes = cx
-                .update(|cx| {
-                    daemon.read(cx).subscribe::<fs::Changes>(ChangesParams {
-                        workspace: info.id.clone(),
-                    })
-                })
-                .await;
-            let state = cx
-                .update(|cx| {
-                    daemon
-                        .read(cx)
-                        .request::<workspace::GetState>(WorkspaceParams {
-                            id: info.id.clone(),
-                        })
-                })
-                .await;
+            // Subscribe before views list, so no change slips between. The
+            // state comes at the same time: one round trip, not two.
+            let (changes, state) = cx.update(|cx| {
+                let daemon = daemon.read(cx);
+                let changes = daemon.subscribe::<fs::Changes>(ChangesParams {
+                    workspace: info.id.clone(),
+                });
+                let state = daemon.request::<workspace::GetState>(WorkspaceParams {
+                    id: info.id.clone(),
+                });
+                (changes, state)
+            });
+            let (changes, state) = futures_util::future::join(changes, state).await;
             let state = match state {
                 Ok(state) => state.entries,
                 Err(err) => {
@@ -657,6 +718,44 @@ impl Workspaces {
         }
         cx.notify();
     }
+}
+
+/// Rename workspace `id` (`workspace/rename`). Every rail follows through
+/// `workspace/events`. A blank name is ignored.
+pub fn rename(id: WorkspaceId, name: &str, cx: &mut App) {
+    let name = name.trim().to_owned();
+    let Some(daemon) = Workspaces::daemon(cx) else {
+        return;
+    };
+    if name.is_empty() {
+        return;
+    }
+    let renamed = daemon
+        .read(cx)
+        .request::<workspace::Rename>(RenameParams { id, name });
+    cx.background_spawn(async move {
+        if let Err(err) = renamed.await {
+            eprintln!("coqo: couldn't rename the workspace: {err}");
+        }
+    })
+    .detach();
+}
+
+/// Forget workspace `id` (`workspace/remove`): it leaves every rail, and a
+/// window showing it shows no workspace. Its folders are never touched.
+pub fn remove(id: WorkspaceId, cx: &mut App) {
+    let Some(daemon) = Workspaces::daemon(cx) else {
+        return;
+    };
+    let removed = daemon
+        .read(cx)
+        .request::<workspace::Remove>(WorkspaceParams { id });
+    cx.background_spawn(async move {
+        if let Err(err) = removed.await {
+            eprintln!("coqo: couldn't remove the workspace: {err}");
+        }
+    })
+    .detach();
 }
 
 /// `path` made absolute against the working directory: the daemon runs
