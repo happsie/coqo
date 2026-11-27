@@ -14,6 +14,7 @@ mod daemon;
 mod files;
 mod git;
 mod layout;
+mod questions;
 mod resume;
 mod shell;
 mod terminal;

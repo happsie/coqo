@@ -55,6 +55,11 @@ icons!(
     "circle-x",
     "log-in",
     "arrow-up",
+    // Coqo's own filled shapes (not Lucide): the question marker in the
+    // gutter and the caret of a popover anchored to code.
+    "marker-diamond",
+    "caret-up",
+    "caret-down",
 );
 
 /// Serves Coqo's bundled icons, then gpui-kit's defaults.

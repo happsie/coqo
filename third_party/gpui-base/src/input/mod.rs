@@ -68,6 +68,9 @@ mod rope_ext;
 // Coqo patch: remote edits (PATCHES.md).
 #[path = "base/remote_edits.rs"]
 mod remote_edits;
+// Coqo patch: overlay geometry (PATCHES.md).
+#[path = "base/overlay_geometry.rs"]
+mod overlay_geometry;
 mod scrollbar_presentation;
 #[path = "editor/search.rs"]
 mod search;

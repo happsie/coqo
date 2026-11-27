@@ -53,6 +53,7 @@ use crate::{
         editor::{self as file_editor, FileEditor},
     },
     layout::{DaemonLayoutStore, LAYOUT_KEY},
+    questions::{self, QuestionsEvent, navigate, popover::OpenQuestionChat},
     welcome::{self, shortcut},
     workspace::{
         KnownWorkspaces, OpenFolder, SwitchToWorkspace, Workspaces, WorkspacesEvent,
@@ -79,6 +80,7 @@ pub fn init(cx: &mut App) {
     daemon::register_status_slot(cx);
     files::init(cx);
     chat::init(cx);
+    questions::init(cx);
     activity::init(cx);
     crate::git::init(cx);
     alerts::init(cx);
@@ -113,6 +115,9 @@ pub struct Shell {
     _toast_timer: Option<Task<()>>,
     /// An alert to open once the window shows its workspace.
     pending_alert: Option<Alert>,
+    /// The current workspace's questions, for the popovers of questions an
+    /// agent starts waiting for.
+    _questions: Option<Subscription>,
     _dock_events: Subscription,
     _subscriptions: Vec<Subscription>,
 }
@@ -164,6 +169,7 @@ impl Shell {
             cx.subscribe_in(&workspaces, window, |this, _, event, window, cx| {
                 if *event == WorkspacesEvent::CurrentChanged {
                     this.workspace_changed(window, cx);
+                    this.follow_questions(window, cx);
                     ContextPublisher::schedule(this, cx);
                     this.open_pending_alert(window, cx);
                 }
@@ -232,10 +238,26 @@ impl Shell {
             toast: None,
             _toast_timer: None,
             pending_alert: None,
+            _questions: None,
             _subscriptions: subscriptions,
         };
+        this.follow_questions(window, cx);
         ContextPublisher::schedule(&mut this, cx);
         this
+    }
+
+    /// Follow the current workspace's questions: a question an agent starts
+    /// waiting for opens its popover in a file tab on screen.
+    fn follow_questions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.workspaces.read(cx).current().map(|w| w.id.clone());
+        let store = current.and_then(|id| questions::questions_for(&id, cx));
+        self._questions = store.map(|store| {
+            cx.subscribe_in(&store, window, |this, _, event, window, cx| {
+                if let QuestionsEvent::Waiting(id) = event {
+                    navigate::show_waiting(&this.dock, &this.workspaces, *id, window, cx);
+                }
+            })
+        });
     }
 
     /// Open the file of an agent's `editor/reveal` (or show its tab) and
@@ -689,6 +711,26 @@ impl Render for Shell {
                 }),
             )
             .on_action(cx.listener(|this, _: &chat::SessionSwitched, _, cx| this.schedule_save(cx)))
+            .on_action(
+                cx.listener(|this, _: &questions::NextQuestion, window, cx| {
+                    navigate::step_question(&this.dock, &this.workspaces, true, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &questions::PreviousQuestion, window, cx| {
+                    navigate::step_question(&this.dock, &this.workspaces, false, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, action: &questions::OpenQuestion, window, cx| {
+                    let id = coqo_protocol::methods::questions::QuestionId(action.id);
+                    navigate::open_question(&this.dock, &this.workspaces, id, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, action: &OpenQuestionChat, window, cx| {
+                let id = coqo_protocol::methods::questions::QuestionId(action.id);
+                navigate::open_chat(&this.dock, &this.workspaces, id, window, cx)
+            }))
             .size_full()
             .flex()
             .flex_col()

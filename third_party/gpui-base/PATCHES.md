@@ -20,8 +20,8 @@ The vendored crate is not a workspace member (`exclude = ["third_party"]`), so C
 
 ## The patch
 
-Two changes, both additive. No upstream line is modified, so the patch carries over to a new
-release by copying two hunks.
+Four changes, all additive. No upstream line is modified, so the patch carries over to a new
+release by copying two files and two `mod` lines.
 
 1. **New file `src/input/base/remote_edits.rs`.** An extra `impl<M: InputModeKind>
    InputBaseState<M>` block with three public methods:
@@ -51,6 +51,18 @@ release by copying two hunks.
      covered by the `coqo-ui` editor tests (`crates/ui/src/editor/tests.rs`).
 2. **`src/input/mod.rs`:** one `mod remote_edits;` declaration (with a `#[path]` attribute, like its
    neighbours) after `mod rope_ext;`.
+3. **New file `src/input/base/overlay_geometry.rs`** (issue #74, the question markers and the
+   popover anchored to code): another `impl<M: InputModeKind> InputBaseState<M>` block with two
+   read-only methods, for views drawn over the editor:
+   - `gutter_width(&self) -> Option<Pixels>`: the last layout's `line_number_width` (decoration
+     strip, line numbers, fold icons and the gap before the text). Upstream doesn't expose it, and
+     it depends on the digit count, folding and decorations.
+   - `line_top(&self, line) -> Option<Pixels>`: the top of a buffer line relative to
+     `text_bounds()`, through the display map (so folds count), at the scroll offset the next frame
+     lays out with (`deferred_scroll_y_f64`, else the effective one), so an overlay doesn't lag a
+     scroll by a frame. `None` before the first layout or while the line is folded away.
+4. **`src/input/mod.rs`:** one `mod overlay_geometry;` declaration (with a `#[path]` attribute)
+   after `mod remote_edits;`.
 
 Coqo code reaches these only through `coqo_ui::editor::CodeEditor`.
 
@@ -61,8 +73,10 @@ When `gpui-kit` moves past 0.11.0:
 1. Check whether upstream gained an equivalent API. If it did, delete this directory and the
    `[patch.crates-io]` entry, and port `coqo_ui::editor` to it.
 2. Otherwise replace this directory with the new `gpui-base` package (same version `gpui-kit`
-   pins), copy `remote_edits.rs` back, re-add the `mod` line, update the commit, checksum and
-   version above, and fix any renamed internals (`replace_text_in_ranges`, `selections`,
-   `undo_manager`, `emit_events`, `last_selected_range`, `ime_marked_range`).
+   pins), copy `remote_edits.rs` and `overlay_geometry.rs` back, re-add the two `mod` lines,
+   update the commit, checksum and version above, and fix any renamed internals
+   (`replace_text_in_ranges`, `selections`, `undo_manager`, `emit_events`, `last_selected_range`,
+   `ime_marked_range`, `last_layout.line_number_width`, `display_map`, `deferred_scroll_y_f64`,
+   `effective_scroll_y_f64`).
 3. Run `cargo tree -i gpui-base` to confirm the patch is used (cargo warns and ignores a patch whose
    version no longer matches), then the `coqo-ui` editor tests and `cargo deny check`.
