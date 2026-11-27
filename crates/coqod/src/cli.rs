@@ -44,6 +44,9 @@ Environment:
                     out of agent sessions, for debugging. On by default.
   COQO_CLAUDE_GUIDE `0` to leave Coqo's operating guide out of Claude
                     Code's system prompt (setting `claude.guide`).
+  COQO_CLAUDE_PLUGIN `0` to start Claude sessions without Coqo's Claude
+                    Code plugin, the walkthrough skill (setting
+                    `claude.plugin`).
 ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

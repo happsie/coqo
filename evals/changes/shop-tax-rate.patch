@@ -1,0 +1,70 @@
+diff --git a/shop/config.py b/shop/config.py
+index f31e4c4..a9a6006 100644
+--- a/shop/config.py
++++ b/shop/config.py
+@@ -8,3 +8,6 @@ SHIPPING_FLAT_FEE = 4.90
+ FREE_SHIPPING_THRESHOLD = None
+ 
+ REFUND_WINDOW_DAYS = 30
++
++# VAT added to every order total, as a fraction (0.25 is 25 %).
++TAX_RATE = 0.0
+diff --git a/shop/pricing.py b/shop/pricing.py
+index 9c6ab94..269c5e2 100644
+--- a/shop/pricing.py
++++ b/shop/pricing.py
+@@ -1,6 +1,6 @@
+ """Prices, discounts and shipping for the shop."""
+ 
+-from shop.config import FREE_SHIPPING_THRESHOLD, SHIPPING_FLAT_FEE
++from shop.config import FREE_SHIPPING_THRESHOLD, SHIPPING_FLAT_FEE, TAX_RATE
+ 
+ 
+ def apply_discount(price, quantity):
+@@ -19,10 +19,19 @@ def shipping_cost(subtotal):
+     return SHIPPING_FLAT_FEE
+ 
+ 
+-def total(items):
+-    """The order total: discounted items plus shipping.
++def apply_tax(amount, rate):
++    """`amount` with tax at `rate` (a fraction) added."""
++    if rate < 0:
++        raise ValueError(f"tax rate must not be negative: {rate}")
++    return amount * (1 + rate)
+ 
+-    `items` is a list of (unit_price, quantity) pairs.
++
++def total(items, tax_rate=None):
++    """The order total: discounted items plus shipping, then tax.
++
++    `items` is a list of (unit_price, quantity) pairs. `tax_rate` defaults
++    to the shop's `TAX_RATE`.
+     """
++    rate = TAX_RATE if tax_rate is None else tax_rate
+     subtotal = sum(apply_discount(price, qty) * qty for price, qty in items)
+-    return round(subtotal + shipping_cost(subtotal), 2)
++    return round(apply_tax(subtotal + shipping_cost(subtotal), rate), 2)
+diff --git a/test_pricing.py b/test_pricing.py
+index 9ff7289..4e81bbf 100644
+--- a/test_pricing.py
++++ b/test_pricing.py
+@@ -1,3 +1,5 @@
++import pytest
++
+ from shop.pricing import apply_discount, total
+ 
+ 
+@@ -9,3 +11,12 @@ def test_volume_discount():
+ 
+ def test_total_adds_shipping():
+     assert total([(10.0, 1)]) == 14.9
++
++
++def test_total_adds_tax_after_shipping():
++    assert total([(10.0, 1)], tax_rate=0.25) == 18.62
++
++
++def test_negative_tax_rate_is_refused():
++    with pytest.raises(ValueError):
++        total([(10.0, 1)], tax_rate=-0.1)

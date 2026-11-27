@@ -34,8 +34,11 @@ Claude Code saves its own transcripts of these sessions, as of any session, unde
 | `three-steps` | add `tax_rate` to `total()`, a test, and a README line | none | `set_status` at least twice and `set_acceptance_criteria` |
 | `show-where` | "Show me where refunds are handled" | `README.md` open | `editor_reveal` of `orders.py` |
 | `plain-question` | list vs tuple, no code | none | no Coqo tool at all (no over-use) |
+| `walkthrough` | "Walk me through this change." on `evals/changes/shop-tax-rate.patch` (uncommitted, on a one-commit repo of the fixture) | none | `publish_walkthrough` called, and its walkthrough covers every hunk of `git diff -U0 HEAD` with a step anchor or a trivial hunk (the coverage guard's rule, #99) |
 
-Add a scenario in `crates/evals/src/scenarios.rs` (a prompt, the editor's tabs, an answer for questions, and a check over the outcome); add fixture files under `evals/fixtures/`. Keep prompts short: every run costs usage.
+Add a scenario in `crates/evals/src/scenarios.rs` (a prompt, the editor's tabs, an answer for questions, and a check over the outcome); add fixture files under `evals/fixtures/`, and a change to ask about as a patch under `evals/changes/`. Keep prompts short: every run costs usage.
+
+Shell commands are rejected, except plain read-only git ones (`git diff`, `status`, `log`, `show`, with nothing chained or redirected), which a walkthrough needs.
 
 ## Baseline
 
@@ -49,5 +52,7 @@ Claude Code 2.1.332, adapter 0.113.0, guide v1, 2026-11-27 (#216). Results vary 
 | `show-where` | pass: `editor_reveal`, 27.5k | pass: `editor_reveal`, 27.1k |
 | `plain-question` | pass: none, 23.2k | pass: none, 22.7k |
 | **Passed** | **3/5** | **3/5** |
+
+`walkthrough` (#98, Coqo's Claude Code plugin loaded, guide v2, 2026-11-27): pass. Claude loaded the skill (`coqo:coqo-walkthrough`), read the diff with `git diff -U0 HEAD`, and published six steps (entry point, config, flow, logic, edge case, tests) with what, why and risks on the first call; all 8 hunks covered (7 anchors, 1 trivial: the test file's new import), 38.6k context tokens.
 
 The guide costs about 0.2–0.5k context tokens per turn. With it, the multi-step task got acceptance criteria (registered, then verified) and a reveal of the change; without it, no Coqo tool. Neither run asked a question in `ambiguous-default`: the prompt says "give it a sensible default", which Claude reads as permission to decide.

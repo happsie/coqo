@@ -311,7 +311,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
          anchors[], what (markdown), why (reasoning), risks[{severity: low|med|high, text}],
          criteria_refs[], depends_on[] }
   ```
-- **Generation:** a `coqo-walkthrough` skill, which installs as a Claude Code skill/plugin and as a native skill. It tells the agent to order the steps the way a reader would follow the code (entry point → flow → data → edge cases → tests) and to finish with `publish_walkthrough`.
+- **Generation:** a `coqo-walkthrough` skill. It tells the agent to order the steps the way a reader would follow the code (entry point → flow → data → edge cases → tests), to cover every hunk or list it as trivial, to refer to the acceptance criteria, and to finish with `publish_walkthrough`. For Claude it ships in Coqo's own Claude Code plugin (`integrations/claude-code/coqo-plugin`, with the command `/coqo:walkthrough`), which Coqo writes to its data directory and loads into each of its Claude sessions through the ACP adapter; nothing is installed into the user's Claude Code configuration ([ADR 0005](adr/0005-claude-integration.md), *As built (#98)*). The native-loop form follows the skills loader (#62).
 - **Coverage guard:** Coqo computes the diff itself and checks that every changed hunk is covered by a step or explicitly listed as trivial. Uncovered hunks are flagged, so nothing slips past the reader.
 - **Player:** a step list with progress. Each step opens its anchor in the editor or diff view with a popover showing what, why, and risks. Navigate with next/prev. Mark a step "understood" or "question". A question on a step goes to the agent as an anchored message.
 - **Where walkthroughs are stored** (open decision §13.1):
@@ -405,7 +405,8 @@ crates/syntax/           coqo-syntax: languages, tree-sitter parsing, symbols, o
 crates/storage/          SQLite + migrations
 crates/lsp-client/ crates/dap-client/ crates/acp-host/ crates/mcp/
 mods/<name>/             built-in core mods (§6)
-skills/                  coqo-walkthrough, coqo-review-default, …
+skills/                  coqo-review-default, … (native-loop skills, #62)
+integrations/claude-code/coqo-plugin/  Coqo's Claude Code plugin: coqo-walkthrough skill, /coqo:walkthrough
 sdk/                     mod SDKs: Rust (wasm), TS (jco), process-mod templates
 docs/                    PLAN.md, ADRs, protocol docs
 ```
