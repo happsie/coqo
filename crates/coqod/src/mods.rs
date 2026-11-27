@@ -32,6 +32,10 @@ pub const CLAUDE_PLAN_LOGINS_ENV: &str = "COQO_CLAUDE_PLAN_LOGINS";
 /// store lands (#26).
 pub const CLAUDE_GUIDE_ENV: &str = "COQO_CLAUDE_GUIDE";
 
+/// Overrides the setting "Load Coqo's Claude Code plugin" (`claude.plugin`)
+/// with `0`, `false` or `off` until the settings store lands (#26).
+pub const CLAUDE_PLUGIN_ENV: &str = "COQO_CLAUDE_PLUGIN";
+
 /// Whether an override variable's value turns its setting off.
 fn env_off(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| matches!(v.trim(), "0" | "false" | "off"))
@@ -53,6 +57,7 @@ pub fn builtins(
     claude.acp.terminals = agent_terminals.clone();
     claude.plan_logins = !env_off(CLAUDE_PLAN_LOGINS_ENV);
     claude.guide = !env_off(CLAUDE_GUIDE_ENV);
+    claude.plugin = !env_off(CLAUDE_PLUGIN_ENV);
     BuiltinMods::new()
         .with_point::<coqo_agents::AgentProviderImpls>()
         .with(coqo_mod_hello::MANIFEST, coqo_mod_hello::Hello::new())

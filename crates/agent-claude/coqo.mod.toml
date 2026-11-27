@@ -21,3 +21,10 @@ title = "Append Coqo's operating guide to Claude's system prompt"
 description = "Add a short guide on when to use Coqo's editor tools (editor_context, ask_question, set_status, ...) to Claude Code's own system prompt. Claude Code keeps its own prompt, your CLAUDE.md and settings. Until the settings store lands (#26), COQO_CLAUDE_GUIDE=0 in the daemon's environment turns it off."
 type = "boolean"
 default = true
+
+[[contributes.settings]]
+key = "claude.plugin"
+title = "Load Coqo's Claude Code plugin"
+description = "Load Coqo's own Claude Code plugin (the coqo-walkthrough skill and /coqo:walkthrough) into Coqo's Claude sessions. Coqo keeps it in its data directory and passes it per session; nothing is installed into your Claude Code configuration. Until the settings store lands (#26), COQO_CLAUDE_PLUGIN=0 in the daemon's environment turns it off."
+type = "boolean"
+default = true

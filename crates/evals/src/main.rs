@@ -34,11 +34,12 @@ use coqo_protocol::methods::editor::{
     WindowContext,
 };
 use coqo_protocol::methods::questions::{self as qm, AnswerParams, Question};
+use coqo_protocol::methods::walkthroughs::{self as wtm, ListParams, WalkthroughParams};
 use coqo_protocol::methods::workspace::{self as wsm, WorkspaceInfo};
 use coqo_protocol::{Client, ClientConfig};
 use futures_util::StreamExt as _;
 
-use crate::scenarios::{Outcome, SCENARIOS, Scenario};
+use crate::scenarios::{Coverage, Outcome, SCENARIOS, Scenario, parse_hunks};
 
 /// The Claude provider's id.
 const PROVIDER: &str = "claude-acp";
@@ -119,6 +120,42 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     if !status.success() {
         bail!("cannot copy {} to {}", from.display(), to.display());
     }
+    Ok(())
+}
+
+/// Runs `git` in `dir` with a fixed identity and no signing; its stdout.
+fn git(dir: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .args([
+            "-c",
+            "user.name=coqo-evals",
+            "-c",
+            "user.email=evals@coqo.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .output()
+        .context("cannot run git")?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Makes `dir` a git repository with one commit, then applies `patch` to
+/// its files, uncommitted.
+fn apply_change(dir: &Path, patch: &Path) -> Result<()> {
+    git(dir, &["init", "-q"])?;
+    git(dir, &["add", "-A"])?;
+    git(dir, &["commit", "-q", "-m", "base"])?;
+    git(dir, &["apply", &patch.display().to_string()])?;
     Ok(())
 }
 
@@ -292,14 +329,27 @@ fn window_context(scenario: &Scenario, ws: &WorkspaceInfo) -> Option<WindowConte
     })
 }
 
+/// Whether `command` only reads git state: `git diff`, `status`, `log` or
+/// `show`, with nothing chained or redirected.
+fn read_only_git(command: &str) -> bool {
+    let command = command.trim();
+    ["git diff", "git status", "git log", "git show"]
+        .iter()
+        .any(|p| command == *p || command.starts_with(&format!("{p} ")))
+        && !command.contains(['|', '&', ';', '>', '<', '`', '$', '\n'])
+}
+
 /// The option to pick for a permission request: allow, except for shell
-/// commands.
+/// commands other than read-only git ones.
 fn permission_answer(request: &PermissionRequest) -> PermissionOutcome {
-    let shell = request
-        .tool_call
-        .as_ref()
-        .and_then(|c| c.kind)
-        .is_some_and(|k| k == ToolKind::Execute);
+    let shell = request.tool_call.as_ref().is_some_and(|c| {
+        c.kind == Some(ToolKind::Execute)
+            && !c
+                .raw_input
+                .as_ref()
+                .and_then(|i| i["command"].as_str())
+                .is_some_and(read_only_git)
+    });
     let wanted: &[PermissionOptionKind] = if shell {
         &[
             PermissionOptionKind::RejectOnce,
@@ -351,6 +401,9 @@ async fn run(
         &repo_root().join("evals/fixtures").join(scenario.fixture),
         &dir,
     )?;
+    if let Some(change) = scenario.change {
+        apply_change(&dir, &repo_root().join("evals/changes").join(change))?;
+    }
     let ws = client
         .request::<wsm::Open>(wsm::OpenParams {
             path: Some(dir.canonicalize()?.display().to_string()),
@@ -448,6 +501,38 @@ async fn run(
         })
         .await?;
     outcome.tool_use = snapshot.info.tool_use;
+    if scenario.change.is_some() {
+        outcome.hunks = parse_hunks(&git(&dir, &["diff", "-U0", "HEAD"])?);
+        let list = client
+            .request::<wtm::List>(ListParams {
+                workspace: ws.id.clone(),
+                session: Some(session.clone()),
+            })
+            .await?;
+        if let Some(newest) = list.walkthroughs.first() {
+            let w = client
+                .request::<wtm::Get>(WalkthroughParams {
+                    id: newest.id.clone(),
+                })
+                .await?;
+            let coverage = Coverage::of(&w);
+            let missing: Vec<String> = coverage
+                .uncovered(&outcome.hunks)
+                .iter()
+                .map(|h| h.to_string())
+                .collect();
+            eprintln!(
+                "  walkthrough `{}`: {} steps, {} anchors, {} trivial, {} of {} hunks uncovered {missing:?}",
+                w.id,
+                coverage.steps,
+                coverage.anchors.len(),
+                coverage.trivial.len(),
+                missing.len(),
+                outcome.hunks.len(),
+            );
+            outcome.walkthrough = Some(coverage);
+        }
+    }
     outcome.reveals = reveals
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -559,4 +644,31 @@ async fn main() -> Result<()> {
     drop(client);
     drop(daemon);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_only_git;
+
+    #[test]
+    fn only_plain_read_only_git_commands_are_allowed() {
+        for ok in [
+            "git diff",
+            "git diff -U0 HEAD",
+            "git status --short",
+            "git log -3",
+        ] {
+            assert!(read_only_git(ok), "{ok}");
+        }
+        for no in [
+            "git diffx",
+            "git commit -am x",
+            "git diff; rm -rf x",
+            "git diff > out",
+            "git log $(id)",
+            "rm -rf .",
+        ] {
+            assert!(!read_only_git(no), "{no}");
+        }
+    }
 }

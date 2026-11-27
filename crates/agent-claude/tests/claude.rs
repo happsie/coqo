@@ -12,7 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use coqo_agent_claude::{
-    ADAPTER_VERSION, ClaudeOptions, ClaudeProvider, INSTALL_ACTION, PROVIDER_ID, provider_info,
+    ADAPTER_VERSION, ClaudeOptions, ClaudeProvider, INSTALL_ACTION, PROVIDER_ID, plugin,
+    provider_info,
 };
 use coqo_agents::model::*;
 use coqo_agents::{
@@ -101,13 +102,17 @@ impl Env {
     }
 
     fn manager(&self, plan_logins: bool) -> SessionManager {
+        self.manager_with(|o| o.plan_logins = plan_logins)
+    }
+
+    fn manager_with(&self, change: impl FnOnce(&mut ClaudeOptions)) -> SessionManager {
         let mut options = ClaudeOptions::new(&self.data);
         // The stand-ins first; the system's for the scripts' own tools.
         let path = std::env::join_paths([self.bin.as_path(), "/usr/bin".as_ref(), "/bin".as_ref()]);
         options.path = Some(path.unwrap());
-        options.plan_logins = plan_logins;
         options.acp.start_timeout = TIMEOUT;
         options.acp.request_timeout = TIMEOUT;
+        change(&mut options);
         let provider = ClaudeProvider::new(options);
         let providers = StaticProviders::new().with(provider_info(), Arc::new(provider));
         let store = SessionStore::open(&self.base().join("coqo.db")).unwrap();
@@ -129,10 +134,15 @@ impl Env {
     }
 
     fn agent_starts(&self) -> Vec<Value> {
+        self.logged("start")
+    }
+
+    /// The fake agent's log entries of `event` (a request's params).
+    fn logged(&self, event: &str) -> Vec<Value> {
         let text = std::fs::read_to_string(self.base().join("agent.log")).unwrap_or_default();
         text.lines()
             .map(|l| serde_json::from_str::<Value>(l).unwrap())
-            .filter(|v| v["event"] == "start")
+            .filter(|v| v["event"] == event)
             .map(|v| v["data"].clone())
             .collect()
     }
@@ -301,4 +311,43 @@ async fn signed_out_claude_asks_for_a_login_in_its_own_terminal() {
         err,
         AgentError::Provider(ProviderError::Unsupported(_))
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sessions_load_coqos_plugin_from_the_data_directory() {
+    let env = Env::new();
+    let manager = env.manager(true);
+    manager
+        .run_action(PROVIDER_ID, INSTALL_ACTION.into())
+        .await
+        .unwrap();
+    let session = manager.create(env.params()).await.unwrap();
+
+    // The plugin is in Coqo's data directory, not in the user's Claude
+    // Code configuration, and the session names it as a local plugin.
+    let dir = env.data.join("claude-plugins").join(plugin::PLUGIN_NAME);
+    for (path, contents) in plugin::PLUGIN_FILES {
+        assert_eq!(std::fs::read_to_string(dir.join(path)).unwrap(), *contents);
+    }
+    let created = env.logged("session/new");
+    assert_eq!(
+        created[0]["_meta"],
+        serde_json::json!({"claudeCode": {"options": {"plugins": [
+            {"type": "local", "path": dir.display().to_string()}
+        ]}}})
+    );
+    manager.close(&session.id).await.unwrap();
+
+    // Turned off: no plugin.
+    let env = Env::new();
+    let manager = env.manager_with(|o| o.plugin = false);
+    manager
+        .run_action(PROVIDER_ID, INSTALL_ACTION.into())
+        .await
+        .unwrap();
+    let session = manager.create(env.params()).await.unwrap();
+    let created = env.logged("session/new");
+    assert!(created[0].get("_meta").is_none(), "{}", created[0]);
+    assert!(!env.data.join("claude-plugins").exists());
+    manager.close(&session.id).await.unwrap();
 }

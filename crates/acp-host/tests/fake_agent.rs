@@ -791,6 +791,51 @@ async fn the_system_prompt_is_appended_on_new_resume_and_load_when_advertised() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_session_meta_is_sent_on_new_resume_and_load() {
+    let meta = serde_json::json!({
+        "claudeCode": {"options": {"plugins": [{"type": "local", "path": "/data/claude-plugins/coqo"}]}}
+    });
+    let with_meta = |o: &mut AcpOptions| {
+        o.session_meta = meta.as_object().cloned();
+    };
+    for no_resume in [false, true] {
+        let env = Env::new();
+        let agent_env: &[(&str, &str)] = if no_resume {
+            &[("FAKE_ACP_NO_RESUME", "1")]
+        } else {
+            &[]
+        };
+        let id = {
+            let manager = env.manager(env.provider_with(agent_env, with_meta));
+            let id = manager.create(env.params("ws-1")).await.unwrap().id;
+            manager.shutdown().await;
+            id
+        };
+        assert_eq!(env.logged("session/new")[0]["_meta"], meta);
+
+        let manager = env.manager(env.provider_with(agent_env, with_meta));
+        let since = head(&manager, &id);
+        prompt(&manager, &id, "say again").await;
+        until(&manager, &id, since, turn_ended).await;
+        let reattached = if no_resume {
+            env.logged("session/load")
+        } else {
+            env.logged("session/resume")
+        };
+        assert_eq!(reattached[0]["_meta"], meta, "no_resume={no_resume}");
+        manager.shutdown().await;
+    }
+
+    // None set: no `_meta`.
+    let env = Env::new();
+    let manager = env.manager(env.provider(&[]));
+    manager.create(env.params("ws-1")).await.unwrap();
+    let created = env.logged("session/new");
+    assert!(created[0].get("_meta").is_none(), "{}", created[0]);
+    manager.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn no_system_prompt_when_not_advertised_or_not_set() {
     // The agent does not take one.
     let env = Env::new();

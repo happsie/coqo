@@ -29,6 +29,7 @@ crates/storage/        SQLite + migrations
 crates/lsp-client/  crates/dap-client/  crates/acp-host/  crates/mcp/
 mods/                  built-in core mods
 skills/                agent skills shipped with Coqo
+integrations/          Coqo for other tools: the Claude Code plugin (walkthrough skill)
 sdk/                   mod SDKs and templates
 fixtures/              sample projects for tests and spikes
 docs/                  plan, ADRs, design and protocol docs

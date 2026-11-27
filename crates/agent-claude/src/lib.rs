@@ -32,6 +32,13 @@
 //!   use each `coqo-editor` tool. Claude Code keeps its preset, the user's
 //!   CLAUDE.md and settings. The setting `claude.guide` (default on) turns
 //!   it off.
+//! - **Coqo's Claude Code plugin:** [`plugin`] (the `coqo-walkthrough`
+//!   skill and `/coqo:walkthrough`) is written to
+//!   `<data dir>/claude-plugins/coqo` and loaded into every session as a
+//!   local plugin through the adapter's Agent SDK options
+//!   (`_meta.claudeCode.options.plugins`). Nothing goes into the user's
+//!   Claude Code configuration. The setting `claude.plugin` (default on)
+//!   turns it off.
 //! - **Billing badge, modes and commands** come from the adapter through the
 //!   ACP host: auth status reduced to kind, label and plan (no email or
 //!   organization), session modes, and the available slash commands and
@@ -43,6 +50,7 @@
 
 pub mod detect;
 pub mod launch;
+pub mod plugin;
 mod provider;
 
 use std::sync::Arc;
@@ -79,6 +87,9 @@ pub const PLAN_LOGINS_SETTING: &str = "claude.acp.plan-logins";
 
 /// The setting "Append Coqo's operating guide to Claude's system prompt".
 pub const GUIDE_SETTING: &str = "claude.guide";
+
+/// The setting "Load Coqo's Claude Code plugin" (the walkthrough skill).
+pub const PLUGIN_SETTING: &str = "claude.plugin";
 
 /// The Coqo operating guide as kept in the repo (`guide.md`). Its first
 /// line names the version; `<!-- -->` lines are notes for maintainers.
@@ -154,6 +165,7 @@ mod tests {
         assert_eq!(m.id.as_str(), "coqo.claude");
         assert_eq!(m.tier, Tier::Core);
         assert!(MANIFEST.contains(PLAN_LOGINS_SETTING));
+        assert!(MANIFEST.contains(PLUGIN_SETTING));
     }
 
     #[test]

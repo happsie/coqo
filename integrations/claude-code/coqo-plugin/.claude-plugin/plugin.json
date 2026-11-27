@@ -1,0 +1,10 @@
+{
+  "name": "coqo",
+  "version": "0.1.0",
+  "description": "Coqo's skills for Claude Code: code walkthroughs that Coqo replays step by step (publish_walkthrough).",
+  "author": {
+    "name": "Coqo"
+  },
+  "homepage": "https://github.com/happsie/coqo",
+  "license": "Apache-2.0"
+}

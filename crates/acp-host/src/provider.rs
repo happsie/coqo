@@ -115,6 +115,10 @@ pub struct AcpOptions {
     /// `sessionCapabilities.systemPrompt`. Never `override`: the agent keeps
     /// its own instructions and the user's settings. `None` sends nothing.
     pub system_prompt: Option<String>,
+    /// `_meta` sent on `session/new`, `session/resume` and `session/load`:
+    /// agent-specific session options (the Claude adapter reads
+    /// `claudeCode.options`, its Agent SDK options). `None` sends none.
+    pub session_meta: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl AcpOptions {
@@ -136,6 +140,7 @@ impl AcpOptions {
             client_name: "coqo".into(),
             client_version: env!("CARGO_PKG_VERSION").into(),
             system_prompt: None,
+            session_meta: None,
         }
     }
 }
@@ -175,6 +180,11 @@ impl Inner {
             acp::SystemPrompt::new(vec![acp::ContentBlock::Text(acp::TextContent::new(text))])
                 .mode(acp::SystemPromptMode::Append),
         )
+    }
+
+    /// The `_meta` for a session request.
+    fn session_meta(&self) -> Option<acp::Meta> {
+        self.options.session_meta.clone()
     }
 
     async fn connection(&self, host: &Host, cwd: &Path) -> Result<Arc<Conn>, ProviderError> {
@@ -232,7 +242,8 @@ impl Inner {
                         .send_request(
                             acp::ResumeSessionRequest::new(session_id.clone(), cx.cwd.clone())
                                 .mcp_servers(mcp.clone())
-                                .system_prompt(self.system_prompt(conn)),
+                                .system_prompt(self.system_prompt(conn))
+                                .meta(self.session_meta()),
                         )
                         .block_task(),
                 )
@@ -263,7 +274,8 @@ impl Inner {
                     .send_request(
                         acp::LoadSessionRequest::new(session_id, cx.cwd.clone())
                             .mcp_servers(mcp)
-                            .system_prompt(self.system_prompt(conn)),
+                            .system_prompt(self.system_prompt(conn))
+                            .meta(self.session_meta()),
                     )
                     .block_task(),
             )
@@ -364,7 +376,8 @@ impl AgentProvider for AcpProvider {
                         .send_request(
                             acp::NewSessionRequest::new(cx.cwd.clone())
                                 .mcp_servers(mcp)
-                                .system_prompt(inner.system_prompt(&conn)),
+                                .system_prompt(inner.system_prompt(&conn))
+                                .meta(inner.session_meta()),
                         )
                         .block_task(),
                 )

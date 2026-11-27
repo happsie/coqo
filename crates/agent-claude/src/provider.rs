@@ -39,6 +39,10 @@ pub struct ClaudeOptions {
     /// and resumed session gets [`crate::guide`] appended to Claude Code's
     /// system prompt, if the adapter takes one.
     pub guide: bool,
+    /// "Load Coqo's Claude Code plugin" (`claude.plugin`): when on, the
+    /// plugin ([`crate::plugin`]) is written to [`Self::plugin_dir`] and
+    /// loaded into every session.
+    pub plugin: bool,
     /// Where the agent's file traffic goes (the daemon's buffers).
     pub fs: FsHandle,
     /// The `PATH` to find `claude`, `node` and `npm` on; the daemon's when
@@ -55,6 +59,7 @@ impl ClaudeOptions {
             data_dir: data_dir.into(),
             plan_logins: true,
             guide: true,
+            plugin: true,
             fs: FsHandle::new(),
             path: None,
             acp: AcpOptions::new(crate::ADAPTER_BIN),
@@ -64,6 +69,11 @@ impl ClaudeOptions {
     /// The adapter's install directory.
     pub fn adapter_dir(&self) -> PathBuf {
         self.data_dir.join("claude-acp")
+    }
+
+    /// Where Coqo's Claude Code plugin is written.
+    pub fn plugin_dir(&self) -> PathBuf {
+        crate::plugin::plugin_dir(&self.data_dir)
     }
 }
 
@@ -97,6 +107,17 @@ impl ClaudeProvider {
         let mut acp = options.acp.clone();
         acp.fs = options.fs.clone();
         acp.system_prompt = options.guide.then(crate::guide);
+        if options.plugin {
+            let dir = options.plugin_dir();
+            match crate::plugin::install(&dir) {
+                Ok(()) => acp.session_meta = Some(crate::plugin::session_meta(&dir)),
+                Err(e) => tracing::warn!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "cannot write Coqo's Claude Code plugin; sessions start without it"
+                ),
+            }
+        }
         let launch = Arc::clone(&detector);
         let plan_logins = options.plan_logins;
         let acp = AcpProvider::new(
