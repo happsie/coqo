@@ -600,6 +600,27 @@ export type ProtocolVersion = {
   minor: number;
 };
 
+/** A button for a provider's setup. */
+export type ProviderAction = {
+  /** Action id, for `agents/runAction`. */
+  id: string;
+  /** Button label, such as `Install Claude ACP adapter (npm)`. */
+  label: string;
+  /** What pressing it does. */
+  run: ProviderActionRun;
+};
+
+/** What a [`ProviderAction`] does. */
+export type ProviderActionRun = {
+  kind: "daemon";
+} | {
+  /** Its arguments. */
+  args?: Array<string>;
+  kind: "terminal";
+  /** The program (absolute path). */
+  program: string;
+};
+
 /** What a provider supports. */
 export type ProviderCapabilities = {
   /** Prompts may contain embedded resources (file contents). */
@@ -614,7 +635,7 @@ export type ProviderCapabilities = {
 
 /** An agent provider, for the chat's provider picker. */
 export type ProviderInfo = {
-  /** Whether sessions can be created now (the providing mod is active). */
+  /** Whether sessions can be created now: the providing mod is active and the provider is set up (`status.ready`, when it reports a status). */
   available: boolean;
   /** What it supports; `null` when not available. */
   capabilities?: ProviderCapabilities | null;
@@ -626,10 +647,24 @@ export type ProviderInfo = {
   kind: ProviderKind;
   /** Display name. */
   name: string;
+  /** Whether it is set up, and what the user can do about it; `null` when the provider has nothing to report (always ready). */
+  status?: ProviderStatus | null;
 };
 
 /** How an agent provider runs (mirrors the mod API's `AgentProviderKind`). */
 export type ProviderKind = "acp" | "terminal" | "native";
+
+/** Whether a provider can start sessions on this machine, such as Claude Code being installed and the ACP adapter set up. */
+export type ProviderStatus = {
+  /** Setup steps the user can take now, such as installing the agent's adapter. Shown when not ready. Never run without the user asking. */
+  actions?: Array<ProviderAction>;
+  /** What is missing or wrong, for the user; `null` when ready. */
+  message?: string | null;
+  /** Sessions can start now. */
+  ready: boolean;
+  /** How the user signs in to the agent's own tool, offered when a session fails with `AUTH_REQUIRED`. Coqo never runs a login itself. */
+  signIn?: ProviderAction | null;
+};
 
 /** Params of [`ReadFile`]. */
 export type ReadParams = {
@@ -738,6 +773,14 @@ export type RuleDecision = "allow" | "reject";
 export type RuleParams = {
   /** The rule. */
   id: PermissionRuleId;
+};
+
+/** Params of `agents/runAction`. */
+export type RunActionParams = {
+  /** A daemon action's id, from the provider's status. */
+  action: string;
+  /** Provider id. */
+  provider: string;
 };
 
 /** Params of [`Save`]. */
@@ -1330,6 +1373,8 @@ export interface Requests {
   "fs/read": { params: ReadParams; result: ReadResult };
   /** Every agent provider, with whether it is available. (client→server) */
   "agents/providers": { params: null; result: Array<ProviderInfo> };
+  /** Run a provider's setup action (such as installing its adapter) at the user's request. (client→server) */
+  "agents/runAction": { params: RunActionParams; result: ProviderInfo };
   /** Agent sessions, with the sessions/changes seq the list reflects. (client→server) */
   "sessions/list": { params: ListSessionsParams; result: SessionList };
   /** One session's folded state and the seq of its last update. (client→server) */

@@ -648,3 +648,94 @@ async fn wait_dead(pid: u64) {
     .await
     .unwrap_or_else(|_| panic!("agent process {pid} is still running"));
 }
+
+/// Workspace `ws-rules` with `root`, as the workspace service stores it.
+fn add_workspace(db: &Path, root: &Path) {
+    let conn = rusqlite::Connection::open(db).unwrap();
+    conn.execute(
+        "INSERT INTO workspaces (id, name, created_at, last_opened_at)
+         VALUES ('ws-rules', 'app', 0, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO workspace_roots (workspace, root_id, position, path, name)
+         VALUES ('ws-rules', 1, 0, ?1, 'app')",
+        [root.to_string_lossy()],
+    )
+    .unwrap();
+}
+
+/// The Claude adapter's `Bash` and `Write` permission requests (the tool
+/// call, then the request with the whole call again) give the rules engine
+/// the command and the paths, so "remember for this workspace" gets a rule.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn adapter_shaped_permission_requests_get_a_suggested_rule() {
+    let env = Env::new();
+    let manager = env.manager(env.provider(&[]));
+    add_workspace(&env.dir.path().join("coqo.db"), &env.root);
+    std::fs::create_dir_all(env.root.join("src")).unwrap();
+    let id = manager.create(env.params("ws-rules")).await.unwrap().id;
+
+    let since = head(&manager, &id);
+    let file = env.root.join("src/a.rs");
+    prompt(
+        &manager,
+        &id,
+        &format!(
+            "run cargo test -p shop\nedit {} fn a() {{}}",
+            file.display()
+        ),
+    )
+    .await;
+    let mut feed = manager.updates(&id, Some(since)).unwrap().events;
+    let mut asked = Vec::new();
+    tokio::time::timeout(TIMEOUT, async {
+        while let Some(item) = feed.next().await {
+            match item.unwrap().event {
+                SessionUpdate::PermissionRequested(request) => {
+                    let tool_call = request.tool_call.clone().unwrap();
+                    asked.push((tool_call.kind, request.suggested_rule.clone()));
+                    let allow = request
+                        .options
+                        .iter()
+                        .find(|o| o.kind == PermissionOptionKind::AllowOnce)
+                        .unwrap();
+                    manager
+                        .respond_permission(
+                            &id,
+                            request.id,
+                            PermissionOutcome::Selected {
+                                option_id: allow.id.clone(),
+                            },
+                        )
+                        .unwrap();
+                }
+                SessionUpdate::TurnEnded { .. } => return,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the turn ends");
+    assert_eq!(
+        asked,
+        [
+            (
+                Some(ToolKind::Execute),
+                Some(PermissionRuleSpec {
+                    tool: ToolKind::Execute,
+                    pattern: "cargo test".into(),
+                })
+            ),
+            (
+                Some(ToolKind::Edit),
+                Some(PermissionRuleSpec {
+                    tool: ToolKind::Edit,
+                    pattern: "src/**".into(),
+                })
+            ),
+        ]
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "fn a() {}");
+}

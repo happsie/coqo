@@ -22,9 +22,10 @@ use coqo_protocol::{
     Sequenced, codes,
     methods::agents::{
         AgentState, AuthKind, Cancel, ContentBlock, Get, PermissionOptionKind, PermissionOutcome,
-        PermissionRequest, PermissionRequestId, PlanEntryStatus, ProviderInfo, Providers,
-        RespondPermission, RespondPermissionParams, SessionId, SessionInfo, SessionParams,
-        SessionSnapshot, SessionUpdate, ToolCallContent, ToolCallStatus, ToolKind, Updates,
+        PermissionRequest, PermissionRequestId, PlanEntryStatus, ProviderActionRun, ProviderInfo,
+        Providers, RespondPermission, RespondPermissionParams, SessionId, SessionInfo,
+        SessionParams, SessionSnapshot, SessionUpdate, ToolCallContent, ToolCallStatus, ToolKind,
+        Updates,
     },
 };
 use coqo_ui::{
@@ -39,11 +40,11 @@ use coqo_ui::{
     input::{PromptInput, PromptInputEvent},
     serde_json::{Value, json},
     text::markdown,
-    widgets::{Icon, TestSupportExt as _, icon, section_label},
+    widgets::{Icon, TestSupportExt as _, icon, primary, section_label},
 };
 
 use super::{
-    CancelTurn, KIND, OpenLocation, SIGN_IN_HELP, agent_dot, attention_label,
+    CancelTurn, KIND, OpenLocation, RunInTerminal, SIGN_IN_HELP, agent_dot, attention_label,
     diff::{DiffLine, DiffPreview, LineKind, file_name},
     list::ChatList,
     transcript::{Entry, NoticeKind, ToolEntry, Transcript, block_text},
@@ -998,6 +999,28 @@ impl ChatTab {
             .as_ref()
             .is_some_and(|a| a.kind == AuthKind::None);
         if self.transcript.sign_in.is_some() || signed_out {
+            // The provider's own sign-in tool, in a terminal tab.
+            let sign_in = self
+                .info
+                .as_ref()
+                .and_then(|i| self.providers.iter().find(|p| p.id == i.provider))
+                .and_then(|p| p.status.as_ref()?.sign_in.clone())
+                .and_then(|a| match a.run {
+                    ProviderActionRun::Terminal { program, args } => {
+                        Some((a.label, RunInTerminal { program, args }))
+                    }
+                    ProviderActionRun::Daemon => None,
+                });
+            let button = sign_in.map(|(label, action)| {
+                primary(div().mt_1().px(px(10.)).py(px(4.)).rounded(px(8.)), cx)
+                    .id("chat-sign-in-terminal")
+                    .test_support()
+                    .cursor_pointer()
+                    .child(label)
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(Box::new(action.clone()), cx);
+                    })
+            });
             banners.push(
                 div()
                     .id("chat-sign-in")
@@ -1024,7 +1047,8 @@ impl ChatTab {
                                     self.provider_label()
                                 )),
                             )
-                            .child(div().text_color(p.text_muted.hsla()).child(SIGN_IN_HELP)),
+                            .child(div().text_color(p.text_muted.hsla()).child(SIGN_IN_HELP))
+                            .children(button.map(|b| div().flex().child(b))),
                     )
                     .into_any_element(),
             );

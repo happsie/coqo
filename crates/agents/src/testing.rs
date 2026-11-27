@@ -25,8 +25,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use coqo_mod_api::BoxFuture;
 use coqo_protocol::methods::agents::{
-    AgentState, ContentBlock, PermissionOutcome, ProviderCapabilities, SessionMode, SessionModes,
-    StopReason,
+    AgentState, ContentBlock, PermissionOutcome, ProviderCapabilities, ProviderStatus, SessionMode,
+    SessionModes, StopReason,
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -87,6 +87,8 @@ pub enum Call {
     SetMode(String),
     /// `close`.
     Close,
+    /// `run_action`.
+    RunAction(String),
 }
 
 #[derive(Default)]
@@ -95,6 +97,9 @@ struct Script {
     on_start: Vec<AgentUpdate>,
     on_resume: Vec<AgentUpdate>,
     fail_start: Option<ProviderError>,
+    /// The status reported, and what each action changes it to.
+    status: Mutex<Option<ProviderStatus>>,
+    actions: Vec<(String, Option<ProviderStatus>)>,
     turns: Mutex<VecDeque<Vec<Step>>>,
     calls: Mutex<Vec<Call>>,
     outcomes: Mutex<Vec<PermissionOutcome>>,
@@ -182,6 +187,17 @@ impl ScriptedProvider {
         self.edit(|s| s.fail_start = Some(error))
     }
 
+    /// Reports `status` in `agents/providers`.
+    pub fn status(self, status: ProviderStatus) -> Self {
+        self.edit(|s| *lock(&s.status) = Some(status))
+    }
+
+    /// Offers the daemon action `id`; running it sets the status to
+    /// `after`.
+    pub fn action(self, id: &str, after: Option<ProviderStatus>) -> Self {
+        self.edit(|s| s.actions.push((id.to_owned(), after)))
+    }
+
     /// Appends a scripted turn.
     pub fn turn(self, steps: impl IntoIterator<Item = Step>) -> Self {
         self.push_turn(steps);
@@ -220,6 +236,22 @@ impl ScriptedProvider {
 impl AgentProvider for ScriptedProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         self.script.capabilities
+    }
+
+    fn status(&self) -> Option<ProviderStatus> {
+        lock(&self.script.status).clone()
+    }
+
+    fn run_action(&self, action: String) -> BoxFuture<'_, Result<(), ProviderError>> {
+        self.call(Call::RunAction(action.clone()));
+        let result = match self.script.actions.iter().find(|(id, _)| *id == action) {
+            Some((_, after)) => {
+                *lock(&self.script.status) = after.clone();
+                Ok(())
+            }
+            None => Err(ProviderError::Unsupported(format!("action `{action}`"))),
+        };
+        Box::pin(std::future::ready(result))
     }
 
     fn start_session(

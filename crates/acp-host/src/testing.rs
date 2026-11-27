@@ -21,10 +21,13 @@
 //!   - `plan`: a two-entry plan;
 //!   - `usage`: a usage update with a cost;
 //!   - `mode <id>`: a current-mode update;
-//!   - `edit <path> <text>`: a `tool_call` with a diff, a permission
-//!     request (options `reject`, `allow-always`, `allow-once`, in that
-//!     order), then, if allowed, writes the file itself (like Claude Code)
-//!     and completes the call;
+//!   - `edit <path> <text>`: a `tool_call` with a diff, the path's
+//!     location and `rawInput.file_path`, then a permission request carrying
+//!     the whole call again (options `reject`, `allow-always`, `allow-once`,
+//!     in that order), as the Claude adapter sends its `Write`; if allowed it
+//!     writes the file itself (like Claude Code) and completes the call;
+//!   - `run <command>`: the same for a shell command (`kind: execute`,
+//!     `rawInput.command`, like the adapter's `Bash`), without running it;
 //!   - `write <path> <text>`: `fs/write_text_file` through the client;
 //!   - `read <path>`: `fs/read_text_file`, then says what it read;
 //!   - `wait`: waits for `session/cancel` and ends the turn as cancelled;
@@ -93,6 +96,47 @@ impl State {
         let mut cancels = self.cancels.lock().unwrap_or_else(PoisonError::into_inner);
         Arc::clone(cancels.entry(id.to_owned()).or_default())
     }
+}
+
+/// Sends `fields` as a `tool_call`, then asks permission with the whole call
+/// again, as the Claude adapter does for a v1 client. `Some(allowed)`, or
+/// `None` when the turn was cancelled.
+async fn ask(
+    cx: &ConnectionTo<Client>,
+    id: &acp::SessionId,
+    call_id: &acp::ToolCallId,
+    fields: acp::ToolCallUpdateFields,
+) -> Result<Option<bool>, agent_client_protocol::Error> {
+    let mut call = acp::ToolCall::new(call_id.clone(), fields.title.clone().unwrap_or_default());
+    call.kind = fields.kind.unwrap_or_default();
+    call.status = fields.status.unwrap_or_default();
+    call.content = fields.content.clone().unwrap_or_default();
+    call.locations = fields.locations.clone().unwrap_or_default();
+    call.raw_input = fields.raw_input.clone();
+    notify(cx, id, acp::SessionUpdate::ToolCall(call));
+    let option = |id: &str, name: &str, kind| {
+        acp::PermissionOption::new(acp::PermissionOptionId::new(id), name, kind)
+    };
+    let answer = cx
+        .send_request(acp::RequestPermissionRequest::new(
+            id.clone(),
+            acp::ToolCallUpdate::new(call_id.clone(), fields),
+            vec![
+                option("reject", "Reject", acp::PermissionOptionKind::RejectOnce),
+                option(
+                    "allow-always",
+                    "Always allow",
+                    acp::PermissionOptionKind::AllowAlways,
+                ),
+                option("allow-once", "Allow", acp::PermissionOptionKind::AllowOnce),
+            ],
+        ))
+        .block_task()
+        .await?;
+    Ok(match answer.outcome {
+        acp::RequestPermissionOutcome::Selected(s) => Some(s.option_id.0.starts_with("allow")),
+        _ => None,
+    })
 }
 
 fn text(t: impl Into<String>) -> acp::ContentChunk {
@@ -182,58 +226,54 @@ async fn turn(
                 )),
             ),
             "edit" => {
+                // Shaped like the Claude adapter's `Write`: the tool call,
+                // then a permission request carrying the whole call again.
                 let (path, new_text) = rest.split_once(' ').unwrap_or((rest, ""));
                 let path = PathBuf::from(path);
                 let old_text = std::fs::read_to_string(&path).ok();
                 let call_id = acp::ToolCallId::new(format!("edit-{n}"));
-                let diff = acp::ToolCallContent::Diff(
-                    acp::Diff::new(path.clone(), new_text).old_text(old_text),
-                );
+                let fields = acp::ToolCallUpdateFields::new()
+                    .title(format!("Edit {}", path.display()))
+                    .kind(acp::ToolKind::Edit)
+                    .status(acp::ToolCallStatus::Pending)
+                    .raw_input(json!({"file_path": path, "content": new_text}))
+                    .content(vec![acp::ToolCallContent::Diff(
+                        acp::Diff::new(path.clone(), new_text).old_text(old_text),
+                    )])
+                    .locations(vec![acp::ToolCallLocation::new(path.clone())]);
+                let allowed = match ask(&cx, &id, &call_id, fields).await? {
+                    Some(allowed) => allowed,
+                    None => return Ok(acp::StopReason::Cancelled),
+                };
+                let status = if allowed {
+                    std::fs::write(&path, new_text)
+                        .map_err(agent_client_protocol::Error::into_internal_error)?;
+                    acp::ToolCallStatus::Completed
+                } else {
+                    acp::ToolCallStatus::Failed
+                };
                 notify(
                     &cx,
                     &id,
-                    acp::SessionUpdate::ToolCall(
-                        acp::ToolCall::new(call_id.clone(), format!("Edit {}", path.display()))
-                            .kind(acp::ToolKind::Edit)
-                            .status(acp::ToolCallStatus::Pending)
-                            .content(vec![diff.clone()])
-                            .locations(vec![acp::ToolCallLocation::new(path.clone())]),
-                    ),
+                    acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                        call_id,
+                        acp::ToolCallUpdateFields::new().status(status),
+                    )),
                 );
-                let option = |id: &str, name: &str, kind| {
-                    acp::PermissionOption::new(acp::PermissionOptionId::new(id), name, kind)
-                };
-                let answer = cx
-                    .send_request(acp::RequestPermissionRequest::new(
-                        id.clone(),
-                        acp::ToolCallUpdate::new(
-                            call_id.clone(),
-                            acp::ToolCallUpdateFields::new()
-                                .title(format!("Edit {}", path.display()))
-                                .content(vec![diff]),
-                        ),
-                        vec![
-                            option("reject", "Reject", acp::PermissionOptionKind::RejectOnce),
-                            option(
-                                "allow-always",
-                                "Always allow",
-                                acp::PermissionOptionKind::AllowAlways,
-                            ),
-                            option("allow-once", "Allow", acp::PermissionOptionKind::AllowOnce),
-                        ],
-                    ))
-                    .block_task()
-                    .await?;
-                let status = match answer.outcome {
-                    acp::RequestPermissionOutcome::Selected(s)
-                        if s.option_id.0.starts_with("allow") =>
-                    {
-                        std::fs::write(&path, new_text)
-                            .map_err(agent_client_protocol::Error::into_internal_error)?;
-                        acp::ToolCallStatus::Completed
-                    }
-                    acp::RequestPermissionOutcome::Selected(_) => acp::ToolCallStatus::Failed,
-                    _ => return Ok(acp::StopReason::Cancelled),
+            }
+            "run" => {
+                // Shaped like the Claude adapter's `Bash`: `rawInput.command`.
+                let call_id = acp::ToolCallId::new(format!("run-{n}"));
+                let fields = acp::ToolCallUpdateFields::new()
+                    .title(rest)
+                    .kind(acp::ToolKind::Execute)
+                    .status(acp::ToolCallStatus::Pending)
+                    .raw_input(json!({"command": rest, "description": "Run it"}))
+                    .content(vec![]);
+                let status = match ask(&cx, &id, &call_id, fields).await? {
+                    Some(true) => acp::ToolCallStatus::Completed,
+                    Some(false) => acp::ToolCallStatus::Failed,
+                    None => return Ok(acp::StopReason::Cancelled),
                 };
                 notify(
                     &cx,

@@ -39,6 +39,7 @@ enum Call {
 #[derive(Default)]
 struct Fake {
     calls: RefCell<Vec<Call>>,
+    spawned: RefCell<Vec<SpawnParams>>,
     feeds: RefCell<Vec<(TerminalId, mpsc::UnboundedSender<Update>)>>,
 }
 
@@ -67,6 +68,7 @@ impl Fake {
 impl TerminalBackend for Fake {
     fn spawn(&self, params: SpawnParams) -> oneshot::Receiver<Result<TerminalInfo, String>> {
         self.calls.borrow_mut().push(Call::Spawn);
+        self.spawned.borrow_mut().push(params.clone());
         let (tx, rx) = oneshot::channel();
         let _ = tx.send(Ok(info(ID, params.size)));
         rx
@@ -480,6 +482,31 @@ fn new_terminal_spawns_a_shell_and_opens_it() {
     let calls = h.fake.calls();
     assert_eq!(calls[0], Call::Spawn);
     assert!(calls.contains(&Call::Attach(ID)), "{calls:?}");
+    let kinds: Vec<String> =
+        h.dock(|d, _, _| d.tree().tabs().iter().map(|t| t.kind.clone()).collect());
+    assert_eq!(kinds, ["terminal"]);
+}
+
+#[test]
+fn a_sign_in_program_runs_in_a_new_terminal_tab() {
+    let mut h = open_with(MemoryLayoutStore::default());
+    h.frame(|window, cx| {
+        window.dispatch_action(
+            Box::new(crate::chat::RunInTerminal {
+                program: "/home/u/.local/bin/claude".into(),
+                args: vec![],
+            }),
+            cx,
+        );
+    });
+    h.frame(|_, _| {});
+    let spawned = h.fake.spawned.borrow().clone();
+    assert_eq!(spawned.len(), 1);
+    assert_eq!(
+        spawned[0].program.as_deref(),
+        Some("/home/u/.local/bin/claude")
+    );
+    assert_eq!(spawned[0].title.as_deref(), Some("claude"));
     let kinds: Vec<String> =
         h.dock(|d, _, _| d.tree().tabs().iter().map(|t| t.kind.clone()).collect());
     assert_eq!(kinds, ["terminal"]);

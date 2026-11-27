@@ -16,9 +16,10 @@ use coqo_agents::{
     StaticProviders,
     model::{
         AgentState, AuthKind, AuthStatus, AvailableCommand, ContentBlock, PermissionOption,
-        PermissionOptionKind, PermissionOutcome, PlanEntry, PlanEntryStatus, ProviderCapabilities,
-        RuleDecision, SessionInfo, StopReason, ToolCall, ToolCallContent, ToolCallId,
-        ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
+        PermissionOptionKind, PermissionOutcome, PlanEntry, PlanEntryStatus, ProviderAction,
+        ProviderActionRun, ProviderCapabilities, ProviderStatus, RuleDecision, SessionInfo,
+        StopReason, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus,
+        ToolCallUpdate, ToolKind,
     },
     testing::{Call, ScriptedProvider, Step, test_modes},
 };
@@ -808,6 +809,96 @@ fn a_provider_that_needs_a_login_says_how_to_sign_in() {
     ui.frame(|window, _| assert!(window.try_find("chat-list-error").is_some()));
 }
 
+fn sign_in_action() -> ProviderAction {
+    ProviderAction {
+        id: "sign-in".into(),
+        label: "Open `claude` in a terminal".into(),
+        run: ProviderActionRun::Terminal {
+            program: "/usr/local/bin/claude".into(),
+            args: vec![],
+        },
+    }
+}
+
+#[test]
+fn a_provider_that_isnt_set_up_offers_its_setup_and_starts_after_it() {
+    let provider = ScriptedProvider::new()
+        .status(ProviderStatus {
+            ready: false,
+            message: Some("Claude Code chats need the Claude ACP adapter".into()),
+            actions: vec![ProviderAction {
+                id: "install-adapter".into(),
+                label: "Install Claude ACP adapter (npm)".into(),
+                run: ProviderActionRun::Daemon,
+            }],
+            sign_in: Some(sign_in_action()),
+        })
+        .action(
+            "install-adapter",
+            Some(ProviderStatus {
+                sign_in: Some(sign_in_action()),
+                ..ProviderStatus::ready()
+            }),
+        );
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    ui.press(if cfg!(target_os = "macos") {
+        "cmd-shift-n"
+    } else {
+        "ctrl-shift-n"
+    });
+    ui.wait_for("the setup message", |ui| {
+        ui.shows("chat-action-install-adapter")
+    });
+    let error = ui.cx.read(|cx| {
+        ChatList::global(cx)
+            .unwrap()
+            .read(cx)
+            .error()
+            .map(str::to_owned)
+    });
+    assert_eq!(
+        error.as_deref(),
+        Some("Claude Code chats need the Claude ACP adapter")
+    );
+    assert!(ui.chats().is_empty());
+    // Nothing runs until the button is pressed.
+    assert!(fixture.provider.calls().is_empty());
+
+    ui.frame(|window, cx| window.click(name("chat-action-install-adapter"), cx));
+    let chat = ui.chat();
+    assert_eq!(
+        fixture.provider.calls()[0],
+        Call::RunAction("install-adapter".into())
+    );
+    ui.wait_for("the chat in the sidebar", |ui| ui.listed().len() == 1);
+    assert!(!ui.shows("chat-action-install-adapter"));
+    ui.send(&chat, "hi");
+    ui.wait_for("the reply", |ui| ui.agent_text(&chat) == "ok");
+}
+
+#[test]
+fn signing_in_opens_the_agents_own_tool_in_a_terminal() {
+    let provider = ScriptedProvider::new()
+        .status(ProviderStatus {
+            sign_in: Some(sign_in_action()),
+            ..ProviderStatus::ready()
+        })
+        .fail_start(ProviderError::AuthRequired("signed out".into()));
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    ui.press(if cfg!(target_os = "macos") {
+        "cmd-shift-n"
+    } else {
+        "ctrl-shift-n"
+    });
+    ui.wait_for("the sign-in button", |ui| ui.shows("chat-action-sign-in"));
+    let actions = ui
+        .cx
+        .read(|cx| ChatList::global(cx).unwrap().read(cx).actions().to_vec());
+    assert_eq!(actions, [("fake".to_owned(), sign_in_action())]);
+}
+
 // ---- composer (#64) -----------------------------------------------------------
 
 /// Every prompt the agent received, in order.
@@ -1238,14 +1329,35 @@ fn chat_screenshots() {
         ("chat-light", Appearance::Light, false),
         ("composer-dark", Appearance::Dark, true),
         ("composer-light", Appearance::Light, true),
+        ("setup-dark", Appearance::Dark, false),
     ];
     for (name, appearance, composing) in shots {
+        let setup = name.starts_with("setup");
         let updates = updates.clone();
         let rules = rules.clone();
         let image = render_offscreen(appearance, size(1440., 900.), move |window, cx| {
             crate::shell::init(cx);
             let list = ChatList::global(cx).unwrap();
             list.update(cx, |l, cx| {
+                if setup {
+                    // A first chat with Claude Code before its adapter is
+                    // installed.
+                    l.set_problem(
+                        "Claude Code chats need the Claude ACP adapter: Coqo installs \
+                         @agentclientprotocol/claude-agent-acp with npm into its data \
+                         directory when you ask it to. It runs your own `claude` and your \
+                         own login."
+                            .into(),
+                        "claude-acp".into(),
+                        vec![ProviderAction {
+                            id: "install-adapter".into(),
+                            label: "Install Claude ACP adapter (npm)".into(),
+                            run: ProviderActionRun::Daemon,
+                        }],
+                        cx,
+                    );
+                    return;
+                }
                 l.upsert(info("s3", "Bump the HTTP client", AgentState::Done, 1), cx);
                 l.upsert(
                     info("s2", "Fix the flaky login test", AgentState::Working, 2),
@@ -1264,6 +1376,9 @@ fn chat_screenshots() {
             let store = Rc::new(MemoryLayoutStore::default());
             cx.new(|cx| {
                 let shell = Shell::new(store, DEFAULT_WORKSPACE, window, cx);
+                if setup {
+                    return shell;
+                }
                 let chat = cx.new(|cx| {
                     let mut chat = ChatTab::new(SessionId("s1".into()), window, cx);
                     chat.set_preview(

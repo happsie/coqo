@@ -104,10 +104,16 @@ pub fn tab(id: TerminalId, cx: &mut App) -> Option<AnyTab> {
 
 /// Start a login shell and open it in the active group of `dock`.
 pub fn open_new(dock: &Entity<Dock>, window: &mut Window, cx: &mut App) {
+    open_with(dock, SpawnParams::default(), window, cx);
+}
+
+/// Start a terminal with `params` (a program such as `claude`, say) and
+/// open it in the active group of `dock`.
+pub fn open_with(dock: &Entity<Dock>, params: SpawnParams, window: &mut Window, cx: &mut App) {
     let Some(t) = cx.try_global::<Terminals>() else {
         return;
     };
-    let started = t.backend.spawn(SpawnParams::default());
+    let started = t.backend.spawn(params);
     let dock = dock.downgrade();
     window
         .spawn(cx, async move |cx| {

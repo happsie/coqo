@@ -77,13 +77,15 @@ pub fn provider_info(
     info: &AgentProviderInfo,
     provider: Option<&Arc<dyn AgentProvider>>,
 ) -> ProviderInfo {
+    let status = provider.and_then(|p| p.status());
     ProviderInfo {
         id: info.id.as_str().to_owned(),
         name: info.name.clone(),
         kind: kind(info.kind),
         description: info.description.clone(),
-        available: provider.is_some(),
+        available: provider.is_some() && status.as_ref().is_none_or(|s| s.ready),
         capabilities: provider.map(|p| p.capabilities()),
+        status,
     }
 }
 

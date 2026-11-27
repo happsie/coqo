@@ -1703,6 +1703,72 @@
       ],
       "type": "object"
     },
+    "ProviderAction": {
+      "description": "A button for a provider's setup.",
+      "properties": {
+        "id": {
+          "description": "Action id, for `agents/runAction`.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Button label, such as `Install Claude ACP adapter (npm)`.",
+          "type": "string"
+        },
+        "run": {
+          "$ref": "#/$defs/ProviderActionRun",
+          "description": "What pressing it does."
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "run"
+      ],
+      "type": "object"
+    },
+    "ProviderActionRun": {
+      "description": "What a [`ProviderAction`] does.",
+      "oneOf": [
+        {
+          "description": "The daemon runs it: call `agents/runAction`.",
+          "properties": {
+            "kind": {
+              "const": "daemon",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Open a terminal tab running `program` with `args` in the workspace\n(`terminal/spawn`), such as `claude` for the user to `/login`.",
+          "properties": {
+            "args": {
+              "description": "Its arguments.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "terminal",
+              "type": "string"
+            },
+            "program": {
+              "description": "The program (absolute path).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "program"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ProviderCapabilities": {
       "description": "What a provider supports.",
       "properties": {
@@ -1733,7 +1799,7 @@
       "description": "An agent provider, for the chat's provider picker.",
       "properties": {
         "available": {
-          "description": "Whether sessions can be created now (the providing mod is active).",
+          "description": "Whether sessions can be created now: the providing mod is active and\nthe provider is set up (`status.ready`, when it reports a status).",
           "type": "boolean"
         },
         "capabilities": {
@@ -1765,6 +1831,17 @@
         "name": {
           "description": "Display name.",
           "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Whether it is set up, and what the user can do about it; `null` when\nthe provider has nothing to report (always ready)."
         }
       },
       "required": [
@@ -1794,6 +1871,44 @@
           "type": "string"
         }
       ]
+    },
+    "ProviderStatus": {
+      "description": "Whether a provider can start sessions on this machine, such as Claude\nCode being installed and the ACP adapter set up.",
+      "properties": {
+        "actions": {
+          "description": "Setup steps the user can take now, such as installing the agent's\nadapter. Shown when not ready. Never run without the user asking.",
+          "items": {
+            "$ref": "#/$defs/ProviderAction"
+          },
+          "type": "array"
+        },
+        "message": {
+          "description": "What is missing or wrong, for the user; `null` when ready.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ready": {
+          "description": "Sessions can start now.",
+          "type": "boolean"
+        },
+        "signIn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderAction"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How the user signs in to the agent's own tool, offered when a session\nfails with `AUTH_REQUIRED`. Coqo never runs a login itself."
+        }
+      },
+      "required": [
+        "ready"
+      ],
+      "type": "object"
     },
     "ReadParams": {
       "description": "Params of [`ReadFile`].",
@@ -2074,6 +2189,24 @@
       },
       "required": [
         "id"
+      ],
+      "type": "object"
+    },
+    "RunActionParams": {
+      "description": "Params of `agents/runAction`.",
+      "properties": {
+        "action": {
+          "description": "A daemon action's id, from the provider's status.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "action"
       ],
       "type": "object"
     },
@@ -4093,6 +4226,17 @@
           "$ref": "#/$defs/ProviderInfo"
         },
         "type": "array"
+      }
+    },
+    "agents/runAction": {
+      "description": "Run a provider's setup action (such as installing its adapter) at the user's request.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/RunActionParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ProviderInfo"
       }
     },
     "buffer/changes": {

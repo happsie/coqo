@@ -127,7 +127,8 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mods::{Mods, builtins};
+    use crate::mods::Mods;
+    use crate::mods::tests::test_builtins;
     use coqo_agents::register_provider;
     use coqo_agents::testing::ScriptedProvider;
     use coqo_mod_api::contrib::{AgentProviderInfo, AgentProviderKind};
@@ -160,14 +161,21 @@ mod tests {
 
     #[tokio::test]
     async fn providers_come_from_mods() {
-        let mods = Mods::load(builtins().with(FAKE_MANIFEST, FakeAgentMod));
+        let dir = tempfile::tempdir().unwrap();
+        let mods = Mods::load(test_builtins(dir.path()).with(FAKE_MANIFEST, FakeAgentMod));
         mods.start().await;
         let providers = ModProviders(Arc::clone(&mods.contributions));
         let listed = providers.providers();
-        assert_eq!(listed.len(), 1, "{listed:?}");
-        assert_eq!(listed[0].id, "fake");
-        assert!(listed[0].available);
-        assert!(listed[0].capabilities.is_some_and(|c| c.resume));
+        let fake = listed.iter().find(|p| p.id == "fake").expect("{listed:?}");
+        assert!(fake.available);
+        assert!(fake.capabilities.is_some_and(|c| c.resume));
+        assert!(fake.status.is_none());
+        // The built-in Claude provider reports its setup.
+        let claude = listed
+            .iter()
+            .find(|p| p.id == coqo_agent_claude::PROVIDER_ID)
+            .expect("{listed:?}");
+        assert!(claude.status.is_some());
         assert!(providers.provider("fake").is_some());
         assert!(providers.provider("other").is_none());
 

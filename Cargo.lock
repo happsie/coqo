@@ -1184,10 +1184,25 @@ dependencies = [
  "coqo-mod-api",
  "coqo-protocol",
  "futures-util",
+ "rusqlite",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "coqo-agent-claude"
+version = "0.0.0"
+dependencies = [
+ "coqo-acp-host",
+ "coqo-agents",
+ "coqo-mod-api",
+ "futures-util",
+ "serde_json",
+ "tempfile",
+ "tokio",
  "tracing",
 ]
 
@@ -1334,6 +1349,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "coqo-acp-host",
+ "coqo-agent-claude",
  "coqo-agents",
  "coqo-buffers",
  "coqo-client",

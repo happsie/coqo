@@ -1,0 +1,16 @@
+# Claude Code through the Claude Agent ACP adapter (PLAN §7.3, ADR 0005).
+# Built in: it registers the `claude` agent provider at startup.
+id = "coqo.claude"
+name = "Claude Code"
+version = "0.1.0"
+description = "Chat with your own Claude Code, signed in with your own login, through the Claude Agent ACP adapter."
+engine = "^0.0"
+tier = "core"
+activation = ["startup"]
+
+[[contributes.settings]]
+key = "claude.acp.plan-logins"
+title = "Use Claude plan logins through ACP"
+description = "Let the Claude ACP adapter use the Claude.ai subscription login of your own `claude`. Turn it off to use only API keys and cloud providers (the adapter then runs with --hide-claude-auth)."
+type = "boolean"
+default = true

@@ -609,6 +609,27 @@ impl SessionManager {
         self.inner.providers.providers()
     }
 
+    /// Runs a provider's setup action (`agents/runAction`) and returns the
+    /// provider's new info. Holds the daemon open while it runs.
+    pub async fn run_action(&self, provider: &str, action: String) -> Result<ProviderInfo> {
+        let runtime = self
+            .inner
+            .providers
+            .provider(provider)
+            .ok_or_else(|| AgentError::UnknownProvider(provider.to_owned()))?;
+        let _busy = self
+            .inner
+            .options
+            .keep_alive
+            .as_ref()
+            .map(|k| k.hold(format!("agent provider {provider}: {action}")));
+        runtime.run_action(action).await?;
+        self.providers()
+            .into_iter()
+            .find(|p| p.id == provider)
+            .ok_or_else(|| AgentError::UnknownProvider(provider.to_owned()))
+    }
+
     /// Sessions, most recently updated first, and the `sessions/changes`
     /// seq they reflect.
     pub fn list(&self, params: &ListSessionsParams) -> Result<SessionList> {

@@ -1,0 +1,36 @@
+[package]
+name = "coqo-agent-claude"
+description = "Claude Code as a Coqo agent provider, through the Claude Agent ACP adapter and the user's own login."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# A built-in core mod, but not under `mods/`: it builds on the daemon's ACP
+# host (`coqo-acp-host`) and agent runtime (`coqo-agents`), which the mod
+# boundary keeps out of `mods/` crates (PLAN §6).
+
+# The scripted ACP agent from coqo-acp-host, standing in for the adapter in
+# this crate's integration tests.
+[[bin]]
+name = "coqo-fake-claude-acp"
+path = "src/bin/fake_claude_acp.rs"
+test = false
+doc = false
+
+[dependencies]
+coqo-acp-host = { path = "../acp-host" }
+coqo-agents = { path = "../agents" }
+coqo-mod-api = { path = "../mod-api" }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tempfile = "3"
+
+[lints]
+workspace = true

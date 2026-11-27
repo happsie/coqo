@@ -30,8 +30,8 @@ use std::sync::Arc;
 use coqo_mod_api::BoxFuture;
 use coqo_protocol::methods::agents::{
     AgentState, AuthStatus, AvailableCommand, ContentBlock, PermissionOption, PermissionOutcome,
-    PlanEntry, ProviderCapabilities, SessionId, SessionModes, SessionUpdate, StopReason, ToolCall,
-    ToolCallUpdate, Usage,
+    PlanEntry, ProviderCapabilities, ProviderStatus, SessionId, SessionModes, SessionUpdate,
+    StopReason, ToolCall, ToolCallUpdate, Usage,
 };
 
 /// An MCP server to inject into a session (ACP `session/new.mcpServers`),
@@ -98,6 +98,23 @@ pub enum ProviderError {
 pub trait AgentProvider: Send + Sync + 'static {
     /// What it supports.
     fn capabilities(&self) -> ProviderCapabilities;
+
+    /// Whether it is set up on this machine, and the setup and sign-in
+    /// actions it offers. Called for every `agents/providers`, so keep it
+    /// cheap (cache what is slow to find out). `None`, the default, means
+    /// always ready.
+    fn status(&self) -> Option<ProviderStatus> {
+        None
+    }
+
+    /// Runs the daemon-side setup action `action` from [`status`](Self::status)
+    /// (`agents/runAction`), at the user's explicit request. The default
+    /// has none.
+    fn run_action(&self, action: String) -> BoxFuture<'_, Result<(), ProviderError>> {
+        Box::pin(std::future::ready(Err(ProviderError::Unsupported(
+            format!("action `{action}`"),
+        ))))
+    }
 
     /// Starts a new session (ACP `session/new`). `events` is where the
     /// session reports updates and asks for permission, for as long as it

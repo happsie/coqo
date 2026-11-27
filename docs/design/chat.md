@@ -54,6 +54,14 @@ When the provider needs a login, a sand banner says how to sign in to the agent'
 
 The CHATS section lists the current workspace's open sessions, newest first, with a 7 px status dot: sage for idle and done, sand when it needs input or permission or is blocked, rose on error, and a pulsing blue while working. The row of the active chat tab is `surface_selected`. The **+** next to CHATS and `Ctrl Shift N` (`Cmd Shift N` on macOS) start a chat in the workspace with the first available provider. Problems (no folder open, no provider installed, sign-in needed) show under the list in sand.
 
+Below a problem go the provider's buttons, in the primary style:
+
+- When a provider isn't set up (Claude Code before its ACP adapter is installed), the list shows the provider's own message and its setup buttons, such as **Install Claude ACP adapter (npm)**. Nothing installs until the button is pressed. While it runs, the list says what is running. When it finishes, the chat starts.
+- When the provider needs a login, the button is **Open `claude` in a terminal**. It opens a terminal tab in the workspace running the user's own `claude`, where they `/login`.
+- The chat tab's sign-in banner carries the same button.
+
+![The CHATS list before Claude's adapter is installed, dark](screenshots/setup-dark.png)
+
 ## Reattaching
 
 A chat tab saves only its session id. When it comes back (a new window, a restart), it asks `sessions/get` for the session's info and subscribes to `sessions/updates` from seq 0, so the whole transcript replays, then the live stream follows. After a dropped connection it resubscribes from the last seq it applied; if the daemon can't replay that far (`RESUME_GAP`) it starts over from 0.
@@ -64,4 +72,4 @@ A chat tab saves only its session id. When it comes back (a new window, a restar
 
 ![The @-mention popover, light](screenshots/composer-light.png)
 
-To regenerate the screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored chat_screenshots` (offscreen, needs a GPU) and downscale the 2× PNGs to 1440×900 as `chat-<appearance>.png` and `composer-<appearance>.png`.
+To regenerate the screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored chat_screenshots` (offscreen, needs a GPU) and downscale the 2× PNGs to 1440×900 as `chat-<appearance>.png`, `composer-<appearance>.png` and `setup-dark.png`.

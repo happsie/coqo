@@ -6,7 +6,9 @@
 
 use coqo_protocol::{
     codes,
-    methods::agents::{Changes, ChangesParams, List, ListSessionsParams, SessionId, SessionInfo},
+    methods::agents::{
+        Changes, ChangesParams, List, ListSessionsParams, ProviderAction, SessionId, SessionInfo,
+    },
 };
 use coqo_ui::{
     ActiveTokens as _,
@@ -16,10 +18,10 @@ use coqo_ui::{
         InteractiveElement as _, IntoElement as _, ParentElement as _,
         StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, div, px,
     },
-    widgets::{Icon, TestSupportExt as _, icon, section_label},
+    widgets::{Icon, TestSupportExt as _, icon, primary, section_label},
 };
 
-use super::{KIND, agent_dot, new_chat, open_session};
+use super::{KIND, agent_dot, new_chat, open_session, press_action};
 use crate::{
     daemon::{Daemon, DaemonEvent},
     workspace::{KnownWorkspaces, WindowWorkspaceChanged, Workspaces},
@@ -32,6 +34,9 @@ pub struct ChatList {
     sessions: Vec<SessionInfo>,
     /// Why the last "new chat" (or the list) failed.
     error: Option<String>,
+    /// What the user can do about it: a provider's setup or sign-in
+    /// buttons, as `(provider id, action)`.
+    actions: Vec<(String, ProviderAction)>,
     creating: bool,
     _loading: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -79,6 +84,7 @@ impl ChatList {
             workspace: None,
             sessions: Vec::new(),
             error: None,
+            actions: Vec::new(),
             creating: false,
             _loading: None,
             _subscriptions: subscriptions,
@@ -109,7 +115,26 @@ impl ChatList {
 
     pub fn set_error(&mut self, error: Option<String>, cx: &mut Context<Self>) {
         self.error = error;
+        self.actions.clear();
         cx.notify();
+    }
+
+    /// Show `error` with `provider`'s buttons for it.
+    pub fn set_problem(
+        &mut self,
+        error: String,
+        provider: String,
+        actions: Vec<ProviderAction>,
+        cx: &mut Context<Self>,
+    ) {
+        self.error = Some(error);
+        self.actions = actions.into_iter().map(|a| (provider.clone(), a)).collect();
+        cx.notify();
+    }
+
+    /// The buttons under the error.
+    pub fn actions(&self) -> &[(String, ProviderAction)] {
+        &self.actions
     }
 
     pub fn set_creating(&mut self, creating: bool, cx: &mut Context<Self>) {
@@ -230,12 +255,16 @@ pub fn render_section(dock: WeakEntity<Dock>, cx: &App) -> AnyElement {
         .gap(px(2.))
         .text_size(px(12.))
         .child(header);
-    let (sessions, error) = match &list {
+    let (sessions, error, actions) = match &list {
         Some(list) => {
             let list = list.read(cx);
-            (list.sessions().to_vec(), list.error().map(str::to_owned))
+            (
+                list.sessions().to_vec(),
+                list.error().map(str::to_owned),
+                list.actions().to_vec(),
+            )
         }
-        None => (Vec::new(), None),
+        None => (Vec::new(), None, Vec::new()),
     };
     if sessions.is_empty() && error.is_none() {
         section = section.child(
@@ -283,6 +312,31 @@ pub fn render_section(dock: WeakEntity<Dock>, cx: &App) -> AnyElement {
                 .text_color(p.sand.hsla())
                 .child(error),
         );
+    }
+    if !actions.is_empty() {
+        let mut row = div().flex().flex_wrap().gap(px(6.)).px_2().pb_1();
+        for (provider, action) in actions {
+            let dock = dock.clone();
+            let label = action.label.clone();
+            row = row.child(
+                primary(
+                    div()
+                        .px(px(10.))
+                        .py(px(4.))
+                        .rounded(px(8.))
+                        .text_size(m.text_sm),
+                    cx,
+                )
+                .id(ElementId::Name(format!("chat-action-{}", action.id).into()))
+                .test_support()
+                .cursor_pointer()
+                .child(label)
+                .on_click(move |_, window, cx| {
+                    press_action(dock.clone(), provider.clone(), action.clone(), window, cx)
+                }),
+            );
+        }
+        section = section.child(row);
     }
     section.into_any_element()
 }

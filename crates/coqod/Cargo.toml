@@ -23,6 +23,9 @@ doc = false
 alacritty_terminal = "0.26"
 anyhow = "1"
 coqo-acp-host = { path = "../acp-host" }
+# Built-in Claude Code provider (a core mod outside `mods/`: it needs the ACP
+# host, which mods may not depend on).
+coqo-agent-claude = { path = "../agent-claude" }
 coqo-agents = { path = "../agents" }
 coqo-buffers = { path = "../buffers" }
 coqo-client = { path = "../client" }
