@@ -32,6 +32,8 @@ coqo-ui = { path = "../ui", features = ["test-support"] }
 coqod = { path = "../coqod" }
 # Chat tests serve the real session manager with a scripted agent.
 coqo-agents = { path = "../agents" }
+# The agent tools that read the editor context the UI publishes.
+coqo-mcp = { path = "../mcp" }
 coqo-mod-api = { path = "../mod-api" }
 coqo-storage = { path = "../storage" }
 tempfile = "3"

@@ -941,6 +941,22 @@ fn editor_context(fixture: &Fixture, ws: &WorkspaceId) -> edm::EditorContext {
     })
 }
 
+/// Call coqo-editor tool `tool` as an agent of workspace `ws` would (the
+/// bridge's tool, on a connection of its own).
+fn agent_tool(
+    fixture: &Fixture,
+    ws: &WorkspaceId,
+    tool: impl coqo_mcp::Tool,
+    args: coqo_ui::serde_json::Value,
+) -> coqo_mcp::ToolOutput {
+    let workspace = ws.clone();
+    fixture.daemon.with_client(async move |client| {
+        let cx = coqo_mcp::ToolContext::new(client, workspace, "s-test");
+        let args = args.as_object().cloned().unwrap_or_default();
+        tool.call(&cx, args).await.unwrap()
+    })
+}
+
 /// The one window's tab of `path`, if the context has it.
 fn context_tab<'a>(cx: &'a edm::EditorContext, path: &str) -> Option<&'a edm::EditorTab> {
     cx.windows
@@ -1018,6 +1034,29 @@ fn publishes_the_editor_context_for_agents() {
         edm::Range::new(edm::Position::new(0, 3), edm::Position::new(0, 7))
     );
     assert_eq!(tab.visible.map(|v| v.start), Some(0), "{tab:?}");
+    // What an agent's `editor_context` tool makes of it: 1-based.
+    let out = agent_tool(
+        &fixture,
+        &ws,
+        coqo_mcp::tools::EditorContextTool,
+        coqo_ui::serde_json::json!({}),
+    );
+    let s = out.structured.unwrap();
+    let main_path = fixture.project.join("src/main.rs");
+    assert_eq!(s["activeFile"]["path"], main_path.to_str().unwrap(), "{s}");
+    assert_eq!(
+        s["activeFile"]["selections"][0],
+        coqo_ui::serde_json::json!({
+            "start": { "line": 1, "column": 4 },
+            "end": { "line": 1, "column": 8 },
+            "text": "main",
+        })
+    );
+    assert!(
+        out.text.contains("Selection: 1:4-1:8\n```\nmain\n```"),
+        "{}",
+        out.text
+    );
 
     // A cursor in the second line, after the tab and the typed `x`; typing
     // makes it dirty.
@@ -1118,6 +1157,18 @@ fn reveals_open_the_file_and_select_the_range() {
             .and_then(|id| dock.tab(id)?.downcast::<FileEditor>())
     });
     assert_eq!(active, Some(tab.clone()));
+
+    // The agent's `editor_reveal` tool (1-based) lands in the same tab.
+    let out = agent_tool(
+        &fixture,
+        &ws,
+        coqo_mcp::tools::EditorRevealTool,
+        coqo_ui::serde_json::json!({ "path": "src/lib.rs", "line": 1, "column": 1, "end_column": 4 }),
+    );
+    assert_eq!(out.structured.unwrap()["delivered"], true);
+    ui.wait_for("the tool's range selected", |ui| {
+        ui.selections(&tab) == [0..3]
+    });
 
     // Revealing it again reuses the tab; positions past the text clamp to
     // its end, and no range is the top of the file.

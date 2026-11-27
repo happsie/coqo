@@ -216,3 +216,53 @@ fn mods_activate_and_deactivate_through_the_trait_object() {
     assert_eq!(host.withdraw_mod(&pid("counter")), 2);
     assert!(host.services().is_empty());
 }
+
+#[test]
+fn mcp_tools_register_with_their_handler() {
+    use coqo_mod_api::contrib::McpTool;
+    use coqo_mod_api::{McpToolCall, McpToolOutput};
+
+    let host = TestHost::new();
+    let cx = host.context(pid("tools"));
+    let tool = McpTool::new(
+        "count_lines".parse().unwrap(),
+        "Counts the lines of `text`.",
+    )
+    .with_title("Count lines")
+    .read_only()
+    .with_schema(json!({
+        "type": "object",
+        "properties": { "text": { "type": "string" } },
+        "required": ["text"],
+    }));
+    cx.register_mcp_tool(tool, |call: McpToolCall| async move {
+        let text = call.arguments["text"].as_str().unwrap_or_default();
+        Ok(McpToolOutput::json(json!({
+            "lines": text.lines().count(),
+            "workspace": call.workspace,
+            "session": call.session,
+        })))
+    })
+    .unwrap();
+
+    let listed = host
+        .contribution::<points::McpTools>("count_lines")
+        .unwrap();
+    assert!(listed.read_only);
+    assert_eq!(listed.title.as_deref(), Some("Count lines"));
+    let args = json!({ "text": "a\nb\n" }).as_object().cloned().unwrap();
+    let out = host.call_mcp_tool("count_lines", args).unwrap();
+    assert_eq!(
+        out.structured,
+        Some(json!({ "lines": 2, "workspace": "ws-test", "session": "s-test" }))
+    );
+    assert!(out.text.contains("\"lines\": 2"));
+    assert!(host.call_mcp_tool("missing", Default::default()).is_err());
+
+    // Withdrawn with the mod: the tool and its handler.
+    assert_eq!(host.withdraw_mod(&pid("tools")), 2);
+    assert!(
+        host.contribution::<points::McpTools>("count_lines")
+            .is_none()
+    );
+}
