@@ -271,7 +271,7 @@ Hard rules, documented in `agent-claude` and in CONTRIBUTING: no claude.ai OAuth
 **Chat UX:** streaming markdown, collapsible tool calls, inline diffs with accept/reject, the agent's plan/todo view, @-mentions (files, symbols, selection, diagnostics, git diff, terminal output, PR), drag code into chat, provider and model picker per session, a usage/billing-source indicator, stop/retry/fork, and permission prompts that also raise alerts (§7.9).
 
 ### 7.4 Editor MCP
-- An agent launches `coqod mcp --session <id>` (the same binary in a stdio MCP server mode). It connects to the daemon socket, and the session token routes calls to the right workspace and agent session. **This works whether or not a UI is open.**
+- An agent launches `coqod mcp --workspace <id> --session <id>` (the same binary in a stdio MCP server mode). It connects to the daemon socket with a one-time session token from its environment, and that token's scope routes calls to the right workspace and agent session ([ADR 0012](adr/0012-editor-mcp-bridge.md)). **This works whether or not a UI is open.**
 - **Tools are contributed by mods** through the registry, so a new mod automatically gives agents new editor powers.
 
 | Tool | Purpose |
@@ -379,7 +379,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 ## 9. Security and privacy
 - No telemetry by default. Crash reports are opt-in.
 - Secrets live only in the keychain and never in files or logs.
-- **Daemon socket:** a user-only directory (verified, never adopted: no symlinks, no other owner, no group or other access), 0600 permissions, a peer credential check (`SO_PEERCRED` / `LOCAL_PEERCRED`), a per-start daemon token in `coqod.token` (0600) that every `coqo/hello` must present, and per-session MCP tokens scoped to a workspace. The daemon token is an ephemeral capability in a user-only runtime file, not a long-lived secret, so it does not go in the keychain. See [ADR 0007](adr/0007-daemon-lifecycle.md).
+- **Daemon socket:** a user-only directory (verified, never adopted: no symlinks, no other owner, no group or other access), 0600 permissions, a peer credential check (`SO_PEERCRED` / `LOCAL_PEERCRED`), a per-start daemon token in `coqod.token` (0600) that every `coqo/hello` must present, and per-session MCP tokens scoped to a workspace (one-time, since agent adapters may put an MCP server's environment on a command line; [ADR 0012](adr/0012-editor-mcp-bridge.md)). The daemon token is an ephemeral capability in a user-only runtime file, not a long-lived secret, so it does not go in the keychain. See [ADR 0007](adr/0007-daemon-lifecycle.md).
 - WASM mods are sandboxed through WASI capabilities. Process mods and core mods are trusted and declare their permissions. Every mod install shows its permission list.
 - Trace redaction runs before writing, and tracing is never used against production.
 - Agent permission prompts are always shown, and auto-approve rules can be set per workspace. Rules are an allowlist kept by the daemon: they only match simple commands (word-wise prefix) and files inside the workspace's roots (glob), never shell operators, paths outside the workspace or programs such as `rm`, `sudo` or `curl`; everything else is asked ([chat design](design/chat.md#permissions)).

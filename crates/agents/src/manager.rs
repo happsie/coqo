@@ -343,7 +343,10 @@ impl Inner {
             .providers
             .provider(&info.provider)
             .ok_or_else(|| AgentError::UnknownProvider(info.provider.clone()))?;
-        let cx = SessionContext {
+        // Built for each start or resume: the MCP servers may carry one-time
+        // credentials (the `coqo-editor` token), so a start after a failed
+        // resume gets its own.
+        let context = || SessionContext {
             session: s.id.clone(),
             workspace: info.workspace.clone(),
             cwd: PathBuf::from(&info.cwd),
@@ -362,7 +365,7 @@ impl Inner {
             let resumed = provider
                 .resume_session(
                     ResumeRequest {
-                        context: cx.clone(),
+                        context: context(),
                         provider_session,
                     },
                     events.clone(),
@@ -380,7 +383,7 @@ impl Inner {
         }
         let live = match live {
             Some(live) => live,
-            None => provider.start_session(cx, events).await?,
+            None => provider.start_session(context(), events).await?,
         };
 
         let mut st = lock(&s.state);

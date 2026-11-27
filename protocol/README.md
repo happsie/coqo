@@ -118,7 +118,7 @@ A server may require a **session token** in `coqo/hello` (`token`, a string). `c
 | Token | Where a client gets it | Scope |
 |---|---|---|
 | The **daemon token**: 256 random bits, hex, new at every daemon start | `coqod.token` (`0600`) in the runtime directory, next to the socket. `coqo-client` reads it automatically, after connecting. | Everything. |
-| A **session token**, minted by the daemon for one agent session | Passed to the process the agent launches (`coqod mcp`) in the `COQO_SESSION_TOKEN` environment variable, never in `argv`. | The methods and topics opened to session tokens (below), for its own workspace only. Everything else fails with `-32007 FORBIDDEN`. |
+| A **session token**, minted by the daemon for one agent session | Passed to the process the agent launches (`coqod mcp`) in the `COQO_SESSION_TOKEN` environment variable, never in `argv`. That one is a **one-time** token: it works for one `coqo/hello`, within a minute of being issued ([ADR 0012](../docs/adr/0012-editor-mcp-bridge.md)). | The methods and topics opened to session tokens (below), for its own workspace only. Everything else fails with `-32007 FORBIDDEN`. When the agent session closes, the daemon closes connections attached with its token. |
 
 **Session tokens are denied by default.** Every method, notification and topic declares, when the server registers it, whether session tokens may call it and how the call is bound to the token's workspace or agent session. The server checks this before the handler runs. A session token gets `-32007 FORBIDDEN` from:
 

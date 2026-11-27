@@ -38,7 +38,9 @@ use coqo_protocol::methods::agents::{
 /// such as the `coqo-editor` server (`coqod mcp`, PLAN §7.4).
 ///
 /// The Claude adapter passes these on the CLI's argv, which other local users
-/// can read through `/proc` (ADR 0005), so `env` must never hold a secret.
+/// can read through `/proc` (ADR 0005), so `env` must never hold a lasting
+/// secret. The `coqo-editor` server carries a one-time token there, spent
+/// when the server connects (ADR 0012).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct McpServer {
     /// Server name, as the agent shows it.
@@ -47,7 +49,7 @@ pub struct McpServer {
     pub command: PathBuf,
     /// Arguments.
     pub args: Vec<String>,
-    /// Environment variables. **No secrets.**
+    /// Environment variables. **No lasting secrets** (see above).
     pub env: Vec<(String, String)>,
 }
 

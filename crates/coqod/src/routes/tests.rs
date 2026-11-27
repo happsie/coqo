@@ -52,7 +52,7 @@ const SESSION_ROUTES: &[(&str, AccessKind)] = &[
     ("workspace/getState", AccessKind::Workspace),
 ];
 
-fn context(dir: &Path) -> DaemonContext {
+pub(crate) fn context(dir: &Path) -> DaemonContext {
     DaemonContext {
         paths: DaemonPaths::at(dir.join("run")),
         data: DataDirs::at(dir.join("data")),

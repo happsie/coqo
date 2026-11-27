@@ -13,7 +13,7 @@ use coqo_kernel::logging::{self, LogConfig, LogTarget};
 use coqo_protocol::ClientConfig;
 
 use coqod::cli::{self, Args, Mode};
-use coqod::daemon;
+use coqod::{daemon, editor_mcp};
 
 fn main() -> ExitCode {
     let args = match cli::parse(std::env::args_os().skip(1)) {
@@ -34,6 +34,7 @@ fn main() -> ExitCode {
         }
         Mode::Start => start(&args),
         Mode::Foreground | Mode::Detached => run(&args),
+        Mode::Mcp => mcp(&args),
     };
     match result {
         Ok(code) => code,
@@ -84,6 +85,33 @@ fn run(args: &Args) -> Result<ExitCode> {
         daemon::serve(paths, data, args.idle, lock, listener).await
     })?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// `coqod mcp`: the coqo-editor MCP server on stdin and stdout. stdout is
+/// the MCP channel, so logs go to stderr (agents keep it in their MCP logs).
+fn mcp(args: &Args) -> Result<ExitCode> {
+    let mcp = args.mcp.as_ref().context("coqod mcp needs its arguments")?;
+    logging::init(&LogConfig {
+        default_directive: "warn".to_owned(),
+        target: LogTarget::Stderr,
+        ..LogConfig::default()
+    })
+    .context("cannot set up logging")?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("cannot start the async runtime")?;
+    let exit = runtime.block_on(editor_mcp::run(mcp))?;
+    tracing::debug!(?exit, "coqod mcp stopped");
+    Ok(match exit {
+        coqo_mcp::Exit::StdinClosed => ExitCode::SUCCESS,
+        coqo_mcp::Exit::DaemonGone => {
+            eprintln!(
+                "coqod mcp: the daemon connection closed (coqod stopped, or the agent session ended)"
+            );
+            ExitCode::FAILURE
+        }
+    })
 }
 
 /// No mode: make sure a daemon is running, starting one in the background.

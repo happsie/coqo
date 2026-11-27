@@ -12,21 +12,28 @@
 //! 3. **Session tokens:** `coqo/hello` must carry a token [`Auth`] knows.
 //!    The daemon token (random, per daemon start, in `coqod.token`) grants
 //!    [`Scope::Daemon`]; tokens from [`Auth::mint_session`] grant one agent
-//!    session in one workspace, for `coqod mcp`.
+//!    session in one workspace, and one-time tokens from
+//!    [`Auth::issue_ticket`] grant the same once, for `coqod mcp` (ADR 0012).
+//!
+//! Closing an agent session ([`Auth::revoke_session`]) also closes the
+//! connections attached with its scope ([`Authenticator::revoked`]).
 //!
 //! [`daemon::acquire`]: crate::daemon::acquire
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::io::{self, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use coqo_client::{RuntimeDir, TOKEN_FILE};
-use coqo_protocol::{Authenticator, Scope, SessionToken, Unauthorized};
+use coqo_protocol::{Authenticator, Revoked, Scope, SessionToken, Unauthorized};
 use nix::fcntl::{OFlag, renameat};
 use nix::unistd::{UnlinkatFlags, unlinkat};
 use tokio::net::UnixStream;
+use tokio::sync::watch;
 
 /// Random bytes per token (256 bits).
 const TOKEN_BYTES: usize = 32;
@@ -42,23 +49,54 @@ pub fn generate_token() -> io::Result<SessionToken> {
     Ok(SessionToken::new(hex))
 }
 
+/// How long a one-time token from [`Auth::issue_ticket`] stays valid by
+/// default: an ACP agent starts its MCP servers within a few seconds of
+/// `session/new` (ADR 0005 measured 1-2 s).
+pub const TICKET_TTL: Duration = Duration::from_secs(60);
+
+/// An agent session: (workspace, session).
+type SessionKey = (String, String);
+
 /// The tokens the daemon accepts. Cheap to clone; clones share the table.
 #[derive(Clone)]
 pub struct Auth {
     inner: Arc<Mutex<Tokens>>,
+    /// Agent sessions whose scope was revoked. Their connections close.
+    revoked: Arc<watch::Sender<HashSet<SessionKey>>>,
 }
 
 struct Tokens {
     daemon: SessionToken,
     sessions: Vec<(SessionToken, Scope)>,
+    tickets: Vec<Ticket>,
+}
+
+/// A one-time token: valid for one `coqo/hello` until `expires`.
+struct Ticket {
+    token: SessionToken,
+    scope: Scope,
+    expires: Instant,
 }
 
 impl std::fmt::Debug for Auth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let tokens = self.lock();
         f.debug_struct("Auth")
-            .field("sessions", &self.lock().sessions.len())
+            .field("sessions", &tokens.sessions.len())
+            .field("tickets", &tokens.tickets.len())
             .finish_non_exhaustive()
     }
+}
+
+fn session_scope(workspace: impl Into<String>, session: impl Into<String>) -> Scope {
+    Scope::Session {
+        workspace: workspace.into(),
+        session: session.into(),
+    }
+}
+
+fn is_session(scope: &Scope, workspace: &str, session: &str) -> bool {
+    matches!(scope, Scope::Session { workspace: w, session: s } if w == workspace && s == session)
 }
 
 impl Auth {
@@ -73,7 +111,9 @@ impl Auth {
             inner: Arc::new(Mutex::new(Tokens {
                 daemon: token,
                 sessions: Vec::new(),
+                tickets: Vec::new(),
             })),
+            revoked: Arc::new(watch::channel(HashSet::new()).0),
         }
     }
 
@@ -87,9 +127,10 @@ impl Auth {
         self.lock().daemon.clone()
     }
 
-    /// Mint a token for one agent session in one workspace: what the agents
-    /// service hands `coqod mcp` (in its environment, never its `argv`; see
-    /// `coqo_client::SESSION_TOKEN_ENV`). Calls through it get
+    /// Mint a reusable token for one agent session in one workspace, valid
+    /// until revoked. Never put it in an `argv` or in anything that may end
+    /// up in one: `coqod mcp` gets a one-time token from
+    /// [`Self::issue_ticket`] instead (ADR 0012). Calls through it get
     /// [`Scope::Session`]: the router refuses them on every route that does
     /// not open to session tokens, and keeps the rest to that workspace
     /// ([`coqo_protocol::Access`]).
@@ -99,11 +140,37 @@ impl Auth {
         session: impl Into<String>,
     ) -> io::Result<SessionToken> {
         let token = generate_token()?;
-        let scope = Scope::Session {
-            workspace: workspace.into(),
-            session: session.into(),
-        };
+        let scope = session_scope(workspace, session);
         self.lock().sessions.push((token.clone(), scope));
+        Ok(token)
+    }
+
+    /// Issue a **one-time** token for one agent session in one workspace:
+    /// what the agents service hands `coqod mcp` (ADR 0012). It grants the
+    /// same [`Scope::Session`] as [`Self::mint_session`], but only for the
+    /// first `coqo/hello` that presents it, and only within `ttl`. The
+    /// connection keeps the scope until it closes or the session is revoked.
+    ///
+    /// Agent adapters may put an MCP server's environment on a command line
+    /// (ADR 0005), where other local users can read it. A token that is spent
+    /// within seconds, and that only same-user processes could present at
+    /// all (the socket's directory and peer checks), is worthless there.
+    pub fn issue_ticket(
+        &self,
+        workspace: impl Into<String>,
+        session: impl Into<String>,
+        ttl: Duration,
+    ) -> io::Result<SessionToken> {
+        let token = generate_token()?;
+        let ticket = Ticket {
+            token: token.clone(),
+            scope: session_scope(workspace, session),
+            expires: Instant::now() + ttl,
+        };
+        let mut tokens = self.lock();
+        let now = Instant::now();
+        tokens.tickets.retain(|t| t.expires > now);
+        tokens.tickets.push(ticket);
         Ok(token)
     }
 
@@ -117,27 +184,41 @@ impl Auth {
         tokens.sessions.len() != before
     }
 
-    /// Revoke every token minted for `session` in `workspace` (when the
-    /// agent session ends). Returns how many there were.
+    /// End `session` in `workspace` (when the agent session closes): its
+    /// tokens and unused one-time tokens stop working, and connections
+    /// attached with its scope are closed. Returns how many tokens there
+    /// were.
     pub fn revoke_session(&self, workspace: &str, session: &str) -> usize {
-        let mut tokens = self.lock();
-        let before = tokens.sessions.len();
-        tokens.sessions.retain(|(_, scope)| {
-            !matches!(scope, Scope::Session { workspace: w, session: s } if w == workspace && s == session)
+        let removed = {
+            let mut tokens = self.lock();
+            let before = tokens.sessions.len() + tokens.tickets.len();
+            tokens
+                .sessions
+                .retain(|(_, scope)| !is_session(scope, workspace, session));
+            tokens
+                .tickets
+                .retain(|t| !is_session(&t.scope, workspace, session));
+            before - tokens.sessions.len() - tokens.tickets.len()
+        };
+        self.revoked.send_modify(|revoked| {
+            revoked.insert((workspace.to_owned(), session.to_owned()));
         });
-        before - tokens.sessions.len()
+        removed
     }
-}
 
-impl Authenticator for Auth {
-    fn authenticate(&self, token: Option<&SessionToken>) -> Result<Scope, Unauthorized> {
+    fn authenticate_at(
+        &self,
+        token: Option<&SessionToken>,
+        now: Instant,
+    ) -> Result<Scope, Unauthorized> {
         let Some(token) = token else {
             return Err(Unauthorized(format!(
                 "coqod requires a session token: send the one in `{TOKEN_FILE}` in its runtime \
                  directory (coqo-client does this; this client may be too old)"
             )));
         };
-        let tokens = self.lock();
+        let mut tokens = self.lock();
+        tokens.tickets.retain(|t| t.expires > now);
         // `==` on tokens is constant-time; check every entry so the time
         // does not depend on which one matches either.
         let mut scope = (*token == tokens.daemon).then_some(Scope::Daemon);
@@ -146,11 +227,42 @@ impl Authenticator for Auth {
                 scope = Some(s.clone());
             }
         }
+        let mut ticket = None;
+        for (i, t) in tokens.tickets.iter().enumerate() {
+            if t.token == *token && scope.is_none() && ticket.is_none() {
+                ticket = Some(i);
+            }
+        }
+        if let Some(i) = ticket {
+            // One use only.
+            scope = Some(tokens.tickets.swap_remove(i).scope);
+        }
         scope.ok_or_else(|| {
             Unauthorized(
-                "invalid session token (if coqod restarted, reconnect to pick up its new token)"
+                "invalid session token (if coqod restarted, reconnect to pick up its new token; \
+                 the one-time tokens coqod gives `coqod mcp` work once, shortly after it starts)"
                     .to_owned(),
             )
+        })
+    }
+}
+
+impl Authenticator for Auth {
+    fn authenticate(&self, token: Option<&SessionToken>) -> Result<Scope, Unauthorized> {
+        self.authenticate_at(token, Instant::now())
+    }
+
+    fn revoked(&self, scope: &Scope) -> Revoked {
+        let Scope::Session { workspace, session } = scope else {
+            return Box::pin(std::future::pending());
+        };
+        let key = (workspace.clone(), session.clone());
+        let mut revoked = self.revoked.subscribe();
+        Box::pin(async move {
+            if revoked.wait_for(|r| r.contains(&key)).await.is_err() {
+                // The table is gone, and with it the daemon.
+                std::future::pending::<()>().await;
+            }
         })
     }
 }
@@ -271,6 +383,63 @@ mod tests {
         // The daemon token is not revocable this way.
         assert!(!auth.revoke(&auth.daemon_token()));
         assert!(auth.authenticate(Some(&auth.daemon_token())).is_ok());
+    }
+
+    #[test]
+    fn tickets_work_once_and_expire() {
+        let auth = Auth::generate().unwrap();
+        let ticket = auth.issue_ticket("ws-a", "s-1", TICKET_TTL).unwrap();
+        assert_eq!(ticket.expose().len(), 64);
+        let scope = auth.authenticate(Some(&ticket)).unwrap();
+        assert_eq!(scope, session_scope("ws-a", "s-1"));
+        // Spent.
+        assert!(auth.authenticate(Some(&ticket)).is_err());
+
+        let ticket = auth.issue_ticket("ws-a", "s-1", TICKET_TTL).unwrap();
+        let later = Instant::now() + TICKET_TTL + Duration::from_secs(1);
+        assert!(auth.authenticate_at(Some(&ticket), later).is_err());
+        // An expired ticket is forgotten, not just refused.
+        assert!(auth.authenticate(Some(&ticket)).is_err());
+        assert!(format!("{auth:?}").contains("tickets: 0"), "{auth:?}");
+    }
+
+    #[test]
+    fn revoking_a_session_drops_its_unused_tickets() {
+        let auth = Auth::generate().unwrap();
+        let mine = auth.issue_ticket("ws-a", "s-1", TICKET_TTL).unwrap();
+        let other = auth.issue_ticket("ws-a", "s-2", TICKET_TTL).unwrap();
+        let token = auth.mint_session("ws-a", "s-1").unwrap();
+        assert_eq!(auth.revoke_session("ws-a", "s-1"), 2);
+        assert!(auth.authenticate(Some(&mine)).is_err());
+        assert!(auth.authenticate(Some(&token)).is_err());
+        assert!(auth.authenticate(Some(&other)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn revoking_a_session_resolves_its_revoked_future() {
+        let auth = Auth::generate().unwrap();
+        let a = auth.revoked(&session_scope("ws-a", "s-1"));
+        let b = auth.revoked(&session_scope("ws-a", "s-2"));
+        let daemon = auth.revoked(&Scope::Daemon);
+        auth.revoke_session("ws-a", "s-1");
+        tokio::time::timeout(Duration::from_secs(5), a)
+            .await
+            .expect("s-1 revoked");
+        let pending = tokio::time::timeout(Duration::from_millis(50), async {
+            tokio::select! {
+                () = b => "s-2",
+                () = daemon => "daemon",
+            }
+        })
+        .await;
+        assert!(pending.is_err(), "{pending:?}");
+        // A connection attached after the revocation closes at once.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            auth.revoked(&session_scope("ws-a", "s-1")),
+        )
+        .await
+        .expect("already revoked");
     }
 
     #[test]

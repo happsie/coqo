@@ -541,6 +541,10 @@ impl Server {
             },
         };
         drop(token);
+        let mut revoked = match &config.authenticator {
+            None => Box::pin(std::future::pending()),
+            Some(auth) => auth.revoked(&scope),
+        };
         let encoding = negotiate_encoding(&hello.encodings, &config.encodings);
         let connection = self.next_connection.fetch_add(1, Ordering::Relaxed);
         let welcome = Welcome {
@@ -578,7 +582,14 @@ impl Server {
 
         let result = loop {
             while tasks.try_join_next().is_some() {}
-            let message = match transport::recv(&mut reader, encoding).await {
+            let received = tokio::select! {
+                received = transport::recv(&mut reader, encoding) => received,
+                () = &mut revoked => {
+                    tracing::debug!(connection, scope = %ctx.scope, "scope revoked; closing the connection");
+                    break Ok(());
+                }
+            };
+            let message = match received {
                 None => break Ok(()),
                 Some(Err(e)) => break Err(e),
                 Some(Ok(Err(e))) => {

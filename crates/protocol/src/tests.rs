@@ -637,6 +637,51 @@ async fn the_token_grants_a_scope_and_is_hidden_from_handlers() {
     assert_eq!(e.rpc().map(|e| e.code), Some(codes::FORBIDDEN), "{e}");
 }
 
+/// [`TestAuth`] whose session scopes are revoked when `revoke` fires.
+#[derive(Debug)]
+struct RevokingAuth(tokio::sync::watch::Receiver<bool>);
+
+impl Authenticator for RevokingAuth {
+    fn authenticate(&self, token: Option<&SessionToken>) -> Result<Scope, Unauthorized> {
+        TestAuth.authenticate(token)
+    }
+
+    fn revoked(&self, scope: &Scope) -> Revoked {
+        if *scope == Scope::Daemon {
+            return Box::pin(std::future::pending());
+        }
+        let mut rx = self.0.clone();
+        Box::pin(async move {
+            let _ = rx.wait_for(|revoked| *revoked).await;
+        })
+    }
+}
+
+#[tokio::test]
+async fn revoking_a_scope_closes_its_connections() {
+    let f = fixture();
+    let (revoke, rx) = tokio::sync::watch::channel(false);
+    let config = || {
+        let mut config = ServerConfig::new("s", "b");
+        config.authenticator = Some(Arc::new(RevokingAuth(rx.clone())));
+        config
+    };
+    let (session, _n, session_server) =
+        connect_with(&f, config(), client_with_token(Some("ws-a-token"))).await;
+    let (daemon, _n2, _t) =
+        connect_with(&f, config(), client_with_token(Some("daemon-token"))).await;
+    session.request::<WhoAmI>("ws-a".into()).await.unwrap();
+
+    revoke.send_replace(true);
+    tokio::time::timeout(Duration::from_secs(5), session.closed())
+        .await
+        .expect("the session connection closes");
+    assert!(session_server.await.unwrap().is_ok());
+    assert!(session.request::<WhoAmI>("ws-a".into()).await.is_err());
+    // Other scopes stay attached.
+    daemon.request::<WhoAmI>("ws-a".into()).await.unwrap();
+}
+
 #[tokio::test]
 async fn servers_without_an_authenticator_ignore_tokens() {
     let f = fixture();

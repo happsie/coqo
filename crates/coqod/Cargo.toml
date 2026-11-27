@@ -30,6 +30,8 @@ coqo-agents = { path = "../agents" }
 coqo-buffers = { path = "../buffers" }
 coqo-client = { path = "../client" }
 coqo-kernel = { path = "../kernel" }
+# `coqod mcp`: the coqo-editor MCP server.
+coqo-mcp = { path = "../mcp" }
 coqo-mod-api = { path = "../mod-api" }
 # Built-in core mods (see src/mods.rs).
 coqo-mod-hello = { path = "../../mods/hello" }

@@ -284,7 +284,21 @@ pub trait Authenticator: Send + Sync + fmt::Debug + 'static {
     /// none). Compare tokens in constant time ([`SessionToken`]'s `==`
     /// does).
     fn authenticate(&self, token: Option<&SessionToken>) -> Result<Scope, Unauthorized>;
+
+    /// Resolves when connections attached with `scope` must close, for
+    /// example because the agent session it names has ended. The server
+    /// asks once per connection, right after [`authenticate`], and closes
+    /// the connection when the future resolves. The default never resolves.
+    ///
+    /// [`authenticate`]: Authenticator::authenticate
+    fn revoked(&self, scope: &Scope) -> Revoked {
+        let _ = scope;
+        Box::pin(std::future::pending())
+    }
 }
+
+/// What [`Authenticator::revoked`] returns.
+pub type Revoked = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
 
 #[cfg(test)]
 mod tests {

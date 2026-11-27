@@ -46,4 +46,4 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
