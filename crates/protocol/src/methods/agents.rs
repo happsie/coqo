@@ -1023,6 +1023,9 @@ pub enum SessionUpdate {
     /// asked, and again when it is answered or dismissed: the chat shows
     /// it with links to its code.
     Question(Box<super::questions::Question>),
+    /// The agent published a code walkthrough (`walkthroughs/*`): the chat
+    /// shows a card that opens it where it starts.
+    Walkthrough(Box<super::walkthroughs::WalkthroughSummary>),
     /// The session was closed. Nothing follows.
     Closed,
 }

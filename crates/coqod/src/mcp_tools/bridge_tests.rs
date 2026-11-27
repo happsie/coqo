@@ -275,6 +275,7 @@ async fn core_tools_end_to_end() {
             "editor_context",
             "editor_reveal",
             PROBE_TOOL,
+            "publish_walkthrough",
             "set_acceptance_criteria",
             "set_status",
         ]
@@ -805,5 +806,134 @@ async fn acceptance_criteria_reach_the_session_and_the_ui() {
         .await
         .unwrap();
     assert!(snap.info.criteria.is_empty(), "{:?}", snap.info);
+    drop(a_dir);
+}
+
+#[tokio::test]
+async fn publish_walkthrough_end_to_end() {
+    use coqo_protocol::methods::walkthroughs as wtm;
+
+    let h = Harness::start();
+    h.ctx.mods.start().await;
+    let ui = h.ui().await;
+    let (a_dir, a) = project(&ui).await;
+    let create = || CreateSessionParams {
+        provider: "fake".into(),
+        cwd: a_dir.path().to_str().unwrap().to_owned(),
+        workspace: Some(a.id.0.clone()),
+        title: Some("Circle area".into()),
+        mode: None,
+    };
+    let session = ui.request::<agm::Create>(create()).await.unwrap().id;
+    let other = ui.request::<agm::Create>(create()).await.unwrap().id;
+    let token = h
+        .ctx
+        .auth
+        .mint_session(a.id.0.clone(), session.0.clone())
+        .unwrap();
+    let mut agent = Agent::start_as(h.connect(token).await, &a, &session.0).await;
+
+    // The tool, and the schema as a resource.
+    let list = agent.request("tools/list", json!({})).await;
+    let tool = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "publish_walkthrough")
+        .expect("publish_walkthrough is offered")
+        .clone();
+    assert!(
+        tool["inputSchema"]["$defs"]["StepDraft"].is_object(),
+        "{tool}"
+    );
+    let resources = agent.request("resources/list", json!({})).await;
+    assert_eq!(
+        resources["result"]["resources"][0]["uri"],
+        wtm::SCHEMA_URI,
+        "{resources}"
+    );
+    let read = agent
+        .request("resources/read", json!({ "uri": wtm::SCHEMA_URI }))
+        .await;
+    let text_json = read["result"]["contents"][0]["text"].as_str().unwrap();
+    let schema: Value = serde_json::from_str(text_json).unwrap();
+    assert_eq!(schema["$id"], wtm::SCHEMA_URI);
+    let missing = agent
+        .request("resources/read", json!({ "uri": "coqo://nope" }))
+        .await;
+    assert!(missing["error"].is_object(), "{missing}");
+
+    let walkthrough = json!({
+        "title": "Circle area",
+        "summary": "Circles compute their area.",
+        "scope": { "kind": "worktree" },
+        "steps": [{
+            "id": "area",
+            "title": "The area",
+            "kind": "logic",
+            "anchors": [{ "path": "src/main.rs", "start_line": 4, "end_line": 6, "text": "fn area" }],
+            "what": "pi r squared.",
+            "why": "Geometry.",
+        }],
+    });
+
+    // A bad draft: every problem at once, and nothing published. The
+    // bridge does not cut the list short with its own schema check.
+    let mut bad = walkthrough.clone();
+    bad["title"] = json!("");
+    bad["steps"][0]["kind"] = json!("maths");
+    bad["steps"][0]["anchors"][0]["start_line"] = json!(1);
+    bad["steps"][0]["anchors"][0]["end_line"] = json!(2);
+    bad["steps"][0]["depends_on"] = json!(["base"]);
+    let e = agent.error("publish_walkthrough", bad).await;
+    assert!(
+        e.starts_with("the walkthrough was not published: 4 problems."),
+        "{e}"
+    );
+    for part in [
+        "\n- title: is empty",
+        "\n- steps[0].kind: `maths` is not a step kind",
+        "\n- steps[0].depends_on[0]: no step has id `base`",
+        "\n- steps[0].anchors[0].text: `fn area` is not in lines 1-2 of src/main.rs",
+    ] {
+        assert!(e.contains(part), "{part:?} in {e}");
+    }
+
+    // A good one.
+    let r = agent.ok("publish_walkthrough", walkthrough.clone()).await;
+    assert!(
+        text(&r).starts_with("Published walkthrough `circle-area-"),
+        "{r}"
+    );
+    let id = r["structuredContent"]["id"].as_str().unwrap().to_owned();
+    let list = ui
+        .request::<wtm::List>(wtm::ListParams {
+            workspace: a.id.clone(),
+            session: Some(session.clone()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(list.walkthroughs.len(), 1);
+    assert_eq!(list.walkthroughs[0].id.0, id);
+    assert_eq!(list.walkthroughs[0].session, session);
+
+    // A bridge claiming another session with this session's token is
+    // refused.
+    let ticket = h
+        .ctx
+        .auth
+        .mint_session(a.id.0.clone(), session.0.clone())
+        .unwrap();
+    let mut lying = Agent::start_as(h.connect(ticket).await, &a, &other.0).await;
+    let e = lying.error("publish_walkthrough", walkthrough).await;
+    assert!(e.contains("outside this connection's scope"), "{e}");
+    let list = ui
+        .request::<wtm::List>(wtm::ListParams {
+            workspace: a.id.clone(),
+            session: Some(other.clone()),
+        })
+        .await
+        .unwrap();
+    assert!(list.walkthroughs.is_empty());
     drop(a_dir);
 }

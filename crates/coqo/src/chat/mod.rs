@@ -88,12 +88,14 @@ coqo_ui::gpui::actions!(
 );
 
 /// Open a file a tool call or a criterion's evidence names (absolute path)
-/// in a file tab, at `line` (0-based) if given.
+/// in a file tab, at `line` (0-based) if given, selecting through line
+/// `end` (0-based, inclusive) if given too (a walkthrough step's lines).
 #[derive(Clone, Debug, PartialEq, Eq, Action)]
 #[action(namespace = chat, no_json)]
 pub struct OpenLocation {
     pub path: String,
     pub line: Option<u32>,
+    pub end: Option<u32>,
 }
 
 /// Open daemon terminal `id`, where an agent's command runs (ACP
@@ -506,8 +508,12 @@ pub fn open_location(
     };
     if let (Some(file), Some(line)) = (file, location.line) {
         let at = Position::new(line, 0);
+        let to = location
+            .end
+            .filter(|end| *end >= line)
+            .map_or(at, |end| Position::new(end + 1, 0));
         file.update(cx, |file, cx| {
-            file.reveal(Some(Range::new(at, at)), window, cx)
+            file.reveal(Some(Range::new(at, to)), window, cx)
         });
     }
 }

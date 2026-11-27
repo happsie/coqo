@@ -303,7 +303,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 - **Store and anchors service:** questions and notes live in `coqo.db` with their anchors (as asked, and as last rebased); the daemon resolves them against the open buffer through its changes, or by fingerprint after a gap, and publishes moves on `questions/changes`. While a session has an open question its state is `needs_input` ([ADR 0016](adr/0016-anchored-questions.md)).
 
 ### 7.6 Code walkthrough
-- **Schema** (`walkthrough.schema.json`, also exposed to agents as an MCP resource):
+- **Schema** (`protocol/schema/walkthrough.schema.json`, generated from the Rust types and exposed to agents as the MCP resource `coqo://schemas/walkthrough.json`; the agent leaves out `id`, `created_by` and `created_at`, which Coqo fills in, and gets every problem of a bad walkthrough at once with its JSON path, [ADR 0020](adr/0020-walkthroughs.md)):
   ```
   Walkthrough { id, title, summary, scope: {kind: worktree|commits|pr, base, head},
                 acceptance_criteria[], steps[], trivial_hunks[], created_by, created_at }
@@ -315,8 +315,8 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 - **Coverage guard:** Coqo computes the diff itself and checks that every changed hunk is covered by a step or explicitly listed as trivial. Uncovered hunks are flagged, so nothing slips past the reader.
 - **Player:** a step list with progress. Each step opens its anchor in the editor or diff view with a popover showing what, why, and risks. Navigate with next/prev. Mark a step "understood" or "question". A question on a step goes to the agent as an anchored message.
 - **Where walkthroughs are stored** (open decision §13.1):
-  - *Local (default):* in the daemon's per-workspace data. Private to you; you can replay a walkthrough for as long as it exists.
-  - *Committed (opt-in per repo):* written to `.coqo/walkthroughs/<id>.json` in the repo and committed with the feature. Teammates, PR reviewers, and future readers can replay the agent's explanation in Coqo, so it becomes living documentation of why the code looks the way it does.
+  - *Local (default):* in the daemon's data (`coqo.db`, keyed by workspace, [ADR 0020](adr/0020-walkthroughs.md)). Private to you; you can replay a walkthrough for as long as it exists.
+  - *Committed (opt-in per repo):* written to `.coqo/walkthroughs/<id>.json` in the repo for the user to commit with the feature (Coqo never commits; opted in with the workspace state `walkthroughs.storage = "committed"` until `settings.toml` exists). Teammates, PR reviewers, and future readers can replay the agent's explanation in Coqo, so it becomes living documentation of why the code looks the way it does.
   - *Attached to the PR (opt-in):* published as a collapsible PR comment (markdown rendering plus embedded JSON) that Coqo's PR walkthrough player picks up.
 
 ### 7.7 Git and native diff
@@ -374,7 +374,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 
 | Location | Contents |
 |---|---|
-| Daemon data (`~/Library/Application Support/Coqo`, `$XDG_DATA_HOME/coqo`) | `coqo.db` (workspaces, sessions, transcripts, **event log**, alerts, anchored questions and notes), per-workspace: walkthroughs (local), `traces.db`, PR worktrees; installed mods |
+| Daemon data (`~/Library/Application Support/Coqo`, `$XDG_DATA_HOME/coqo`) | `coqo.db` (workspaces, sessions, transcripts, **event log**, alerts, anchored questions and notes, walkthroughs), per-workspace: `traces.db`, PR worktrees; installed mods |
 | UI data (`<data dir>/ui/`) | Workbench layouts saved while `coqod` was unreachable, and a window's no-workspace layout; the daemon keeps each workspace's layout in its state (`ui.layout`, [ADR 0004](adr/0004-workbench-layout.md)) |
 | Config (`~/.config/coqo`, macOS equivalent) | `settings.toml`, keymaps, themes |
 | OS keychain | API keys, GitHub token |

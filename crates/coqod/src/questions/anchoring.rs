@@ -249,6 +249,35 @@ pub(crate) fn code_anchor(root: RootId, a: &Anchor) -> CodeAnchor {
     }
 }
 
+/// The anchor a wire form describes (the inverse of [`code_anchor`]), for
+/// anchors kept in their wire form, like walkthrough steps'.
+pub(crate) fn from_wire(a: &CodeAnchor) -> Anchor {
+    let pos = |p: AnchorPoint| coqo_anchors::Position {
+        line: p.line as usize,
+        col: p.col as usize,
+        offset: usize::try_from(p.offset).unwrap_or(usize::MAX),
+    };
+    Anchor {
+        path: a.path.clone(),
+        rev: a.rev,
+        range: Span {
+            start: pos(a.range.start),
+            end: pos(a.range.end),
+        },
+        text_hash: a.text_hash.clone(),
+        text: a.text.clone(),
+        prefix: a.prefix.clone(),
+        suffix: a.suffix.clone(),
+        context_before: a.context_before.clone(),
+        context_after: a.context_after.clone(),
+        symbol: a.symbol.as_ref().map(|s| coqo_anchors::SymbolPath {
+            path: s.path.clone(),
+            kind: s.kind.clone(),
+            line_offset: s.line_offset as usize,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,6 +362,19 @@ mod tests {
         let out = resolve("src/main.rs", &gone, &[job]).remove(0);
         assert_eq!(out.resolution.status, AnchorStatus::Orphaned);
         assert!(out.resolution.range.is_none() && out.moved_to.is_none());
+    }
+
+    #[test]
+    fn the_wire_form_round_trips() {
+        let disk = Text {
+            text: SRC.into(),
+            ..Text::default()
+        };
+        let (anchor, _) = make("src/main.rs", &disk, &[RangeInclusive::new(1, 2)])
+            .unwrap()
+            .remove(0);
+        assert!(anchor.symbol.is_some());
+        assert_eq!(from_wire(&code_anchor(RootId(0), &anchor)), anchor);
     }
 
     #[test]

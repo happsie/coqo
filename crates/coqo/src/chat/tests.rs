@@ -1531,6 +1531,12 @@ fn chat_screenshots() {
             by_rule: Some(rules[0].clone()),
             remembered: None,
         },
+        SessionUpdate::Walkthrough(Box::new(walkthrough_summary(
+            "s1",
+            "Free shipping threshold",
+            "src/shipping.rs",
+            5,
+        ))),
         SessionUpdate::Plan {
             entries: vec![
                 step("Threshold in ShippingPolicy", PlanEntryStatus::Completed),
@@ -1753,6 +1759,110 @@ fn acceptance_criteria_show_in_the_panel_and_the_user_can_mark_them() {
             .unwrap()
             .clone()
     });
+    let key = editor::key(&ws.id, ws.roots[0].id, "src/main.rs");
+    let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
+    ui.wait_for("the file tab", |ui| {
+        ui.cx
+            .read(|cx| dock.read(cx).find_tab(editor::KIND, &key, cx).is_some())
+    });
+    next.notify_one();
+    ui.wait_for("the end of the turn", |ui| !running(ui, &chat));
+}
+
+/// A published walkthrough as the transcript carries it.
+fn walkthrough_summary(
+    session: &str,
+    title: &str,
+    path: &str,
+    line: u32,
+) -> coqo_protocol::methods::walkthroughs::WalkthroughSummary {
+    use coqo_protocol::methods::editor::LineRange;
+    use coqo_protocol::methods::walkthroughs::{
+        ScopeKind, StorageMode, WalkthroughId, WalkthroughLocation, WalkthroughSummary,
+    };
+    use coqo_protocol::methods::workspace::{RootId, WorkspaceId};
+    WalkthroughSummary {
+        id: WalkthroughId(format!("{}-0001", title.to_lowercase().replace(' ', "-"))),
+        workspace: WorkspaceId("ws".into()),
+        session: coqo_agents::model::SessionId(session.into()),
+        title: title.into(),
+        scope: ScopeKind::Worktree,
+        steps: 4,
+        understood: 0,
+        questions: 0,
+        start: Some(WalkthroughLocation {
+            root: RootId(0),
+            path: path.into(),
+            lines: LineRange {
+                start: line,
+                end: line + 2,
+            },
+        }),
+        storage: StorageMode::Local,
+        created_at: 1,
+    }
+}
+
+#[test]
+fn a_published_walkthrough_shows_as_a_card_and_opens_where_it_starts() {
+    let next = Arc::new(Notify::new());
+    let provider =
+        ScriptedProvider::new().turn([Step::Wait(next.clone()), Step::Stop(StopReason::EndTurn)]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.frame(|window, _| {
+        assert!(
+            window.try_find("chat-walkthroughs").is_some(),
+            "the empty card"
+        );
+        assert!(window.try_find(("chat-walkthrough-row", 0usize)).is_none());
+    });
+    ui.send(&chat, "Add the volume discount");
+    ui.wait_for("the turn", |ui| running(ui, &chat));
+    let id = ui.listed()[0].id.clone();
+    let ws = ui.cx.read(|cx| {
+        Workspaces::global(cx)
+            .unwrap()
+            .read(cx)
+            .current()
+            .unwrap()
+            .clone()
+    });
+
+    // The agent publishes one (as `walkthroughs/create` records it).
+    let mut summary = walkthrough_summary(&id.0, "Volume discount", "src/main.rs", 0);
+    summary.start.as_mut().unwrap().root = ws.roots[0].id;
+    summary.start.as_mut().unwrap().lines.end = 0;
+    fixture
+        .daemon
+        .manager
+        .record_walkthrough(&id, summary.clone())
+        .unwrap();
+    ui.wait_for("the card", |ui| {
+        ui.cx
+            .read(|cx| chat.read(cx).transcript().walkthroughs.len())
+            == 1
+    });
+    let card = ui.cx.read(|cx| {
+        chat.read(cx)
+            .transcript()
+            .entries
+            .iter()
+            .position(|e| matches!(e, Entry::Walkthrough(_)))
+    });
+    let card = card.expect("a walkthrough entry");
+    assert_eq!(
+        super::tab::published_label(&summary),
+        "Walkthrough published: Volume discount · 4 steps"
+    );
+    ui.frame(|window, _| {
+        assert!(window.try_find(("chat-walkthrough", card)).is_some());
+        assert!(window.try_find(("chat-walkthrough-row", 0usize)).is_some());
+    });
+
+    // Clicking the panel's row opens the first step's file.
+    ui.frame(|window, cx| window.click(("chat-walkthrough-row", 0usize), cx));
     let key = editor::key(&ws.id, ws.roots[0].id, "src/main.rs");
     let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
     ui.wait_for("the file tab", |ui| {

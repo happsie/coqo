@@ -19,6 +19,7 @@
 //! | `await_answer` | wait for the answer to an earlier question | `questions/watch` |
 //! | `annotate` | a note pinned to code, non-blocking | `questions/create` |
 //! | `set_acceptance_criteria` | the task's acceptance criteria and whether each holds | `sessions/setCriteria` |
+//! | `publish_walkthrough` | a code walkthrough of the finished change, checked in full | `walkthroughs/create` |
 //!
 //! [`daemon`] adds the tools mods contribute in the daemon (`mcp/*`).
 //!
@@ -38,15 +39,17 @@ pub mod daemon;
 mod editor;
 pub mod questions;
 mod status;
+mod walkthrough;
 
 pub use criteria::SetAcceptanceCriteriaTool;
 pub use editor::{EditorContextTool, EditorRevealTool};
 pub use questions::{AnnotateTool, AskQuestionTool, AwaitAnswerTool};
 pub use status::SetStatusTool;
+pub use walkthrough::PublishWalkthroughTool;
 
 /// Register the core tools.
 pub fn core(registry: &ToolRegistry) {
-    let tools: [Arc<dyn Tool>; 7] = [
+    let tools: [Arc<dyn Tool>; 8] = [
         Arc::new(EditorContextTool),
         Arc::new(EditorRevealTool),
         Arc::new(SetStatusTool),
@@ -54,6 +57,7 @@ pub fn core(registry: &ToolRegistry) {
         Arc::new(AwaitAnswerTool),
         Arc::new(AnnotateTool),
         Arc::new(SetAcceptanceCriteriaTool),
+        Arc::new(PublishWalkthroughTool),
     ];
     for error in registry.update(&[], tools.into()) {
         tracing::warn!(error = %error, "cannot register a core tool");

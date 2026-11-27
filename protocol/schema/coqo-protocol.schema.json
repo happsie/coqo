@@ -481,6 +481,54 @@
       ],
       "type": "object"
     },
+    "AnchorDraft": {
+      "additionalProperties": false,
+      "description": "Lines of a file a step is about, as the file is now (open buffers with\ntheir unsaved edits).",
+      "properties": {
+        "end_line": {
+          "description": "Last line, 1-based, inclusive. Default: `start_line`.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "The file, relative to the root or absolute inside the workspace.",
+          "type": "string"
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RootId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Root id from `editor_context`. Default: the scope's root, or the root\nan absolute path is in."
+        },
+        "start_line": {
+          "description": "First line, 1-based.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "text": {
+          "description": "Code that must be in those lines (a line of it is enough;\nwhitespace is ignored), so a stale line number is caught instead of\npinning the wrong code.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "start_line"
+      ],
+      "type": "object"
+    },
     "AnchorPoint": {
       "description": "A spot in a text: 0-based line, byte column within the line and byte\noffset from the start (UTF-8, as in `buffer/*`).",
       "properties": {
@@ -1067,6 +1115,26 @@
       ],
       "type": "object"
     },
+    "ChangeKind": {
+      "description": "What happened to a walkthrough.",
+      "oneOf": [
+        {
+          "const": "published",
+          "description": "An agent published it.",
+          "type": "string"
+        },
+        {
+          "const": "updated",
+          "description": "A step's state changed.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "It was deleted.",
+          "type": "string"
+        }
+      ]
+    },
     "ChangedFile": {
       "description": "A file that differs, in [`DiffFilesResult`].",
       "properties": {
@@ -1186,6 +1254,23 @@
             }
           ],
           "description": "Only this workspace's alerts."
+        }
+      },
+      "type": "object"
+    },
+    "ChangesParams7": {
+      "description": "Params of the [`Changes`] topic.",
+      "properties": {
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only this workspace's walkthroughs."
         }
       },
       "type": "object"
@@ -1694,6 +1779,29 @@
       ],
       "type": "object"
     },
+    "CreateParams2": {
+      "description": "Params of [`Create`].",
+      "properties": {
+        "session": {
+          "description": "The publishing agent session.",
+          "type": "string"
+        },
+        "walkthrough": {
+          "$ref": "#/$defs/WalkthroughDraft",
+          "description": "The [`WalkthroughDraft`], as the agent wrote it. Checked by the\ndaemon, which reports every problem at once, so it is any JSON here."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The publishing session's workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "session",
+        "walkthrough"
+      ],
+      "type": "object"
+    },
     "CreateSessionParams": {
       "description": "Params of `sessions/create`.",
       "properties": {
@@ -1747,6 +1855,27 @@
           "type": "string"
         }
       ]
+    },
+    "CriterionDraft": {
+      "additionalProperties": false,
+      "description": "An acceptance criterion a walkthrough addresses.",
+      "properties": {
+        "id": {
+          "description": "Its id: one of the session's (`AC1`) or a new one.",
+          "type": "string"
+        },
+        "text": {
+          "description": "What must hold. Default: the session criterion's text; required for\na criterion that is not the session's.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
     },
     "CriterionEvidence": {
       "description": "Why a criterion has its status: a test, a command, a place in the code.",
@@ -1939,6 +2068,23 @@
         "connections",
         "busy",
         "idle"
+      ],
+      "type": "object"
+    },
+    "DeleteParams": {
+      "description": "Params of [`Delete`].",
+      "properties": {
+        "deleteFile": {
+          "description": "Also delete its committed file, if it has one. Default: the file\nstays (it may be committed already; git is the user's).",
+          "type": "boolean"
+        },
+        "id": {
+          "$ref": "#/$defs/WalkthroughId",
+          "description": "The walkthrough."
+        }
+      },
+      "required": [
+        "id"
       ],
       "type": "object"
     },
@@ -3275,6 +3421,30 @@
           "description": "Only this workspace's alerts."
         }
       },
+      "type": "object"
+    },
+    "ListParams3": {
+      "description": "Params of [`List`].",
+      "properties": {
+        "session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only this session's."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace"
+      ],
       "type": "object"
     },
     "ListResult": {
@@ -5024,6 +5194,47 @@
       ],
       "type": "object"
     },
+    "Risk": {
+      "additionalProperties": false,
+      "description": "Something that could go wrong with a step's code.",
+      "properties": {
+        "severity": {
+          "$ref": "#/$defs/RiskSeverity",
+          "description": "How bad."
+        },
+        "text": {
+          "description": "What could go wrong, and what would show it.",
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "severity",
+        "text"
+      ],
+      "type": "object"
+    },
+    "RiskSeverity": {
+      "description": "How bad it would be if a risk came true.",
+      "oneOf": [
+        {
+          "const": "low",
+          "description": "Unlikely, or cheap to fix.",
+          "type": "string"
+        },
+        {
+          "const": "med",
+          "description": "Worth a reviewer's attention.",
+          "type": "string"
+        },
+        {
+          "const": "high",
+          "description": "Could break users or data; review closely.",
+          "type": "string"
+        }
+      ]
+    },
     "RootId": {
       "description": "Identifies a root within its workspace. Stable for the root's lifetime and\nnever reused within the workspace.",
       "format": "uint32",
@@ -5141,6 +5352,65 @@
         "savedRev"
       ],
       "type": "object"
+    },
+    "ScopeDraft": {
+      "additionalProperties": false,
+      "description": "What a walkthrough covers.",
+      "properties": {
+        "base": {
+          "description": "The git revision the change is against (a commit, branch or tag).\nDefault for `worktree`: `HEAD`. Required for `commits` and `pr`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head": {
+          "description": "The last revision of the change. Required for `commits` and `pr`;\nnot allowed for `worktree`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/ScopeKind",
+          "description": "`worktree` (uncommitted changes; the usual case right after a\nchange), `commits` or `pr`."
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RootId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The workspace root (repository) of the change, from\n`editor_context`. Default: the first root."
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ScopeKind": {
+      "description": "What a walkthrough covers.",
+      "oneOf": [
+        {
+          "const": "worktree",
+          "description": "The uncommitted changes in the working tree, against `base` (default\n`HEAD`). No `head`: the working tree is the head.",
+          "type": "string"
+        },
+        {
+          "const": "commits",
+          "description": "The commits from `base` (exclusive) to `head`.",
+          "type": "string"
+        },
+        {
+          "const": "pr",
+          "description": "A pull request: its base branch `base` and head branch `head`.",
+          "type": "string"
+        }
+      ]
     },
     "Screen": {
       "description": "The rows in view, the cursor and the modes: what a client draws.",
@@ -5903,6 +6173,20 @@
           "type": "object"
         },
         {
+          "$ref": "#/$defs/WalkthroughSummary",
+          "description": "The agent published a code walkthrough (`walkthroughs/*`): the chat\nshows a card that opens it where it starts.",
+          "properties": {
+            "update": {
+              "const": "walkthrough",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The session was closed. Nothing follows.",
           "properties": {
             "update": {
@@ -6046,6 +6330,29 @@
       "required": [
         "session",
         "status"
+      ],
+      "type": "object"
+    },
+    "SetStepStateParams": {
+      "description": "Params of [`SetStepState`].",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/WalkthroughId",
+          "description": "The walkthrough."
+        },
+        "state": {
+          "$ref": "#/$defs/StepState",
+          "description": "Where the reader is with it."
+        },
+        "step": {
+          "description": "The step's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "step",
+        "state"
       ],
       "type": "object"
     },
@@ -6437,6 +6744,228 @@
         }
       ]
     },
+    "Step": {
+      "description": "One step of a stored walkthrough.",
+      "properties": {
+        "anchors": {
+          "description": "The code, at least one location.",
+          "items": {
+            "$ref": "#/$defs/StepAnchor"
+          },
+          "type": "array"
+        },
+        "criteriaRefs": {
+          "description": "Acceptance criteria (ids) it helps meet.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dependsOn": {
+          "description": "Steps (ids) to read first.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Unique within the walkthrough.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/StepKind",
+          "description": "What it is about."
+        },
+        "risks": {
+          "description": "What could go wrong.",
+          "items": {
+            "$ref": "#/$defs/Risk"
+          },
+          "type": "array"
+        },
+        "title": {
+          "description": "The step in a few words.",
+          "type": "string"
+        },
+        "what": {
+          "description": "What the code does (markdown).",
+          "type": "string"
+        },
+        "why": {
+          "description": "Why it is done this way (markdown).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "kind",
+        "anchors",
+        "what",
+        "why"
+      ],
+      "type": "object"
+    },
+    "StepAnchor": {
+      "description": "One code location of a step.",
+      "properties": {
+        "anchor": {
+          "$ref": "#/$defs/CodeAnchor",
+          "description": "The code as published (ADR 0013)."
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnchorResolution"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where it is now: set by [`Get`], absent elsewhere (and in committed\nfiles)."
+        }
+      },
+      "required": [
+        "anchor"
+      ],
+      "type": "object"
+    },
+    "StepDraft": {
+      "additionalProperties": false,
+      "description": "One step of a walkthrough: code to read, and what, why and the risks.",
+      "properties": {
+        "anchors": {
+          "description": "The code the step is about: 1 to 16 line ranges.",
+          "items": {
+            "$ref": "#/$defs/AnchorDraft"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "type": "array"
+        },
+        "criteria_refs": {
+          "description": "The acceptance criteria (ids) this step helps meet.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "depends_on": {
+          "description": "Steps (ids) to read before this one.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Unique within the walkthrough (letters, digits, `.`, `_`, `-`; at\nmost 32), for `depends_on`: `s1`, `discount-rule`.",
+          "pattern": "^[A-Za-z0-9._-]{1,32}$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/StepKind",
+          "description": "What the step is about."
+        },
+        "risks": {
+          "description": "What could go wrong here.",
+          "items": {
+            "$ref": "#/$defs/Risk"
+          },
+          "maxItems": 16,
+          "type": "array"
+        },
+        "title": {
+          "description": "The step in a few words.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "what": {
+          "description": "What this code does (markdown).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "why": {
+          "description": "Why it is done this way: the reasoning, the alternatives turned\ndown.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "kind",
+        "anchors",
+        "what",
+        "why"
+      ],
+      "type": "object"
+    },
+    "StepKind": {
+      "description": "What a step is about, so the reader knows where they are.",
+      "oneOf": [
+        {
+          "const": "entry_point",
+          "description": "Where the change is entered: a route, a command, a public function.",
+          "type": "string"
+        },
+        {
+          "const": "flow",
+          "description": "How control or data moves from there.",
+          "type": "string"
+        },
+        {
+          "const": "data_model",
+          "description": "Types, schemas, structs the change adds or alters.",
+          "type": "string"
+        },
+        {
+          "const": "logic",
+          "description": "The core logic: rules, calculations, decisions.",
+          "type": "string"
+        },
+        {
+          "const": "edge_case",
+          "description": "Limits, errors, empty and concurrent cases.",
+          "type": "string"
+        },
+        {
+          "const": "test",
+          "description": "Tests that show the change works.",
+          "type": "string"
+        },
+        {
+          "const": "config",
+          "description": "Configuration, flags, build or dependency changes.",
+          "type": "string"
+        },
+        {
+          "const": "migration",
+          "description": "Data or schema migrations.",
+          "type": "string"
+        }
+      ]
+    },
+    "StepState": {
+      "description": "Where the reader is with one step (the player's progress).",
+      "oneOf": [
+        {
+          "const": "unread",
+          "description": "Not read yet.",
+          "type": "string"
+        },
+        {
+          "const": "understood",
+          "description": "Read and understood.",
+          "type": "string"
+        },
+        {
+          "const": "question",
+          "description": "The reader has a question about it.",
+          "type": "string"
+        }
+      ]
+    },
     "StopReason": {
       "description": "Why a turn ended (ACP `StopReason`, plus Coqo's own).",
       "oneOf": [
@@ -6473,6 +7002,21 @@
         {
           "const": "interrupted",
           "description": "The daemon stopped during the turn.",
+          "type": "string"
+        }
+      ]
+    },
+    "StorageMode": {
+      "description": "Where a walkthrough is kept.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "In the daemon only, private to the user.",
+          "type": "string"
+        },
+        {
+          "const": "committed",
+          "description": "Also written to `.coqo/walkthroughs/<id>.json` in the repository,\nfor the user to commit.",
           "type": "string"
         }
       ]
@@ -7536,6 +8080,92 @@
       ],
       "type": "object"
     },
+    "TrivialHunk": {
+      "description": "A changed hunk the agent marked as needing no explanation.",
+      "properties": {
+        "lines": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The hunk's lines in the new file, 0-based, `end` inclusive; absent\nfor the whole file."
+        },
+        "path": {
+          "description": "`/`-separated path relative to the root.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why it is trivial.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root `path` is relative to."
+        }
+      },
+      "required": [
+        "root",
+        "path"
+      ],
+      "type": "object"
+    },
+    "TrivialHunkDraft": {
+      "additionalProperties": false,
+      "description": "A changed hunk that needs no explanation.",
+      "properties": {
+        "end_line": {
+          "description": "Last line, inclusive. Default: `start_line`.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "The file, relative to the root or absolute inside the workspace. It\nmay be deleted.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why it is trivial (\"formatting\", \"import order\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RootId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Root id. Default: the scope's root, or the root an absolute path is\nin."
+        },
+        "start_line": {
+          "description": "First line of the hunk (1-based, in the new file). Default: the\nwhole file.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
     "UnsubscribeParams": {
       "description": "Params of `coqo/unsubscribe`.",
       "properties": {
@@ -7592,6 +8222,462 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "Walkthrough": {
+      "description": "A published walkthrough.",
+      "properties": {
+        "acceptanceCriteria": {
+          "description": "The acceptance criteria it addresses.",
+          "items": {
+            "$ref": "#/$defs/WalkthroughCriterion"
+          },
+          "type": "array"
+        },
+        "createdAt": {
+          "description": "Published, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "createdBy": {
+          "$ref": "#/$defs/WalkthroughAuthor",
+          "description": "Who published it."
+        },
+        "id": {
+          "$ref": "#/$defs/WalkthroughId",
+          "description": "Id."
+        },
+        "scope": {
+          "$ref": "#/$defs/WalkthroughScope",
+          "description": "What it covers."
+        },
+        "stepStates": {
+          "additionalProperties": {
+            "$ref": "#/$defs/StepState"
+          },
+          "description": "The reader's progress by step id; a step not listed is unread. Never\nwritten to committed files.",
+          "type": "object"
+        },
+        "steps": {
+          "description": "The steps, in reading order.",
+          "items": {
+            "$ref": "#/$defs/Step"
+          },
+          "type": "array"
+        },
+        "storage": {
+          "$ref": "#/$defs/WalkthroughStorage",
+          "default": {
+            "mode": "local"
+          },
+          "description": "Where it is kept."
+        },
+        "summary": {
+          "description": "The change in a few sentences (markdown).",
+          "type": "string"
+        },
+        "title": {
+          "description": "What changed, in a few words.",
+          "type": "string"
+        },
+        "trivialHunks": {
+          "description": "Hunks that need no explanation.",
+          "items": {
+            "$ref": "#/$defs/TrivialHunk"
+          },
+          "type": "array"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "id",
+        "workspace",
+        "title",
+        "summary",
+        "scope",
+        "steps",
+        "createdBy",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "WalkthroughAuthor": {
+      "description": "Who published a walkthrough.",
+      "properties": {
+        "agent": {
+          "description": "Its provider (`claude-code`), or `agent` if the session is unknown.",
+          "type": "string"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The agent session."
+        }
+      },
+      "required": [
+        "session",
+        "agent"
+      ],
+      "type": "object"
+    },
+    "WalkthroughChange": {
+      "description": "An event of [`Changes`].",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/WalkthroughId",
+          "description": "The walkthrough's id."
+        },
+        "kind": {
+          "$ref": "#/$defs/ChangeKind",
+          "description": "What happened."
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WalkthroughSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "It as it is now; absent when deleted."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "Its workspace."
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "workspace"
+      ],
+      "type": "object"
+    },
+    "WalkthroughCriterion": {
+      "description": "An acceptance criterion a walkthrough addresses, as it was when it was\npublished. Steps refer to it by `id`; the session's live criteria (ADR\n0017) say whether it holds now.",
+      "properties": {
+        "id": {
+          "description": "Its id, e.g. `AC1`.",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CriterionStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its status in the session when published; absent for a criterion\nonly the walkthrough names."
+        },
+        "text": {
+          "description": "What must hold.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ],
+      "type": "object"
+    },
+    "WalkthroughDraft": {
+      "additionalProperties": false,
+      "description": "A code walkthrough as an agent publishes it with `publish_walkthrough`:\nthe change in the order a reader should follow it (entry point → flow →\ndata → logic → edge cases → tests), every step anchored to code. Coqo\nfills in the id, the author and the time. Lines are 1-based.",
+      "properties": {
+        "acceptance_criteria": {
+          "description": "The acceptance criteria the change addresses, by id. Default: every\ncriterion of this session (`set_acceptance_criteria`). A criterion\nthat is not the session's needs `text`.",
+          "items": {
+            "$ref": "#/$defs/CriterionDraft"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/ScopeDraft",
+          "description": "What the walkthrough covers."
+        },
+        "steps": {
+          "description": "The steps, in reading order: 1 to 100.",
+          "items": {
+            "$ref": "#/$defs/StepDraft"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "type": "array"
+        },
+        "summary": {
+          "description": "The change in two to five sentences (markdown): what it does and\nwhy.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "description": "What changed, in a few words (\"Volume discount for bulk orders\").",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "trivial_hunks": {
+          "description": "Changed hunks no step needs to explain (formatting, imports,\nrenames), so the coverage check does not flag them.",
+          "items": {
+            "$ref": "#/$defs/TrivialHunkDraft"
+          },
+          "maxItems": 500,
+          "type": "array"
+        }
+      },
+      "required": [
+        "title",
+        "summary",
+        "scope",
+        "steps"
+      ],
+      "title": "Coqo walkthrough",
+      "type": "object"
+    },
+    "WalkthroughId": {
+      "description": "Identifies a walkthrough: a slug of its title and a random suffix, e.g.\n`volume-discount-3f2a9c1b`. Assigned by the daemon; also the committed\nfile's name.",
+      "type": "string"
+    },
+    "WalkthroughList": {
+      "description": "Result of [`List`].",
+      "properties": {
+        "walkthroughs": {
+          "description": "Newest first.",
+          "items": {
+            "$ref": "#/$defs/WalkthroughSummary"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "walkthroughs"
+      ],
+      "type": "object"
+    },
+    "WalkthroughLocation": {
+      "description": "A file location, for opening a walkthrough where it starts.",
+      "properties": {
+        "lines": {
+          "$ref": "#/$defs/LineRange",
+          "description": "The anchored lines when published, 0-based, `end` inclusive."
+        },
+        "path": {
+          "description": "`/`-separated path relative to the root.",
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root."
+        }
+      },
+      "required": [
+        "root",
+        "path",
+        "lines"
+      ],
+      "type": "object"
+    },
+    "WalkthroughParams": {
+      "description": "Params of [`Get`].",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/WalkthroughId",
+          "description": "The walkthrough."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "WalkthroughProblem": {
+      "description": "One thing wrong with a draft.",
+      "properties": {
+        "message": {
+          "description": "What is wrong and how to fix it.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Where, as a JSON path into the draft: `steps[2].anchors[0].end_line`\n(empty for the whole draft).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "message"
+      ],
+      "type": "object"
+    },
+    "WalkthroughProblems": {
+      "description": "The `data` of [`INVALID_WALKTHROUGH`](super::codes::INVALID_WALKTHROUGH).",
+      "properties": {
+        "problems": {
+          "description": "Every problem found, in document order.",
+          "items": {
+            "$ref": "#/$defs/WalkthroughProblem"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "problems"
+      ],
+      "type": "object"
+    },
+    "WalkthroughScope": {
+      "description": "What a stored walkthrough covers, with its revisions resolved.",
+      "properties": {
+        "base": {
+          "description": "The base revision as the agent named it (`HEAD`, `main`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseCommit": {
+          "description": "The base commit when published (absent outside a git repository).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head": {
+          "description": "The head revision as named; absent for the working tree.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "headCommit": {
+          "description": "The head commit when published; absent for the working tree.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/ScopeKind",
+          "description": "Worktree, commits or a pull request."
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The workspace root (repository) of the change."
+        }
+      },
+      "required": [
+        "kind",
+        "root"
+      ],
+      "type": "object"
+    },
+    "WalkthroughStorage": {
+      "description": "Where a walkthrough is kept.",
+      "properties": {
+        "error": {
+          "description": "Why the committed file could not be written; the walkthrough is kept\nlocally anyway.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "$ref": "#/$defs/StorageMode",
+          "description": "Local, or committed too."
+        },
+        "path": {
+          "description": "The committed file, relative to the scope's root\n(`.coqo/walkthroughs/<id>.json`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "type": "object"
+    },
+    "WalkthroughSummary": {
+      "description": "A walkthrough in a list, the transcript and change events.",
+      "properties": {
+        "createdAt": {
+          "description": "Published, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "id": {
+          "$ref": "#/$defs/WalkthroughId",
+          "description": "Id."
+        },
+        "questions": {
+          "default": 0,
+          "description": "How many are marked with a question.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scope": {
+          "$ref": "#/$defs/ScopeKind",
+          "description": "Worktree, commits or a pull request."
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The publishing session."
+        },
+        "start": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WalkthroughLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The first step's first anchor, where a reader starts."
+        },
+        "steps": {
+          "description": "How many steps.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "storage": {
+          "$ref": "#/$defs/StorageMode",
+          "description": "Local or committed."
+        },
+        "title": {
+          "description": "Title.",
+          "type": "string"
+        },
+        "understood": {
+          "default": 0,
+          "description": "How many are marked understood.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "id",
+        "workspace",
+        "session",
+        "title",
+        "scope",
+        "steps",
+        "storage",
+        "createdAt"
+      ],
       "type": "object"
     },
     "WatchParams": {
@@ -7943,6 +9029,7 @@
     "INVALID_EDIT": 1204,
     "INVALID_PARAMS": -32602,
     "INVALID_REQUEST": -32600,
+    "INVALID_WALKTHROUGH": 1702,
     "IO_ERROR": 1009,
     "METHOD_NOT_FOUND": -32601,
     "NOT_A_DIRECTORY": 1006,
@@ -7971,6 +9058,7 @@
     "UNKNOWN_SESSION": 1101,
     "UNKNOWN_SUBSCRIPTION": -32004,
     "UNKNOWN_TOOL": 1401,
+    "UNKNOWN_WALKTHROUGH": 1701,
     "UNKNOWN_WORKSPACE": 1001,
     "UNSUPPORTED": 1106,
     "UNSUPPORTED_ENCODING": 1202,
@@ -8883,6 +9971,72 @@
       },
       "result": {
         "$ref": "#/$defs/TerminalInfo"
+      }
+    },
+    "walkthroughs/changes": {
+      "description": "Walkthroughs published, updated or deleted (live only).",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/WalkthroughChange"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/ChangesParams7"
+      }
+    },
+    "walkthroughs/create": {
+      "description": "An agent publishes a walkthrough; every problem of a bad draft is reported at once.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/CreateParams2"
+      },
+      "result": {
+        "$ref": "#/$defs/Walkthrough"
+      }
+    },
+    "walkthroughs/delete": {
+      "description": "Forget a walkthrough (and optionally its committed file).",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/DeleteParams"
+      },
+      "result": {
+        "type": "boolean"
+      }
+    },
+    "walkthroughs/get": {
+      "description": "One walkthrough, anchors resolved against the files as they are now.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/WalkthroughParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Walkthrough"
+      }
+    },
+    "walkthroughs/list": {
+      "description": "A workspace's walkthroughs, newest first.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ListParams3"
+      },
+      "result": {
+        "$ref": "#/$defs/WalkthroughList"
+      }
+    },
+    "walkthroughs/setStepState": {
+      "description": "Mark a step unread, understood or with a question.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SetStepStateParams"
+      },
+      "result": {
+        "$ref": "#/$defs/WalkthroughSummary"
       }
     },
     "workspace/addRoot": {

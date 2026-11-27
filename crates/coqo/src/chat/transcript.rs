@@ -16,8 +16,8 @@ use coqo_protocol::methods::agents::{
     PermissionRequest, PermissionRequestId, PermissionRule, PlanEntry, SessionModes, SessionUpdate,
     StopReason, ToolCall, ToolCallContent, ToolCallId, ToolCallUpdate, Usage,
 };
-
 use coqo_protocol::methods::questions::{Question, QuestionId};
+use coqo_protocol::methods::walkthroughs::WalkthroughSummary;
 
 use super::diff::DiffPreview;
 
@@ -144,6 +144,8 @@ pub enum Entry {
     /// A question or note the agent pinned to code, in its latest state
     /// (asked, then answered or dismissed).
     Question(Box<Question>),
+    /// The agent published a code walkthrough: a card that opens it.
+    Walkthrough(Box<WalkthroughSummary>),
 }
 
 /// What [`Transcript::apply`] changed.
@@ -194,6 +196,8 @@ pub struct Transcript {
     pub closed: bool,
     /// The provider needs the user to sign in, with its message.
     pub sign_in: Option<String>,
+    /// The walkthroughs the agent published, oldest first.
+    pub walkthroughs: Vec<WalkthroughSummary>,
 }
 
 impl Transcript {
@@ -417,6 +421,12 @@ impl Transcript {
                     self.push(Entry::Question(question), changes);
                 }
             },
+            SessionUpdate::Walkthrough(w) => {
+                changes.meta = true;
+                self.walkthroughs.retain(|o| o.id != w.id);
+                self.walkthroughs.push((*w).clone());
+                self.push(Entry::Walkthrough(w), changes);
+            }
             SessionUpdate::Closed => {
                 self.closed = true;
                 self.running = false;

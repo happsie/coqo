@@ -18,6 +18,8 @@
 //!   before it runs; a mismatch is an `invalid arguments` tool error.
 //! - [`tools`]: the core tools ([`tools::core`]) and the proxies of the
 //!   tools mods contribute in the daemon ([`tools::daemon`]).
+//! - [`resources`]: the MCP resources the server offers (the walkthrough
+//!   schema).
 //! - [`bridge`]: the MCP server over any reader and writer
 //!   ([`bridge::serve`]) and the `coqod mcp` entry point
 //!   ([`bridge::run_stdio`]).
@@ -27,6 +29,7 @@
 
 pub mod bridge;
 pub mod registry;
+pub mod resources;
 pub mod schema;
 mod server;
 pub mod tools;

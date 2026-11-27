@@ -199,12 +199,13 @@ impl Agent {
 }
 
 /// The core tools, in the order `tools/list` gives them.
-const CORE_TOOLS: [&str; 7] = [
+const CORE_TOOLS: [&str; 8] = [
     "annotate",
     "ask_question",
     "await_answer",
     "editor_context",
     "editor_reveal",
+    "publish_walkthrough",
     "set_acceptance_criteria",
     "set_status",
 ];

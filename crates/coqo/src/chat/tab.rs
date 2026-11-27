@@ -18,6 +18,10 @@
 mod composer;
 mod criteria;
 mod permission;
+mod walkthroughs;
+
+#[cfg(test)]
+pub(crate) use walkthroughs::published_label;
 
 use std::collections::{HashMap, HashSet};
 
@@ -634,6 +638,7 @@ impl ChatTab {
             ),
             Entry::Notice { kind, text } => self.render_notice(ix, kind, text, cx),
             Entry::Question(question) => self.render_question(ix, &question, cx),
+            Entry::Walkthrough(w) => self.render_walkthrough_card(ix, &w, cx),
         };
         let top = if ix == 0 { px(18.) } else { px(0.) };
         column(body).pt(top).pb(px(14.)).into_any_element()
@@ -915,6 +920,7 @@ impl ChatTab {
                         let action = OpenLocation {
                             path: loc.path.clone(),
                             line: loc.line,
+                            end: None,
                         };
                         let focus = self.focus.clone();
                         div()
@@ -1451,6 +1457,7 @@ impl ChatTab {
             let action = OpenLocation {
                 path: path.clone(),
                 line: None,
+                end: None,
             };
             let focus = self.focus.clone();
             changes = changes.child(
@@ -1497,6 +1504,7 @@ impl ChatTab {
             .child(self.render_status(cx))
             .child(plan)
             .child(self.render_criteria(cx))
+            .child(self.render_walkthroughs(cx))
             .child(changes)
             .child(self.render_rules(cx))
             .into_any_element()

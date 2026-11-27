@@ -231,6 +231,29 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
             ALTER TABLE agent_sessions ADD COLUMN tool_use TEXT;
         ",
     },
+    Migration {
+        version: 10,
+        name: "walkthroughs",
+        // Code walkthroughs agents publish (#97, `walkthroughs/*`), kept in
+        // the daemon whatever the storage mode (committed ones are also
+        // written to the repository). `document` is the JSON `Walkthrough`
+        // as published (anchors as made, no resolutions, no step states);
+        // `step_states` is the reader's progress, a JSON object of step id
+        // to state. `workspace` and `session` are ids, not foreign keys, as
+        // for questions. Timestamps are Unix milliseconds.
+        sql: "
+            CREATE TABLE walkthroughs (
+                id          TEXT    PRIMARY KEY NOT NULL,
+                workspace   TEXT    NOT NULL,
+                session     TEXT    NOT NULL,
+                document    TEXT    NOT NULL,
+                step_states TEXT    NOT NULL DEFAULT '{}',
+                created_at  INTEGER NOT NULL,
+                updated_at  INTEGER NOT NULL
+            ) WITHOUT ROWID;
+            CREATE INDEX walkthroughs_workspace ON walkthroughs (workspace, created_at);
+        ",
+    },
 ];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.

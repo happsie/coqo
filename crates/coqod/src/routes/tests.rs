@@ -62,6 +62,7 @@ const SESSION_ROUTES: &[(&str, AccessKind)] = &[
     ("syntax/folding", AccessKind::Check),
     ("syntax/outline", AccessKind::Check),
     ("syntax/symbols", AccessKind::Check),
+    ("walkthroughs/create", AccessKind::Check),
     ("workspace/events", AccessKind::Check),
     ("workspace/get", AccessKind::Workspace),
     ("workspace/getState", AccessKind::Workspace),
@@ -322,6 +323,24 @@ fn probes(
             json!({ "session": session, "criteria": [{ "text": "Probing works" }] }),
         ),
         (
+            "walkthroughs/create",
+            RouteKind::Method,
+            json!({
+                "workspace": ws.id,
+                "session": session,
+                "walkthrough": {
+                    "title": "Probe",
+                    "summary": "A probe.",
+                    "scope": { "kind": "worktree" },
+                    "steps": [{
+                        "id": "s1", "title": "The file", "kind": "logic",
+                        "anchors": [{ "path": file, "start_line": 1 }],
+                        "what": "Text.", "why": "Probing.",
+                    }],
+                },
+            }),
+        ),
+        (
             "buffer/close",
             RouteKind::Method,
             json!({ "buffer": buffer, "replica": replica }),
@@ -471,6 +490,13 @@ async fn a_session_token_reaches_only_its_own_workspace() {
             criteria: vec![],
             replace: true,
         })
+        .await;
+    assert_eq!(code(&other), Some(codes::FORBIDDEN), "{other:?}");
+    let other = agent
+        .request_raw(
+            "walkthroughs/create",
+            Some(json!({ "workspace": a.id, "session": b_session, "walkthrough": {} })),
+        )
         .await;
     assert_eq!(code(&other), Some(codes::FORBIDDEN), "{other:?}");
     // An unfiltered workspace feed covers every workspace.
