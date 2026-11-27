@@ -8,7 +8,12 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use coqo_agents::model::{self as agm, CreateSessionParams, SessionId};
+use coqo_agents::register_provider;
+use coqo_agents::testing::ScriptedProvider;
 use coqo_client::DaemonPaths;
+use coqo_mod_api::contrib::{AgentProviderInfo, AgentProviderKind};
+use coqo_mod_api::{BoxFuture, Mod, ModContext, ModError};
 use coqo_protocol::methods::buffer::{
     self as bufm, BufferId, ChangesParams, EditParams, OpenResult, ReplicaId, TextEdit,
 };
@@ -49,6 +54,7 @@ const SESSION_ROUTES: &[(&str, AccessKind)] = &[
     ("mcp/call", AccessKind::Check),
     ("mcp/tools", AccessKind::Workspace),
     ("mcp/toolsChanged", AccessKind::Workspace),
+    ("sessions/setStatus", AccessKind::Session),
     ("syntax/folding", AccessKind::Check),
     ("syntax/outline", AccessKind::Check),
     ("syntax/symbols", AccessKind::Check),
@@ -57,7 +63,41 @@ const SESSION_ROUTES: &[(&str, AccessKind)] = &[
     ("workspace/getState", AccessKind::Workspace),
 ];
 
+/// A built-in test mod (in the test daemons' mod table) that registers a
+/// scripted agent provider, `fake`, once the mods start.
+pub(crate) const FAKE_AGENT_MANIFEST: &str = r#"
+id = "test.fake-agent"
+name = "Fake agent"
+version = "0.1.0"
+engine = "^0.0"
+tier = "core"
+activation = ["startup"]
+"#;
+
+/// The mod behind [`FAKE_AGENT_MANIFEST`].
+pub(crate) struct FakeAgent(pub ScriptedProvider);
+
+impl Mod for FakeAgent {
+    fn activate(&self, cx: ModContext) -> BoxFuture<'_, Result<(), ModError>> {
+        Box::pin(async move {
+            let info = AgentProviderInfo {
+                id: "fake".parse()?,
+                name: "Fake agent".into(),
+                kind: AgentProviderKind::Native,
+                description: None,
+            };
+            register_provider(&cx, info, std::sync::Arc::new(self.0.clone()))
+        })
+    }
+}
+
 pub(crate) fn context(dir: &Path) -> DaemonContext {
+    context_with(dir, ScriptedProvider::new())
+}
+
+/// A test daemon's context whose `fake` agent provider (once its mods
+/// start) is `agent`.
+pub(crate) fn context_with(dir: &Path, agent: ScriptedProvider) -> DaemonContext {
     DaemonContext {
         paths: DaemonPaths::at(dir.join("run")),
         data: DataDirs::at(dir.join("data")),
@@ -67,10 +107,14 @@ pub(crate) fn context(dir: &Path) -> DaemonContext {
         shutdown: CancellationToken::new(),
         started_at: SystemTime::now(),
         started: tokio::time::Instant::now(),
-        mods: Mods::load(test_builtins(&dir.join("mods")).with(
-            crate::mcp_tools::tests::PROBE_MANIFEST,
-            crate::mcp_tools::tests::Probe,
-        )),
+        mods: Mods::load(
+            test_builtins(&dir.join("mods"))
+                .with(
+                    crate::mcp_tools::tests::PROBE_MANIFEST,
+                    crate::mcp_tools::tests::Probe,
+                )
+                .with(FAKE_AGENT_MANIFEST, FakeAgent(agent)),
+        ),
         auth: Auth::generate().unwrap(),
         agent_fs: coqo_acp_host::FsHandle::new(),
     }
@@ -189,12 +233,13 @@ async fn open_buffer(client: &Client, ws: &WorkspaceInfo, file: &str) -> OpenRes
 }
 
 /// One call to every session route but `buffer/edit` (a notification,
-/// tested on its own), aimed at `ws` and its open buffer.
+/// tested on its own), aimed at `ws`, its open buffer and its agent session.
 fn probes(
     ws: &WorkspaceInfo,
     file: &str,
     buffer: BufferId,
     replica: &ReplicaId,
+    session: &SessionId,
 ) -> Vec<(&'static str, RouteKind, Value)> {
     let id = json!({ "id": ws.id });
     let path = |p: &str| json!({ "workspace": ws.id, "root": ws.roots[0].id, "path": p });
@@ -226,10 +271,15 @@ fn probes(
             RouteKind::Method,
             json!({
                 "workspace": ws.id,
-                "session": "session-1",
+                "session": session,
                 "name": crate::mcp_tools::tests::PROBE_TOOL,
                 "arguments": { "text": "probe" },
             }),
+        ),
+        (
+            agm::SetStatus::NAME,
+            RouteKind::Method,
+            json!({ "session": session, "status": "Probing" }),
         ),
         (
             "buffer/close",
@@ -288,13 +338,32 @@ async fn call(
 #[tokio::test]
 async fn a_session_token_reaches_only_its_own_workspace() {
     let daemon = Daemon::start();
+    daemon.ctx.mods.start().await;
     let admin = daemon.connect(daemon.ctx.auth.daemon_token()).await;
-    let (_a_dir, a) = workspace(&admin, "a.txt").await;
-    let (_b_dir, b) = workspace(&admin, "b.txt").await;
+    let (a_dir, a) = workspace(&admin, "a.txt").await;
+    let (b_dir, b) = workspace(&admin, "b.txt").await;
+    // An agent session in each workspace; the token is A's.
+    let session_in = |dir: &TempDir, ws: &WorkspaceInfo| CreateSessionParams {
+        provider: "fake".into(),
+        cwd: dir.path().to_str().unwrap().to_owned(),
+        workspace: Some(ws.id.0.clone()),
+        title: None,
+        mode: None,
+    };
+    let a_session = admin
+        .request::<agm::Create>(session_in(&a_dir, &a))
+        .await
+        .unwrap()
+        .id;
+    let b_session = admin
+        .request::<agm::Create>(session_in(&b_dir, &b))
+        .await
+        .unwrap()
+        .id;
     let token = daemon
         .ctx
         .auth
-        .mint_session(a.id.0.clone(), "session-1")
+        .mint_session(a.id.0.clone(), a_session.0.clone())
         .unwrap();
     let agent = daemon.connect(token).await;
 
@@ -321,7 +390,7 @@ async fn a_session_token_reaches_only_its_own_workspace() {
     // Session routes aimed at workspace B: refused.
     let b_buffer = open_buffer(&admin, &b, "b.txt").await;
     let a_buffer = open_buffer(&agent, &a, "a.txt").await;
-    let b_probes = probes(&b, "b.txt", b_buffer.buffer, &b_buffer.replica);
+    let b_probes = probes(&b, "b.txt", b_buffer.buffer, &b_buffer.replica, &b_session);
     let mut covered: Vec<_> = b_probes.iter().map(|(name, ..)| *name).collect();
     covered.push(bufm::Edit::NAME);
     covered.sort_unstable();
@@ -338,6 +407,16 @@ async fn a_session_token_reaches_only_its_own_workspace() {
             "{name} on B: {result:?}"
         );
     }
+    // Its own session's status in workspace A, but another session's: refused.
+    let other = agent
+        .request::<agm::SetStatus>(agm::SetStatusParams {
+            session: b_session.clone(),
+            status: "Not mine".into(),
+            state: None,
+            progress: None,
+        })
+        .await;
+    assert_eq!(code(&other), Some(codes::FORBIDDEN), "{other:?}");
     // An unfiltered workspace feed covers every workspace.
     let result = subscribe_raw(&agent, wsm::Events::NAME, json!({})).await;
     assert_eq!(code(&result), Some(codes::FORBIDDEN), "{result:?}");
@@ -371,7 +450,8 @@ async fn a_session_token_reaches_only_its_own_workspace() {
     assert_eq!((b_now.rev, b_now.text.as_str()), (b_buffer.rev, "text\n"));
 
     // The same session routes aimed at its own workspace A: allowed.
-    for (name, kind, params) in probes(&a, "a.txt", a_buffer.buffer, &a_buffer.replica) {
+    for (name, kind, params) in probes(&a, "a.txt", a_buffer.buffer, &a_buffer.replica, &a_session)
+    {
         let result = call(&agent, kind, name, params).await;
         assert!(result.is_ok(), "{name} on A: {result:?}");
     }

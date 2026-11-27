@@ -137,8 +137,9 @@ In `coqod`, session tokens may call only these, and only for their own workspace
 | `buffer/open` | `workspace` |
 | `buffer/edit` (notification), `buffer/close`, `buffer/changes` (topic) | the workspace the `buffer` is open in |
 | `syntax/symbols`, `syntax/outline`, `syntax/folding` | the workspace the `buffer` is open in |
+| `sessions/setStatus` | `session`: its own agent session only |
 
-Everything else, including `daemon/*`, the rest of `workspace/*`, `buffer/save`, `buffer/revertChange`, `terminal/*`, `agents/*` and `sessions/*`, needs the daemon token.
+Everything else, including `daemon/*`, the rest of `workspace/*`, `buffer/save`, `buffer/revertChange`, `terminal/*`, `agents/*` and the rest of `sessions/*`, needs the daemon token.
 
 Tokens are secrets. Compare them in constant time, and never log them or put them on a command line. The server takes the token out of the hello before request handlers see it. Before the handshake, `coqod` also checks that the connecting process runs as the same user (`SO_PEERCRED` / `getpeereid`), and both sides check that the runtime directory belongs to the user and is closed to everyone else ([ADR 0007](../docs/adr/0007-daemon-lifecycle.md)).
 
@@ -245,6 +246,7 @@ Service `coqo.agents@1` (PLAN §7.3; types in `coqo_protocol::methods::agents`, 
 | `sessions/cancel` | `{session}` | `true` if a turn was running. Pending permission requests resolve as `cancelled`. |
 | `sessions/respondPermission` | `{session, requestId, outcome, remember?}` | `null`. `outcome` is `{"outcome": "selected", "optionId"}` or `{"outcome": "cancelled"}`. With `remember: true` the request's `suggestedRule` is also stored for the session's workspace, as an allow or deny rule after the chosen option's kind; the option still goes to the agent unchanged. `INVALID_PARAMS` if the request has no `suggestedRule` or the outcome is `cancelled`. |
 | `sessions/setMode` | `{session, modeId}` | `null`. |
+| `sessions/setStatus` | `{session, status, state?, progress?}` | `SessionInfo`. The agent's status line (the `set_status` MCP tool): whitespace collapsed, cut at 120 characters; `state` is `working`, `blocked` or `done`; `progress` is `{current, total}` with `total` ≥ 1. A session token may call it for its own session. See **Status** below. |
 | `sessions/close` | `{session}` | `true` if it was open. Cancels a running turn; the transcript stays readable. |
 | `agents/permissionRules` | `{workspace}` | `PermissionRule[]`, oldest first: `{id, workspace, tool, pattern, decision, createdAt}`. |
 | `agents/deletePermissionRule` | `{id}` | `true` if it existed. |
@@ -252,9 +254,11 @@ Service `coqo.agents@1` (PLAN §7.3; types in `coqo_protocol::methods::agents`, 
 | Topic | Params | Events |
 |---|---|---|
 | `sessions/updates` | `{session}` | `SessionUpdate`, tagged by `update`: `user_message`, `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update` (with `diff` content and `locations`), `plan`, `available_commands`, `modes`, `current_mode`, `usage`, `auth_status`, `permission_requested`, `permission_resolved`, `state`, `turn_started`, `turn_ended`, `closed`. Seqs are per session, from 1, stable across restarts. |
-| `sessions/changes` | `{workspace?}` | `SessionInfo` whenever a session's state, title, mode or closed flag changes. Resuming replays only each session's latest info, so seqs skip values. |
+| `sessions/changes` | `{workspace?}` | `SessionInfo` whenever a session's state, title, mode, status or closed flag changes. Resuming replays only each session's latest info, so seqs skip values. |
 
-**States** (`SessionInfo.state`): `idle` → `working` → (`needs_permission` → `working`) → `done`, or `idle` after a cancel, or `error` (with `stateReason`). Providers may also report `needs_input` and `blocked`. A turn cut off by a daemon stop or crash ends with `stopReason: interrupted` and leaves the session in `error`; the next prompt resumes the provider session.
+**States** (`SessionInfo.state`, since `stateSince`): `idle` → `working` → (`needs_permission` → `working`) → `done`, or `idle` after a cancel, or `error` (with `stateReason`). Providers and daemon features may also report `needs_input` and `blocked`; while a permission request waits only `error` changes the state. A turn cut off by a daemon stop or crash ends with `stopReason: interrupted` and leaves the session in `error`; the next prompt resumes the provider session. The full table is in `crates/agents/src/state.rs` ([ADR 0015](../docs/adr/0015-agent-state-and-status.md)).
+
+**Status** (`SessionInfo.status`: `{text, state?, progress?, turn?, updatedAt}`): what the agent says it is doing. `blocked` makes the session `blocked` with the text as `stateReason`; during a turn, `working` and `done` make it `working` (the turn's end makes it `done`); between turns `done` makes it `done` and `working` changes nothing. A turn start clears the status, and a turn end clears it unless the agent claimed `blocked` or `done`. Status changes are not transcript updates; they arrive on `sessions/changes`.
 
 **Permission rules** (per workspace, in `coqo.db`, kept across restarts): before a permission request reaches any UI, the daemon checks the workspace's rules. `tool` is `execute` (`pattern` is a word-wise command prefix such as `cargo test`), `edit` or `read` (`pattern` is a glob over root-relative paths such as `src/**`); `decision` is `allow` or `reject`, and a reject rule wins. A rule only matches a request Coqo can read exactly: a simple command (no shell operators, redirections, substitutions, globs, `~` or `..`, absolute paths inside the workspace only, no code flags such as `-c`, never programs such as `rm`, `sudo`, `curl` or a shell), or files that all resolve inside the workspace's roots. Such a request carries `suggestedRule` (`{tool, pattern}`). A matched request is recorded as `permission_requested` followed at once by `permission_resolved` with `byRule` (the rule), answered with the `allow_once` option (else `allow_always`) or `reject_once` (else `reject_always`); the state stays `working`. A `permission_resolved` that created a rule carries it as `remembered`. Anything else is asked: the default is ask.
 

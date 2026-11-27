@@ -29,9 +29,19 @@
 //!
 //! [`AgentState`]: `idle` (nothing running) → `working` (a turn runs) →
 //! `needs_permission` (a permission request waits for the user) → `working`
-//! → `done` (the turn ended) / `idle` (cancelled) / `error`. Providers may
-//! also report `needs_input` and `blocked` (e.g. through the `set_status`
-//! MCP tool, #75).
+//! → `done` (the turn ended) / `idle` (cancelled) / `error`. Providers and
+//! daemon features may also report `needs_input` (a question waits) and
+//! `blocked`; the agent itself reports through the `set_status` MCP tool
+//! (`sessions/setStatus`). [`SessionInfo::state_since`] says since when.
+//!
+//! # Status
+//!
+//! On top of the state, the agent's own words: [`AgentStatus`], a short
+//! status line ("Running the test suite") with optional progress, set
+//! with `sessions/setStatus`. It is cleared when a turn starts, and when a
+//! turn ends unless the agent marked it `blocked` or `done` (then it is the
+//! outcome, kept until the next turn). Status changes stream on
+//! `sessions/changes`; they are not transcript updates.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -721,6 +731,53 @@ impl AgentState {
     }
 }
 
+/// The state an agent claims with its status (`set_status`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum StatusState {
+    /// Still working (clears an earlier `blocked`).
+    Working,
+    /// Cannot continue without the user; the status says why.
+    Blocked,
+    /// The task is finished; the status is the outcome.
+    Done,
+}
+
+/// Countable progress: `current` of `total` steps done.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct StatusProgress {
+    /// Steps done (at most `total`).
+    pub current: u64,
+    /// All steps (at least 1).
+    pub total: u64,
+}
+
+/// What the agent says it is doing (`sessions/setStatus`, the `set_status`
+/// MCP tool).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStatus {
+    /// One short line, at most [`MAX_STATUS_CHARS`] characters.
+    pub text: String,
+    /// The state the agent claimed with it, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<StatusState>,
+    /// Progress, if the work is countable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<StatusProgress>,
+    /// The turn it was set in (`None` between turns).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u64>,
+    /// When it was set, Unix milliseconds.
+    pub updated_at: i64,
+}
+
+/// The longest status line, in characters; longer ones are cut with `…`.
+pub const MAX_STATUS_CHARS: usize = 120;
+
 /// Why a turn ended (ACP `StopReason`, plus Coqo's own).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -866,6 +923,14 @@ pub struct SessionInfo {
     /// Why, for `error`, `blocked` and `needs_input`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_reason: Option<String>,
+    /// When `state` last changed, Unix milliseconds (how long it has
+    /// waited, for alerts and the agents overview).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_since: Option<i64>,
+    /// What the agent says it is doing, if it said so this turn (or its
+    /// `blocked` or `done` outcome).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<AgentStatus>,
     /// Current mode id, if the provider has modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
@@ -1109,6 +1174,38 @@ impl Method for SetMode {
     const NAME: &'static str = "sessions/setMode";
     type Params = SetModeParams;
     type Result = ();
+}
+
+/// Params of `sessions/setStatus`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct SetStatusParams {
+    /// The session.
+    pub session: SessionId,
+    /// One short line (whitespace is collapsed; cut at
+    /// [`MAX_STATUS_CHARS`]). Must not be empty.
+    pub status: String,
+    /// The state the agent claims: `working` clears an earlier `blocked`,
+    /// `blocked` asks for the user (the status says why), `done` marks the
+    /// task finished (the session is `done` once the turn ends).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<StatusState>,
+    /// Progress (`total` at least 1; `current` is capped at `total`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<StatusProgress>,
+}
+
+/// `sessions/setStatus`: the agent reports what it is doing. Session
+/// tokens may call it for their own session (the `set_status` MCP tool).
+/// Returns the session's new info, which also goes out on
+/// `sessions/changes`. Fails with `UNKNOWN_SESSION`, `SESSION_CLOSED` or
+/// `INVALID_PARAMS`.
+#[derive(Debug)]
+pub enum SetStatus {}
+impl Method for SetStatus {
+    const NAME: &'static str = "sessions/setStatus";
+    type Params = SetStatusParams;
+    type Result = SessionInfo;
 }
 
 /// `sessions/close`: end a session (cancelling a running turn). Its

@@ -7,7 +7,7 @@ A chat is a tab like any file (PLAN §7.3, design board 1). The code is in `crat
 ## Layout
 
 - **Reading column:** the transcript and the composer sit in a centred column at most 760 px wide. The transcript is a virtual list that follows the tail while you are at the bottom.
-- **Session panel:** 300 px on the right of the tab, behind a hairline: **Plan** (the agent's todo list: sage check done, sand dot in progress, hollow circle pending) and **Changes** (every file a tool call edits or proposes to edit, with `+`/`−` line counts; a click opens the file). Acceptance criteria, open questions and "Review diff" join it with their features (#96, PLAN §7.5, board 4).
+- **Session panel:** 300 px on the right of the tab, behind a hairline. First the **status card**: a pill with the session's state in capitals (`NEEDS PERMISSION`, `WORKING`, …) in its status colour on an 18 % tint of it (sage idle or done, blue working, sand when it needs you, rose on error, as board 6's agents overview), the agent's status line from `set_status` (else why it waits, else a quiet line such as "Ready for a prompt" in `text_subtle`), and a 4 px progress bar with "2 of 5" when the agent reports progress (else the plan's "Plan: 2 of 4 done" while the session is busy). Then **Plan** (the agent's todo list: sage check done, sand dot in progress, hollow circle pending) and **Changes** (every file a tool call edits or proposes to edit, with `+`/`−` line counts; a click opens the file). Acceptance criteria, open questions and "Review diff" join it with their features (#96, PLAN §7.5, board 4).
 - **Tab label:** a chat icon and the title; when the session needs you, the icon turns sand (rose on error) and a small "needs input", "needs permission", "blocked" or "error" badge follows the title.
 
 ## Transcript rows
@@ -52,7 +52,7 @@ When the provider needs a login, a sand banner says how to sign in to the agent'
 
 ## Sidebar
 
-The CHATS section lists the current workspace's open sessions, newest first, with a 7 px status dot: sage for idle and done, sand when it needs input or permission or is blocked, rose on error, and a pulsing blue while working. The row of the active chat tab is `surface_selected`. The **+** next to CHATS and `Ctrl Shift N` (`Cmd Shift N` on macOS) start a chat in the workspace with the first available provider. Problems (no folder open, no provider installed, sign-in needed) show under the list in sand.
+The CHATS section lists the current workspace's open sessions, newest first, with a 7 px status dot: sage for idle and done, sand when it needs input or permission or is blocked, rose on error, and a pulsing blue while working. Under the title, in `text_subtle` at label size, the agent's status line with its progress ("Running the tests · 2 of 5"), or why the session waits; rows without one stay one line. The row of the active chat tab is `surface_selected`. The **+** next to CHATS and `Ctrl Shift N` (`Cmd Shift N` on macOS) start a chat in the workspace with the first available provider. Problems (no folder open, no provider installed, sign-in needed) show under the list in sand.
 
 Below a problem go the provider's buttons, in the primary style:
 

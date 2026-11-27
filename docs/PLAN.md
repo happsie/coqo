@@ -284,7 +284,7 @@ Hard rules, documented in `agent-claude` and in CONTRIBUTING: no claude.ai OAuth
 | `ask_question` | **Anchored question** (§7.5). Blocks until answered, or returns an id when `async: true` |
 | `await_answer` | Waits for an async question |
 | `annotate` | Non-blocking anchored info or warning note |
-| `set_status` | `working \| needs_input \| blocked \| done`, which feeds alerts |
+| `set_status` | A short status line, optional progress, and `working \| blocked \| done`, which feeds alerts (`needs_input` comes from questions; [ADR 0015](adr/0015-agent-state-and-status.md)) |
 | `set_acceptance_criteria` | Registers the criteria for the current task |
 | `publish_walkthrough` | Publishes a walkthrough (§7.6) |
 | `request_review` | Asks the user to review the diff |
@@ -333,7 +333,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 
 ### 7.9 Multiple workspaces and alerts
 - **Workspace rail:** a vertical strip at the far left with one icon per workspace. Switch with `Cmd/Ctrl+1..9`. All workspaces live in the daemon, and background workspaces keep their agents running. "New workspace from worktree" supports running agents on several tasks at once.
-- **Agent states:** `idle · working · needs_input · needs_permission · blocked · error · done`.
+- **Agent states:** `idle · working · needs_input · needs_permission · blocked · error · done`, derived from provider events by one state machine, with the agent's own status line (`set_status`) on top and `state_since` for how long it has waited ([ADR 0015](adr/0015-agent-state-and-status.md)).
 - **Alert sources:** permission requests, `ask_question`, `set_status`, a finished turn, agent errors, review requested, CI failed, trace run finished.
 - **UI:** badges on the rail and tabs, an **Agents overview** panel showing all sessions across workspaces with their state and how long they have waited, a notification center, and OS notifications (the daemon sends them, and clicking one opens or focuses the UI at the exact question). Includes do-not-disturb and per-source settings. The CLI shows the same data: `coqo agents`.
 

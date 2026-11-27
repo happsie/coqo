@@ -8,7 +8,8 @@
 //! that wait for the user (`sand`), or shows `!` when one failed (`rose`); a
 //! dot in the bottom-right corner shows an agent working (`blue`, pulsing)
 //! or done (`sage`). Background workspaces keep running in the daemon, so
-//! their badges stay live ([`AgentActivity`]).
+//! their badges stay live ([`AgentActivity`]). The tooltip lists the busy
+//! sessions with the agent's status line.
 //!
 //! - **Click** (or `Ctrl/Cmd+1..9`): switch the window to the workspace,
 //!   saving this one's layout and restoring that one's, or focus the window
@@ -20,7 +21,10 @@
 
 use std::path::PathBuf;
 
-use coqo_protocol::methods::workspace::{WorkspaceId, WorkspaceInfo};
+use coqo_protocol::methods::{
+    agents::{AgentState, SessionInfo},
+    workspace::{WorkspaceId, WorkspaceInfo},
+};
 use coqo_ui::{
     ActiveTokens as _, Appearance, Rgb,
     gpui::{
@@ -36,6 +40,7 @@ use coqo_ui::{
 
 use crate::{
     activity::{AgentActivity, WorkspaceActivity},
+    chat::{agent_dot, status_line},
     welcome::shortcut,
     windows,
     workspace::{self, KnownWorkspaces, Workspaces, initials, prompt_open_folder_in},
@@ -323,6 +328,7 @@ impl Rail {
         let light = t.appearance == Appearance::Light;
         let id = info.id.clone();
         let menu_id = info.id.clone();
+        let tooltip_id = info.id.clone();
         let name: SharedString = info.name.clone().into();
         let key = (ix < 9).then(|| shortcut(&format!("Ctrl {}", ix + 1)));
         let button = div()
@@ -348,7 +354,15 @@ impl Rail {
             )
             .tooltip(move |_, cx| {
                 let (name, key) = (name.clone(), key.clone());
-                cx.new(|_| RailTooltip { name, key }).into()
+                let sessions = AgentActivity::global(cx)
+                    .map(|a| TooltipSession::list(a.read(cx).busy_in(&tooltip_id.0)))
+                    .unwrap_or_default();
+                cx.new(|_| RailTooltip {
+                    name,
+                    key,
+                    sessions,
+                })
+                .into()
             });
         let button = workspace_surface(button, selected, &p, light).test_support();
         // Badges sit beside the button, not in it: GPUI draws a border over
@@ -695,26 +709,95 @@ fn rail_button(id: &'static str, cx: &App) -> Stateful<coqo_ui::gpui::Div> {
         .rounded(m.radius_rail)
 }
 
-/// A rail button's tooltip: the workspace's name and its key.
+/// Sessions a rail tooltip lists at most.
+const TOOLTIP_SESSIONS: usize = 5;
+
+/// A busy session in a rail tooltip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TooltipSession {
+    pub state: AgentState,
+    pub title: SharedString,
+    /// The agent's status line, or why it waits.
+    pub line: Option<SharedString>,
+}
+
+impl TooltipSession {
+    /// The first [`TOOLTIP_SESSIONS`] of `sessions`, as
+    /// [`AgentActivity::busy_in`] orders them.
+    pub fn list<'a>(sessions: impl IntoIterator<Item = &'a SessionInfo>) -> Vec<Self> {
+        sessions
+            .into_iter()
+            .take(TOOLTIP_SESSIONS)
+            .map(|s| Self {
+                state: s.state,
+                title: s
+                    .title
+                    .clone()
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| "New chat".into())
+                    .into(),
+                line: status_line(s).map(Into::into),
+            })
+            .collect()
+    }
+}
+
+/// A rail button's tooltip: the workspace's name and its key, and what its
+/// busy agents are doing.
 struct RailTooltip {
     name: SharedString,
     key: Option<SharedString>,
+    sessions: Vec<TooltipSession>,
 }
 
 impl Render for RailTooltip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.tokens();
-        popover(cx)
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let header = div()
+            .flex()
             .flex_row()
             .items_center()
             .gap(px(8.))
+            .child(self.name.clone())
+            .children(self.key.clone().map(|key| kbd(key, cx)));
+        let rows = self.sessions.iter().enumerate().map(|(ix, s)| {
+            div()
+                .flex()
+                .items_start()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .pt(px(5.))
+                        .child(agent_dot(s.state, ("rail-tooltip-dot", ix), cx)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().truncate().child(s.title.clone()))
+                        .children(s.line.clone().map(|line| {
+                            div()
+                                .truncate()
+                                .text_size(m.text_label)
+                                .text_color(p.text_muted.hsla())
+                                .child(line)
+                        })),
+                )
+        });
+        popover(cx)
+            .flex_col()
+            .gap(px(6.))
+            .max_w(px(300.))
             .px(px(10.))
             .py(px(6.))
-            .text_size(t.metrics.text_sm)
-            .text_color(t.palette.text.hsla())
-            .font_family(t.metrics.font_ui.clone())
-            .child(self.name.clone())
-            .children(self.key.clone().map(|key| kbd(key, cx)))
+            .text_size(m.text_sm)
+            .text_color(p.text.hsla())
+            .font_family(m.font_ui.clone())
+            .child(header)
+            .children(rows)
     }
 }
 
@@ -770,6 +853,8 @@ mod screenshots {
             title: None,
             state,
             state_reason: None,
+            state_since: None,
+            status: None,
             mode: None,
             closed: false,
             created_at: 0,

@@ -130,6 +130,18 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
             );
         ",
     },
+    Migration {
+        version: 5,
+        name: "agent session status",
+        // The agent's own status (#75, `coqo-agents`): `status` is the
+        // JSON `AgentStatus` (status line, claimed state, progress), NULL
+        // when there is none; `state_since` is when `state` last changed
+        // (Unix milliseconds), NULL for rows from before this migration.
+        sql: "
+            ALTER TABLE agent_sessions ADD COLUMN status TEXT;
+            ALTER TABLE agent_sessions ADD COLUMN state_since INTEGER;
+        ",
+    },
 ];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.

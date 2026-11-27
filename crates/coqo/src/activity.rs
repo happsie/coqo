@@ -116,6 +116,44 @@ impl AgentActivity {
     pub fn of(&self, workspace: &str) -> WorkspaceActivity {
         WorkspaceActivity::of(self.sessions.values(), workspace)
     }
+
+    /// One open session's latest info.
+    pub fn info(&self, id: &SessionId) -> Option<&SessionInfo> {
+        self.sessions.get(id)
+    }
+
+    /// The open sessions of `workspace` that are doing something or wait
+    /// (not idle), those that need the user first, then by most recent
+    /// change.
+    pub fn busy_in(&self, workspace: &str) -> Vec<&SessionInfo> {
+        busy_in(self.sessions.values(), workspace)
+    }
+}
+
+/// See [`AgentActivity::busy_in`].
+pub fn busy_in<'a>(
+    sessions: impl IntoIterator<Item = &'a SessionInfo>,
+    workspace: &str,
+) -> Vec<&'a SessionInfo> {
+    let rank = |state: AgentState| match state {
+        AgentState::NeedsInput | AgentState::NeedsPermission | AgentState::Blocked => 0,
+        AgentState::Error => 1,
+        AgentState::Working => 2,
+        AgentState::Done | AgentState::Idle => 3,
+    };
+    let mut busy: Vec<_> = sessions
+        .into_iter()
+        .filter(|s| {
+            !s.closed && s.state != AgentState::Idle && s.workspace.as_deref() == Some(workspace)
+        })
+        .collect();
+    busy.sort_by(|a, b| {
+        rank(a.state)
+            .cmp(&rank(b.state))
+            .then(b.updated_at.cmp(&a.updated_at))
+            .then(a.id.cmp(&b.id))
+    });
+    busy
 }
 
 impl WorkspaceActivity {
@@ -144,7 +182,7 @@ impl WorkspaceActivity {
 mod tests {
     use coqo_protocol::methods::agents::{AgentState, SessionId, SessionInfo};
 
-    use super::WorkspaceActivity;
+    use super::{WorkspaceActivity, busy_in};
 
     fn session(id: &str, workspace: &str, state: AgentState) -> SessionInfo {
         SessionInfo {
@@ -155,6 +193,8 @@ mod tests {
             title: None,
             state,
             state_reason: None,
+            state_since: None,
+            status: None,
             mode: None,
             closed: false,
             created_at: 0,
@@ -197,5 +237,16 @@ mod tests {
             WorkspaceActivity::of(&sessions, "ws-c"),
             WorkspaceActivity::default()
         );
+        // The tooltip's list: not idle, not closed, waiting ones first.
+        let ids: Vec<_> = busy_in(&sessions, "ws-a")
+            .into_iter()
+            .map(|s| s.id.0.as_str())
+            .collect();
+        assert_eq!(ids, ["a", "b", "c"]);
+        let ids: Vec<_> = busy_in(&sessions, "ws-b")
+            .into_iter()
+            .map(|s| s.id.0.as_str())
+            .collect();
+        assert_eq!(ids, ["f", "g"]);
     }
 }

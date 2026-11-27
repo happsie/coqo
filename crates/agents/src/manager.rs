@@ -12,6 +12,11 @@
 //! - When the daemon starts, sessions whose stored state says a turn was
 //!   running get their turn ended as `interrupted` and their state set to
 //!   `error`. Their provider session is resumed on the next prompt.
+//! - The session's state follows the state machine in [`crate::state`]:
+//!   every change goes through `Inner::transition`, which records a
+//!   `state` update when the state or its reason changes and saves the info
+//!   (state, `state_since`, the agent's status) as a `sessions/changes`
+//!   event.
 //! - A permission request first meets the workspace's permission rules
 //!   ([`crate::rules`]): one that a rule answers is recorded as requested and
 //!   resolved at once (`byRule`) and never waits for the user. Every other
@@ -26,9 +31,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use coqo_mod_api::BoxFuture;
 use coqo_protocol::methods::agents::{
-    AgentState, CreateSessionParams, ListSessionsParams, PermissionOutcome, PermissionRequest,
-    PermissionRequestId, PermissionRule, PermissionRuleId, PromptResult, ProviderInfo, SessionId,
-    SessionInfo, SessionList, SessionSnapshot, SessionUpdate, StopReason, ToolCallUpdate,
+    AgentState, AgentStatus, CreateSessionParams, ListSessionsParams, PermissionOutcome,
+    PermissionRequest, PermissionRequestId, PermissionRule, PermissionRuleId, PromptResult,
+    ProviderInfo, SessionId, SessionInfo, SessionList, SessionSnapshot, SessionUpdate,
+    SetStatusParams, StatusProgress, StopReason, ToolCallUpdate,
 };
 use coqo_protocol::{ErrorObject, EventFeed, Sequenced};
 use coqo_storage::Timestamp;
@@ -43,6 +49,7 @@ use crate::provider::{
 };
 use crate::registry::ProviderRegistry;
 use crate::rules::{self, Subject};
+use crate::state::{self, Event, Tracked};
 use crate::store::{SessionStore, StoredSession};
 
 type Result<T> = std::result::Result<T, AgentError>;
@@ -136,6 +143,16 @@ impl SessionState {
     fn info(&self) -> &SessionInfo {
         &self.stored.info
     }
+
+    /// What the state machine tracks.
+    fn tracked(&self) -> Tracked {
+        let info = self.info();
+        Tracked {
+            state: info.state,
+            reason: info.state_reason.clone(),
+            status: info.status.clone(),
+        }
+    }
 }
 
 impl Inner {
@@ -165,17 +182,29 @@ impl Inner {
         Ok(())
     }
 
-    fn set_state(
-        &self,
-        s: &Session,
-        st: &mut SessionState,
-        state: AgentState,
-        reason: Option<String>,
-    ) -> Result<()> {
-        if st.info().state != state || st.info().state_reason != reason {
-            st.stored.info.state = state;
-            st.stored.info.state_reason.clone_from(&reason);
-            self.record(s, st, SessionUpdate::State { state, reason })?;
+    /// Applies `event` to the session's state machine ([`crate::state`]):
+    /// records a `state` update if the state or its reason changed, and
+    /// saves the info if anything changed.
+    fn transition(&self, s: &Session, st: &mut SessionState, event: Event) -> Result<()> {
+        let current = st.tracked();
+        let next = state::next(&current, event);
+        if next != current {
+            let Tracked {
+                state,
+                reason,
+                status,
+            } = next;
+            let info = &mut st.stored.info;
+            let changed = info.state != state || info.state_reason != reason;
+            if info.state != state {
+                info.state_since = Some(now());
+            }
+            info.state = state;
+            info.state_reason.clone_from(&reason);
+            info.status = status;
+            if changed {
+                self.record(s, st, SessionUpdate::State { state, reason })?;
+            }
             self.save_info(st)?;
         }
         self.update_busy(s, st);
@@ -283,7 +312,7 @@ impl Inner {
                 },
             )?;
         }
-        self.set_state(s, st, AgentState::Error, Some(reason.to_owned()))
+        self.transition(s, st, Event::Failed(reason.to_owned()))
     }
 
     // ---- loading -------------------------------------------------------------
@@ -422,21 +451,37 @@ impl Inner {
             },
         )?;
         st.turn = None;
-        let (state, reason) = match stop_reason {
-            StopReason::Cancelled => (AgentState::Idle, None),
-            StopReason::Error | StopReason::Interrupted => (AgentState::Error, error),
-            StopReason::EndTurn
-            | StopReason::MaxTokens
-            | StopReason::MaxTurnRequests
-            | StopReason::Refusal => match st.info().state {
-                // The agent said it waits for the user; keep that.
-                s @ (AgentState::NeedsInput | AgentState::Blocked) => {
-                    (s, st.info().state_reason.clone())
-                }
-                _ => (AgentState::Done, None),
+        self.transition(
+            s,
+            &mut st,
+            Event::TurnEnded {
+                stop: stop_reason,
+                error,
             },
-        };
-        self.set_state(s, &mut st, state, reason)
+        )
+    }
+
+    /// Applies a provider's or a daemon feature's reported state.
+    fn report(
+        &self,
+        s: &Session,
+        st: &mut SessionState,
+        state: AgentState,
+        reason: Option<String>,
+    ) -> Result<()> {
+        if state == AgentState::NeedsPermission {
+            tracing::warn!(session = %s.id, "only the session manager reports needs_permission");
+        }
+        let running = st.turn.is_some();
+        self.transition(
+            s,
+            st,
+            Event::Reported {
+                state,
+                reason,
+                running,
+            },
+        )
     }
 }
 
@@ -548,7 +593,7 @@ impl EventSink for Sink {
             .record(s, &mut st, SessionUpdate::PermissionRequested(request))
             .and_then(|_| {
                 st.waiters.insert(id, tx);
-                inner.set_state(s, &mut st, AgentState::NeedsPermission, None)
+                inner.transition(s, &mut st, Event::PermissionAsked)
             });
         if let Err(e) = result {
             tracing::error!(session = %s.id, error = %e, "cannot record a permission request");
@@ -559,10 +604,6 @@ impl EventSink for Sink {
     }
 
     fn report_state(&self, state: AgentState, reason: Option<String>) {
-        if state == AgentState::NeedsPermission {
-            tracing::warn!(session = %self.session.id, "providers cannot report needs_permission");
-            return;
-        }
         let Some(inner) = self.inner.upgrade() else {
             return;
         };
@@ -571,7 +612,7 @@ impl EventSink for Sink {
         if st.replaying || st.info().closed {
             return;
         }
-        if let Err(e) = inner.set_state(s, &mut st, state, reason) {
+        if let Err(e) = inner.report(s, &mut st, state, reason) {
             tracing::error!(session = %s.id, error = %e, "cannot record a state change");
         }
     }
@@ -691,6 +732,8 @@ impl SessionManager {
                 title: params.title,
                 state: AgentState::Idle,
                 state_reason: None,
+                state_since: Some(ts),
+                status: None,
                 mode: None,
                 closed: false,
                 created_at: ts,
@@ -705,7 +748,7 @@ impl SessionManager {
 
         if let Err(e) = inner.ensure_live(&s).await {
             let mut st = lock(&s.state);
-            inner.set_state(&s, &mut st, AgentState::Error, Some(e.to_string()))?;
+            inner.transition(&s, &mut st, Event::Failed(e.to_string()))?;
             st.stored.info.closed = true;
             inner.record(&s, &mut st, SessionUpdate::Closed)?;
             inner.save_info(&mut st)?;
@@ -757,7 +800,7 @@ impl SessionManager {
             )?;
             inner.record(&s, &mut st, SessionUpdate::TurnStarted { turn })?;
             st.turn = Some(turn);
-            inner.set_state(&s, &mut st, AgentState::Working, None)?;
+            inner.transition(&s, &mut st, Event::TurnStarted)?;
             (turn, seq)
         };
 
@@ -781,9 +824,7 @@ impl SessionManager {
                 return Ok(false);
             }
             inner.cancel_pending(&s, &mut st)?;
-            if st.info().state == AgentState::NeedsPermission {
-                inner.set_state(&s, &mut st, AgentState::Working, None)?;
-            }
+            inner.transition(&s, &mut st, Event::CancelRequested)?;
             st.live.clone()
         };
         if let Some(live) = live {
@@ -848,10 +889,94 @@ impl SessionManager {
             None
         };
         inner.resolve(&s, &mut st, request_id, outcome, remembered)?;
-        if st.fold.pending.is_empty() && st.info().state == AgentState::NeedsPermission {
-            inner.set_state(&s, &mut st, AgentState::Working, None)?;
+        if st.fold.pending.is_empty() {
+            inner.transition(&s, &mut st, Event::PermissionsSettled)?;
         }
         Ok(())
+    }
+
+    /// Sets the agent's status (`sessions/setStatus`, the `set_status` MCP
+    /// tool): a short line, optional progress and an optional claimed state,
+    /// applied as [`crate::state`] says. Returns the session's new info; a
+    /// change also goes out on `sessions/changes`. Setting the same status
+    /// again changes nothing.
+    pub fn set_status(&self, params: SetStatusParams) -> Result<SessionInfo> {
+        let text = state::status_line(&params.status);
+        if text.is_empty() {
+            return Err(AgentError::InvalidParams(
+                "the status must not be empty".into(),
+            ));
+        }
+        let progress = params
+            .progress
+            .map(|p| {
+                if p.total == 0 {
+                    Err(AgentError::InvalidParams(
+                        "progress `total` must be at least 1".into(),
+                    ))
+                } else {
+                    Ok(StatusProgress {
+                        current: p.current.min(p.total),
+                        total: p.total,
+                    })
+                }
+            })
+            .transpose()?;
+        let inner = &self.inner;
+        let id = &params.session;
+        let s = inner.session(id)?;
+        let mut st = lock(&s.state);
+        if st.info().closed {
+            return Err(AgentError::Closed(id.clone()));
+        }
+        let status = AgentStatus {
+            text,
+            state: params.state,
+            progress,
+            turn: st.turn,
+            updated_at: now(),
+        };
+        let event = Event::StatusSet {
+            status: status.clone(),
+            running: st.turn.is_some(),
+        };
+        // The same status again, with nothing to change: keep the old one
+        // (and its time) and send no change.
+        let current = st.tracked();
+        let next = state::next(&current, event.clone());
+        let repeat = (next.state, &next.reason) == (current.state, &current.reason)
+            && current.status.as_ref().is_some_and(|old| {
+                AgentStatus {
+                    updated_at: old.updated_at,
+                    ..status
+                } == *old
+            });
+        if !repeat {
+            inner.transition(&s, &mut st, event)?;
+        }
+        Ok(st.info().clone())
+    }
+
+    /// Reports a session's state from a daemon feature, such as
+    /// `needs_input` while a question waits for the user (#73), or
+    /// `working` once it is answered. Applied like a provider's report
+    /// ([`SessionEvents::report_state`], see [`crate::state`]):
+    /// `needs_permission` is ignored, and while a permission request waits
+    /// only `error` changes the state. Returns the session's new info.
+    pub fn report_state(
+        &self,
+        id: &SessionId,
+        state: AgentState,
+        reason: Option<String>,
+    ) -> Result<SessionInfo> {
+        let inner = &self.inner;
+        let s = inner.session(id)?;
+        let mut st = lock(&s.state);
+        if st.info().closed {
+            return Err(AgentError::Closed(id.clone()));
+        }
+        inner.report(&s, &mut st, state, reason)?;
+        Ok(st.info().clone())
     }
 
     /// Workspace `workspace`'s permission rules, oldest first.
@@ -922,12 +1047,7 @@ impl SessionManager {
             )?;
         }
         st.live = None;
-        if matches!(
-            st.info().state,
-            AgentState::Working | AgentState::NeedsPermission
-        ) {
-            inner.set_state(&s, &mut st, AgentState::Idle, None)?;
-        }
+        inner.transition(&s, &mut st, Event::Closed)?;
         inner.record(&s, &mut st, SessionUpdate::Closed)?;
         st.stored.info.closed = true;
         inner.save_info(&mut st)?;

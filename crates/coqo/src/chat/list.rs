@@ -2,7 +2,7 @@
 
 //! The sidebar's CHATS list: the current workspace's sessions from
 //! `sessions/list`, kept current by `sessions/changes` (state dots, titles,
-//! closed sessions dropping out).
+//! the agent's status line, closed sessions dropping out).
 
 use coqo_protocol::{
     codes,
@@ -21,7 +21,7 @@ use coqo_ui::{
     widgets::{Icon, TestSupportExt as _, icon, primary, section_label},
 };
 
-use super::{KIND, agent_dot, new_chat, open_session, press_action};
+use super::{KIND, agent_dot, new_chat, open_session, press_action, status_line};
 use crate::{
     daemon::{Daemon, DaemonEvent},
     workspace::{KnownWorkspaces, WindowWorkspaceChanged, Workspaces},
@@ -284,6 +284,7 @@ pub fn render_section(dock: WeakEntity<Dock>, cx: &App) -> AnyElement {
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| "New chat".into());
         let (dock, id) = (dock.clone(), info.id.clone());
+        let line = status_line(&info);
         section = section.child(
             div()
                 .id(ElementId::Name(format!("chat-row-{}", info.id).into()))
@@ -297,7 +298,23 @@ pub fn render_section(dock: WeakEntity<Dock>, cx: &App) -> AnyElement {
                 .when_selected(selected, &p)
                 .test_support()
                 .child(agent_dot(info.state, ("chat-row-dot", ix), cx))
-                .child(div().flex_1().truncate().child(title))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().truncate().child(title))
+                        .children(line.map(|line| {
+                            div()
+                                .id(("chat-row-status", ix))
+                                .test_support()
+                                .truncate()
+                                .text_size(m.text_label)
+                                .text_color(p.text_subtle.hsla())
+                                .child(line)
+                        })),
+                )
                 .on_click(move |_, window, cx| open_session(dock.clone(), id.clone(), window, cx)),
         );
     }
