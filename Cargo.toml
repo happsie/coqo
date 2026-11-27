@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-# Built-in mods will live under `mods/` and are added here once the first one exists.
-members = ["crates/*"]
+# Built-in core mods live under `mods/` (PLAN §6).
+members = ["crates/*", "mods/*"]
 
 [workspace.package]
 version = "0.0.0"

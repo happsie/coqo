@@ -9,6 +9,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+coqo-mod-api = { path = "../mod-api" }
 nix = { version = "0.30", default-features = false, features = ["signal", "process", "feature"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
@@ -18,7 +19,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "ansi"] }
 
 [dev-dependencies]
-serde_json = "1"
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros"] }
 
 [lints]

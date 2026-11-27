@@ -1,0 +1,17 @@
+[package]
+name = "coqo-mod-hello"
+description = "Sample core mod: registers a command and a status bar item through coqo-mod-api only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# Mods may depend only on coqo-mod-api (plus third-party crates); see
+# scripts/check-mod-boundary.sh.
+[dependencies]
+coqo-mod-api = { path = "../../crates/mod-api" }
+
+[lints]
+workspace = true

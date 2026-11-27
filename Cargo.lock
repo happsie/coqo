@@ -1092,9 +1092,9 @@ version = "0.0.0"
 name = "coqo-kernel"
 version = "0.0.0"
 dependencies = [
+ "coqo-mod-api",
  "nix",
  "serde",
- "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
@@ -1113,6 +1113,20 @@ version = "0.0.0"
 [[package]]
 name = "coqo-mod-api"
 version = "0.0.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml 1.2.3+spec-1.1.0",
+]
+
+[[package]]
+name = "coqo-mod-hello"
+version = "0.0.0"
+dependencies = [
+ "coqo-mod-api",
+]
 
 [[package]]
 name = "coqo-mod-host-proc"

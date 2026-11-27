@@ -1,0 +1,10 @@
+# Sample core mod. It contributes everything at runtime from `activate`, to
+# show the mod API; see crates/mod-api/examples/coqo.mod.toml for a manifest
+# that declares contributions up front.
+id = "coqo.hello"
+name = "Hello"
+version = "0.1.0"
+description = "Says hello: a command and a status bar item that counts greetings."
+engine = "^0.0"
+tier = "core"
+activation = ["startup"]
