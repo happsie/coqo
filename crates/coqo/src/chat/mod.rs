@@ -17,7 +17,11 @@
 //! (`tab::permission`).
 //!
 //! Coqo never signs anyone in: when a provider needs a login, the chat says
-//! how to sign in to the agent's own tool ([`SIGN_IN_HELP`]).
+//! how to sign in to the agent's own tool ([`SIGN_IN_HELP`]), with a button
+//! that opens that tool in a terminal tab ([`RunInTerminal`]). A provider
+//! that isn't set up (Claude Code without its ACP adapter, say) shows its
+//! setup message under CHATS with its setup buttons; daemon-side ones run
+//! through `agents/runAction`, only when pressed.
 //!
 //! The composer (`tab::composer`) has @-mentions of workspace files, the
 //! session's slash commands and skills, the provider and mode dropdowns and
@@ -29,14 +33,18 @@ pub mod tab;
 pub mod transcript;
 
 use coqo_protocol::methods::{
-    agents::{AgentState, Create, CreateSessionParams, Providers, SessionId},
+    agents::{
+        AgentState, Create, CreateSessionParams, ProviderAction, ProviderActionRun, ProviderInfo,
+        Providers, RunAction, RunActionParams, SessionId,
+    },
     codes as app_codes,
+    terminal::SpawnParams,
 };
 use coqo_ui::{
     ActiveTokens as _, Rgb,
     dock::{AnyTab, Dock, register_tab_kind},
     gpui::{
-        Action, Animation, AnimationExt as _, AnyElement, App, AppContext as _, ElementId,
+        Action, Animation, AnimationExt as _, AnyElement, App, AppContext as _, ElementId, Entity,
         IntoElement as _, KeyBinding, Styled as _, WeakEntity, Window, pulsating_between,
     },
     widgets::status_dot,
@@ -82,6 +90,15 @@ coqo_ui::gpui::actions!(
 pub struct OpenLocation {
     pub path: String,
     pub line: Option<u32>,
+}
+
+/// Run a provider's sign-in program (such as `claude`, to `/login` there) in
+/// a terminal tab in the workspace.
+#[derive(Clone, Debug, PartialEq, Eq, Action)]
+#[action(namespace = chat, no_json)]
+pub struct RunInTerminal {
+    pub program: String,
+    pub args: Vec<String>,
 }
 
 #[cfg(target_os = "macos")]
@@ -165,6 +182,149 @@ fn list_error(error: Option<String>, cx: &mut App) {
     }
 }
 
+/// Why a new chat can't start, with what the user can do about it.
+struct Problem {
+    message: String,
+    provider: String,
+    actions: Vec<ProviderAction>,
+}
+
+impl From<String> for Problem {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            provider: String::new(),
+            actions: Vec::new(),
+        }
+    }
+}
+
+fn list_problem(problem: Problem, cx: &mut App) {
+    if let Some(list) = list::ChatList::global(cx) {
+        list.update(cx, |l, cx| {
+            l.set_problem(problem.message, problem.provider, problem.actions, cx)
+        });
+    }
+}
+
+/// Why no provider is available: the first one that reports what is
+/// missing, with its setup actions.
+fn unavailable(providers: &[ProviderInfo]) -> Problem {
+    let Some((p, status)) = providers
+        .iter()
+        .find_map(|p| Some((p, p.status.as_ref().filter(|s| !s.ready)?)))
+    else {
+        return "No agent provider is installed yet".to_owned().into();
+    };
+    Problem {
+        message: status
+            .message
+            .clone()
+            .unwrap_or_else(|| format!("{} isn't set up yet", p.name)),
+        provider: p.id.clone(),
+        actions: status.actions.clone(),
+    }
+}
+
+/// The provider's sign-in button, as a list action.
+fn sign_in_actions(provider: &ProviderInfo) -> Vec<ProviderAction> {
+    provider
+        .status
+        .as_ref()
+        .and_then(|s| s.sign_in.clone())
+        .into_iter()
+        .collect()
+}
+
+/// Press a provider's setup button from the CHATS list: open a terminal, or
+/// run the daemon action and then start the chat.
+pub fn press_action(
+    dock: WeakEntity<Dock>,
+    provider: String,
+    action: ProviderAction,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (program, args) = match action.run {
+        ProviderActionRun::Terminal { program, args } => (program, args),
+        ProviderActionRun::Daemon => {
+            run_daemon_action(dock, provider, action, window, cx);
+            return;
+        }
+    };
+    window.dispatch_action(Box::new(RunInTerminal { program, args }), cx);
+}
+
+fn run_daemon_action(
+    dock: WeakEntity<Dock>,
+    provider: String,
+    action: ProviderAction,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(daemon) = Daemon::global(cx).filter(|d| d.read(cx).is_connected()) else {
+        list_error(Some("coqod isn't connected".into()), cx);
+        return;
+    };
+    let run = daemon.read(cx).request::<RunAction>(RunActionParams {
+        provider: provider.clone(),
+        action: action.id.clone(),
+    });
+    list_error(Some(format!("{}…", action.label)), cx);
+    if let Some(list) = list::ChatList::global(cx) {
+        list.update(cx, |l, cx| l.set_creating(true, cx));
+    }
+    window
+        .spawn(cx, async move |cx| {
+            let result = run.await;
+            cx.update(|window, cx| {
+                if let Some(list) = list::ChatList::global(cx) {
+                    list.update(cx, |l, cx| l.set_creating(false, cx));
+                }
+                match result {
+                    Ok(info) if info.available => {
+                        list_error(None, cx);
+                        new_chat(dock, window, cx);
+                    }
+                    Ok(info) => list_problem(unavailable(&[info]), cx),
+                    Err(e) => list_problem(
+                        Problem {
+                            message: format!("{} failed: {e}", action.label),
+                            provider,
+                            actions: vec![action],
+                        },
+                        cx,
+                    ),
+                }
+            })
+            .ok();
+        })
+        .detach();
+}
+
+/// Run `action`'s program in a terminal tab in the window's workspace.
+pub fn run_in_terminal(
+    dock: &Entity<Dock>,
+    action: &RunInTerminal,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let cwd = Workspaces::for_window(window, cx)
+        .or_else(|| Workspaces::global(cx))
+        .and_then(|w| w.read(cx).current()?.roots.first().map(|r| r.path.clone()));
+    let title = std::path::Path::new(&action.program)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned());
+    let params = SpawnParams {
+        program: Some(action.program.clone()),
+        args: action.args.clone(),
+        cwd,
+        title,
+        ..SpawnParams::default()
+    };
+    crate::terminal::open_with(dock, params, window, cx);
+}
+
 /// Start a chat in the open workspace with the first available provider,
 /// and open its tab. Failures show under CHATS in the sidebar.
 pub fn new_chat(dock: WeakEntity<Dock>, window: &mut Window, cx: &mut App) {
@@ -189,11 +349,12 @@ pub fn new_chat(dock: WeakEntity<Dock>, window: &mut Window, cx: &mut App) {
     window
         .spawn(cx, async move |cx| {
             let result = async {
-                let providers = providers.await.map_err(|e| e.to_string())?;
+                let providers = providers.await.map_err(|e| Problem::from(e.to_string()))?;
                 let provider = providers
-                    .into_iter()
+                    .iter()
                     .find(|p| p.available)
-                    .ok_or_else(|| "No agent provider is installed yet".to_owned())?;
+                    .cloned()
+                    .ok_or_else(|| unavailable(&providers))?;
                 let create = cx
                     .update(|_, cx| {
                         daemon.read(cx).request::<Create>(CreateSessionParams {
@@ -204,12 +365,19 @@ pub fn new_chat(dock: WeakEntity<Dock>, window: &mut Window, cx: &mut App) {
                             mode: None,
                         })
                     })
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| Problem::from(e.to_string()))?;
                 create.await.map_err(|e| {
                     if e.code() == Some(app_codes::AUTH_REQUIRED) {
-                        format!("{} needs you to sign in. {SIGN_IN_HELP}", provider.name)
+                        Problem {
+                            message: format!(
+                                "{} needs you to sign in. {SIGN_IN_HELP}",
+                                provider.name
+                            ),
+                            provider: provider.id.clone(),
+                            actions: sign_in_actions(&provider),
+                        }
                     } else {
-                        format!("Couldn't start a chat: {e}")
+                        format!("Couldn't start a chat: {e}").into()
                     }
                 })
             }
@@ -226,7 +394,7 @@ pub fn new_chat(dock: WeakEntity<Dock>, window: &mut Window, cx: &mut App) {
                         }
                         open_session(dock, id, window, cx);
                     }
-                    Err(error) => list_error(Some(error), cx),
+                    Err(problem) => list_problem(problem, cx),
                 }
             })
             .ok();

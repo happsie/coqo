@@ -177,6 +177,11 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "Every agent provider, with whether it is available.",
         ),
+        request::<agents::RunAction>(
+            g,
+            "client→server",
+            "Run a provider's setup action (such as installing its adapter) at the user's request.",
+        ),
         request::<agents::List>(
             g,
             "client→server",
@@ -612,6 +617,7 @@ fn schema_covers_every_builtin_method() {
         daemon::Status::NAME,
         daemon::Shutdown::NAME,
         agents::Providers::NAME,
+        agents::RunAction::NAME,
         agents::Create::NAME,
         agents::Prompt::NAME,
         agents::PermissionRules::NAME,

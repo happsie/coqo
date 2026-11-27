@@ -119,11 +119,80 @@ pub struct ProviderInfo {
     /// Short description for the picker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Whether sessions can be created now (the providing mod is active).
+    /// Whether sessions can be created now: the providing mod is active and
+    /// the provider is set up (`status.ready`, when it reports a status).
     pub available: bool,
     /// What it supports; `null` when not available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<ProviderCapabilities>,
+    /// Whether it is set up, and what the user can do about it; `null` when
+    /// the provider has nothing to report (always ready).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<ProviderStatus>,
+}
+
+/// Whether a provider can start sessions on this machine, such as Claude
+/// Code being installed and the ACP adapter set up.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderStatus {
+    /// Sessions can start now.
+    pub ready: bool,
+    /// What is missing or wrong, for the user; `null` when ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Setup steps the user can take now, such as installing the agent's
+    /// adapter. Shown when not ready. Never run without the user asking.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ProviderAction>,
+    /// How the user signs in to the agent's own tool, offered when a session
+    /// fails with `AUTH_REQUIRED`. Coqo never runs a login itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_in: Option<ProviderAction>,
+}
+
+impl ProviderStatus {
+    /// Ready, with nothing to do.
+    pub fn ready() -> Self {
+        Self {
+            ready: true,
+            message: None,
+            actions: Vec::new(),
+            sign_in: None,
+        }
+    }
+}
+
+/// A button for a provider's setup.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderAction {
+    /// Action id, for `agents/runAction`.
+    pub id: String,
+    /// Button label, such as `Install Claude ACP adapter (npm)`.
+    pub label: String,
+    /// What pressing it does.
+    pub run: ProviderActionRun,
+}
+
+/// What a [`ProviderAction`] does.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProviderActionRun {
+    /// The daemon runs it: call `agents/runAction`.
+    Daemon,
+    /// Open a terminal tab running `program` with `args` in the workspace
+    /// (`terminal/spawn`), such as `claude` for the user to `/login`.
+    Terminal {
+        /// The program (absolute path).
+        program: String,
+        /// Its arguments.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
+    },
 }
 
 // ---- content -----------------------------------------------------------------
@@ -849,6 +918,29 @@ impl Method for Providers {
     const NAME: &'static str = "agents/providers";
     type Params = ();
     type Result = Vec<ProviderInfo>;
+}
+
+/// Params of `agents/runAction`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct RunActionParams {
+    /// Provider id.
+    pub provider: String,
+    /// A daemon action's id, from the provider's status.
+    pub action: String,
+}
+
+/// `agents/runAction`: run one of a provider's daemon-side setup actions
+/// (such as installing its adapter) at the user's request. Returns when it
+/// is done, with the provider's new info. Fails with `UNKNOWN_PROVIDER`,
+/// `UNSUPPORTED` (no such action) or `PROVIDER_ERROR` (it failed; the
+/// message says why).
+#[derive(Debug)]
+pub enum RunAction {}
+impl Method for RunAction {
+    const NAME: &'static str = "agents/runAction";
+    type Params = RunActionParams;
+    type Result = ProviderInfo;
 }
 
 /// Params naming one session.

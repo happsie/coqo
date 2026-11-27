@@ -14,18 +14,34 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use coqo_acp_host::FsHandle;
 use coqo_kernel::mods::{BuiltinMods, ModManager, ModState};
 use coqo_kernel::{ContributionRegistry, ServiceRegistry};
+use coqo_storage::DataDirs;
 
 /// How long a mod may take to activate or deactivate before it is failed.
 const LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Overrides the setting "Use Claude plan logins through ACP"
+/// (`claude.acp.plan-logins`) with `0`, `false` or `off` until the settings
+/// store lands (#26).
+pub const CLAUDE_PLAN_LOGINS_ENV: &str = "COQO_CLAUDE_PLAN_LOGINS";
+
 /// The core mods linked into the daemon, and the contribution points their
-/// crates own.
-pub fn builtins() -> BuiltinMods {
+/// crates own. `data` is the daemon's data directory (Claude's ACP adapter
+/// is installed under it); agents read and write files through `agent_fs`.
+pub fn builtins(data: &DataDirs, agent_fs: &FsHandle) -> BuiltinMods {
+    let mut claude = coqo_agent_claude::ClaudeOptions::new(data.root());
+    claude.fs = agent_fs.clone();
+    claude.plan_logins = std::env::var(CLAUDE_PLAN_LOGINS_ENV)
+        .map_or(true, |v| !matches!(v.trim(), "0" | "false" | "off"));
     BuiltinMods::new()
         .with_point::<coqo_agents::AgentProviderImpls>()
         .with(coqo_mod_hello::MANIFEST, coqo_mod_hello::Hello::new())
+        .with(
+            coqo_agent_claude::MANIFEST,
+            coqo_agent_claude::ClaudeMod::new(claude),
+        )
 }
 
 /// The kernel registries and the mods running on them. Cheap to clone.
@@ -83,15 +99,21 @@ impl Mods {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use coqo_mod_api::points;
     use coqo_mod_api::serde_json::Value;
 
     use super::*;
 
+    /// The built-in mods, with data in `dir`.
+    pub(crate) fn test_builtins(dir: &std::path::Path) -> BuiltinMods {
+        builtins(&DataDirs::at(dir), &FsHandle::new())
+    }
+
     #[tokio::test]
     async fn hello_runs_in_the_daemon() {
-        let mods = Mods::load(builtins());
+        let dir = tempfile::tempdir().unwrap();
+        let mods = Mods::load(test_builtins(dir.path()));
         mods.start().await;
         let status = mods.manager.status();
         assert!(
@@ -110,6 +132,23 @@ mod tests {
         assert_eq!(
             mods.manager.run_command(&greet, Value::Null).await.unwrap(),
             "Hello, world!"
+        );
+        // Claude Code is a built-in provider, whether or not it is set up.
+        assert!(
+            status
+                .iter()
+                .any(|s| s.id.as_str() == "coqo.claude" && s.state == ModState::Active),
+            "{status:?}"
+        );
+        let providers = mods
+            .contributions
+            .contributions_of::<points::AgentProviders>()
+            .unwrap();
+        assert!(
+            providers
+                .iter()
+                .any(|p| p.id.as_str() == coqo_agent_claude::PROVIDER_ID),
+            "{providers:?}"
         );
 
         mods.shutdown().await;

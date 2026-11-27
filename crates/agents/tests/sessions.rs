@@ -1112,3 +1112,66 @@ async fn remembered_rules_answer_matching_requests_and_survive_a_restart() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn setup_status_and_actions_over_the_protocol() {
+    let install = ProviderAction {
+        id: "install".into(),
+        label: "Install the adapter".into(),
+        run: ProviderActionRun::Daemon,
+    };
+    let sign_in = ProviderAction {
+        id: "sign-in".into(),
+        label: "Open `claude` in a terminal".into(),
+        run: ProviderActionRun::Terminal {
+            program: "/usr/bin/claude".into(),
+            args: vec![],
+        },
+    };
+    let provider = ScriptedProvider::new()
+        .status(ProviderStatus {
+            ready: false,
+            message: Some("The adapter isn't installed".into()),
+            actions: vec![install],
+            sign_in: Some(sign_in.clone()),
+        })
+        .action(
+            "install",
+            Some(ProviderStatus {
+                sign_in: Some(sign_in),
+                ..ProviderStatus::ready()
+            }),
+        );
+    let d = daemon(SessionStore::open_in_memory().unwrap(), &provider);
+    let client = d.connect().await;
+
+    let listed = client.request::<Providers>(()).await.unwrap();
+    assert!(!listed[0].available, "not set up: not available");
+    assert_eq!(listed[0].status.as_ref().unwrap().actions[0].id, "install");
+
+    let info = client
+        .request::<RunAction>(RunActionParams {
+            provider: "fake".into(),
+            action: "install".into(),
+        })
+        .await
+        .unwrap();
+    assert!(info.available);
+    assert!(info.status.unwrap().ready);
+    assert_eq!(provider.calls(), [Call::RunAction("install".into())]);
+    assert_eq!(d.busy.held(), 0);
+
+    for (provider, action, code) in [
+        ("fake", "nope", app_codes::UNSUPPORTED),
+        ("nope", "install", app_codes::UNKNOWN_PROVIDER),
+    ] {
+        let err = client
+            .request::<RunAction>(RunActionParams {
+                provider: provider.into(),
+                action: action.into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(app_error(err), code);
+    }
+}

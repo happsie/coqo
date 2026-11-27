@@ -181,6 +181,13 @@ The model was the user's default (Opus 5.5, high effort), so prompt latency is t
   - Billing badge from `auth/status`; `--hide-claude-auth` setting as above.
   - Surface modes and `available_commands`.
   - Never ship the SDK or a `claude` binary.
+  - **As built (#56):** the `coqo.claude` built-in mod (`crates/agent-claude`, provider `claude-acp`). It lives in `crates/` rather than `mods/` because it needs `coqo-acp-host` and `coqo-agents`.
+    - The adapter goes into `<data>/claude-acp` (`npm install --prefix <dir> --omit=optional --save-exact`), and only when the user presses "Install Claude ACP adapter (npm)". That button is a daemon action in the provider's status (`agents/providers`), run through `agents/runAction`.
+    - Until the adapter is installed, the provider reports `available: false` together with a message.
+    - Coqo runs the adapter as `<node on PATH> <dir>/node_modules/.bin/claude-agent-acp`, so the Node.js it checked (≥ 22) is the one that runs it, whatever the script's `#!/usr/bin/env node` would find.
+    - **Curated environment:** the daemon's environment minus Claude Code session markers. Those are `CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_EFFORT`, `CLAUDE_AGENT_SDK_VERSION`, `AI_AGENT`, and every `CLAUDE_CODE_*`. A few `CLAUDE_CODE_*` variables are kept because they are user configuration: `CLAUDE_CODE_USE_*`, `_SKIP_*`, `_DISABLE_*`, `_CLIENT_*`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `_API_KEY_HELPER_TTL_MS`, `_SUBAGENT_MODEL` and `_EFFORT_LEVEL`. `CLAUDE_CODE_EXECUTABLE` is then set to the realpath of `claude`.
+    - **Sign-in action:** a terminal action that runs the `claude` found on `PATH` in a terminal tab in the workspace.
+    - **Plan-login setting:** the mod declares it as `claude.acp.plan-logins` (default on). Until the settings store (#26) exists, coqod reads it from `COQO_CLAUDE_PLAN_LOGINS=0|false|off`.
 - **#57 (terminal mode):** generate `--session-id <uuid>` and resume with `--resume <uuid>`. Put the generated `--mcp-config` file in the user-only runtime directory, with no secrets. Leave the trust dialog to the user. Start from a curated environment without inherited `CLAUDE*` markers.
 - **Follow-up:** evaluate MCP-over-ACP (`"type":"acp"`) for `coqo-editor` in ACP mode. It needs no extra process, and nothing would land on argv. The stdio `coqod mcp` stays the baseline because terminal mode needs it anyway.
 - **Re-check before 1.0 (#129):** the adapter's launch flags and `CLAUDE_CODE_EXECUTABLE` behaviour (they changed in SDK 0.3.326), the legal page, and the Agent SDK credit status.

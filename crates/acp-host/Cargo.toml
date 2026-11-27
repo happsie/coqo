@@ -35,6 +35,9 @@ tracing = "0.1"
 coqo-protocol = { path = "../protocol" }
 tempfile = "3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Workspace roots for the permission-rules test, as the workspace service
+# stores them.
+rusqlite = "0.43"
 
 [lints]
 workspace = true

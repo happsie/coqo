@@ -329,6 +329,11 @@ impl Render for Shell {
                     chat::open_location(this.dock.downgrade(), location, window, cx)
                 }),
             )
+            .on_action(
+                cx.listener(|this, action: &chat::RunInTerminal, window, cx| {
+                    chat::run_in_terminal(&this.dock, action, window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &chat::SessionSwitched, _, cx| this.schedule_save(cx)))
             .size_full()
             .flex()

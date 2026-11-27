@@ -7,7 +7,7 @@
 use coqo_protocol::Router;
 use coqo_protocol::methods::agents::{
     Cancel, Changes, Close, Create, DeletePermissionRule, Get, List, PermissionRules, Prompt,
-    Providers, RespondPermission, SetMode, Updates,
+    Providers, RespondPermission, RunAction, SetMode, Updates,
 };
 
 use crate::manager::SessionManager;
@@ -16,6 +16,7 @@ use crate::manager::SessionManager;
 pub fn register(router: Router, manager: SessionManager) -> Router {
     let m = manager;
     let providers = m.clone();
+    let run_action = m.clone();
     let list = m.clone();
     let get = m.clone();
     let create = m.clone();
@@ -32,6 +33,14 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
         .method::<Providers, _, _>(move |_, ()| {
             let r = providers.providers();
             async move { Ok(r) }
+        })
+        .method::<RunAction, _, _>(move |_, p| {
+            let m = run_action.clone();
+            async move {
+                m.run_action(&p.provider, p.action)
+                    .await
+                    .map_err(Into::into)
+            }
         })
         .method::<List, _, _>(move |_, p| {
             let r = list.list(&p).map_err(Into::into);

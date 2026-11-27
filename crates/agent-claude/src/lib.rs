@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! `coqo.claude`: Claude Code as an agent provider, through the Claude Agent
+//! ACP adapter and the user's own login (PLAN §7.3, ADR 0005).
+//!
+//! - **The user's own Claude Code.** Coqo finds `claude` on `PATH` and runs
+//!   the adapter with `CLAUDE_CODE_EXECUTABLE` set to it (symlinks
+//!   resolved). It never modifies or wraps `claude`, never reads its
+//!   credentials, never runs a login and never proxies its traffic. When
+//!   Claude Code is signed out the session fails with `AUTH_REQUIRED`, and
+//!   the provider's `sign_in` action opens a terminal running `claude` for
+//!   the user to `/login` there.
+//! - **The adapter** ([`ADAPTER_PACKAGE`] at the pinned [`ADAPTER_VERSION`])
+//!   is installed only when the user asks (the provider's install action,
+//!   `agents/runAction`), with `npm install --omit=optional` into
+//!   `<data dir>/claude-acp`. Coqo bundles neither the adapter, the Agent
+//!   SDK nor a `claude` binary, and `--omit=optional` skips the SDK's own
+//!   `claude` binaries. It needs Node.js [`MIN_NODE_MAJOR`] or newer.
+//! - **One adapter process per workspace**, run by the ACP host
+//!   (`coqo-acp-host`) under the kernel supervisor, with the daemon's
+//!   environment minus Claude Code session markers
+//!   ([`launch::is_session_marker`]): coqod may itself run inside a Claude
+//!   Code session, and its markers would break transcript saving and
+//!   resume.
+//! - **Plan logins:** the setting `claude.acp.plan-logins` ("Use Claude plan
+//!   logins through ACP", default on). When off, the adapter runs with
+//!   `--hide-claude-auth`.
+//! - **Billing badge, modes and commands** come from the adapter through the
+//!   ACP host: auth status reduced to kind, label and plan (no email or
+//!   organization), session modes, and the available slash commands and
+//!   skills.
+//!
+//! This is a built-in core mod, but it lives in `crates/`, not `mods/`: it
+//! needs the daemon's ACP host and agent runtime, and `mods/` crates may
+//! depend only on `coqo-mod-api`.
+
+pub mod detect;
+pub mod launch;
+mod provider;
+
+use std::sync::Arc;
+
+use coqo_agents::register_provider;
+use coqo_mod_api::contrib::{AgentProviderInfo, AgentProviderKind};
+use coqo_mod_api::{BoxFuture, Manifest, Mod, ModContext, ModError};
+
+pub use provider::{ClaudeOptions, ClaudeProvider, status};
+
+/// The mod's `coqo.mod.toml`.
+pub const MANIFEST: &str = include_str!("../coqo.mod.toml");
+
+/// The provider id.
+pub const PROVIDER_ID: &str = "claude-acp";
+
+/// The npm package of the Claude Agent ACP adapter.
+pub const ADAPTER_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp";
+
+/// The adapter version Coqo installs and runs (ADR 0005 pins it).
+pub const ADAPTER_VERSION: &str = "0.113.0";
+
+/// The adapter's executable in `node_modules/.bin`.
+pub const ADAPTER_BIN: &str = "claude-agent-acp";
+
+/// The oldest Node.js major the adapter runs on.
+pub const MIN_NODE_MAJOR: u32 = 22;
+
+/// The daemon action that installs the adapter.
+pub const INSTALL_ACTION: &str = "install-adapter";
+
+/// The setting "Use Claude plan logins through ACP".
+pub const PLAN_LOGINS_SETTING: &str = "claude.acp.plan-logins";
+
+/// The parsed, validated [`MANIFEST`].
+pub fn manifest() -> Manifest {
+    Manifest::from_toml_str(MANIFEST).expect("coqo.claude's manifest is valid")
+}
+
+/// The provider's metadata in `agent_providers`.
+pub fn provider_info() -> AgentProviderInfo {
+    AgentProviderInfo {
+        id: PROVIDER_ID.parse().expect("a valid id"),
+        name: "Claude Code".into(),
+        kind: AgentProviderKind::Acp,
+        description: Some("Your own Claude Code and login, through the ACP adapter".into()),
+    }
+}
+
+/// The mod: registers [`ClaudeProvider`] as `claude-acp`.
+#[derive(Debug)]
+pub struct ClaudeMod {
+    options: ClaudeOptions,
+}
+
+impl ClaudeMod {
+    /// The mod, with the provider's `options`.
+    pub fn new(options: ClaudeOptions) -> Self {
+        Self { options }
+    }
+}
+
+impl Mod for ClaudeMod {
+    fn activate(&self, cx: ModContext) -> BoxFuture<'_, Result<(), ModError>> {
+        Box::pin(async move {
+            let provider = ClaudeProvider::new(self.options.clone());
+            register_provider(&cx, provider_info(), Arc::new(provider))
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use coqo_mod_api::manifest::Tier;
+
+    #[test]
+    fn the_manifest_is_a_core_mod_with_the_plan_logins_setting() {
+        let m = manifest();
+        assert_eq!(m.id.as_str(), "coqo.claude");
+        assert_eq!(m.tier, Tier::Core);
+        assert!(MANIFEST.contains(PLAN_LOGINS_SETTING));
+    }
+}

@@ -200,7 +200,7 @@ pub async fn serve(
     let (idle_tx, idle_rx) = watch::channel(IdlePhase::Active);
     let shutdown = CancellationToken::new();
     let agent_fs = coqo_acp_host::FsHandle::new();
-    let mods = Mods::load(mods::builtins());
+    let mods = Mods::load(mods::builtins(&data, &agent_fs));
     mods.start().await;
     let ctx = DaemonContext {
         paths: paths.clone(),
