@@ -12,8 +12,8 @@
 //!   connection; each connection has a new **generation**, and sessions
 //!   reattach (`session/resume`, else `session/load`) when they find a newer
 //!   one than they were started on.
-//! - Agent → client traffic (updates, permission requests, `fs/*`, auth
-//!   status) is routed by ACP session id. Updates for a session that is not
+//! - Agent → client traffic (updates, permission requests, `fs/*`,
+//!   `terminal/*`, auth status) is routed by ACP session id. Updates for a session that is not
 //!   registered yet (they can race the `session/new` response) are held and
 //!   delivered on registration.
 
@@ -39,6 +39,7 @@ use tokio_util::sync::CancellationToken;
 use crate::convert;
 use crate::fs::{self, FsHandle};
 use crate::provider::{AcpOptions, AgentCommand};
+use crate::terminal::{self, AgentTerminal, TerminalExit, TerminalHandle, TerminalRequest};
 
 /// Updates held per session that is not registered yet.
 const EARLY_PER_SESSION: usize = 256;
@@ -74,10 +75,30 @@ pub(crate) struct Route {
     pub auth_sent: Option<AuthStatus>,
 }
 
+/// A terminal an agent created (`terminal/create`).
+struct AgentTerm {
+    /// The ACP session that owns it.
+    session: String,
+    /// The connection it was created on.
+    generation: u64,
+    term: Arc<dyn AgentTerminal>,
+    /// `outputByteLimit`.
+    limit: Option<u64>,
+    /// `terminal/release` was called (or the connection ended): the id is
+    /// no longer valid for `terminal/*`.
+    released: bool,
+    /// A tool call shows it, so it stays (exited) after release until the
+    /// session closes, for the transcript's link.
+    shown: bool,
+}
+
 /// State shared by every process and connection of one host.
 pub(crate) struct Shared {
     name: String,
     fs: FsHandle,
+    terminals: TerminalHandle,
+    /// Agent terminals by ACP terminal id.
+    terms: Mutex<HashMap<String, AgentTerm>>,
     routes: Mutex<HashMap<String, Route>>,
     early: Mutex<HashMap<String, Vec<acp::SessionUpdate>>>,
     auth: Mutex<Option<AuthStatus>>,
@@ -101,7 +122,55 @@ impl Shared {
         }
     }
 
-    fn deliver(&self, route: &mut Route, update: &acp::SessionUpdate) {
+    /// Points `update`'s terminal content at the daemon terminal: the agent
+    /// names terminals by the ACP id it got from `terminal/create`. Content
+    /// naming a terminal this session did not create (or one from before a
+    /// restart, in replayed history) is dropped.
+    fn map_terminals(&self, id: &str, update: &mut AgentUpdate) {
+        match update {
+            AgentUpdate::ToolCall(tc) => self.map_terminal_content(id, &mut tc.content),
+            AgentUpdate::ToolCallUpdate(u) => {
+                if let Some(content) = &mut u.content {
+                    self.map_terminal_content(id, content);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn map_terminal_content(
+        &self,
+        id: &str,
+        content: &mut Vec<coqo_agents::model::ToolCallContent>,
+    ) {
+        use coqo_agents::model::ToolCallContent;
+
+        if !content
+            .iter()
+            .any(|c| matches!(c, ToolCallContent::Terminal { .. }))
+        {
+            return;
+        }
+        let mut terms = lock(&self.terms);
+        content.retain_mut(|c| {
+            let ToolCallContent::Terminal { terminal_id } = c else {
+                return true;
+            };
+            match terms
+                .get_mut(terminal_id.as_str())
+                .filter(|t| t.session == id)
+            {
+                Some(t) => {
+                    t.shown = true;
+                    *terminal_id = t.term.id();
+                    true
+                }
+                None => false,
+            }
+        });
+    }
+
+    fn deliver(&self, id: &str, route: &mut Route, update: &acp::SessionUpdate) {
         if route.replay == Replay::Drop {
             return;
         }
@@ -115,7 +184,10 @@ impl Shared {
             _ => {}
         }
         match convert::update(update) {
-            Some(u) => route.events.update(u),
+            Some(mut u) => {
+                self.map_terminals(id, &mut u);
+                route.events.update(u);
+            }
             None => {
                 tracing::trace!(agent = %self.name, "ignoring a session update Coqo does not show")
             }
@@ -126,7 +198,7 @@ impl Shared {
         let id = n.session_id.0.to_string();
         let mut routes = lock(&self.routes);
         if let Some(route) = routes.get_mut(&id) {
-            self.deliver(route, &n.update);
+            self.deliver(&id, route, &n.update);
             return;
         }
         drop(routes);
@@ -146,7 +218,7 @@ impl Shared {
         let mut routes = lock(&self.routes);
         let held = lock(&self.early).remove(id).unwrap_or_default();
         for update in &held {
-            self.deliver(&mut route, update);
+            self.deliver(id, &mut route, update);
         }
         if route.replay == Replay::Live {
             self.send_auth(&mut route);
@@ -166,6 +238,40 @@ impl Shared {
     pub(crate) fn unregister(&self, id: &str) {
         lock(&self.routes).remove(id);
         lock(&self.early).remove(id);
+        let mut gone = Vec::new();
+        lock(&self.terms).retain(|_, t| {
+            if t.session == id {
+                gone.push(Arc::clone(&t.term));
+                false
+            } else {
+                true
+            }
+        });
+        for term in gone {
+            term.close();
+        }
+    }
+
+    /// The connection `generation` ended, so its terminal ids are dead:
+    /// kills what still runs and frees what no tool call shows.
+    fn end_terminals(&self, generation: u64) {
+        let mut gone = Vec::new();
+        lock(&self.terms).retain(|_, t| {
+            if t.generation != generation || t.released {
+                return true;
+            }
+            t.released = true;
+            if t.shown {
+                t.term.kill();
+                true
+            } else {
+                gone.push(Arc::clone(&t.term));
+                false
+            }
+        });
+        for term in gone {
+            term.close();
+        }
     }
 
     pub(crate) fn sessions(&self) -> usize {
@@ -234,7 +340,11 @@ impl Shared {
                     if let Some(content) = &req.tool_call.fields.content {
                         self.announce(route, content);
                     }
-                    route.events.request_permission(convert::permission(&req))
+                    let mut ask = convert::permission(&req);
+                    if let Some(content) = ask.tool_call.as_mut().and_then(|t| t.content.as_mut()) {
+                        self.map_terminal_content(&id, content);
+                    }
+                    route.events.request_permission(ask)
                 })
         };
         let Some(answer) = answer else {
@@ -299,6 +409,105 @@ impl Shared {
         tokio::fs::write(&path, &req.content)
             .await
             .map_err(|e| format!("cannot write {}: {e}", req.path.display()))
+    }
+
+    /// `terminal/create`: runs the command in a daemon terminal, in the
+    /// session's working directory or `cwd` if that is inside the workspace.
+    fn create_terminal(
+        &self,
+        req: &acp::CreateTerminalRequest,
+        generation: u64,
+    ) -> Result<acp::CreateTerminalResponse, String> {
+        let backend = self
+            .terminals
+            .get()
+            .ok_or("this client does not run terminals")?;
+        let session = req.session_id.0.to_string();
+        let (coqo, roots, cwd) = {
+            let routes = lock(&self.routes);
+            let route = routes
+                .get(&session)
+                .filter(|r| r.replay == Replay::Live)
+                .ok_or_else(|| format!("unknown session {session}"))?;
+            let cwd = req.cwd.clone().unwrap_or_else(|| route.cwd.clone());
+            (route.coqo.clone(), self.roots(route), cwd)
+        };
+        let cwd = fs::inside(&cwd, &roots).map_err(|e| e.to_string())?;
+        if !cwd.is_dir() {
+            return Err(format!("{} is not a directory", cwd.display()));
+        }
+        let term = backend.create(TerminalRequest {
+            session: coqo,
+            agent: self.name.clone(),
+            command: req.command.clone(),
+            args: req.args.clone(),
+            env: req
+                .env
+                .iter()
+                .map(|v| (v.name.clone(), v.value.clone()))
+                .collect(),
+            cwd,
+        })?;
+        let id = format!("term-{}", term.id());
+        tracing::debug!(agent = %self.name, terminal = %id, "agent terminal created");
+        lock(&self.terms).insert(
+            id.clone(),
+            AgentTerm {
+                session,
+                generation,
+                term,
+                limit: req.output_byte_limit,
+                released: false,
+                shown: false,
+            },
+        );
+        Ok(acp::CreateTerminalResponse::new(id))
+    }
+
+    /// `session`'s terminal `id`, unless it was released, and its output
+    /// limit.
+    fn terminal(
+        &self,
+        session: &acp::SessionId,
+        id: &acp::TerminalId,
+    ) -> Result<(Arc<dyn AgentTerminal>, Option<u64>), String> {
+        let terms = lock(&self.terms);
+        terms
+            .get(&*id.0)
+            .filter(|t| *t.session == *session.0 && !t.released)
+            .map(|t| (Arc::clone(&t.term), t.limit))
+            .ok_or_else(|| format!("unknown terminal {}", id.0))
+    }
+
+    fn terminal_output(
+        &self,
+        req: &acp::TerminalOutputRequest,
+    ) -> Result<acp::TerminalOutputResponse, String> {
+        let (term, limit) = self.terminal(&req.session_id, &req.terminal_id)?;
+        // The status first: output read after an exit is complete.
+        let exit = term.exit_status();
+        let out = term.output();
+        let (text, cut) = terminal::truncate(out.text, limit);
+        Ok(acp::TerminalOutputResponse::new(text, cut || out.truncated)
+            .exit_status(exit.map(exit_status)))
+    }
+
+    /// `terminal/release`: kills the command and frees the id. A terminal a
+    /// tool call shows stays, exited, until the session closes.
+    fn release_terminal(&self, req: &acp::ReleaseTerminalRequest) -> Result<(), String> {
+        self.terminal(&req.session_id, &req.terminal_id)?;
+        let mut terms = lock(&self.terms);
+        let Some(t) = terms.get_mut(&*req.terminal_id.0) else {
+            return Ok(());
+        };
+        t.released = true;
+        if t.shown {
+            t.term.kill();
+        } else if let Some(t) = terms.remove(&*req.terminal_id.0) {
+            drop(terms);
+            t.term.close();
+        }
+        Ok(())
     }
 
     fn stderr_tail(&self) -> String {
@@ -462,7 +671,7 @@ async fn run(
         };
         let generation = shared.generation.fetch_add(1, Ordering::Relaxed) + 1;
         state.send_replace(ConnState::Starting);
-        tokio::select! {
+        let stopped = tokio::select! {
             result = connect(io, generation, Arc::clone(&shared), &state, &options) => {
                 if let Err(e) = result {
                     tracing::info!(agent = %options.name, error = %e, "the agent connection ended");
@@ -470,8 +679,13 @@ async fn run(
                 // Until the supervisor hands over the next instance (or
                 // gives up), there is no connection.
                 state.send_replace(ConnState::Starting);
+                false
             }
-            () = stop.cancelled() => break,
+            () = stop.cancelled() => true,
+        };
+        shared.end_terminals(generation);
+        if stopped {
+            break;
         }
     }
     // Stopped on purpose (last session closed, provider dropped). Agents
@@ -502,6 +716,14 @@ async fn connect(
     let client_name = options.client_name.clone();
     let client_version = options.client_version.clone();
     let start_timeout = options.start_timeout;
+    let terminals = shared.terminals.get().is_some();
+    let (on_create, on_output, on_wait, on_kill, on_release) = (
+        Arc::clone(&shared),
+        Arc::clone(&shared),
+        Arc::clone(&shared),
+        Arc::clone(&shared),
+        Arc::clone(&shared),
+    );
     Client
         .v1()
         .name("coqo")
@@ -564,6 +786,64 @@ async fn connect(
             },
             agent_client_protocol::on_receive_request!(),
         )
+        .on_receive_request(
+            async move |req: acp::CreateTerminalRequest, responder, _cx| match on_create
+                .create_terminal(&req, generation)
+            {
+                Ok(r) => responder.respond(r),
+                Err(e) => responder.respond_with_error(request_error(e)),
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: acp::TerminalOutputRequest, responder, _cx| match on_output
+                .terminal_output(&req)
+            {
+                Ok(r) => responder.respond(r),
+                Err(e) => responder.respond_with_error(request_error(e)),
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: acp::WaitForTerminalExitRequest, responder, cx| {
+                let term = match on_wait.terminal(&req.session_id, &req.terminal_id) {
+                    Ok((term, _)) => term,
+                    Err(e) => return responder.respond_with_error(request_error(e)),
+                };
+                // Waiting must not hold the dispatch loop.
+                cx.spawn(async move {
+                    let exit = term.wait().await;
+                    if let Err(e) =
+                        responder.respond(acp::WaitForTerminalExitResponse::new(exit_status(exit)))
+                    {
+                        tracing::debug!(error = %e, "cannot answer terminal/wait_for_exit");
+                    }
+                    Ok(())
+                })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: acp::KillTerminalRequest, responder, _cx| match on_kill
+                .terminal(&req.session_id, &req.terminal_id)
+            {
+                Ok((term, _)) => {
+                    term.kill();
+                    responder.respond(acp::KillTerminalResponse::new())
+                }
+                Err(e) => responder.respond_with_error(request_error(e)),
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: acp::ReleaseTerminalRequest, responder, _cx| match on_release
+                .release_terminal(&req)
+            {
+                Ok(()) => responder.respond(acp::ReleaseTerminalResponse::new()),
+                Err(e) => responder.respond_with_error(request_error(e)),
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
         .connect_with(transport, async move |cx: ConnectionTo<Agent>| {
             let init = tokio::time::timeout(
                 start_timeout,
@@ -574,7 +854,8 @@ async fn connect(
                                 .fs(acp::FileSystemCapabilities::new()
                                     .read_text_file(true)
                                     .write_text_file(true))
-                                .plan(acp::PlanCapabilities::new()),
+                                .plan(acp::PlanCapabilities::new())
+                                .terminal(terminals),
                         )
                         .client_info(acp::Implementation::new(client_name, client_version)),
                 )
@@ -605,7 +886,17 @@ async fn connect(
 }
 
 fn fs_error(message: String) -> agent_client_protocol::Error {
+    request_error(message)
+}
+
+fn request_error(message: String) -> agent_client_protocol::Error {
     agent_client_protocol::Error::invalid_params().data(message)
+}
+
+fn exit_status(exit: TerminalExit) -> acp::TerminalExitStatus {
+    acp::TerminalExitStatus::new()
+        .exit_code(exit.code)
+        .signal(exit.signal)
 }
 
 /// Every session of one workspace, and the agent process serving them.
@@ -628,11 +919,13 @@ impl Drop for Starting<'_> {
 }
 
 impl Host {
-    pub(crate) fn new(name: String, fs: FsHandle) -> Self {
+    pub(crate) fn new(name: String, fs: FsHandle, terminals: TerminalHandle) -> Self {
         Self {
             shared: Arc::new(Shared {
                 name,
                 fs,
+                terminals,
+                terms: Mutex::default(),
                 routes: Mutex::default(),
                 early: Mutex::default(),
                 auth: Mutex::default(),

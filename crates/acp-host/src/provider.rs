@@ -23,6 +23,7 @@ use coqo_mod_api::BoxFuture;
 use crate::convert;
 use crate::fs::FsHandle;
 use crate::host::{Conn, Host, Replay, Route};
+use crate::terminal::TerminalHandle;
 
 /// How to start an agent process.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,6 +95,9 @@ pub struct AcpOptions {
     pub capabilities: ProviderCapabilities,
     /// Where `fs/*` and announced edits go.
     pub fs: FsHandle,
+    /// Where `terminal/*` commands run. Offered to agents (the `terminal`
+    /// client capability) only if set when they connect.
+    pub terminals: TerminalHandle,
     /// Restarts of a crashed agent process.
     pub restart: RestartPolicy,
     /// How long the agent may take to start and answer `initialize`.
@@ -119,6 +123,7 @@ impl AcpOptions {
                 embedded_context: true,
             },
             fs: FsHandle::new(),
+            terminals: TerminalHandle::new(),
             restart: RestartPolicy::default(),
             start_timeout: Duration::from_secs(60),
             request_timeout: Duration::from_secs(120),
@@ -147,6 +152,7 @@ impl Inner {
             Arc::new(Host::new(
                 self.options.name.clone(),
                 self.options.fs.clone(),
+                self.options.terminals.clone(),
             ))
         }))
     }

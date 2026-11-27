@@ -20,11 +20,15 @@
 //! let code = term.wait().await;
 //! ```
 //!
+//! ACP agents' commands (`terminal/create` from the agent) run here too,
+//! through [`AgentTerminalService`] (issue #185).
+//!
 //! Processes are killed (their process group and the PTY's foreground job)
 //! by [`Terminals::close`], and all of them by [`Terminals::shutdown`] or when
 //! the last [`Terminals`] handle is dropped. If the daemon dies outright, the
 //! kernel hangs up the PTYs.
 
+mod agent;
 mod osc;
 mod render;
 mod session;
@@ -44,6 +48,7 @@ use coqo_protocol::{Access, ErrorObject, Router};
 
 use crate::{Activity, DaemonContext};
 
+pub use agent::{AgentTerminalService, SessionTitle};
 pub use session::Terminal;
 
 /// What to run in a new terminal.
@@ -173,10 +178,23 @@ impl Terminals {
 
     /// The daemon's terminals: each running one holds a busy guard (so the
     /// daemon doesn't idle-exit under it), and all are killed when the
-    /// daemon shuts down. Call inside the daemon's runtime.
+    /// daemon shuts down. Call inside the daemon's runtime, **once**: the
+    /// `terminal/*` routes and the agents' terminals share the result.
+    ///
+    /// Ids are not reused by a later daemon (they start from the start
+    /// time), so a saved layout or a chat transcript naming a terminal of an
+    /// earlier run never reaches a new one.
     pub fn for_daemon(ctx: &DaemonContext) -> Self {
         let terminals = Self::default();
-        terminals.lock().activity = Some(ctx.activity.clone());
+        {
+            let mut r = terminals.lock();
+            r.activity = Some(ctx.activity.clone());
+            r.next = ctx
+                .started_at
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0))
+                .saturating_mul(1000);
+        }
         let on_shutdown = terminals.clone();
         let token = ctx.shutdown.clone();
         tokio::spawn(async move {

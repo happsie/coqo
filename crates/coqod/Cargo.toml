@@ -17,6 +17,14 @@ path = "src/main.rs"
 # The library has the same name; document only the library.
 doc = false
 
+# The scripted ACP agent from coqo-acp-host, standing in for a real agent in
+# this crate's integration tests (agents' terminals, #185).
+[[bin]]
+name = "coqod-fake-acp-agent"
+path = "src/bin/fake_acp_agent.rs"
+test = false
+doc = false
+
 [dependencies]
 # Terminal emulation (grid, scrollback, escape sequences). Apache-2.0; the
 # crate Alacritty and Zed use.

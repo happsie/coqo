@@ -40,7 +40,7 @@ use coqo_protocol::methods::{
         Providers, RunAction, RunActionParams, SessionId, SessionInfo,
     },
     codes as app_codes,
-    terminal::SpawnParams,
+    terminal::{SpawnParams, TerminalId},
 };
 use coqo_ui::{
     ActiveTokens as _, Rgb,
@@ -92,6 +92,14 @@ coqo_ui::gpui::actions!(
 pub struct OpenLocation {
     pub path: String,
     pub line: Option<u32>,
+}
+
+/// Open daemon terminal `id`, where an agent's command runs (ACP
+/// `terminal/*`, #185), in a terminal tab.
+#[derive(Clone, Debug, PartialEq, Eq, Action)]
+#[action(namespace = chat, no_json)]
+pub struct OpenTerminal {
+    pub id: u64,
 }
 
 /// Run a provider's sign-in program (such as `claude`, to `/login` there) in
@@ -353,6 +361,26 @@ pub fn run_in_terminal(
         ..SpawnParams::default()
     };
     crate::terminal::open_with(dock, params, window, cx);
+}
+
+/// Show terminal `action.id` in its tab, opening one if none shows it.
+pub fn open_terminal(
+    dock: &Entity<Dock>,
+    action: &OpenTerminal,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let key = format!("terminal:{}", action.id);
+    if let Some(id) = dock.read(cx).find_tab(crate::terminal::KIND, &key, cx) {
+        dock.update(cx, |dock, cx| dock.activate_tab(id, window, cx));
+        return;
+    }
+    let Some(tab) = crate::terminal::tab(TerminalId(action.id), cx) else {
+        return;
+    };
+    dock.update(cx, |dock, cx| {
+        dock.open_tab(tab, window, cx);
+    });
 }
 
 /// Start a chat in the open workspace with the first available provider,

@@ -74,6 +74,8 @@ struct Inner {
     #[cfg(not(unix))]
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     status: watch::Sender<TerminalStatus>,
+    /// The signal that ended the process (as the OS describes it), if one did.
+    signal: Mutex<Option<String>>,
     /// Set by `close`, so subscriptions end.
     closed: watch::Sender<bool>,
     /// Keeps the daemon awake while the process runs.
@@ -236,6 +238,7 @@ impl Terminal {
             #[cfg(not(unix))]
             killer: Mutex::new(killer),
             status: watch::channel(TerminalStatus::Running).0,
+            signal: Mutex::new(None),
             closed: watch::channel(false).0,
             busy: Mutex::new(busy),
         });
@@ -257,6 +260,7 @@ impl Terminal {
             Box::new(move || {
                 read_loop(&t, reader);
                 let status = child.wait().ok();
+                *lock(&t.signal) = status.as_ref().and_then(|s| s.signal().map(str::to_owned));
                 t.exited(status.as_ref().and_then(exit_code));
             }),
         )?;
@@ -362,6 +366,20 @@ impl Terminal {
         render::screen(&self.0.lock().term)
     }
 
+    /// Everything printed so far, scrollback included, as plain text (see
+    /// [`render::text`]), and whether the scrollback is full, so the start
+    /// may be lost.
+    pub fn text(&self) -> (String, bool) {
+        let st = self.0.lock();
+        render::text(&st.term, SCROLLBACK)
+    }
+
+    /// The signal that ended the process, as the OS names it ("Killed"),
+    /// if one did.
+    pub fn exit_signal(&self) -> Option<String> {
+        lock(&self.0.signal).clone()
+    }
+
     /// Output events after `since` (see `coqo_protocol::subscription`). The
     /// feed ends when the terminal is closed.
     pub fn subscribe(
@@ -386,6 +404,12 @@ impl Terminal {
     /// after a grace period. Subscriptions end.
     pub fn kill(&self) {
         self.0.closed.send_replace(true);
+        self.terminate();
+    }
+
+    /// End the process like [`kill`](Self::kill), but keep the terminal
+    /// attached: subscriptions go on and see it exit.
+    pub fn terminate(&self) {
         if matches!(self.status(), TerminalStatus::Exited { .. }) {
             return;
         }

@@ -273,7 +273,7 @@ async fn streams_a_turn_with_modes_commands_auth_and_usage() {
         "{text}"
     );
 
-    // What the agent was told: fs and plan, no terminal, no auth flow; the
+    // What the agent was told: fs and plan, no terminal (no backend set), no auth flow; the
     // session's cwd and MCP servers.
     let init = &env.logged("initialize")[0];
     let caps = &init["clientCapabilities"];

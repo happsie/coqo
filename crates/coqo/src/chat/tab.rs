@@ -44,7 +44,8 @@ use coqo_ui::{
 };
 
 use super::{
-    CancelTurn, KIND, OpenLocation, RunInTerminal, SIGN_IN_HELP, agent_dot, attention_label,
+    CancelTurn, KIND, OpenLocation, OpenTerminal, RunInTerminal, SIGN_IN_HELP, agent_dot,
+    attention_label,
     diff::{DiffLine, DiffPreview, LineKind, file_name},
     list::ChatList,
     state_color, state_name,
@@ -854,6 +855,43 @@ impl ChatTab {
             .font_family(m.font_mono.clone())
             .text_size(px(12.))
             .child(header);
+        // An agent's command in a daemon terminal: open it in a tab (shown
+        // collapsed too, so a running command is one click away).
+        let terminals: Vec<u64> = call
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                ToolCallContent::Terminal { terminal_id } => terminal_id.parse().ok(),
+                _ => None,
+            })
+            .collect();
+        if !terminals.is_empty() {
+            card = card.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .px(px(14.))
+                    .pb(px(9.))
+                    .children(terminals.into_iter().enumerate().map(|(n, id)| {
+                        let focus = self.focus.clone();
+                        div()
+                            .id(ElementId::Name(format!("chat-terminal-{ix}-{n}").into()))
+                            .test_support()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_color(p.blue.hsla())
+                            .cursor_pointer()
+                            .child(icon(Icon::Terminal, px(12.), p.blue.hsla()))
+                            .child("Open terminal")
+                            .on_click(move |_, window, cx| {
+                                window.focus(&focus, cx);
+                                window.dispatch_action(Box::new(OpenTerminal { id }), cx);
+                            })
+                    })),
+            );
+        }
         if open {
             let mut body = div().flex().flex_col().gap_2().px(px(14.)).pb(px(10.));
             if !call.locations.is_empty() {
@@ -889,10 +927,7 @@ impl ChatTab {
                 .iter()
                 .filter_map(|c| match c {
                     ToolCallContent::Content { content } => Some(block_text(content)),
-                    ToolCallContent::Terminal { terminal_id } => {
-                        Some(format!("(output in terminal {terminal_id})"))
-                    }
-                    ToolCallContent::Diff { .. } => None,
+                    ToolCallContent::Terminal { .. } | ToolCallContent::Diff { .. } => None,
                 })
                 .collect();
             if !output.is_empty() {

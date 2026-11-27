@@ -173,6 +173,14 @@ The model was the user's default (Opus 5.5, high effort), so prompt latency is t
   - Handle `UntypedMessage` for `_auth/status_update` and future extensions.
   - Advertise `fs`, `plan` and (optionally) `terminal`, but don't rely on `fs/*` for Claude: add a workspace file watcher.
   - Run one adapter process per workspace with many sessions. Reattach with `session/resume` and fall back to `session/load`.
+  - **As built (#185): client terminals.** When the daemon's terminals are wired in (`TerminalHandle`, late-bound like `FsHandle`), `initialize` advertises `clientCapabilities.terminal`, and `terminal/create`, `output`, `wait_for_exit`, `kill` and `release` run in daemon PTYs (ADR 0009). These PTYs are listed in `terminal/list`, titled `<session title>: <command>`, and the user can open them as terminal tabs.
+    - The host refuses a `cwd` outside the session's workspace roots or one that isn't a directory. It applies `outputByteLimit` from the start of the output, at a character boundary.
+    - A command with no `args` runs as `/bin/sh -c <command>`; with args, it runs as program plus args. `PAGER` and `GIT_PAGER` are set to `cat` unless the agent sets them.
+    - The output is the emulator's grid as plain text: scrollback plus screen, wrapped rows joined, no escape sequences. It is reported `truncated` once the 10 000-line scrollback is full.
+    - Tool-call `terminal` content is rewritten from the ACP id (`term-<n>`) to the daemon terminal id, so the chat card shows an **Open terminal** link. Content naming a terminal the session didn't create (or one from replayed history) is dropped.
+    - `terminal/release` frees a terminal at once, unless a tool call shows it. Then the terminal stays, exited, so the link keeps working, until the session closes. Closing a session, or losing its agent connection, kills and frees its terminals.
+    - Permission prompts are unchanged: the agent asks before it runs a command, and Coqo never answers for the user.
+    - **Claude:** adapter 0.113.0 never sends `terminal/*`. Its Bash tool runs inside Claude Code, and the only terminal-shaped output it knows is the Zed-style `_meta.terminal_info` / `terminal_output` display extension. It sends that only when the client advertises `_meta.terminal_output`, which Coqo doesn't. Advertising `terminal: true` therefore changes nothing for Claude: Bash output stays text in the tool-call card. Coqo advertises it to every ACP agent (Claude included), because agents that do use client terminals (other ACP agents) get live, killable terminal tabs from it.
   - Start the adapter with a curated environment and supervise its exits. Treat an exit after close as normal.
 - **#56 (agent-claude via ACP)**, guidance:
   - Detect `claude` on `PATH`, plus Node ≥ 22.
