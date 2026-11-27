@@ -53,6 +53,7 @@ use crate::{
         view::{self as alert_view, CenterActions},
     },
     chat::{agent_dot, status_line},
+    shell::Shell,
     welcome::shortcut,
     windows,
     workspace::{self, KnownWorkspaces, Workspaces, initials, prompt_open_folder_in},
@@ -106,7 +107,9 @@ impl Dot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RailEvent {
     /// Open where an alert points (the alert center's row was clicked).
-    OpenAlert(Alert),
+    OpenAlert(Box<Alert>),
+    /// Show the agents overview (its button was clicked).
+    ShowAgents,
 }
 
 /// A click on the bell this soon after the alert center closed by a click
@@ -251,7 +254,7 @@ impl Rail {
     /// Open where `alert` points: the window does it.
     fn open_alert(&mut self, alert: Alert, cx: &mut Context<Self>) {
         self.alerts_open = false;
-        cx.emit(RailEvent::OpenAlert(alert));
+        cx.emit(RailEvent::OpenAlert(Box::new(alert)));
         cx.notify();
     }
 
@@ -337,7 +340,7 @@ impl Rail {
 }
 
 impl Render for Rail {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let list = self.list(cx);
         let current = self.workspaces.read(cx).current().map(|w| w.id.clone());
         let activity = AgentActivity::global(cx);
@@ -379,12 +382,47 @@ impl Render for Rail {
                     .on_click(move |_, _, cx| prompt_open_folder_in(open_folder.clone(), cx)),
             )
             .child(div().flex_1())
+            .child(self.render_agents(window, cx))
             .child(self.render_bell(cx))
             .child(rail_button("settings", cx).child(icon(Icon::Settings, px(20.), muted)))
     }
 }
 
 impl Rail {
+    /// The agents overview button (board 6): lit in sage while the overview
+    /// is on screen.
+    fn render_agents(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let lit = Shell::of_window(window.window_handle(), cx)
+            .is_some_and(|shell| shell.read(cx).agents_shown(cx));
+        let t = cx.tokens();
+        let p = t.palette.clone();
+        let light = t.appearance == Appearance::Light;
+        let key: SharedString = shortcut(crate::agents::SHOW_AGENTS_LABEL);
+        let button = rail_button("rail-agents", cx)
+            .cursor_pointer()
+            .hover(|s| s.bg(p.surface.hsla()))
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(RailEvent::ShowAgents)))
+            .tooltip(move |_, cx| {
+                let key = key.clone();
+                cx.new(|_| RailTooltip {
+                    name: "Agents overview".into(),
+                    key: Some(key),
+                    sessions: Vec::new(),
+                })
+                .into()
+            });
+        let button = if lit {
+            workspace_surface(button, true, &p, light).child(icon(
+                Icon::LayoutGrid,
+                px(20.),
+                p.text.hsla(),
+            ))
+        } else {
+            button.child(icon(Icon::LayoutGrid, px(20.), p.text_muted.hsla()))
+        };
+        button.test_support().into_any_element()
+    }
+
     /// The bell, its unread badge, and the alert center when open.
     fn render_bell(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.tokens();

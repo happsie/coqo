@@ -117,6 +117,11 @@ impl AgentActivity {
         WorkspaceActivity::of(self.sessions.values(), workspace)
     }
 
+    /// Every open session, in no order (the agents overview sorts them).
+    pub fn sessions(&self) -> impl Iterator<Item = &SessionInfo> {
+        self.sessions.values()
+    }
+
     /// One open session's latest info.
     pub fn info(&self, id: &SessionId) -> Option<&SessionInfo> {
         self.sessions.get(id)

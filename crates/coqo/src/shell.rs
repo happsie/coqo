@@ -44,6 +44,10 @@ use coqo_ui::{
 
 use crate::{
     activity,
+    agents::{
+        self, AgentTarget,
+        away::{self, BannerActions, Presence},
+    },
     alerts::{self, AlertCenter, Raised, TOAST_FOR},
     chat,
     daemon::{self, Daemon, DaemonEvent},
@@ -86,6 +90,7 @@ pub fn init(cx: &mut App) {
     alerts::init(cx);
     crate::diff::init(cx);
     crate::walkthrough::init(cx);
+    agents::init(cx);
 }
 
 /// The drag payload of the sidebar's resize edge.
@@ -117,6 +122,8 @@ pub struct Shell {
     _toast_timer: Option<Task<()>>,
     /// An alert to open once the window shows its workspace.
     pending_alert: Option<Alert>,
+    /// An agents overview step to take once the window shows its workspace.
+    pending_agent: Option<(WorkspaceId, AgentTarget)>,
     /// The current workspace's questions, for the popovers of questions an
     /// agent starts waiting for.
     _questions: Option<Subscription>,
@@ -174,6 +181,7 @@ impl Shell {
                     this.follow_questions(window, cx);
                     ContextPublisher::schedule(this, cx);
                     this.open_pending_alert(window, cx);
+                    this.open_pending_agent(window, cx);
                 }
             }),
         ];
@@ -200,6 +208,9 @@ impl Shell {
         if let Some(known) = KnownWorkspaces::global(cx) {
             subscriptions.push(cx.observe(&known, |_, _, cx| cx.notify()));
         }
+        if let Some(presence) = Presence::global(cx) {
+            subscriptions.push(cx.observe(&presence, |_, _, cx| cx.notify()));
+        }
         if let Some(center) = AlertCenter::global(cx) {
             subscriptions.push(cx.observe(&center, |_, _, cx| cx.notify()));
             subscriptions.push(cx.subscribe_in(
@@ -216,7 +227,8 @@ impl Shell {
             &rail,
             window,
             |this, _, event: &RailEvent, window, cx| match event {
-                RailEvent::OpenAlert(alert) => this.open_alert(alert.clone(), window, cx),
+                RailEvent::OpenAlert(alert) => this.open_alert((**alert).clone(), window, cx),
+                RailEvent::ShowAgents => this.show_agents(window, cx),
             },
         ));
         ShellWindows::add(window.window_handle(), cx.entity().downgrade(), cx);
@@ -240,6 +252,7 @@ impl Shell {
             toast: None,
             _toast_timer: None,
             pending_alert: None,
+            pending_agent: None,
             _questions: None,
             _subscriptions: subscriptions,
         };
@@ -397,7 +410,7 @@ impl Shell {
             self.follow_alert(&alert, window, cx);
             return;
         };
-        if let Some((handle, shell)) = ShellWindows::showing(&workspace, cx) {
+        if let Some((handle, shell)) = self.other_window_showing(&workspace, cx) {
             handle
                 .update(cx, |_, window, cx| {
                     window.activate_window();
@@ -468,6 +481,150 @@ impl Shell {
                 }
             }
         }
+    }
+
+    // ---- agents overview --------------------------------------------------
+
+    /// Another window that shows `workspace`, and its shell. (Its
+    /// [`Workspaces`] tell, not the shells: this one is mid-update.)
+    fn other_window_showing(
+        &self,
+        workspace: &WorkspaceId,
+        cx: &App,
+    ) -> Option<(AnyWindowHandle, Entity<Shell>)> {
+        let handle = Workspaces::window_showing(workspace, cx).filter(|h| *h != self.window)?;
+        Some((handle, Self::of_window(handle, cx)?))
+    }
+
+    /// The shell of the window `handle`.
+    pub fn of_window(handle: AnyWindowHandle, cx: &App) -> Option<Entity<Shell>> {
+        cx.try_global::<ShellWindows>()?
+            .0
+            .iter()
+            .find(|(h, _)| *h == handle)
+            .and_then(|(_, s)| s.upgrade())
+    }
+
+    /// Show the agents overview: bring its tab forward, or open it.
+    pub fn show_agents(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dock = self.dock.clone();
+        if let Some(id) = dock.read(cx).find_tab(agents::KIND, agents::KIND, cx) {
+            dock.update(cx, |dock, cx| dock.activate_tab(id, window, cx));
+            return;
+        }
+        let tab = agents::view::new(window, cx);
+        dock.update(cx, |dock, cx| dock.open_tab(tab, window, cx));
+    }
+
+    /// Whether the agents overview is the shown tab of a tab group.
+    pub fn agents_shown(&self, cx: &App) -> bool {
+        let dock = self.dock.read(cx);
+        dock.tree()
+            .groups()
+            .into_iter()
+            .filter_map(|g| g.active_tab())
+            .filter_map(|id| dock.tab(id))
+            .any(|tab| tab.kind(cx) == agents::KIND)
+    }
+
+    /// Take an agent session's next step (its chat, the question it waits
+    /// on) and mark its alerts read. A session of another workspace
+    /// switches this window there first, or focuses the window that shows
+    /// it.
+    pub fn open_agent(
+        &mut self,
+        workspace: Option<WorkspaceId>,
+        target: AgentTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(center) = AlertCenter::global(cx) {
+            let session = target.session().clone();
+            center.update(cx, |c, cx| c.seen(&[session], cx));
+        }
+        let current = self.workspaces.read(cx).current().map(|w| w.id.clone());
+        let Some(workspace) = workspace.filter(|w| Some(w) != current.as_ref()) else {
+            self.follow_agent(&target, window, cx);
+            return;
+        };
+        if let Some((handle, shell)) = self.other_window_showing(&workspace, cx) {
+            handle
+                .update(cx, |_, window, cx| {
+                    window.activate_window();
+                    shell.update(cx, |shell, cx| shell.follow_agent(&target, window, cx));
+                })
+                .ok();
+            return;
+        }
+        self.pending_agent = Some((workspace.clone(), target));
+        self.workspaces
+            .update(cx, |w, cx| w.switch_to(workspace, cx));
+    }
+
+    fn open_pending_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.workspaces.read(cx).current().map(|w| w.id.clone());
+        if self
+            .pending_agent
+            .as_ref()
+            .is_some_and(|(w, _)| Some(w) == current.as_ref())
+            && let Some((_, target)) = self.pending_agent.take()
+        {
+            self.follow_agent(&target, window, cx);
+        }
+    }
+
+    /// Take `target` in this window's workspace.
+    fn follow_agent(&mut self, target: &AgentTarget, window: &mut Window, cx: &mut Context<Self>) {
+        match target {
+            AgentTarget::Question { session, question } => {
+                let known = self
+                    .workspaces
+                    .read(cx)
+                    .current()
+                    .map(|w| w.id.clone())
+                    .and_then(|w| questions::questions_for(&w, cx))
+                    .is_some_and(|store| store.read(cx).get(*question).is_some());
+                if known {
+                    navigate::open_question(&self.dock, &self.workspaces, *question, window, cx);
+                } else {
+                    chat::open_session(self.dock.downgrade(), session.clone(), window, cx);
+                }
+            }
+            AgentTarget::Chat(session) => {
+                chat::open_session(self.dock.downgrade(), session.clone(), window, cx);
+            }
+        }
+    }
+
+    /// The welcome back banner, if the UI was away and it isn't dismissed.
+    fn render_welcome(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let presence = Presence::global(cx)?;
+        let welcome = presence.read(cx).welcome()?.clone();
+        let (shell, rail) = (cx.entity().downgrade(), self.rail.downgrade());
+        let actions = BannerActions {
+            open: Rc::new(move |info, window, cx| {
+                let info = info.clone();
+                shell
+                    .update(cx, |shell, cx| {
+                        let target = agents::target_of(&info, cx);
+                        let workspace = info.workspace.clone().map(WorkspaceId);
+                        shell.open_agent(workspace, target, window, cx);
+                    })
+                    .ok();
+            }),
+            alerts: Rc::new(move |_, cx| {
+                rail.update(cx, |rail, cx| {
+                    if !rail.alerts_open() {
+                        rail.toggle_alerts(cx);
+                    }
+                })
+                .ok();
+            }),
+            dismiss: Rc::new(move |_, cx| {
+                presence.update(cx, |p, cx| p.dismiss(cx));
+            }),
+        };
+        Some(away::banner(&welcome, &actions, cx))
     }
 
     fn render_toast(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -697,6 +854,7 @@ impl Render for Shell {
             }
         }
         let toast = self.render_toast(cx);
+        let welcome = self.render_welcome(cx);
         div()
             .id("workbench")
             .relative()
@@ -705,6 +863,11 @@ impl Render for Shell {
                 this.rail
                     .update(cx, |rail, cx| rail.switch_to_index(action.index, cx))
             }))
+            .on_action(
+                cx.listener(|this, _: &agents::ShowAgents, window, cx| {
+                    this.show_agents(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &chat::NewChat, window, cx| {
                 chat::new_chat(this.dock.downgrade(), window, cx)
             }))
@@ -793,9 +956,12 @@ impl Render for Shell {
                             .id("main")
                             .test_support()
                             .flex()
+                            .flex_col()
+                            .gap(m.gap)
                             .flex_1()
                             .min_w_0()
-                            .child(self.dock.clone()),
+                            .children(welcome)
+                            .child(div().flex().flex_1().min_h_0().child(self.dock.clone())),
                     ),
             )
             .child(status)
@@ -819,7 +985,9 @@ pub fn shown_chats(
     workspace: &WorkspaceId,
     cx: &App,
 ) -> Vec<coqo_protocol::methods::agents::SessionId> {
-    let Some((_, shell)) = ShellWindows::showing(workspace, cx) else {
+    let Some(shell) =
+        Workspaces::window_showing(workspace, cx).and_then(|h| Shell::of_window(h, cx))
+    else {
         return Vec::new();
     };
     let dock = shell.read(cx).dock().read(cx);
@@ -838,8 +1006,7 @@ pub fn shown_chats(
         .collect()
 }
 
-/// Every workbench window, to open an alert in the one that shows its
-/// workspace.
+/// Every workbench window and its shell.
 #[derive(Default)]
 struct ShellWindows(Vec<(AnyWindowHandle, WeakEntity<Shell>)>);
 
@@ -850,17 +1017,6 @@ impl ShellWindows {
         let windows = cx.default_global::<ShellWindows>();
         windows.0.retain(|(_, s)| s.upgrade().is_some());
         windows.0.push((handle, shell));
-    }
-
-    /// The window showing `workspace`, and its shell.
-    fn showing(workspace: &WorkspaceId, cx: &App) -> Option<(AnyWindowHandle, Entity<Shell>)> {
-        cx.try_global::<ShellWindows>()?
-            .0
-            .iter()
-            .filter_map(|(h, s)| Some((*h, s.upgrade()?)))
-            .find(|(_, s)| {
-                s.read(cx).workspaces.read(cx).current().map(|w| &w.id) == Some(workspace)
-            })
     }
 }
 
