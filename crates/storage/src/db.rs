@@ -254,6 +254,18 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
             CREATE INDEX walkthroughs_workspace ON walkthroughs (workspace, created_at);
         ",
     },
+    Migration {
+        version: 11,
+        name: "question threads",
+        // Threads the user starts about code (#229, `questions/ask`):
+        // `author` is `agent` or `user`, and `thread` the JSON array of the
+        // user's messages (`ThreadMessage`: text, turn, at), NULL for an
+        // agent's question.
+        sql: "
+            ALTER TABLE questions ADD COLUMN author TEXT NOT NULL DEFAULT 'agent';
+            ALTER TABLE questions ADD COLUMN thread TEXT;
+        ",
+    },
 ];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.

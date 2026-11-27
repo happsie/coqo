@@ -374,6 +374,16 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "Close a question without an answer, or a note.",
         ),
+        request::<questions::Ask>(
+            g,
+            "client→server",
+            "The user asks an agent session about code: a thread pinned to it.",
+        ),
+        request::<questions::Reply>(
+            g,
+            "client→server",
+            "A follow-up in a thread the user started.",
+        ),
         request::<questions::Create>(
             g,
             "client→server",

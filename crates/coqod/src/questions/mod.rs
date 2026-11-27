@@ -46,15 +46,16 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use coqo_agents::SessionManager;
-use coqo_protocol::methods::agents::{AgentState, SessionId};
+use coqo_protocol::methods::agents::{AgentState, ContentBlock, SessionId};
 use coqo_protocol::methods::buffer::BufferId;
 use coqo_protocol::methods::codes;
 use coqo_protocol::methods::fs::{MAX_READ_LIMIT, ReadParams};
 use coqo_protocol::methods::questions::{
-    self as qm, AnchorResolution, AnchorStatus, AnswerParams, ChangesParams, CreateParams,
-    ListParams, MAX_ANCHOR_LINES, MAX_ANCHORS, MAX_ANSWER, MAX_BODY, MAX_OPTIONS, Question,
-    QuestionAnchor, QuestionAnswer, QuestionId, QuestionKind, QuestionList, QuestionOption,
-    QuestionParams, QuestionStatus, WatchParams,
+    self as qm, AnchorResolution, AnchorStatus, AnswerParams, AskParams, ChangesParams,
+    CreateParams, ListParams, MAX_ANCHOR_LINES, MAX_ANCHORS, MAX_ANSWER, MAX_BODY, MAX_OPTIONS,
+    Question, QuestionAnchor, QuestionAnswer, QuestionAuthor, QuestionId, QuestionKind,
+    QuestionList, QuestionOption, QuestionParams, QuestionStatus, ReplyParams, ThreadMessage,
+    WatchParams,
 };
 use coqo_protocol::methods::workspace::{RootId, WorkspaceId};
 use coqo_protocol::{Access, ErrorObject, EventFeed, Router, Sequenced};
@@ -346,6 +347,7 @@ impl QuestionService {
             id: record.id,
             workspace: record.workspace.clone(),
             session: record.session.clone(),
+            author: record.author,
             kind: record.kind,
             severity: record.severity,
             body: record.body.clone(),
@@ -362,6 +364,7 @@ impl QuestionService {
             status: record.status,
             answer: record.answer.clone(),
             waiting,
+            thread: record.thread.clone(),
             created_at: record.created_at,
             closed_at: record.closed_at,
             seq: record.seq,
@@ -569,7 +572,8 @@ impl QuestionService {
         if let Err(e) = sessions.record_question(&q.session, q.clone()) {
             tracing::debug!(session = %q.session, error = %e, "cannot record a question");
         }
-        if !q.kind.is_question() {
+        // Nobody waits on a note or on a thread the user started.
+        if !q.kind.is_question() || !q.author.is_agent() {
             return;
         }
         let open = lock(&self.inner).store.open_questions_of(&q.session);
@@ -635,6 +639,161 @@ impl QuestionService {
 
     /// `questions/create`.
     pub async fn create(self: &Arc<Self>, p: CreateParams) -> Result<Question, ErrorObject> {
+        let question = self.pin(p, QuestionAuthor::Agent).await?;
+        self.tell_session(&question);
+        Ok(question)
+    }
+
+    /// `questions/ask`: pin a thread for the user, then prompt the session.
+    pub async fn ask(self: &Arc<Self>, p: AskParams) -> Result<Question, ErrorObject> {
+        let sessions = self.agent_sessions()?;
+        // Fail before pinning anything for a session that can't take it.
+        let snapshot = sessions.snapshot(&p.session).map_err(ErrorObject::from)?;
+        if snapshot.info.workspace.as_deref() != Some(p.workspace.0.as_str()) {
+            return Err(invalid(format!(
+                "session {} is not in workspace {}",
+                p.session, p.workspace
+            )));
+        }
+        let body = p.body.trim().to_owned();
+        let question = self
+            .pin(
+                CreateParams {
+                    workspace: p.workspace,
+                    session: p.session.0,
+                    kind: QuestionKind::Clarification,
+                    body: body.clone(),
+                    options: Vec::new(),
+                    severity: None,
+                    anchors: p.anchors,
+                },
+                QuestionAuthor::User,
+            )
+            .await?;
+        let content = self.prompt_for(&question, &body, true).await;
+        match sessions.prompt(&question.session, content).await {
+            Ok(started) => {
+                let question = self.add_message(question.id, body, started.turn).await?;
+                tracing::debug!(question = %question.id, session = %question.session, "the user asked");
+                Ok(question)
+            }
+            Err(e) => {
+                // Leave no thread nobody was asked about behind.
+                let id = question.id;
+                let resolutions = question.anchors.iter().map(|a| a.resolution).collect();
+                let dropped = self.publish(id, resolutions, |r| {
+                    r.status = QuestionStatus::Dismissed;
+                    r.closed_at = Some(Timestamp::now().0);
+                    Ok(())
+                });
+                if let Err(drop) = dropped {
+                    tracing::warn!(question = %id, error = %drop.message, "cannot drop a thread");
+                }
+                Err(e.into())
+            }
+        }
+    }
+
+    /// `questions/reply`: a follow-up in a thread the user started.
+    pub async fn reply(self: &Arc<Self>, p: ReplyParams) -> Result<Question, ErrorObject> {
+        let sessions = self.agent_sessions()?;
+        let record = self.record(p.id)?;
+        if record.author.is_agent() {
+            return Err(invalid(format!(
+                "question {} was asked by an agent: answer it instead",
+                p.id
+            )));
+        }
+        if record.status != QuestionStatus::Open {
+            return Err(closed(p.id, record.status));
+        }
+        let body = p.body.trim().to_owned();
+        if body.is_empty() {
+            return Err(invalid("the reply is empty"));
+        }
+        if body.len() > MAX_BODY {
+            return Err(invalid(format!("the reply is longer than {MAX_BODY} bytes")));
+        }
+        let question = self.questions(vec![record]).await.remove(0);
+        let content = self.prompt_for(&question, &body, false).await;
+        let started = sessions
+            .prompt(&question.session, content)
+            .await
+            .map_err(ErrorObject::from)?;
+        self.add_message(p.id, body, started.turn).await
+    }
+
+    fn agent_sessions(&self) -> Result<&SessionManager, ErrorObject> {
+        self.sessions
+            .as_ref()
+            .ok_or_else(|| ErrorObject::internal("this daemon runs no agent sessions"))
+    }
+
+    /// The prompt of a thread's message: the text, then the code as
+    /// embedded resources (as the composer embeds a selection).
+    async fn prompt_for(&self, q: &Question, text: &str, first: bool) -> Vec<ContentBlock> {
+        let places: Vec<String> = q.anchors.iter().map(|a| anchor_place(&a.anchor)).collect();
+        let intro = if first {
+            format!(
+                "I'm asking about {} (attached; pinned in my editor as thread #{}). \
+                 Please answer here. If a note on the code itself would help, you can also \
+                 `annotate` the same lines.",
+                places.join(", "),
+                q.id
+            )
+        } else {
+            format!("Follow-up on thread #{} about {}:", q.id, places.join(", "))
+        };
+        let mut content = vec![ContentBlock::text(format!("{intro}\n\n{text}"))];
+        if first {
+            for a in &q.anchors {
+                let code = &a.anchor;
+                let uri = match self
+                    .workspaces
+                    .resolve_file(q.workspace.clone(), code.root, code.path.clone())
+                    .await
+                {
+                    Ok(file) => format!("file://{}", file.real.display()),
+                    Err(_) => format!("file:///{}", code.path),
+                };
+                let (start, end) = line_numbers(code);
+                content.push(ContentBlock::Resource {
+                    uri: format!("{uri}#L{start}-L{end}"),
+                    mime_type: None,
+                    text: code.text.clone(),
+                });
+            }
+        }
+        content
+    }
+
+    /// Add the user's `text`, answered by `turn`, to thread `id`.
+    async fn add_message(
+        self: &Arc<Self>,
+        id: QuestionId,
+        text: String,
+        turn: u64,
+    ) -> Result<Question, ErrorObject> {
+        let mut records = vec![self.record(id)?];
+        let resolutions = self.resolve(&mut records).await.remove(0);
+        let question = self.publish(id, resolutions, move |r| {
+            r.thread.push(ThreadMessage {
+                text,
+                turn,
+                at: Timestamp::now().0,
+            });
+            Ok(())
+        })?;
+        self.tell_session(&question);
+        Ok(question)
+    }
+
+    /// Validate, anchor and store a question by `author`.
+    async fn pin(
+        self: &Arc<Self>,
+        p: CreateParams,
+        author: QuestionAuthor,
+    ) -> Result<Question, ErrorObject> {
         let body = p.body.trim();
         if body.is_empty() {
             return Err(invalid("the question is empty"));
@@ -713,6 +872,7 @@ impl QuestionService {
         let new = NewRecord {
             workspace: p.workspace,
             session: SessionId(p.session),
+            author,
             kind: p.kind,
             severity: (p.kind == QuestionKind::Annotation).then(|| p.severity.unwrap_or_default()),
             body: body.to_owned(),
@@ -749,7 +909,6 @@ impl QuestionService {
             self.follow(buffer);
         }
         tracing::debug!(question = %question.id, session = %question.session, kind = ?question.kind, "question asked");
-        self.tell_session(&question);
         Ok(question)
     }
 
@@ -796,6 +955,12 @@ impl QuestionService {
         let record = self.record(p.id)?;
         if record.status != QuestionStatus::Open {
             return Err(closed(p.id, record.status));
+        }
+        if !record.author.is_agent() {
+            return Err(invalid(format!(
+                "thread {} is yours: reply to it (questions/reply) or dismiss it",
+                p.id
+            )));
         }
         let answer = check_answer(&record, p.option, p.text)?;
         let mut records = vec![record];
@@ -1113,6 +1278,28 @@ fn check_answer(
     }
 }
 
+/// An anchor's file and 1-based lines, `src/cart.rs:42-48`.
+fn anchor_place(code: &qm::CodeAnchor) -> String {
+    let (start, end) = line_numbers(code);
+    if start == end {
+        format!("{}:{start}", code.path)
+    } else {
+        format!("{}:{start}-{end}", code.path)
+    }
+}
+
+/// An anchor's first and last line, 1-based (a whole-line range ends at the
+/// start of the next line).
+fn line_numbers(code: &qm::CodeAnchor) -> (u32, u32) {
+    let (start, end) = (code.range.start, code.range.end);
+    let last = if end.col == 0 && end.line > start.line {
+        end.line - 1
+    } else {
+        end.line
+    };
+    (start.line + 1, last + 1)
+}
+
 /// The session state's reason while it waits: the question's first line.
 fn waiting_reason(body: &str) -> String {
     const MAX: usize = 120;
@@ -1135,6 +1322,8 @@ pub fn register(router: Router, svc: Arc<QuestionService>) -> Router {
     let answer = Arc::clone(&svc);
     let dismiss = Arc::clone(&svc);
     let create = Arc::clone(&svc);
+    let ask = Arc::clone(&svc);
+    let reply = Arc::clone(&svc);
     let changes = Arc::clone(&svc);
     let watch = svc;
     router
@@ -1153,6 +1342,14 @@ pub fn register(router: Router, svc: Arc<QuestionService>) -> Router {
         .method_with::<qm::Dismiss, _, _>(Access::daemon(), move |_ctx, p| {
             let s = Arc::clone(&dismiss);
             async move { s.dismiss(p).await }
+        })
+        .method_with::<qm::Ask, _, _>(Access::daemon(), move |_ctx, p| {
+            let s = Arc::clone(&ask);
+            async move { s.ask(p).await }
+        })
+        .method_with::<qm::Reply, _, _>(Access::daemon(), move |_ctx, p| {
+            let s = Arc::clone(&reply);
+            async move { s.reply(p).await }
         })
         .method_with::<qm::Create, _, _>(
             Access::check(|scope, p: &CreateParams| {

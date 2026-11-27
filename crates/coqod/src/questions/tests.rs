@@ -695,6 +695,231 @@ async fn a_session_needs_input_while_its_question_is_open() {
     daemon.stop().await;
 }
 
+#[tokio::test]
+async fn a_thread_the_user_starts_prompts_the_session_with_the_code() {
+    use coqo_agents::AgentUpdate;
+    use coqo_agents::testing::Call;
+    use qm::{AskParams, QuestionAuthor, ReplyParams};
+
+    let data = tempfile::tempdir().unwrap();
+    let say = |text: &str| {
+        [
+            Step::Update(AgentUpdate::AgentMessageChunk(ContentBlock::text(text))),
+            Step::Stop(StopReason::EndTurn),
+        ]
+    };
+    let release = Arc::new(Notify::new());
+    let provider = ScriptedProvider::new()
+        .turn(say("Because π."))
+        .turn(say("Twice the area."))
+        .turn([
+            Step::Wait(Arc::clone(&release)),
+            Step::Stop(StopReason::EndTurn),
+        ]);
+    let daemon = Daemon::start(data.path(), &provider).await;
+    let ui = daemon.ui().await;
+    let (dir, ws) = project(&ui).await;
+    let session = ui
+        .request::<agm::Create>(CreateSessionParams {
+            provider: "fake".into(),
+            cwd: dir.path().to_str().unwrap().into(),
+            workspace: Some(ws.id.0.clone()),
+            title: None,
+            mode: None,
+        })
+        .await
+        .unwrap();
+    let id = session.id.clone();
+    let anchors = vec![NewAnchor {
+        root: ws.roots[0].id,
+        path: "src/main.rs".into(),
+        lines: LineRange { start: 4, end: 4 },
+    }];
+    let idle = async |ui: &Client| {
+        until("the turn to end", async || {
+            (!ui.request::<agm::Get>(SessionParams {
+                session: id.clone(),
+            })
+            .await
+            .unwrap()
+            .running)
+                .then_some(())
+        })
+        .await
+    };
+
+    // The user asks about `3.14 * …`: a thread pinned there, and a prompt
+    // with the question and the code.
+    let q = ui
+        .request::<qm::Ask>(AskParams {
+            workspace: ws.id.clone(),
+            session: id.clone(),
+            body: " Why **3.14**? ".into(),
+            anchors: anchors.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(q.author, QuestionAuthor::User);
+    assert_eq!(q.kind, QuestionKind::Clarification);
+    assert_eq!(q.status, QuestionStatus::Open);
+    assert_eq!(q.anchors[0].anchor.range.start.line, 4);
+    assert_eq!(
+        q.thread.iter().map(|m| (m.text.as_str(), m.turn)).collect::<Vec<_>>(),
+        [("Why **3.14**?", 1)]
+    );
+    let prompts = || -> Vec<Vec<ContentBlock>> {
+        provider
+            .calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                Call::Prompt(content) => Some(content),
+                _ => None,
+            })
+            .collect()
+    };
+    let first = &prompts()[0];
+    let ContentBlock::Text { text } = &first[0] else {
+        panic!("{first:?}")
+    };
+    assert!(text.contains("src/main.rs:5"), "{text}");
+    assert!(text.ends_with("Why **3.14**?"), "{text}");
+    let ContentBlock::Resource { uri, text, .. } = &first[1] else {
+        panic!("{first:?}")
+    };
+    assert!(uri.starts_with("file://") && uri.ends_with("src/main.rs#L5-L5"), "{uri}");
+    assert_eq!(text, "        3.14 * self.r * self.r\n");
+    idle(&ui).await;
+
+    // Nobody waits on it: the session is done, not waiting for input, and
+    // it can't be answered like an agent's question.
+    let info = ui
+        .request::<agm::Get>(SessionParams {
+            session: id.clone(),
+        })
+        .await
+        .unwrap()
+        .info;
+    assert_eq!(info.state, AgentState::Done);
+    let r = ui
+        .request::<qm::Answer>(AnswerParams {
+            id: q.id,
+            option: None,
+            text: Some("no".into()),
+        })
+        .await;
+    assert_eq!(code(r), coqo_protocol::codes::INVALID_PARAMS);
+
+    // A follow-up: the next turn, without the code again.
+    let q = ui
+        .request::<qm::Reply>(ReplyParams {
+            id: q.id,
+            body: "And for 2r?".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        q.thread.iter().map(|m| m.turn).collect::<Vec<_>>(),
+        [1, 2]
+    );
+    let second = &prompts()[1];
+    assert_eq!(second.len(), 1);
+    let ContentBlock::Text { text } = &second[0] else {
+        panic!("{second:?}")
+    };
+    assert!(text.starts_with(&format!("Follow-up on thread #{}", q.id)), "{text}");
+    idle(&ui).await;
+
+    // The chat records the thread as it grows; the turns hold the replies.
+    let mut updates = ui
+        .subscribe::<agm::Updates>(
+            SessionParams {
+                session: id.clone(),
+            },
+            Some(0),
+        )
+        .await
+        .unwrap();
+    let (mut threads, mut replies) = (Vec::new(), Vec::new());
+    while replies.len() < 2 || threads.len() < 2 {
+        let u = tokio::time::timeout(TIMEOUT, updates.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        match u.event {
+            SessionUpdate::Question(q) => threads.push(q.thread.len()),
+            SessionUpdate::AgentMessageChunk { content } => replies.push(content),
+            _ => {}
+        }
+    }
+    assert_eq!(threads, [1, 2], "recorded once it has its message");
+    assert_eq!(
+        replies,
+        [
+            ContentBlock::text("Because π."),
+            ContentBlock::text("Twice the area.")
+        ]
+    );
+
+    // An agent's question is answered, not replied to; a dismissed thread
+    // takes no more replies.
+    let agent = daemon.agent(&ws, &id.0).await;
+    let theirs = agent
+        .request::<qm::Create>(create(&ws, &id.0, QuestionKind::Clarification, (0, 0)))
+        .await
+        .unwrap();
+    let r = ui
+        .request::<qm::Reply>(ReplyParams {
+            id: theirs.id,
+            body: "hm".into(),
+        })
+        .await;
+    assert_eq!(code(r), coqo_protocol::codes::INVALID_PARAMS);
+    ui.request::<qm::Dismiss>(QuestionParams { id: theirs.id })
+        .await
+        .unwrap();
+    ui.request::<qm::Dismiss>(QuestionParams { id: q.id })
+        .await
+        .unwrap();
+    let r = ui
+        .request::<qm::Reply>(ReplyParams {
+            id: q.id,
+            body: "and?".into(),
+        })
+        .await;
+    assert_eq!(code(r), codes::QUESTION_CLOSED);
+
+    // A busy session is asked nothing, and no thread is left behind.
+    ui.request::<agm::Prompt>(PromptParams {
+        session: id.clone(),
+        content: vec![ContentBlock::text("go")],
+    })
+    .await
+    .unwrap();
+    let r = ui
+        .request::<qm::Ask>(AskParams {
+            workspace: ws.id.clone(),
+            session: id.clone(),
+            body: "Now?".into(),
+            anchors,
+        })
+        .await;
+    assert_eq!(code(r), codes::SESSION_BUSY);
+    let open = ui
+        .request::<qm::List>(ListParams {
+            workspace: ws.id.clone(),
+            session: None,
+            root: None,
+            path: None,
+            include_closed: false,
+        })
+        .await
+        .unwrap();
+    assert!(open.questions.is_empty(), "{:?}", open.questions);
+    release.notify_one();
+    daemon.stop().await;
+}
+
 // ---- the bridge ---------------------------------------------------------------
 
 /// The agent's end of a `coqo-editor` bridge.

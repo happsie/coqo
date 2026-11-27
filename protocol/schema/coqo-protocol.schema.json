@@ -738,6 +738,37 @@
       ],
       "type": "object"
     },
+    "AskParams": {
+      "description": "Params of [`Ask`].",
+      "properties": {
+        "anchors": {
+          "description": "The code it is about: 1 to [`MAX_ANCHORS`] locations, as for\n[`Create`].",
+          "items": {
+            "$ref": "#/$defs/NewAnchor"
+          },
+          "type": "array"
+        },
+        "body": {
+          "description": "The question, markdown.",
+          "type": "string"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The agent session to ask; it must not be running a turn."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "session",
+        "body",
+        "anchors"
+      ],
+      "type": "object"
+    },
     "AuthKind": {
       "description": "Where the agent's usage is billed (from ACP `auth/status`).",
       "oneOf": [
@@ -4587,6 +4618,10 @@
           ],
           "description": "The answer, once answered."
         },
+        "author": {
+          "$ref": "#/$defs/QuestionAuthor",
+          "description": "Who asked: an agent, or the user ([`Ask`])."
+        },
         "body": {
           "description": "The question or note, in markdown.",
           "type": "string"
@@ -4610,7 +4645,7 @@
         },
         "kind": {
           "$ref": "#/$defs/QuestionKind",
-          "description": "What kind of answer it wants."
+          "description": "What kind of answer it wants (a thread the user started is a\n`clarification`)."
         },
         "options": {
           "description": "The answers it offers, in order (empty for a clarification or a\nnote).",
@@ -4627,7 +4662,7 @@
         },
         "session": {
           "$ref": "#/$defs/SessionId",
-          "description": "The agent session that asked."
+          "description": "The agent session that asked (or, for a thread the user started,\nthe session asked)."
         },
         "severity": {
           "anyOf": [
@@ -4643,6 +4678,13 @@
         "status": {
           "$ref": "#/$defs/QuestionStatus",
           "description": "Open, answered or dismissed."
+        },
+        "thread": {
+          "description": "A thread the user started: their messages, oldest first, each with\nthe turn that answers it. Empty for an agent's question.",
+          "items": {
+            "$ref": "#/$defs/ThreadMessage"
+          },
+          "type": "array"
         },
         "waiting": {
           "description": "Whether the agent is blocked on it right now (a waiting\n`ask_question` or `await_answer`).",
@@ -4703,6 +4745,21 @@
         }
       },
       "type": "object"
+    },
+    "QuestionAuthor": {
+      "description": "Who started a question.",
+      "oneOf": [
+        {
+          "const": "agent",
+          "description": "An agent asked the user (`ask_question`, `annotate`).",
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "description": "The user asked an agent ([`Ask`]): a thread the agent answers in its\nsession.",
+          "type": "string"
+        }
+      ]
     },
     "QuestionId": {
       "description": "Identifies a question or note. Assigned by the daemon, never reused.",
@@ -4945,6 +5002,24 @@
     "ReplicaId": {
       "description": "Identifies one replica of a buffer (one editor in one window), e.g.\n`r-3f2a9c1d0b7e4a65`. Assigned by [`Open`]; a replica keeps it across\nreconnects and reopens so the daemon can recognise its changes.",
       "type": "string"
+    },
+    "ReplyParams": {
+      "description": "Params of [`Reply`].",
+      "properties": {
+        "body": {
+          "description": "The follow-up, markdown.",
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/QuestionId",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "id",
+        "body"
+      ],
+      "type": "object"
     },
     "RepoInfo": {
       "description": "Where a root's repository is.",
@@ -7646,6 +7721,32 @@
         }
       ]
     },
+    "ThreadMessage": {
+      "description": "One message the user sent in a thread ([`Ask`], [`Reply`]).",
+      "properties": {
+        "at": {
+          "description": "Sent, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "text": {
+          "description": "The message, markdown.",
+          "type": "string"
+        },
+        "turn": {
+          "description": "The session turn it started: the agent's reply is that turn.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "text",
+        "turn",
+        "at"
+      ],
+      "type": "object"
+    },
     "ToolCall": {
       "description": "A tool call, as first reported.",
       "properties": {
@@ -9651,6 +9752,17 @@
         "$ref": "#/$defs/Question"
       }
     },
+    "questions/ask": {
+      "description": "The user asks an agent session about code: a thread pinned to it.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/AskParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Question"
+      }
+    },
     "questions/changes": {
       "description": "Questions whose state changed, as their latest state (resumable).",
       "direction": "server→client",
@@ -9704,6 +9816,17 @@
       },
       "result": {
         "$ref": "#/$defs/QuestionList"
+      }
+    },
+    "questions/reply": {
+      "description": "A follow-up in a thread the user started.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ReplyParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Question"
       }
     },
     "questions/watch": {
