@@ -12,12 +12,24 @@
 //! Contributions from process and WASM mods arrive as data, so their points
 //! will typically use a serde type (or a JSON value); core mods can use any
 //! `Send + Sync` type.
+//!
+//! Points with a [`ContributionPoint`] marker type (every point in
+//! [`coqo_mod_api::points`], and any a crate defines the same way) have typed
+//! shorthands: [`declare`](ContributionRegistry::declare),
+//! [`contributions_of`](ContributionRegistry::contributions_of) and
+//! [`get_of`](ContributionRegistry::get_of).
+//! [`declare_mod_api_points`](ContributionRegistry::declare_mod_api_points)
+//! declares all of `coqo_mod_api::points`. Mods contribute through the
+//! type-erased [`contribute_any`](ContributionRegistry::contribute_any),
+//! which the kernel's [`ModHost`](coqo_mod_api::ModHost) uses.
 
 use std::any::{Any, TypeId, type_name};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, PoisonError, RwLock};
 
+use coqo_mod_api::points::{self, ContributionPoint};
+use coqo_mod_api::{AnyArc, ModError};
 use tokio::sync::watch;
 
 use crate::id::{ContributionId, ContributionPointId, ProviderId};
@@ -51,6 +63,32 @@ pub enum ContributionError {
     },
 }
 
+impl From<ContributionError> for ModError {
+    fn from(e: ContributionError) -> Self {
+        match e {
+            ContributionError::UnknownPoint(point) => ModError::UnknownPoint(point),
+            ContributionError::TypeMismatch {
+                point,
+                declared,
+                requested,
+            } => ModError::ContributionTypeMismatch {
+                point,
+                declared,
+                requested,
+            },
+            ContributionError::Duplicate {
+                point,
+                id,
+                existing,
+            } => ModError::DuplicateContribution {
+                point,
+                id,
+                existing,
+            },
+        }
+    }
+}
+
 /// One contribution, as returned to the point's owner.
 #[derive(Debug)]
 pub struct Contribution<T> {
@@ -78,9 +116,20 @@ struct Entry {
     value: Arc<dyn Any + Send + Sync>,
 }
 
+/// Turns an erased `Arc<T>` into the registry's `Arc<dyn Any>` holding a
+/// `T`, if it holds the point's type.
+type Unerase = fn(&AnyArc) -> Option<Arc<dyn Any + Send + Sync>>;
+
+fn unerase<T: Send + Sync + 'static>(value: &AnyArc) -> Option<Arc<dyn Any + Send + Sync>> {
+    value
+        .downcast::<T>()
+        .map(|v| v as Arc<dyn Any + Send + Sync>)
+}
+
 struct Point {
     type_id: TypeId,
     type_name: &'static str,
+    unerase: Unerase,
     /// In registration order.
     entries: Vec<Entry>,
 }
@@ -148,11 +197,45 @@ impl ContributionRegistry {
             Point {
                 type_id: TypeId::of::<T>(),
                 type_name: type_name::<T>(),
+                unerase: unerase::<T>,
                 entries: Vec::new(),
             },
         );
         drop(points);
         self.bump();
+        Ok(())
+    }
+
+    /// Declares point `P` with its value type. Declaring it again is a no-op.
+    pub fn declare<P: ContributionPoint>(&self) -> Result<(), ContributionError> {
+        self.declare_point::<P::Value>(P::id())
+    }
+
+    /// Declares every contribution point of the mod API
+    /// ([`coqo_mod_api::points::ALL`]) with its value type. The kernel's mod
+    /// host does this when it is created. Idempotent.
+    pub fn declare_mod_api_points(&self) -> Result<(), ContributionError> {
+        // Keep in step with `coqo_mod_api::points`; a test checks the ids
+        // against `points::ALL`.
+        self.declare::<points::Commands>()?;
+        self.declare::<points::CommandHandlers>()?;
+        self.declare::<points::Keybindings>()?;
+        self.declare::<points::Menus>()?;
+        self.declare::<points::Settings>()?;
+        self.declare::<points::SidebarViews>()?;
+        self.declare::<points::PanelViews>()?;
+        self.declare::<points::TabViews>()?;
+        self.declare::<points::RailViews>()?;
+        self.declare::<points::StatusItems>()?;
+        self.declare::<points::Languages>()?;
+        self.declare::<points::LspServers>()?;
+        self.declare::<points::DebugAdapters>()?;
+        self.declare::<points::McpTools>()?;
+        self.declare::<points::AgentProviders>()?;
+        self.declare::<points::SlashCommands>()?;
+        self.declare::<points::ContextProviders>()?;
+        self.declare::<points::AlertSources>()?;
+        self.declare::<points::Themes>()?;
         Ok(())
     }
 
@@ -171,12 +254,44 @@ impl ContributionRegistry {
     where
         T: Send + Sync + 'static,
     {
+        self.insert(point, provider, id, |p| {
+            p.check::<T>(point)?;
+            Ok(Arc::new(value))
+        })
+    }
+
+    /// [`contribute`](Self::contribute) with a type-erased value: an
+    /// [`AnyArc`] holding an `Arc` of the point's value type, as mods hand it
+    /// to the [`ModHost`](coqo_mod_api::ModHost). The registry keeps that
+    /// `Arc`, so readers get the mod's own value back.
+    pub fn contribute_any(
+        &self,
+        point: &ContributionPointId,
+        provider: ProviderId,
+        id: ContributionId,
+        value: &AnyArc,
+    ) -> Result<(), ContributionError> {
+        self.insert(point, provider, id, |p| {
+            (p.unerase)(value).ok_or_else(|| ContributionError::TypeMismatch {
+                point: point.clone(),
+                declared: p.type_name,
+                requested: value.type_name(),
+            })
+        })
+    }
+
+    fn insert(
+        &self,
+        point: &ContributionPointId,
+        provider: ProviderId,
+        id: ContributionId,
+        value: impl FnOnce(&Point) -> Result<Arc<dyn Any + Send + Sync>, ContributionError>,
+    ) -> Result<(), ContributionError> {
         let mut points = self.points.write().unwrap_or_else(PoisonError::into_inner);
         let entry_point = points
             .get_mut(point)
             .ok_or_else(|| ContributionError::UnknownPoint(point.clone()))?;
-        entry_point.check::<T>(point)?;
-        let value: Arc<dyn Any + Send + Sync> = Arc::new(value);
+        let value = value(entry_point)?;
         match entry_point.entries.iter_mut().find(|e| e.id == id) {
             Some(existing) if existing.provider != provider => {
                 return Err(ContributionError::Duplicate {
@@ -198,6 +313,21 @@ impl ContributionRegistry {
         drop(points);
         self.bump();
         Ok(())
+    }
+
+    /// All contributions to point `P`, in registration order.
+    pub fn contributions_of<P: ContributionPoint>(
+        &self,
+    ) -> Result<Vec<Contribution<P::Value>>, ContributionError> {
+        self.contributions::<P::Value>(&P::id())
+    }
+
+    /// The contribution `id` in point `P`, if any.
+    pub fn get_of<P: ContributionPoint>(
+        &self,
+        id: &ContributionId,
+    ) -> Result<Option<Contribution<P::Value>>, ContributionError> {
+        self.get::<P::Value>(&P::id(), id)
     }
 
     /// All contributions to `point`, in registration order.
@@ -483,5 +613,66 @@ mod tests {
         assert!(registry.generation() > generation);
         assert!(titles(&registry).is_empty());
         assert_eq!(registry.points().len(), 2);
+    }
+
+    #[test]
+    fn declares_every_mod_api_point() {
+        let registry = ContributionRegistry::new();
+        registry.declare_mod_api_points().unwrap();
+        registry.declare_mod_api_points().unwrap();
+        let mut declared: Vec<String> = registry.points().iter().map(|p| p.to_string()).collect();
+        let mut all: Vec<String> = points::ALL.iter().map(|p| (*p).to_owned()).collect();
+        declared.sort();
+        all.sort();
+        assert_eq!(declared, all);
+    }
+
+    #[test]
+    fn erased_contributions_keep_the_arc_and_check_the_type() {
+        let registry = ContributionRegistry::new();
+        registry.declare::<points::Commands>().unwrap();
+        let command = Arc::new(coqo_mod_api::contrib::Command::new(cid("x"), "X"));
+        registry
+            .contribute_any(
+                &point("commands"),
+                pid("a"),
+                cid("x"),
+                &AnyArc::new(Arc::clone(&command)),
+            )
+            .unwrap();
+        let got = registry
+            .get_of::<points::Commands>(&cid("x"))
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(&got.value, &command));
+
+        let err = registry
+            .contribute_any(
+                &point("commands"),
+                pid("a"),
+                cid("y"),
+                &AnyArc::from_value(7_u32),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ContributionError::TypeMismatch {
+                requested: "u32",
+                ..
+            }
+        ));
+        assert!(matches!(
+            ModError::from(err),
+            ModError::ContributionTypeMismatch { .. }
+        ));
+        assert_eq!(
+            registry.contribute_any(
+                &point("nope"),
+                pid("a"),
+                cid("x"),
+                &AnyArc::from_value(1_u8)
+            ),
+            Err(ContributionError::UnknownPoint(point("nope")))
+        );
     }
 }

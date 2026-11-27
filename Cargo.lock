@@ -1106,6 +1106,7 @@ name = "coqo-kernel"
 version = "0.0.0"
 dependencies = [
  "coqo-mod-api",
+ "coqo-mod-hello",
  "nix",
  "serde",
  "thiserror 2.0.21",
@@ -1193,6 +1194,8 @@ dependencies = [
  "anyhow",
  "coqo-client",
  "coqo-kernel",
+ "coqo-mod-api",
+ "coqo-mod-hello",
  "coqo-protocol",
  "coqo-storage",
  "futures-util",

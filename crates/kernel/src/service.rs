@@ -21,11 +21,12 @@
 //! [`ServiceError::VersionMismatch`] otherwise. Withdrawing the active
 //! provider (for example when a mod is disabled) brings the next one back.
 
-use std::any::{Any, TypeId, type_name};
+use std::any::type_name;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, PoisonError, RwLock};
 
+use coqo_mod_api::{AnyArc, ModError};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
@@ -70,6 +71,32 @@ pub enum ServiceError {
     },
 }
 
+impl From<ServiceError> for ModError {
+    fn from(e: ServiceError) -> Self {
+        match e {
+            ServiceError::NotFound(service) => ModError::ServiceNotFound(service),
+            ServiceError::VersionMismatch {
+                requested,
+                available,
+            } => ModError::ServiceVersionMismatch {
+                requested,
+                available,
+            },
+            ServiceError::TypeMismatch {
+                service,
+                provider,
+                expected,
+                actual,
+            } => ModError::ServiceTypeMismatch {
+                service,
+                provider,
+                expected,
+                actual,
+            },
+        }
+    }
+}
+
 fn fmt_versions(versions: &[ServiceVersion]) -> String {
     if versions.is_empty() {
         return "none".to_owned();
@@ -99,10 +126,8 @@ struct Entry {
     kind: ProviderKind,
     version: ServiceVersion,
     seq: u64,
-    type_id: TypeId,
-    type_name: &'static str,
-    /// Always an `Arc<T>` boxed as `Any`, so unsized `T` works too.
-    value: Box<dyn Any + Send + Sync>,
+    /// An erased `Arc<T>`, so unsized `T` works too.
+    value: AnyArc,
 }
 
 impl Entry {
@@ -188,6 +213,19 @@ impl ServiceRegistry {
     ) where
         T: ?Sized + Send + Sync + 'static,
     {
+        self.provide_any(provider, kind, service, AnyArc::new(value));
+    }
+
+    /// [`provide`](Self::provide) with a type-erased value, as mods hand it
+    /// to the [`ModHost`](coqo_mod_api::ModHost). Consumers name the erased
+    /// type to get it back.
+    pub fn provide_any(
+        &self,
+        provider: ProviderId,
+        kind: ProviderKind,
+        service: ServiceRef,
+        value: AnyArc,
+    ) {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
         let seq = inner.next_seq;
         inner.next_seq += 1;
@@ -199,9 +237,7 @@ impl ServiceRegistry {
             kind,
             version: service.version,
             seq,
-            type_id: TypeId::of::<Arc<T>>(),
-            type_name: type_name::<T>(),
-            value: Box::new(value),
+            value,
         });
         drop(inner);
         self.bump();
@@ -214,21 +250,32 @@ impl ServiceRegistry {
     where
         T: ?Sized + Send + Sync + 'static,
     {
+        let (descriptor, value) = self.consume_any(request)?;
+        value.downcast::<T>().ok_or(ServiceError::TypeMismatch {
+            service: descriptor.service,
+            provider: descriptor.provider,
+            expected: type_name::<T>(),
+            actual: value.type_name(),
+        })
+    }
+
+    /// Resolves `request` and returns the active provider with its erased
+    /// value, for hosts that hand it on without knowing its type.
+    pub fn consume_any(
+        &self,
+        request: &ServiceRef,
+    ) -> Result<(ServiceDescriptor, AnyArc), ServiceError> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         let entry = Self::resolve_entry(&inner, request)?;
-        if entry.type_id != TypeId::of::<Arc<T>>() {
-            return Err(ServiceError::TypeMismatch {
+        Ok((
+            ServiceDescriptor {
                 service: ServiceRef::new(request.id.clone(), entry.version),
                 provider: entry.provider.clone(),
-                expected: type_name::<T>(),
-                actual: entry.type_name,
-            });
-        }
-        let value = entry
-            .value
-            .downcast_ref::<Arc<T>>()
-            .expect("type id checked above");
-        Ok(Arc::clone(value))
+                kind: entry.kind,
+                active: true,
+            },
+            entry.value.clone(),
+        ))
     }
 
     /// Resolves `request` without fetching the value: which provider would serve it.

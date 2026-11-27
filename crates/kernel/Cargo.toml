@@ -19,6 +19,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "ansi"] }
 
 [dev-dependencies]
+# The sample mod, to test loading a real core mod through the kernel host.
+coqo-mod-hello = { path = "../../mods/hello" }
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros"] }
 
 [lints]

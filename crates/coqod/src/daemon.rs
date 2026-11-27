@@ -23,6 +23,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::lifecycle::{Activity, IdlePhase, IdlePolicy, idle_monitor};
+use crate::mods::{self, Mods};
 use crate::routes;
 
 /// The daemon's version.
@@ -60,6 +61,9 @@ pub struct DaemonContext {
     pub started_at: SystemTime,
     /// When the daemon started, for uptime.
     pub started: Instant,
+    /// The kernel registries and the mods running on them. Startup mods
+    /// are active before services register their routes.
+    pub mods: Mods,
 }
 
 /// Why the daemon could not start.
@@ -174,6 +178,8 @@ pub async fn serve(
     let activity = Activity::new();
     let (idle_tx, idle_rx) = watch::channel(IdlePhase::Active);
     let shutdown = CancellationToken::new();
+    let mods = Mods::load(mods::builtins());
+    mods.start().await;
     let ctx = DaemonContext {
         paths: paths.clone(),
         data,
@@ -183,6 +189,7 @@ pub async fn serve(
         shutdown: shutdown.clone(),
         started_at: SystemTime::now(),
         started: Instant::now(),
+        mods,
     };
     let router = routes::router(&ctx)?;
     tracing::debug!(?router, "routes registered");
@@ -241,6 +248,7 @@ pub async fn serve(
     drop(listener);
     remove_socket(&paths.socket());
     shutdown.cancel();
+    ctx.mods.shutdown().await;
     tokio::time::sleep(SHUTDOWN_GRACE).await;
     connections.shutdown().await;
     drop(lock);

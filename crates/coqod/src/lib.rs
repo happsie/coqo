@@ -7,6 +7,8 @@
 //! - [`lifecycle`]: attached clients, busy guards and the idle policy.
 //! - [`routes`]: **where services register their protocol routes.**
 //! - [`methods`]: `daemon/status` and `daemon/shutdown`.
+//! - [`mods`]: **where built-in mods are listed**; loaded and activated at
+//!   startup, deactivated at shutdown.
 //! - [`cli`]: command-line arguments.
 //! - [`workspace`]: workspaces (folder roots), their persisted state, and
 //!   read-only file-system access with live change events.
@@ -17,6 +19,7 @@ pub mod cli;
 pub mod daemon;
 pub mod lifecycle;
 pub mod methods;
+pub mod mods;
 pub mod routes;
 pub mod workspace;
 
