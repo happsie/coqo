@@ -1,0 +1,37 @@
+# language: toml
+
+# outline (kind name [lines])
+table package [2-4]
+  key name [3-3]
+  key version [4-4]
+table dependencies [6-8]
+  key serde [7-7]
+    key version [7-7]
+    key features [7-7]
+  key tree-sitter [8-8]
+table profile.release [10-11]
+  key lto [11-11]
+table bin [13-15]
+  key name [14-14]
+  key path [15-15]
+
+# symbols (kind qualified name)
+table package
+key package.name
+key package.version
+table dependencies
+key dependencies.serde
+key dependencies.serde.version
+key dependencies.serde.features
+key dependencies.tree-sitter
+table profile.release
+key profile.release.lto
+table bin
+key bin.name
+key bin.path
+
+# folds (lines kind)
+2-4 region
+6-8 region
+10-11 region
+13-15 region

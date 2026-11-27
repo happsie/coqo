@@ -1,0 +1,13 @@
+{
+  "name": "coqo",
+  "version": "0.0.0",
+  "scripts": {
+    "build": "cargo build",
+    "test": "cargo test"
+  },
+  "keywords": [
+    "editor",
+    "agents"
+  ],
+  "private": true
+}

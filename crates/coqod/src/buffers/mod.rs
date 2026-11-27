@@ -243,7 +243,11 @@ impl BufferService {
     /// The router's check for buffer-id routes: a session token may use only
     /// buffers of its own workspace. An unknown id passes, since the handler
     /// can do nothing with it but report it unknown (ids are never reused).
-    fn require_buffer_access(&self, scope: &Scope, id: BufferId) -> Result<(), ErrorObject> {
+    pub(crate) fn require_buffer_access(
+        &self,
+        scope: &Scope,
+        id: BufferId,
+    ) -> Result<(), ErrorObject> {
         let workspace = self
             .registry()
             .buffers
@@ -829,6 +833,32 @@ impl BufferService {
         Some(self.get(buffer).ok()?.lock().buf.text().to_string())
     }
 
+    /// What the syntax service needs to bring its parse of `buffer` from
+    /// revision `since` to the current one: the changes in between if the
+    /// log still has them all, else the whole text.
+    pub fn syntax_view(
+        &self,
+        buffer: BufferId,
+        since: Option<u64>,
+    ) -> Result<SyntaxView, ErrorObject> {
+        let b = self.get(buffer)?;
+        let st = b.lock();
+        let rev = st.buf.rev();
+        let changes = since.filter(|&s| s <= rev).and_then(|since| {
+            (since + 1..=rev)
+                .map(|r| st.buf.entry(r).map(|e| e.op.to_edits()))
+                .collect::<Option<Vec<_>>>()
+        });
+        let text = changes.is_none().then(|| st.buf.text().to_string());
+        Ok(SyntaxView {
+            workspace: b.workspace.clone(),
+            path: b.real.clone(),
+            rev,
+            changes,
+            text,
+        })
+    }
+
     /// An agent edit at the head of an open buffer (edits against its
     /// current text).
     pub fn agent_edit(
@@ -847,6 +877,23 @@ impl BufferService {
         self.commit(&b, &mut st, c, false);
         Ok(rev)
     }
+}
+
+/// An open buffer as [`BufferService::syntax_view`] sees it.
+#[derive(Debug)]
+pub struct SyntaxView {
+    /// The buffer's workspace.
+    pub workspace: WorkspaceId,
+    /// The file's canonical path.
+    pub path: PathBuf,
+    /// The current revision.
+    pub rev: u64,
+    /// The changes after the asked-for revision, oldest first, each a list
+    /// of edits in the coordinates before it. `None` if they are not all in
+    /// the log (or no revision was asked for): then `text` is set.
+    pub changes: Option<Vec<Vec<bufm::TextEdit>>>,
+    /// The text at `rev`, when `changes` is `None`.
+    pub text: Option<String>,
 }
 
 /// Rebuild a buffer from its journal: the buffer, the replayed changes (for

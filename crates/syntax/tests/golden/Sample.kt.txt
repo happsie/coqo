@@ -1,0 +1,48 @@
+# language: kotlin
+
+# outline (kind name [lines])
+constant LIMIT [6-6]
+variable greeting [8-8]
+interface Shape [10-12]
+  method area [11-11]
+class Circle [14-25]
+  field radius [14-14]
+  field diameter [15-15]
+  method area [18-20]
+  method unit [23-23]
+enum Color [27-30]
+  enum_member RED [28-28]
+  enum_member GREEN [29-29]
+class Registry [32-36]
+  method register [33-35]
+type_alias Names [38-38]
+function distance [40-42]
+
+# symbols (kind qualified name)
+constant LIMIT
+variable greeting
+interface Shape
+method Shape.area
+class Circle
+field Circle.radius
+field Circle.diameter
+method Circle.area
+method Circle.unit
+enum Color
+enum_member Color.RED
+enum_member Color.GREEN
+class Registry
+method Registry.register
+type_alias Names
+function distance
+
+# folds (lines kind)
+3-4 imports
+10-12 region
+14-25 region
+18-20 region
+22-24 region
+27-30 region
+32-36 region
+33-35 region
+40-42 region

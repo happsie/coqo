@@ -42,6 +42,7 @@ The allowlist is what the agent bridge (`coqod mcp`, #69) needs in its own works
 - `workspace/get`, `workspace/getState`, and `workspace/events` filtered to it.
 - `fs/list`, `fs/stat`, `fs/read`, `fs/changes`.
 - `buffer/open` in it, and `buffer/edit`, `buffer/changes`, `buffer/close` on buffers open in it (a check looks up the buffer's workspace).
+- `syntax/symbols`, `syntax/outline`, `syntax/folding` on buffers open in it (read-only, the same check; added by #42 so agents can name and anchor to code).
 
 Everything else needs the daemon token: `daemon/status` (it lists every busy session) and `daemon/shutdown`; opening, listing and managing workspaces, because adding a root would widen a session's file access; `workspace/setState` (the UI's state); `buffer/save` and `buffer/revertChange` (the user's review actions); all of `terminal/*`, which is not tied to a workspace; and all of `agents/*` and `sessions/*`, which reach other sessions, permission rules and provider install actions. New editor tools (#70, #73, #75) open the methods they add with `Access::workspace` or `Access::session`, and add them to the allowlist test.
 

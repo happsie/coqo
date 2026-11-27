@@ -1,0 +1,10 @@
+# The always-on syntax layer (PLAN §6, §7.1.1). It contributes the bundled
+# languages at activation, from the crate's language registry, so the list
+# lives in one place (src/language.rs).
+id = "coqo.syntax"
+name = "Syntax"
+version = "0.1.0"
+description = "Tree-sitter languages: highlighting, folding, outline and symbol tags, always on."
+engine = "^0.0"
+tier = "core"
+activation = ["startup"]

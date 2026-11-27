@@ -1,0 +1,31 @@
+# language: html
+
+# outline (kind name [lines])
+element html [2-18]
+  element head [3-8]
+    element title [4-4]
+    element style [5-7]
+  element body [9-17]
+    element main [10-13]
+      element h1 [11-11]
+      element img [12-12]
+    element script [14-16]
+
+# symbols (kind qualified name)
+element html
+element html.head
+element html.head.title
+element html.head.style
+element html.body
+element html.body.main
+element html.body.main.h1
+element html.body.main.img
+element html.body.script
+
+# folds (lines kind)
+2-18 region
+3-8 region
+5-7 region
+9-17 region
+10-13 region
+14-16 region

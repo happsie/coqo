@@ -136,6 +136,7 @@ In `coqod`, session tokens may call only these, and only for their own workspace
 | `fs/list`, `fs/stat`, `fs/read`, `fs/changes` (topic) | `workspace` |
 | `buffer/open` | `workspace` |
 | `buffer/edit` (notification), `buffer/close`, `buffer/changes` (topic) | the workspace the `buffer` is open in |
+| `syntax/symbols`, `syntax/outline`, `syntax/folding` | the workspace the `buffer` is open in |
 
 Everything else, including `daemon/*`, the rest of `workspace/*`, `buffer/save`, `buffer/revertChange`, `terminal/*`, `agents/*` and `sessions/*`, needs the daemon token.
 
@@ -279,6 +280,18 @@ Replicated text buffers ([ADR 0006](../docs/adr/0006-buffer-replication.md), det
 **Flow:** `buffer/open`, then subscribe to `buffer/changes` with `since: rev`. Reconnect: subscribe with `since: <last rev>` and resend the change in flight. On `RESUME_GAP` or `UNKNOWN_BUFFER` (the buffer was unloaded or the daemon restarted), reopen with the same `replica` and rebase pending edits onto the new snapshot (`ClientReplica::resync`).
 
 **Disk changes:** while a buffer is open the daemon follows the workspace's `fs/changes`. A changed file is diffed against the text last read or written (not the live buffer) and merged around unsaved edits; it is attributed to an agent session when it matches a tool-call diff the agent host announced, else `origin.kind` is `disk`. A clean buffer simply reloads.
+
+### Syntax (`syntax/*`)
+
+The always-on syntax layer of an open buffer (PLAN §7.1.1, [ADR 0011](../docs/adr/0011-syntax-layer.md); types in `coqo_protocol::methods::syntax`, model in `coqo-syntax`). The daemon parses the buffer's current text, unsaved edits included, with tree-sitter and re-parses incrementally as changes land. No language server is started, so these work whether or not the language's ⚡ bolt is on. Every result has the `rev` it describes and the `language` id (`rust`, `typescript`, `tsx`, `javascript`, `java`, `kotlin`, `json`, `toml`, `markdown`, `yaml`, `html`, `css`, `xml`), or `null` and empty lists for other files. Ranges are `{start, end}` UTF-8 byte offsets at that revision; lines are 0-based and inclusive.
+
+| Method | Params → result |
+|---|---|
+| `syntax/symbols` | `{buffer}` → `{rev, language, symbols}`. Each symbol is `{name, kind, range, nameRange, startLine, endLine, container?}`; `container` names the enclosing symbols, outermost first (`["shapes", "Circle"]` for a method `area` in `impl Circle` inside `mod shapes`). Document order, containers first. |
+| `syntax/outline` | `{buffer}` → `{rev, language, items}`: the same symbols as a tree, each item with `children`. |
+| `syntax/folding` | `{buffer}` → `{rev, language, ranges}`: `{startLine, endLine, kind}` with `kind` `region`, `comment` (runs of line comments fold together) or `imports`. |
+
+`kind` is one of `module`, `class`, `interface`, `trait`, `struct`, `enum`, `enumMember`, `typeAlias`, `impl`, `function`, `method`, `constructor`, `field`, `constant`, `variable`, `macro`, `heading` (Markdown), `key` (JSON, YAML, TOML), `table` (TOML), `element` (HTML, XML) or `rule` (CSS). A session token may call these for buffers in its own workspace; other buffers are `FORBIDDEN`.
 
 ### Terminals (`terminal/*`)
 

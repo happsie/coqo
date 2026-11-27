@@ -203,6 +203,28 @@
       "minimum": 0,
       "type": "integer"
     },
+    "ByteRange": {
+      "description": "A byte range of the buffer text.",
+      "properties": {
+        "end": {
+          "description": "One past the last byte.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "description": "First byte.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
     "ChangesParams": {
       "description": "Params of the [`Changes`] topic.",
       "properties": {
@@ -871,6 +893,83 @@
       ],
       "type": "object"
     },
+    "FoldKind": {
+      "description": "What a fold holds (LSP's `FoldingRangeKind`).",
+      "oneOf": [
+        {
+          "const": "region",
+          "description": "A block, body or literal.",
+          "type": "string"
+        },
+        {
+          "const": "comment",
+          "description": "A comment, or a run of line comments.",
+          "type": "string"
+        },
+        {
+          "const": "imports",
+          "description": "A run of imports.",
+          "type": "string"
+        }
+      ]
+    },
+    "FoldingRange": {
+      "description": "Lines that can be folded: `start_line` stays visible, the lines after it\nthrough `end_line` are hidden.",
+      "properties": {
+        "endLine": {
+          "description": "Last line folded (0-based, inclusive).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/FoldKind",
+          "description": "What the fold holds."
+        },
+        "startLine": {
+          "description": "First line (0-based).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "startLine",
+        "endLine",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "FoldingResult": {
+      "description": "Result of [`Folding`].",
+      "properties": {
+        "language": {
+          "description": "The language id, or `null` for plain text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ranges": {
+          "description": "The ranges, sorted by start line, at most one per line.",
+          "items": {
+            "$ref": "#/$defs/FoldingRange"
+          },
+          "type": "array"
+        },
+        "rev": {
+          "description": "The revision the ranges describe.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "rev",
+        "ranges"
+      ],
+      "type": "object"
+    },
     "Frame": {
       "description": "What changed on screen since the previous frame.",
       "properties": {
@@ -1350,6 +1449,85 @@
           "type": "string"
         }
       ]
+    },
+    "OutlineItem": {
+      "description": "A symbol and the symbols inside it.",
+      "properties": {
+        "children": {
+          "description": "The symbols directly inside it, in document order.",
+          "items": {
+            "$ref": "#/$defs/OutlineItem"
+          },
+          "type": "array"
+        },
+        "endLine": {
+          "description": "Last line (0-based, inclusive).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/SymbolKind",
+          "description": "What it is."
+        },
+        "name": {
+          "description": "The name.",
+          "type": "string"
+        },
+        "nameRange": {
+          "$ref": "#/$defs/ByteRange",
+          "description": "The name."
+        },
+        "range": {
+          "$ref": "#/$defs/ByteRange",
+          "description": "The whole definition."
+        },
+        "startLine": {
+          "description": "First line (0-based).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "range",
+        "nameRange",
+        "startLine",
+        "endLine"
+      ],
+      "type": "object"
+    },
+    "OutlineResult": {
+      "description": "Result of [`Outline`].",
+      "properties": {
+        "items": {
+          "description": "The top-level symbols.",
+          "items": {
+            "$ref": "#/$defs/OutlineItem"
+          },
+          "type": "array"
+        },
+        "language": {
+          "description": "The language id, or `null` for plain text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rev": {
+          "description": "The revision the outline describes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "rev",
+        "items"
+      ],
+      "type": "object"
     },
     "PathParams": {
       "description": "Params naming a path in a workspace.",
@@ -3228,6 +3406,208 @@
       "minimum": 0,
       "type": "integer"
     },
+    "Symbol": {
+      "description": "A named definition: a function, method, type, module, heading, key, …",
+      "properties": {
+        "container": {
+          "description": "Names of the symbols that contain this one, outermost first: a method\n`area` in `impl Circle` inside `mod shapes` has `[\"shapes\", \"Circle\"]`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "endLine": {
+          "description": "Last line of the definition (0-based, inclusive).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/SymbolKind",
+          "description": "What it is."
+        },
+        "name": {
+          "description": "The name, with runs of whitespace collapsed to one space.",
+          "type": "string"
+        },
+        "nameRange": {
+          "$ref": "#/$defs/ByteRange",
+          "description": "The name."
+        },
+        "range": {
+          "$ref": "#/$defs/ByteRange",
+          "description": "The whole definition."
+        },
+        "startLine": {
+          "description": "First line of the definition (0-based).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "range",
+        "nameRange",
+        "startLine",
+        "endLine"
+      ],
+      "type": "object"
+    },
+    "SymbolKind": {
+      "description": "What a symbol is.",
+      "oneOf": [
+        {
+          "const": "module",
+          "description": "A module, namespace or package.",
+          "type": "string"
+        },
+        {
+          "const": "class",
+          "description": "A class (also a Kotlin `object` or a Java record).",
+          "type": "string"
+        },
+        {
+          "const": "interface",
+          "description": "An interface or a Java annotation type.",
+          "type": "string"
+        },
+        {
+          "const": "trait",
+          "description": "A trait.",
+          "type": "string"
+        },
+        {
+          "const": "struct",
+          "description": "A struct or union.",
+          "type": "string"
+        },
+        {
+          "const": "enum",
+          "description": "An enum.",
+          "type": "string"
+        },
+        {
+          "const": "enumMember",
+          "description": "An enum member or variant.",
+          "type": "string"
+        },
+        {
+          "const": "typeAlias",
+          "description": "A type alias.",
+          "type": "string"
+        },
+        {
+          "const": "impl",
+          "description": "An `impl` block; its name is the implementing type.",
+          "type": "string"
+        },
+        {
+          "const": "function",
+          "description": "A free function.",
+          "type": "string"
+        },
+        {
+          "const": "method",
+          "description": "A function inside a class, struct, trait, interface, impl or object.",
+          "type": "string"
+        },
+        {
+          "const": "constructor",
+          "description": "A constructor.",
+          "type": "string"
+        },
+        {
+          "const": "field",
+          "description": "A field or property.",
+          "type": "string"
+        },
+        {
+          "const": "constant",
+          "description": "A constant or static.",
+          "type": "string"
+        },
+        {
+          "const": "variable",
+          "description": "A top-level variable.",
+          "type": "string"
+        },
+        {
+          "const": "macro",
+          "description": "A macro.",
+          "type": "string"
+        },
+        {
+          "const": "heading",
+          "description": "A Markdown heading (its section).",
+          "type": "string"
+        },
+        {
+          "const": "key",
+          "description": "A key in a data file (JSON, YAML, TOML).",
+          "type": "string"
+        },
+        {
+          "const": "table",
+          "description": "A TOML table.",
+          "type": "string"
+        },
+        {
+          "const": "element",
+          "description": "An HTML or XML element.",
+          "type": "string"
+        },
+        {
+          "const": "rule",
+          "description": "A CSS rule, at-rule or keyframe.",
+          "type": "string"
+        }
+      ]
+    },
+    "SymbolsResult": {
+      "description": "Result of [`Symbols`].",
+      "properties": {
+        "language": {
+          "description": "The language id (`rust`, `tsx`, …), or `null` for plain text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rev": {
+          "description": "The revision the symbols describe.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "symbols": {
+          "description": "Every symbol, in document order (a container before what it holds).",
+          "items": {
+            "$ref": "#/$defs/Symbol"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "rev",
+        "symbols"
+      ],
+      "type": "object"
+    },
+    "SyntaxParams": {
+      "description": "Params of every `syntax/*` method.",
+      "properties": {
+        "buffer": {
+          "$ref": "#/$defs/BufferId",
+          "description": "An open buffer ([`buffer/open`](super::buffer::Open))."
+        }
+      },
+      "required": [
+        "buffer"
+      ],
+      "type": "object"
+    },
     "TermSize": {
       "description": "A terminal's size in cells.",
       "properties": {
@@ -4533,6 +4913,39 @@
       "kind": "topic",
       "params": {
         "$ref": "#/$defs/SessionParams"
+      }
+    },
+    "syntax/folding": {
+      "description": "The foldable line ranges of an open buffer.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SyntaxParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FoldingResult"
+      }
+    },
+    "syntax/outline": {
+      "description": "The symbols of an open buffer as a tree.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SyntaxParams"
+      },
+      "result": {
+        "$ref": "#/$defs/OutlineResult"
+      }
+    },
+    "syntax/symbols": {
+      "description": "Every symbol of an open buffer (tree-sitter tags), flat, with container paths.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SyntaxParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SymbolsResult"
       }
     },
     "terminal/close": {

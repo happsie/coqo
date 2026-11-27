@@ -21,7 +21,7 @@ use crate::daemon;
 use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
-use crate::methods::{self, agents, buffer, fs, terminal, workspace};
+use crate::methods::{self, agents, buffer, fs, syntax, terminal, workspace};
 use crate::subscription::ResumeGap;
 
 struct Entry {
@@ -269,6 +269,21 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             g,
             "client→server",
             "A replica is done with a buffer; it unloads once unsubscribed.",
+        ),
+        request::<syntax::Symbols>(
+            g,
+            "client→server",
+            "Every symbol of an open buffer (tree-sitter tags), flat, with container paths.",
+        ),
+        request::<syntax::Outline>(
+            g,
+            "client→server",
+            "The symbols of an open buffer as a tree.",
+        ),
+        request::<syntax::Folding>(
+            g,
+            "client→server",
+            "The foldable line ranges of an open buffer.",
         ),
         request::<terminal::Spawn>(
             g,
@@ -629,6 +644,9 @@ fn schema_covers_every_builtin_method() {
         buffer::EditRejected::NAME,
         buffer::Changes::NAME,
         buffer::Save::NAME,
+        syntax::Symbols::NAME,
+        syntax::Outline::NAME,
+        syntax::Folding::NAME,
     ] {
         assert!(methods.contains_key(name), "{name} missing from the schema");
     }
