@@ -6,8 +6,15 @@
 //! The chrome is filled through registries in `coqo_ui::slots`: top bar and
 //! status bar items ([`Slots`]) and sidebar panes ([`SidebarPanes`]). The
 //! built-in items registered by [`init`] are honest placeholders until the
-//! daemon, git and language mods exist. The layout (sidebar width and pane,
-//! splits and tabs) is saved through a [`LayoutStore`] and restored on start.
+//! daemon, git and language mods exist.
+//!
+//! Each window has its own [`Workspaces`] (the workspace it shows) and dock.
+//! The layout (sidebar width and pane, splits and tabs) is saved through a
+//! [`LayoutStore`] per workspace, keyed by the workspace id (the app's store
+//! keeps it in the daemon, #140), and restored when the window opens or
+//! switches to that workspace. While no workspace is open, the layout is
+//! saved under the window's local key (`"default"`); the first workspace
+//! opened that has no layout of its own adopts it.
 
 use std::{collections::HashMap, rc::Rc, time::Duration};
 
@@ -34,11 +41,14 @@ use crate::{
     chat,
     daemon::{self, Daemon},
     files,
+    layout::{DaemonLayoutStore, LAYOUT_KEY},
     welcome::{self, shortcut},
-    workspace::{OpenFolder, Workspaces, initials, prompt_open_folder},
+    workspace::{
+        KnownWorkspaces, OpenFolder, Workspaces, WorkspacesEvent, initials, prompt_open_folder_in,
+    },
 };
 
-/// The workspace key layouts are saved under until workspaces exist.
+/// The key a window's layout is saved under while no workspace is open.
 pub const DEFAULT_WORKSPACE: &str = "default";
 
 const SAVE_DELAY: Duration = Duration::from_millis(300);
@@ -70,20 +80,25 @@ struct DraggedSidebarEdge;
 pub struct Shell {
     dock: Entity<Dock>,
     store: Rc<dyn LayoutStore>,
-    workspace: SharedString,
+    workspaces: Entity<Workspaces>,
+    /// The key the layout is saved under: the workspace id, or `local_key`.
+    layout_key: SharedString,
+    /// The key while no workspace is open.
+    local_key: SharedString,
     sidebar_width: Pixels,
     sidebar_pane: Option<SharedString>,
     /// Built pane views, with the builder that made them: a pane registered
     /// again gets a fresh view.
     pane_views: HashMap<SharedString, (PaneBuilder, AnyView)>,
     pending_save: Option<Task<()>>,
+    _dock_events: Subscription,
     _subscriptions: Vec<Subscription>,
 }
 
 impl std::fmt::Debug for Shell {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Shell")
-            .field("workspace", &self.workspace)
+            .field("layout_key", &self.layout_key)
             .field("sidebar_width", &self.sidebar_width)
             .field("sidebar_pane", &self.sidebar_pane)
             .finish_non_exhaustive()
@@ -91,50 +106,54 @@ impl std::fmt::Debug for Shell {
 }
 
 impl Shell {
-    /// Open the workbench for `workspace`, restoring its saved layout.
+    /// Open a workbench window. It restores the layout saved under
+    /// `local_key` until a workspace opens, then that workspace's.
     pub fn new(
         store: Rc<dyn LayoutStore>,
-        workspace: impl Into<SharedString>,
+        local_key: impl Into<SharedString>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let workspace = workspace.into();
-        let saved = store.load(&workspace).unwrap_or_else(|err| {
+        let local_key = local_key.into();
+        // Before the dock: restored tabs look up the window's workspace.
+        let workspaces = cx.new(|cx| Workspaces::new(window, cx));
+        let saved = store.load(&local_key).unwrap_or_else(|err| {
             eprintln!("coqo: couldn't load the saved layout, using the default: {err}");
             None
         });
-        let dock = cx.new(|cx| {
-            let mut dock = match &saved {
-                Some(layout) => Dock::restore(layout.dock.clone(), window, cx),
-                None => Dock::new(cx),
-            };
-            dock.set_empty_state(empty_state);
-            dock.set_new_tab(|_, cx| welcome::new(cx));
-            dock
-        });
-        let subscriptions = vec![
-            cx.subscribe(&dock, |this, _, _: &DockEvent, cx| this.schedule_save(cx)),
+        let dock = new_dock(saved.as_ref(), window, cx);
+        let mut subscriptions = vec![
             cx.observe_global::<Slots>(|_, cx| cx.notify()),
             cx.observe_global::<SidebarPanes>(|_, cx| cx.notify()),
             cx.on_app_quit(|this, cx| {
                 this.save_now(cx);
-                async {}
+                this.store.flush()
+            }),
+            // A closed window saves its layout.
+            cx.on_release(|this, cx| this.save_to_store(cx)),
+            cx.observe(&workspaces, |_, _, cx| cx.notify()),
+            cx.subscribe_in(&workspaces, window, |this, _, event, window, cx| {
+                if *event == WorkspacesEvent::CurrentChanged {
+                    this.workspace_changed(window, cx);
+                }
             }),
         ];
-        let mut subscriptions = subscriptions;
         if let Some(daemon) = Daemon::global(cx) {
             subscriptions.push(cx.observe(&daemon, |_, _, cx| cx.notify()));
         }
-        if let Some(workspaces) = Workspaces::global(cx) {
-            subscriptions.push(cx.observe(&workspaces, |_, _, cx| cx.notify()));
+        if let Some(known) = KnownWorkspaces::global(cx) {
+            subscriptions.push(cx.observe(&known, |_, _, cx| cx.notify()));
         }
         let focus = dock.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         let sidebar = saved.map(|l| l.sidebar);
         Self {
+            _dock_events: cx.subscribe(&dock, |this, _, _: &DockEvent, cx| this.schedule_save(cx)),
             dock,
             store,
-            workspace,
+            workspaces,
+            layout_key: local_key.clone(),
+            local_key,
             sidebar_width: sidebar.as_ref().map_or_else(
                 || cx.tokens().metrics.sidebar_width,
                 |s| px(s.width).clamp(SIDEBAR_MIN, SIDEBAR_MAX),
@@ -144,6 +163,79 @@ impl Shell {
             pending_save: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// The window's workspace.
+    #[allow(dead_code)] // Used by tests.
+    pub fn workspaces(&self) -> &Entity<Workspaces> {
+        &self.workspaces
+    }
+
+    /// The key the layout is saved under now.
+    #[allow(dead_code)] // Used by tests.
+    pub fn layout_key(&self) -> &SharedString {
+        &self.layout_key
+    }
+
+    /// The window shows another workspace (or the same one again, after a
+    /// reconnect): switch to its layout.
+    fn workspace_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(info) = self.workspaces.read(cx).current() else {
+            return;
+        };
+        let key: SharedString = info.id.0.clone().into();
+        if key == self.layout_key {
+            // Reattached: keep the tabs, and push what may have been saved
+            // while the daemon was away.
+            self.schedule_save(cx);
+            return;
+        }
+        if let Some(store) = DaemonLayoutStore::global(cx) {
+            store.fetched(&key, self.workspaces.read(cx).state(LAYOUT_KEY));
+        }
+        self.save_now(cx);
+        let from_local = self.layout_key == self.local_key;
+        let saved = self.store.load(&key).unwrap_or_else(|err| {
+            eprintln!("coqo: couldn't load the saved layout, using the default: {err}");
+            None
+        });
+        let previous = std::mem::replace(&mut self.layout_key, key);
+        match saved {
+            Some(layout) => self.apply_layout(Some(layout), window, cx),
+            // The no-workspace layout moves into the workspace (this imports
+            // a layout file from before layouts lived in the daemon, once).
+            None if from_local => {
+                if let Err(err) = self.store.remove(&previous) {
+                    eprintln!("coqo: couldn't remove the old layout: {err}");
+                }
+            }
+            None => self.apply_layout(None, window, cx),
+        }
+        self.save_now(cx);
+    }
+
+    /// Replace the dock and sidebar with `layout` (or the default).
+    fn apply_layout(
+        &mut self,
+        layout: Option<WorkbenchLayout>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dock = new_dock(layout.as_ref(), window, cx);
+        self._dock_events =
+            cx.subscribe(&dock, |this, _, _: &DockEvent, cx| this.schedule_save(cx));
+        self.dock = dock;
+        // Panes hold the old dock: build them again.
+        self.pane_views.clear();
+        let sidebar = layout.map(|l| l.sidebar);
+        self.sidebar_width = sidebar.as_ref().map_or_else(
+            || cx.tokens().metrics.sidebar_width,
+            |s| px(s.width).clamp(SIDEBAR_MIN, SIDEBAR_MAX),
+        );
+        self.sidebar_pane = sidebar.and_then(|s| s.pane).map(Into::into);
+        let focus = self.dock.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+        cx.notify();
     }
 
     /// The main tab area, for opening and arranging tabs.
@@ -181,8 +273,12 @@ impl Shell {
     /// Save the layout now.
     pub fn save_now(&mut self, cx: &mut Context<Self>) {
         self.pending_save = None;
+        self.save_to_store(cx);
+    }
+
+    fn save_to_store(&self, cx: &App) {
         let layout = self.layout(cx);
-        if let Err(err) = self.store.save(&self.workspace, &layout) {
+        if let Err(err) = self.store.save(&self.layout_key, &layout) {
             eprintln!("coqo: couldn't save the layout: {err}");
         }
     }
@@ -212,12 +308,19 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.tokens();
         let (p, m) = (t.palette.clone(), t.metrics.clone());
-        let top = top_bar(window, cx);
+        let workspace_name: Option<SharedString> = self
+            .workspaces
+            .read(cx)
+            .current()
+            .map(|c| c.name.clone().into());
+        let top = top_bar(workspace_name, window, cx);
         let sidebar = self.render_sidebar(window, cx);
         let status = status_bar(window, cx);
+        let rail = rail(&self.workspaces, cx);
+        let workspaces = self.workspaces.downgrade();
         div()
             .id("workbench")
-            .on_action(|_: &OpenFolder, _, cx| prompt_open_folder(cx))
+            .on_action(move |_: &OpenFolder, _, cx| prompt_open_folder_in(workspaces.clone(), cx))
             .on_action(cx.listener(|this, _: &chat::NewChat, window, cx| {
                 chat::new_chat(this.dock.downgrade(), window, cx)
             }))
@@ -247,7 +350,7 @@ impl Render for Shell {
                             this.resize_sidebar(e, cx)
                         },
                     ))
-                    .child(rail(cx))
+                    .child(rail)
                     .child(div().w(m.gap).flex_none())
                     .child(sidebar)
                     .child(
@@ -347,11 +450,23 @@ fn region(id: &'static str, el: Div) -> AnyElement {
     el.id(id).test_support().into_any_element()
 }
 
-fn top_bar(window: &mut Window, cx: &mut App) -> AnyElement {
+/// A dock showing `layout` (or empty), with the workbench's empty state and
+/// new-tab behaviour.
+fn new_dock(layout: Option<&WorkbenchLayout>, window: &mut Window, cx: &mut App) -> Entity<Dock> {
+    cx.new(|cx| {
+        let mut dock = match layout {
+            Some(layout) => Dock::restore(layout.dock.clone(), window, cx),
+            None => Dock::new(cx),
+        };
+        dock.set_empty_state(empty_state);
+        dock.set_new_tab(|_, cx| welcome::new(cx));
+        dock
+    })
+}
+
+fn top_bar(workspace_name: Option<SharedString>, window: &mut Window, cx: &mut App) -> AnyElement {
     let start = Slots::render(Slot::TopBarStart, window, cx);
     let end = Slots::render(Slot::TopBarEnd, window, cx);
-    let workspace_name: Option<SharedString> =
-        Workspaces::global(cx).and_then(|w| w.read(cx).current().map(|c| c.name.clone().into()));
     let t = cx.tokens();
     let (p, m) = (&t.palette, &t.metrics);
 
@@ -522,7 +637,9 @@ fn rail_button(id: &'static str, cx: &App) -> Stateful<Div> {
         .rounded(m.radius_rail)
 }
 
-fn rail(cx: &App) -> AnyElement {
+fn rail(workspaces: &Entity<Workspaces>, cx: &App) -> AnyElement {
+    let buttons = workspace_buttons(workspaces, cx);
+    let open_folder = workspaces.downgrade();
     let t = cx.tokens();
     let (p, m) = (&t.palette, &t.metrics);
     let muted = p.text_muted.hsla();
@@ -536,7 +653,7 @@ fn rail(cx: &App) -> AnyElement {
             .items_center()
             .gap(px(12.))
             .py(px(6.))
-            .children(workspace_buttons(cx))
+            .children(buttons)
             .child(
                 rail_button("add-workspace", cx)
                     .test_support()
@@ -545,7 +662,7 @@ fn rail(cx: &App) -> AnyElement {
                     .border_color(p.border_strong.hsla())
                     .cursor_pointer()
                     .child(icon(Icon::Plus, px(18.), muted))
-                    .on_click(|_, _, cx| prompt_open_folder(cx)),
+                    .on_click(move |_, _, cx| prompt_open_folder_in(open_folder.clone(), cx)),
             )
             .child(div().flex_1())
             .child(rail_button("alerts", cx).child(icon(Icon::Bell, px(20.), muted)))
@@ -553,19 +670,19 @@ fn rail(cx: &App) -> AnyElement {
     )
 }
 
-/// One rail button per open workspace, the current one lit in sage.
-fn workspace_buttons(cx: &App) -> Vec<AnyElement> {
-    let Some(workspaces) = Workspaces::global(cx) else {
-        return Vec::new();
-    };
-    let workspaces = workspaces.read(cx);
-    let current = workspaces.current().map(|w| w.id.clone());
-    let mut list: Vec<_> = workspaces.open_workspaces().to_vec();
-    if let Some(cur) = workspaces.current()
+/// One rail button per open workspace, the window's current one lit in sage.
+fn workspace_buttons(workspaces: &Entity<Workspaces>, cx: &App) -> Vec<AnyElement> {
+    let window_workspaces = workspaces.downgrade();
+    let current = workspaces.read(cx).current().cloned();
+    let mut list: Vec<_> = KnownWorkspaces::global(cx)
+        .map(|known| known.read(cx).open_workspaces().cloned().collect())
+        .unwrap_or_default();
+    if let Some(cur) = &current
         && !list.iter().any(|w| w.id == cur.id)
     {
         list.insert(0, cur.clone());
     }
+    let current = current.map(|w| w.id);
     let t = cx.tokens();
     let (p, m) = (&t.palette, &t.metrics);
     list.into_iter()
@@ -597,12 +714,11 @@ fn workspace_buttons(cx: &App) -> Vec<AnyElement> {
                     .hover(|s| s.bg(p.surface_strong.hsla()))
             };
             let id = info.id.clone();
+            let workspaces = window_workspaces.clone();
             base.child(initials(&info.name))
                 .on_click(move |_, _, cx| {
-                    if let Some(workspaces) = Workspaces::global(cx) {
-                        let id = id.clone();
-                        workspaces.update(cx, |w, cx| w.switch_to(id, cx));
-                    }
+                    let id = id.clone();
+                    workspaces.update(cx, |w, cx| w.switch_to(id, cx)).ok();
                 })
                 .into_any_element()
         })

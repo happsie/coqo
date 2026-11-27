@@ -9,13 +9,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use coqo_client::{DaemonPaths, connect};
-use coqo_protocol::{
-    ClientConfig,
-    daemon::{Shutdown, ShutdownParams},
-    methods::fs::EntryKind,
-};
-use coqo_storage::DataDirs;
+use coqo_client::connect;
+use coqo_protocol::{ClientConfig, methods::fs::EntryKind};
 use coqo_ui::{
     Appearance,
     dock::store::MemoryLayoutStore,
@@ -25,9 +20,6 @@ use coqo_ui::{
     },
     test::{TestAppContext, TestWindowExt as _},
 };
-use coqod::IdlePolicy;
-use tempfile::TempDir;
-use tokio::{runtime::Runtime, task::JoinHandle};
 
 use super::{
     preview::{Content, FilePreview, KIND},
@@ -36,117 +28,9 @@ use super::{
 use crate::{
     daemon::{self, ConnectionState, Daemon, DaemonConfig},
     shell::{DEFAULT_WORKSPACE, Shell},
+    test_support::{Fixture, TIMEOUT, write},
     workspace::{self, Workspaces},
 };
-
-const TIMEOUT: Duration = Duration::from_secs(10);
-
-/// A `coqod` served on a background runtime.
-struct TestDaemon {
-    runtime: Runtime,
-    paths: DaemonPaths,
-    data: PathBuf,
-    serving: Option<JoinHandle<()>>,
-}
-
-impl TestDaemon {
-    fn start(run: PathBuf, data: PathBuf) -> Self {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap();
-        let mut daemon = Self {
-            runtime,
-            paths: DaemonPaths::at(run),
-            data,
-            serving: None,
-        };
-        daemon.serve();
-        daemon
-    }
-
-    fn serve(&mut self) {
-        let (paths, data) = (self.paths.clone(), DataDirs::at(&self.data));
-        // Binding needs the runtime's reactor.
-        let _entered = self.runtime.enter();
-        let lock = coqod::daemon::acquire(&paths).unwrap();
-        let listener = coqod::daemon::bind(&paths).unwrap();
-        let policy = IdlePolicy {
-            stop_services_after: None,
-            exit_after: None,
-        };
-        self.serving = Some(self.runtime.spawn(async move {
-            coqod::daemon::serve(paths, data, policy, lock, listener)
-                .await
-                .unwrap();
-        }));
-    }
-
-    /// `daemon/shutdown`, and wait until it stopped.
-    fn stop(&mut self) {
-        let paths = self.paths.clone();
-        let serving = self.serving.take().expect("serving");
-        self.runtime.block_on(async move {
-            let (client, _) = connect(&paths, ClientConfig::new("coqo-tests", "test"))
-                .await
-                .unwrap();
-            client
-                .request::<Shutdown>(ShutdownParams { force: true })
-                .await
-                .unwrap();
-            serving.await.unwrap();
-        });
-    }
-}
-
-impl Drop for TestDaemon {
-    fn drop(&mut self) {
-        if let Some(serving) = self.serving.take() {
-            serving.abort();
-        }
-    }
-}
-
-/// A project folder and a daemon.
-struct Fixture {
-    _tmp: TempDir,
-    project: PathBuf,
-    daemon: TestDaemon,
-}
-
-fn write(root: &Path, path: &str, contents: impl AsRef<[u8]>) {
-    let path = root.join(path);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, contents).unwrap();
-}
-
-impl Fixture {
-    fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
-        let project = tmp.path().join("demo-project");
-        write(&project, ".gitignore", "target/\n");
-        write(&project, "README.md", "# Demo\n");
-        write(
-            &project,
-            "src/main.rs",
-            "fn main() {\n\tprintln!(\"hi\");\n}\n",
-        );
-        write(&project, "src/lib.rs", "pub fn f() {}\n");
-        write(&project, "target/out.txt", "build output\n");
-        write(
-            &project,
-            "logo.png",
-            [0x89, b'P', b'N', b'G', 0x00, 0xff, 0xfe, 0x00],
-        );
-        let daemon = TestDaemon::start(tmp.path().join("run"), tmp.path().join("data"));
-        Self {
-            _tmp: tmp,
-            project,
-            daemon,
-        }
-    }
-}
 
 struct Ui {
     cx: TestAppContext,

@@ -15,7 +15,7 @@ use coqo_ui::{
     ActiveTokens as _,
     dock::{AnyTab, TabItem},
     gpui::{
-        AnyElement, App, AppContext as _, Context, FocusHandle, FontWeight,
+        AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight,
         InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
         Styled as _, Subscription, Task, UniformListScrollHandle, Window, div, px, uniform_list,
     },
@@ -69,14 +69,15 @@ impl std::fmt::Debug for FilePreview {
     }
 }
 
-/// Recreate a saved file tab.
-pub fn restore(state: &Value, cx: &mut App) -> Option<AnyTab> {
+/// Recreate a saved file tab in `window`.
+pub fn restore(state: &Value, window: &Window, cx: &mut App) -> Option<AnyTab> {
     let workspace = WorkspaceId(state.get("workspace")?.as_str()?.to_owned());
     let root = RootId(u32::try_from(state.get("root")?.as_u64()?).ok()?);
     let path = state.get("path")?.as_str()?.to_owned();
-    Some(AnyTab::new(
-        cx.new(|cx| FilePreview::new(workspace, root, path, cx)),
-    ))
+    let workspaces = Workspaces::for_window(window, cx);
+    Some(AnyTab::new(cx.new(|cx| {
+        FilePreview::new(workspaces.as_ref(), workspace, root, path, cx)
+    })))
 }
 
 /// The de-duplication key of a file tab.
@@ -99,7 +100,14 @@ fn lines(text: &str) -> Vec<SharedString> {
 }
 
 impl FilePreview {
-    pub fn new(workspace: WorkspaceId, root: RootId, path: String, cx: &mut Context<Self>) -> Self {
+    /// A tab for `path`, following changes through the window's `workspaces`.
+    pub fn new(
+        workspaces: Option<&Entity<Workspaces>>,
+        workspace: WorkspaceId,
+        root: RootId,
+        path: String,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut subscriptions = Vec::new();
         if let Some(daemon) = Daemon::global(cx) {
             subscriptions.push(cx.subscribe(&daemon, |this, _, event, cx| {
@@ -108,9 +116,9 @@ impl FilePreview {
                 }
             }));
         }
-        if let Some(workspaces) = Workspaces::global(cx) {
+        if let Some(workspaces) = workspaces {
             subscriptions.push(cx.subscribe(
-                &workspaces,
+                workspaces,
                 |this, workspaces, event, cx| match event {
                     WorkspacesEvent::CurrentChanged => {
                         let ours =

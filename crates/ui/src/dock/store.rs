@@ -2,15 +2,19 @@
 
 //! Saving and loading the workbench layout, per workspace.
 //!
-//! The UI owns its layout (PLAN §4.2). Until the daemon can hold it, layouts are
-//! JSON files in the UI's data directory; [`LayoutStore`] is the seam the daemon
-//! store will plug into.
+//! The UI owns its layout (PLAN §4.2), and the daemon keeps it with the
+//! workspace (#140): the app's store (`DaemonLayoutStore` in the `coqo` crate)
+//! saves it in the workspace's state, with [`JsonFileLayoutStore`] (JSON files
+//! in the UI's data directory) as the fallback while the daemon isn't
+//! reachable. [`LayoutStore`] is the seam between them.
 
 use std::{
     cell::RefCell,
     collections::HashMap,
+    future::Future,
     io,
     path::{Path, PathBuf},
+    pin::Pin,
     rc::Rc,
 };
 
@@ -41,11 +45,27 @@ pub struct SidebarLayout {
     pub pane: Option<String>,
 }
 
+/// Waits for saves still in flight; see [`LayoutStore::flush`].
+pub type Flush = Pin<Box<dyn Future<Output = ()>>>;
+
 /// Loads and saves layouts by workspace key.
 pub trait LayoutStore {
     /// `Ok(None)` when nothing usable is saved for this workspace.
     fn load(&self, workspace: &str) -> io::Result<Option<WorkbenchLayout>>;
     fn save(&self, workspace: &str, layout: &WorkbenchLayout) -> io::Result<()>;
+
+    /// Forget the layout saved for this workspace. Removing one that isn't
+    /// saved is fine.
+    fn remove(&self, workspace: &str) -> io::Result<()> {
+        let _ = workspace;
+        Ok(())
+    }
+
+    /// Resolves once every save so far has landed, for stores that save in
+    /// the background. Awaited on quit.
+    fn flush(&self) -> Flush {
+        Box::pin(std::future::ready(()))
+    }
 }
 
 /// Keeps layouts in memory. Clones share the same storage, so a test can
@@ -62,6 +82,11 @@ impl LayoutStore for MemoryLayoutStore {
         self.0
             .borrow_mut()
             .insert(workspace.to_owned(), layout.clone());
+        Ok(())
+    }
+
+    fn remove(&self, workspace: &str) -> io::Result<()> {
+        self.0.borrow_mut().remove(workspace);
         Ok(())
     }
 }
@@ -120,6 +145,13 @@ impl LayoutStore for JsonFileLayoutStore {
         let json = serde_json::to_vec_pretty(layout).map_err(io::Error::other)?;
         std::fs::write(&tmp, json)?;
         std::fs::rename(&tmp, &path)
+    }
+
+    fn remove(&self, workspace: &str) -> io::Result<()> {
+        match std::fs::remove_file(self.path(workspace)) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -182,6 +214,9 @@ mod tests {
         store.save("default", &layout()).unwrap();
         assert_eq!(store.load("default").unwrap(), Some(layout()));
         assert!(store.path("default").ends_with("default.json"));
+        store.remove("default").unwrap();
+        assert_eq!(store.load("default").unwrap(), None);
+        store.remove("default").unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
 

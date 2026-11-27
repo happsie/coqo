@@ -154,7 +154,9 @@ fn list_error(error: Option<String>, cx: &mut App) {
 /// Start a chat in the open workspace with the first available provider,
 /// and open its tab. Failures show under CHATS in the sidebar.
 pub fn new_chat(dock: WeakEntity<Dock>, window: &mut Window, cx: &mut App) {
-    let workspace = Workspaces::global(cx).and_then(|w| w.read(cx).current().cloned());
+    let workspace = Workspaces::for_window(window, cx)
+        .or_else(|| Workspaces::global(cx))
+        .and_then(|w| w.read(cx).current().cloned());
     let Some((workspace, root)) =
         workspace.and_then(|w| w.roots.first().map(|r| (w.id.clone(), r.path.clone())))
     else {
@@ -227,7 +229,11 @@ pub fn open_location(
     cx: &mut App,
 ) {
     let Some(dock) = dock.upgrade() else { return };
-    let Some(workspace) = Workspaces::global(cx).and_then(|w| w.read(cx).current().cloned()) else {
+    let workspaces = Workspaces::for_window(window, cx).or_else(|| Workspaces::global(cx));
+    let Some(workspace) = workspaces
+        .as_ref()
+        .and_then(|w| w.read(cx).current().cloned())
+    else {
         return;
     };
     let found = workspace.roots.iter().find_map(|root| {
@@ -245,7 +251,7 @@ pub fn open_location(
         return;
     }
     let id = workspace.id.clone();
-    let tab = cx.new(|cx| FilePreview::new(id, root, path, cx));
+    let tab = cx.new(|cx| FilePreview::new(workspaces.as_ref(), id, root, path, cx));
     dock.update(cx, |dock, cx| {
         dock.open_tab(AnyTab::new(tab), window, cx);
     });
