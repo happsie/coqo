@@ -154,6 +154,11 @@ async fn status_reports_the_daemon() {
     let client = env.client().await;
     assert_eq!(client.welcome().server, "coqod");
 
+    // The readiness probe's connection may still be closing.
+    eventually("only this client is connected", || async {
+        client.request::<Status>(()).await.unwrap().connections == 1
+    })
+    .await;
     let status = client.request::<Status>(()).await.unwrap();
     assert_eq!(status.version, env!("CARGO_PKG_VERSION"));
     assert_eq!(status.pid, daemon.child.id());
