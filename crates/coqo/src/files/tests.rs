@@ -1042,7 +1042,8 @@ fn publishes_the_editor_context_for_agents() {
         coqo_ui::serde_json::json!({}),
     );
     let s = out.structured.unwrap();
-    let main_path = fixture.project.join("src/main.rs");
+    // The daemon canonicalizes roots (`/var` is `/private/var` on macOS).
+    let main_path = fixture.project.canonicalize().unwrap().join("src/main.rs");
     assert_eq!(s["activeFile"]["path"], main_path.to_str().unwrap(), "{s}");
     assert_eq!(
         s["activeFile"]["selections"][0],
