@@ -3,13 +3,14 @@
 //! `coqo-ui`: Coqo's facade over GPUI and gpui-component (ADR 0002).
 //!
 //! Every other Coqo crate builds UI through this crate. It owns the exact
-//! `gpui-kit` pin, the zen theme tokens ([`theme`]), the bundled fonts, and the
-//! zen building blocks ([`widgets`]). GPUI itself, the element and layout
-//! framework, is re-exported as [`gpui`]. **gpui-component widgets are wrapped here
+//! `gpui-kit` pin, the zen theme tokens ([`theme`]), the bundled fonts, the
+//! zen building blocks ([`widgets`]) and the code editor ([`editor`]). GPUI
+//! itself, the element and layout framework, is re-exported as [`gpui`]. **gpui-component widgets are wrapped here
 //! and never used directly elsewhere**, so they can be swapped without touching
 //! views or mods.
 
 pub mod dock;
+pub mod editor;
 pub mod slots;
 pub mod theme;
 pub mod widgets;

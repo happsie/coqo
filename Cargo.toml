@@ -19,7 +19,7 @@ missing_debug_implementations = "warn"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 
-# gpui-base carries a small Coqo patch (remote edits for the editor, ADR 0007).
+# gpui-base carries a small Coqo patch (remote edits for the editor, ADR 0008).
 # See third_party/gpui-base/PATCHES.md. It is the exact 0.11.0 that gpui-kit pins.
 [patch.crates-io]
 gpui-base = { path = "third_party/gpui-base" }

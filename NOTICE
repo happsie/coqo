@@ -4,6 +4,10 @@ Copyright 2026 The Coqo Authors
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 Third-party components keep their own licences; see each dependency for details.
 
+Vendored third-party code:
+- gpui-base 0.11.0 (third_party/gpui-base), Copyright the gpui-kit authors, Apache License 2.0
+  (third_party/gpui-base/LICENSE-APACHE). Modified by Coqo; see third_party/gpui-base/PATCHES.md.
+
 Bundled third-party assets:
 - Inter (crates/ui/assets/fonts/Inter-*.ttf), Copyright 2016 The Inter Project Authors,
   SIL Open Font License 1.1 (crates/ui/assets/fonts/Inter-OFL.txt).

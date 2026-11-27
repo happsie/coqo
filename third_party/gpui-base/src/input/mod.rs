@@ -65,6 +65,9 @@ mod movement;
 mod native;
 #[path = "base/rope_ext.rs"]
 mod rope_ext;
+// Coqo patch: remote edits (PATCHES.md).
+#[path = "base/remote_edits.rs"]
+mod remote_edits;
 mod scrollbar_presentation;
 #[path = "editor/search.rs"]
 mod search;

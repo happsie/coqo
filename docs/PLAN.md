@@ -87,7 +87,7 @@ Honest notes:
 - Electron is not *slow* for editing (VS Code proves that), but it will never feel like Zed and it costs memory. JDT LS and kotlin-lsp use 1–3 GB on their own, so every saved MB counts on dev laptops running several workspaces.
 - Not having the Claude Agent SDK in Rust is **not** a problem: Claude is integrated through ACP (the Claude Agent ACP adapter is built on that SDK) or the terminal mode. Both are separate processes anyway (§7.3).
 - The **daemon protocol is the real boundary**. If the GPUI UI turns out too slow to build, an Electron or web UI can be plugged onto the same daemon later without touching agents, LSP, or trace. That makes the Rust bet reversible on the UI side.
-- GPUI is pre-1.0. We get it as the `gpui-pre` crates.io snapshots of Zed's GPUI that gpui-component builds against, pinned exactly through `gpui-kit` ([ADR 0002](adr/0002-ui-editor-component.md)). We upgrade deliberately and keep our widgets behind our own `coqo-ui` facade.
+- GPUI is pre-1.0. We get it as the `gpui-pre` crates.io snapshots of Zed's GPUI that gpui-component builds against, pinned exactly through `gpui-kit` ([ADR 0002](adr/0002-ui-editor-component.md)). We upgrade deliberately and keep our widgets behind our own `coqo-ui` facade. One crate of that stack, `gpui-base` (the editing engine), is vendored with a small additive patch for remote edits ([ADR 0008](adr/0008-editor-remote-edits-patch.md)), so each upgrade re-vendors it.
 
 ### 3.3 Alternatives rejected
 - **Fork Zed:** GPL editor crates, a WASM extension API too narrow for "everything is a mod", and permanent rebasing.
@@ -420,7 +420,7 @@ docs/                    PLAN.md, ADRs, protocol docs
 | **S7** | WASM mod API ergonomics | WIT world for commands + MCP tool + declarative view; author one mod in Rust and one in TS via `jco` | Process mods as the primary third-party tier |
 
 Other risks:
-- **GPUI churn:** pin the exact `gpui-kit` release (which pins its `gpui-pre` snapshot), keep the `coqo-ui` facade.
+- **GPUI churn:** pin the exact `gpui-kit` release (which pins its `gpui-pre` snapshot), keep the `coqo-ui` facade, and keep the vendored `gpui-base` patch additive (ADR 0008).
 - **The UI takes longer to build in Rust:** the protocol boundary allows an interim web UI if needed.
 - **Anthropic billing/policy changes:** provider modes stay decoupled, and the billing source is shown in the UI.
 - **ACP spec churn:** pin versions behind the `acp-host` adapter.
