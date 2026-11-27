@@ -104,3 +104,11 @@ Two points have no manifest key, because they hold runtime handles for in-proces
 1. The host parses and validates the manifest, checks `engine`, and registers `[contributes]` (`Contributes::register`), so commands and views appear before the mod runs.
 2. When an activation event fires, the host calls `Mod::activate` with a `ModContext`. The mod provides services and registers handlers and runtime contributions.
 3. On disable, unload or reload, the host calls `Mod::deactivate` and then withdraws everything the mod registered.
+
+In the daemon, `coqo_kernel::mods::ModManager` does this over the kernel's service and contribution registries (`KernelHost`):
+
+- Built-in core mods are listed in `crates/coqod/src/mods.rs` (`BuiltinMods::new().with(MANIFEST, MyMod::new())`) and provide services as built-ins, so an installed mod providing the same service replaces them. A built-in must have `tier = "core"`.
+- `startup` mods activate when the daemon starts; `command:<id>` mods activate the first time the command runs. The other events are not fired yet.
+- A mod whose manifest is rejected, or whose `activate` fails, panics or takes longer than 10 seconds, is marked failed and everything it registered is withdrawn. Other mods keep running.
+- After a mod is disabled, its `ModContext` is refused, so it can't register anything again until it is enabled.
+- A crate that owns a contribution point declares it before mods load, with `BuiltinMods::with_point::<P>()`.

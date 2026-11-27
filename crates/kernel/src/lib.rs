@@ -10,12 +10,15 @@
 //!   process mods): process groups, restart with backoff, output capture and
 //!   RSS per child.
 //! - [`logging`]: `tracing` subscriber setup for the binaries.
+//! - [`mods`]: the kernel's `ModHost`, the built-in mod table and the mod
+//!   lifecycle (load, activate on activation events, disable, status).
 //! - [`id`]: the identifiers the registries use, re-exported from
 //!   `coqo-mod-api` so mods and the kernel share them.
 
 pub mod contribution;
 pub mod id;
 pub mod logging;
+pub mod mods;
 pub mod service;
 pub mod supervisor;
 
