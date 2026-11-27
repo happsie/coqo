@@ -290,7 +290,7 @@ fn viewed_keys_are_short_and_per_identity() {
 
 // The view, on GPUI's headless platform with a fixed source.
 
-mod view {
+pub(crate) mod view {
     use std::{cell::RefCell, rc::Rc, time::Instant};
 
     use coqo_protocol::methods::git::FileDiff;
@@ -333,6 +333,7 @@ mod view {
                     base: "main".into(),
                     head: "topic".into(),
                     files,
+                    versions: None,
                 };
                 cx.new(|cx| DiffView::new(Rc::new(source), None, window, cx))
             })
@@ -665,7 +666,7 @@ class DiscountService(
 }
 ";
 
-    fn board_sample() -> Vec<FileDiff> {
+    pub(crate) fn board_sample() -> Vec<FileDiff> {
         let config_old = "data class PricingConfig(\n    val saleMonths: Set<Int>,\n    val saleRate: BigDecimal,\n)\n";
         let config_new = "data class PricingConfig(\n    val saleMonths: Set<Int>,\n    val saleRate: BigDecimal,\n    val volumeThreshold: Int = 10,\n    val volumeRate: BigDecimal = BigDecimal(\"0.05\"),\n    val loyaltyBonus: BigDecimal = BigDecimal(\"0.02\"),\n    val maxDiscount: BigDecimal = BigDecimal(\"50.00\"),\n)\n";
         let checkout_old = "public final class CheckoutService {\n    public Receipt checkout(Order order) {\n        BigDecimal discount = BigDecimal.ZERO;\n        return receipts.issue(order, discount);\n    }\n}\n";
@@ -748,6 +749,7 @@ class DiscountService(
                     base: "main".into(),
                     head: "feature/volume-discount".into(),
                     files: board_sample(),
+                    versions: None,
                 };
                 let (list, diffs) = (source.list(), source.files.clone());
                 let view = cx.new(|cx| DiffView::new(Rc::new(source), None, window, cx));

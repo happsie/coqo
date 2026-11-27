@@ -729,6 +729,7 @@ fn git_screenshots() {
                     base: "HEAD".into(),
                     head: "index".into(),
                     files: vec![sample_diff()],
+                    versions: None,
                 };
                 let view = cx.new(|cx| DiffView::new(Rc::new(source), None, window, cx));
                 let tab =

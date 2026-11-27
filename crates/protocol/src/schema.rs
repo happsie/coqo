@@ -24,8 +24,8 @@ use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
 use crate::methods::{
-    self, agents, alerts, buffer, editor, fs, git, mcp, questions, syntax, terminal, walkthroughs,
-    workspace,
+    self, agents, alerts, buffer, editor, fs, git, mcp, questions, syntax, terminal, threads,
+    walkthroughs, workspace,
 };
 use crate::subscription::ResumeGap;
 
@@ -504,6 +504,36 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             g,
             "Walkthroughs published, updated or deleted (live only).",
         ),
+        request::<threads::List>(
+            g,
+            "client→server",
+            "A workspace's comment threads, anchors resolved now, with the changes seq.",
+        ),
+        request::<threads::Get>(g, "client→server", "One thread, anchors resolved now."),
+        request::<threads::Create>(
+            g,
+            "client→server",
+            "Start a thread on lines of a file version (or the whole file).",
+        ),
+        request::<threads::Reply>(g, "client→server", "Add the user's comment to a thread."),
+        request::<threads::EditComment>(g, "client→server", "Change one of the user's comments."),
+        request::<threads::DeleteComment>(
+            g,
+            "client→server",
+            "Delete one of the user's comments; an empty thread goes with it.",
+        ),
+        request::<threads::Resolve>(g, "client→server", "Mark a thread resolved."),
+        request::<threads::Reopen>(g, "client→server", "Open a resolved thread again."),
+        request::<threads::Pending>(
+            g,
+            "client→server",
+            "The user's pending review: the comments not sent yet.",
+        ),
+        request::<threads::Discard>(g, "client→server", "Delete the pending review's comments."),
+        topic::<threads::Changes>(
+            g,
+            "Threads whose state changed, as their latest state, and deleted ones (resumable).",
+        ),
     ]
 }
 
@@ -559,6 +589,9 @@ fn error_codes() -> Value {
         ("GIT_FAILED", methods::codes::GIT_FAILED),
         ("UNKNOWN_WALKTHROUGH", methods::codes::UNKNOWN_WALKTHROUGH),
         ("INVALID_WALKTHROUGH", methods::codes::INVALID_WALKTHROUGH),
+        ("UNKNOWN_THREAD", methods::codes::UNKNOWN_THREAD),
+        ("UNKNOWN_COMMENT", methods::codes::UNKNOWN_COMMENT),
+        ("NOT_YOUR_COMMENT", methods::codes::NOT_YOUR_COMMENT),
     ];
     Value::Object(
         all.iter()

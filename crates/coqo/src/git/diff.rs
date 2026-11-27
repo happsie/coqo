@@ -22,7 +22,10 @@ use coqo_ui::{
     widgets::{Icon, icon},
 };
 
-use crate::diff::{DiffView, source::GitDiffSource};
+use crate::{
+    diff::{DiffView, source::GitDiffSource},
+    threads::overlay::{ReviewState, ThreadsOverlay},
+};
 
 /// The tab kind. Persisted: never change it.
 pub const KIND: &str = "git-diff";
@@ -50,6 +53,10 @@ pub struct DiffTab {
     root: RootId,
     staged: bool,
     view: Entity<DiffView>,
+    /// The comment threads in the view (#94), with a daemon. The view keeps
+    /// the overlay alive; tests reach it here.
+    #[cfg_attr(not(test), allow(dead_code))]
+    review: Option<Entity<ReviewState>>,
 }
 
 impl std::fmt::Debug for DiffTab {
@@ -73,11 +80,13 @@ impl DiffTab {
         let source = GitDiffSource::new(workspace.clone(), root, staged, window, cx);
         let view = cx.new(|cx| DiffView::new(Rc::new(source), select, window, cx));
         cx.observe(&view, |_, _, cx| cx.notify()).detach();
+        let review = ThreadsOverlay::attach(&view, window, cx);
         Self {
             workspace,
             root,
             staged,
             view,
+            review,
         }
     }
 
@@ -94,11 +103,18 @@ impl DiffTab {
             root,
             staged,
             view,
+            review: None,
         }
     }
 
     pub fn view(&self) -> &Entity<DiffView> {
         &self.view
+    }
+
+    /// The comment threads' state, when the view shows them.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn review(&self) -> Option<&Entity<ReviewState>> {
+        self.review.as_ref()
     }
 
     fn title_text(&self) -> &'static str {

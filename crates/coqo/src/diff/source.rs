@@ -43,6 +43,43 @@ pub enum Staging {
 /// A failure, as the view shows it.
 pub type SourceError = String;
 
+/// What a source compares, for views that pin things to its lines (comment
+/// threads, #94): the root, and the file version each side shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceVersions {
+    pub workspace: WorkspaceId,
+    pub root: RootId,
+    /// The root's folder within its repository (`RepoInfo::prefix`, `""`
+    /// at the top): a diff path `p` is the root-relative path `p` minus
+    /// `prefix + "/"`.
+    pub prefix: String,
+    /// The version the old side shows.
+    pub base: DiffSide,
+    /// The version the new side shows.
+    pub head: DiffSide,
+}
+
+impl SourceVersions {
+    /// The root-relative path of the diff path `path`, if it is in the root.
+    pub fn root_path(&self, path: &str) -> Option<String> {
+        if self.prefix.is_empty() {
+            return Some(path.to_owned());
+        }
+        path.strip_prefix(&self.prefix)
+            .and_then(|p| p.strip_prefix('/'))
+            .map(str::to_owned)
+    }
+
+    /// The diff path of the root-relative path `path`.
+    pub fn diff_path(&self, path: &str) -> String {
+        if self.prefix.is_empty() {
+            path.to_owned()
+        } else {
+            format!("{}/{path}", self.prefix)
+        }
+    }
+}
+
 /// A provider of file diffs.
 pub trait DiffSource: 'static {
     /// What is compared, stable across sessions (`git:<root>:index..worktree`).
@@ -60,6 +97,12 @@ pub trait DiffSource: 'static {
 
     /// One file's diff, ideally with [`FULL_CONTEXT`] so folds can open.
     fn file(&self, path: &str, cx: &mut App) -> BoxFuture<'static, Result<FileDiff, SourceError>>;
+
+    /// The root and file versions compared, if the sides are versions of a
+    /// workspace root's files. Comment threads need it.
+    fn versions(&self, _cx: &App) -> Option<SourceVersions> {
+        None
+    }
 
     /// Whether hunks and lines can be staged from this diff, and which way.
     fn staging(&self) -> Option<Staging> {
@@ -233,6 +276,24 @@ impl DiffSource for GitDiffSource {
         Box::pin(async move { call.await.map_err(message) })
     }
 
+    fn versions(&self, cx: &App) -> Option<SourceVersions> {
+        let (base, head) = self.sides();
+        let prefix = self
+            .model
+            .read(cx)
+            .root(self.root)
+            .and_then(|r| r.status.as_ref())
+            .map(|s| s.repo.prefix.clone())
+            .unwrap_or_default();
+        Some(SourceVersions {
+            workspace: self.workspace.clone(),
+            root: self.root,
+            prefix,
+            base,
+            head,
+        })
+    }
+
     fn staging(&self) -> Option<Staging> {
         Some(if self.staged {
             Staging::Unstage
@@ -300,6 +361,8 @@ pub struct StaticSource {
     pub base: SharedString,
     pub head: SharedString,
     pub files: Vec<FileDiff>,
+    /// What [`DiffSource::versions`] says, for overlays.
+    pub versions: Option<SourceVersions>,
 }
 
 #[cfg(test)]
@@ -314,6 +377,10 @@ impl DiffSource for StaticSource {
 
     fn head_label(&self) -> SharedString {
         self.head.clone()
+    }
+
+    fn versions(&self, _: &App) -> Option<SourceVersions> {
+        self.versions.clone()
     }
 
     fn files(&self, _: &mut App) -> BoxFuture<'static, Result<Vec<SourceFile>, SourceError>> {

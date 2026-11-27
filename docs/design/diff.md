@@ -43,6 +43,44 @@ The tab is padded 10 px, with 10 px between its parts, as the board's window is.
 - **Folds:** unchanged runs fold to three lines of context. A fold row holds "N unchanged lines" (opens all of them), plus up and down arrows that open 20 lines at a time when the run is longer than that.
 - **Staging (git sources):** each hunk's first changed line has a button in the marker lane: `+` to stage or `−` to unstage, in `sage`, with a `surface_strong` hover. Drag over the line numbers to select lines; `Shift` extends the selection.
 
+## Comment threads
+
+Threads and the pending review come from #94 and [ADR 0022](../adr/0022-review-threads.md). The code is in `crates/coqo/src/threads/` (`WorkspaceThreads`, `ThreadsOverlay`), and the overlay is attached to every `git-diff` tab. Screenshots are offscreen renders from `threads_screenshots`:
+`COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored threads_screenshots`.
+
+![Threads in the review surface](screenshots/threads-dark.png)
+
+![The same in the light appearance](screenshots/threads-light.png)
+
+- **Starting one:**
+  - The `+` beside the hovered line, or at the end of a selection (drag the line numbers), opens a composer under that line.
+  - The composer is a `surface` card, radius 16, with a `border_strong` hairline. It holds a "You · line N" head, a "Leave a comment" field, a raised **Add to review** button and a flat **Cancel**. `Enter` adds, and `Esc` cancels.
+  - A new comment is *pending*.
+- **Where it shows:** a thread shows on the side whose file version it was made on, under its last line. A thread on the whole file, or one whose code changed away or is outside the diff, shows under the file's header ("Outdated", with the original code in mono).
+- **Thread card** (as on board 4):
+  - The card is `surface`, radius 16, with a `border_strong` hairline, or `sand` at 50% while pending.
+  - **Each comment:**
+    - a 22 px avatar (radius 8): the author's initial on their colour at 18%. The user is `sage`, an agent `lavender`, and GitHub `blue`;
+    - the name in semibold, and "line N" on the first comment;
+    - "edited", when the comment was edited;
+    - on the right, **Edit** (the user's comments) and a `sand` **PENDING** pill with `ground` text;
+    - the body, rendered as markdown.
+  - **Footer band** (`panel_raised`):
+    - the "Add to this thread" field (`Enter` adds a pending reply);
+    - a raised **Reply** button;
+    - flat **Resolve** or **Reopen**;
+    - **Discard**, which drops the user's pending comments, and the thread with them if nothing else is left.
+- **Resolved threads** fold to one `surface` row: a `sage` ✓, `Resolved · "first comment" · last comment`, and a **Show** button.
+- **Gutter and tints:**
+  - A `MessageCircle` marker on the thread's first line: `sand` while it has pending comments, `sage` once it is resolved, `blue` otherwise. Clicking it focuses the reply field, or opens a resolved thread.
+  - Pending threads' lines are tinted `sand` at 10%.
+- **The pending review:**
+  - **Header, after the layout toggle:** "N pending" in `sand` semibold, a flat **Discard**, and the primary **Send N comments to Claude ↑**. Until #95 the send button is shown at 50% opacity, with the tooltip "Sending to the agent comes in #95".
+  - **File rows:** "N pending" in `sand` before the stats.
+  - **Note under the file list:** a `surface` card at 50% that explains the pending review (the board's text).
+  - **Footer hint:** "Press + beside a line, or after selecting lines, to comment", joined to the staging hint.
+  - The counts cover threads started in this diff.
+
 ## Keyboard
 
 The keys work while the diff has focus (click the code or a file row):
@@ -63,7 +101,7 @@ The body's own keys also work: arrows and page keys scroll, `Ctrl C` / `Cmd C` c
 
 These parts of board 4 come with the issues that give them meaning:
 
-- Comment threads and the "pending" counts in the file list (#94).
-- **Send N comments to Claude** and the pending-review note under the file list (#95).
+- Sending the pending review to the agent, and the agent's replies (#95). The **Send N comments to Claude** button is there, disabled.
+- Thread markers in the file editor's gutter (#258).
 - The **Walkthrough overlay** button. The walkthrough player (#100, [walkthrough.md](walkthrough.md)) shows its change in a `DiffView` of its own instead, with its steps as an overlay.
 - Provenance ("made by Claude in …") in the header.

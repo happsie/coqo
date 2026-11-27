@@ -23,6 +23,7 @@ export const ErrorCodes = {
   NOT_A_REPOSITORY: 1601,
   NOT_FOUND: 1004,
   NOT_INITIALIZED: -32002,
+  NOT_YOUR_COMMENT: 1803,
   NO_SUCH_TERMINAL: 1301,
   PARSE_ERROR: -32700,
   PATH_OUTSIDE_WORKSPACE: 1003,
@@ -38,11 +39,13 @@ export const ErrorCodes = {
   STORAGE_ERROR: 1109,
   UNAUTHORIZED: -32006,
   UNKNOWN_BUFFER: 1201,
+  UNKNOWN_COMMENT: 1802,
   UNKNOWN_PERMISSION_REQUEST: 1105,
   UNKNOWN_PROVIDER: 1102,
   UNKNOWN_ROOT: 1002,
   UNKNOWN_SESSION: 1101,
   UNKNOWN_SUBSCRIPTION: -32004,
+  UNKNOWN_THREAD: 1801,
   UNKNOWN_TOOL: 1401,
   UNKNOWN_WALKTHROUGH: 1701,
   UNKNOWN_WORKSPACE: 1001,
@@ -306,6 +309,19 @@ export type AuthStatus = {
   plan?: string | null;
 };
 
+/** Who wrote a comment. */
+export type Author = {
+  kind: "user";
+} | {
+  kind: "agent";
+  /** The session. */
+  session: SessionId;
+} | {
+  kind: "github";
+  /** Their login. */
+  login: string;
+};
+
 /** A slash command or skill the agent offers (ACP `available_commands`). */
 export type AvailableCommand = {
   /** What it does. */
@@ -315,6 +331,9 @@ export type AvailableCommand = {
   /** Name without the slash. */
   name: string;
 };
+
+/** Where a thread lives besides Coqo. */
+export type Backend = "local" | "github";
 
 /** Consecutive lines last changed by one commit. */
 export type BlameHunk = {
@@ -486,6 +505,12 @@ export type ChangesParams7 = {
   workspace?: WorkspaceId | null;
 };
 
+/** Params of the [`Changes`] topic. */
+export type ChangesParams8 = {
+  /** Only this workspace's threads. */
+  workspace?: WorkspaceId | null;
+};
+
 /** Params of [`Close`]. */
 export type CloseParams = {
   /** The buffer. */
@@ -525,6 +550,31 @@ export type Color = "default" | {
   indexed: number;
 } | {
   rgb: [number, number, number];
+};
+
+/** One comment of a thread. */
+export type Comment = {
+  /** Who wrote it. */
+  author: Author;
+  /** The comment, in markdown. */
+  body: string;
+  /** Written, Unix milliseconds. */
+  createdAt: number;
+  /** Last edited, Unix milliseconds. */
+  editedAt?: number | null;
+  /** Id. */
+  id: CommentId;
+  /** Part of the user's pending review: not sent yet. */
+  pending?: boolean;
+};
+
+/** Identifies a comment, across threads. Assigned by the daemon, never reused. */
+export type CommentId = number;
+
+/** Params of [`DeleteComment`]. */
+export type CommentParams = {
+  /** The comment: one of the user's. */
+  comment: CommentId;
 };
 
 /** A commit blame points at. */
@@ -647,6 +697,28 @@ export type CreateParams2 = {
   workspace: WorkspaceId;
 };
 
+/** Params of [`Create`]. */
+export type CreateParams3 = {
+  /** The first comment, in markdown. */
+  body: string;
+  /** The diff source's identity, so the thread can be listed by diff. */
+  diff?: string | null;
+  /** The lines (1-based, at most [`MAX_THREAD_LINES`]); omit to comment on the whole file. */
+  lines?: ThreadLines | null;
+  /** `/`-separated path of the file, relative to the root. */
+  path: string;
+  /** Add it to the pending review (what the review UI does) rather than as a comment already made. */
+  pending?: boolean;
+  /** The root `path` is relative to. */
+  root: RootId;
+  /** The diff side the user commented on. */
+  side?: ThreadSide;
+  /** The version of the file that side shows (see [`ThreadAnchor::version`]). */
+  version: DiffSide;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
 /** Params of `sessions/create`. */
 export type CreateSessionParams = {
   /** The agent's working directory (absolute; the workspace root). */
@@ -729,6 +801,12 @@ export type DaemonStatus = {
   version: string;
 };
 
+/** Result of [`DeleteComment`]. */
+export type DeleteCommentResult = {
+  /** The thread without the comment; absent when it was the last one, and the thread went with it. */
+  thread?: Thread | null;
+};
+
 /** Params of [`Delete`]. */
 export type DeleteParams = {
   /** Also delete its committed file, if it has one. Default: the file stays (it may be committed already; git is the user's). */
@@ -806,6 +884,12 @@ export type DirEntry = {
   symlink: boolean;
 };
 
+/** Result of [`Discard`]. */
+export type DiscardResult = {
+  /** How many pending comments were deleted. */
+  discarded: number;
+};
+
 /** Params of [`DismissAll`]. */
 export type DismissAllParams = {
   /** Only this workspace's; every alert if absent. */
@@ -820,6 +904,14 @@ export type DismissParams = {
 
 /** How a graph line meets a row. */
 export type EdgeKind = "through" | "in" | "out";
+
+/** Params of [`EditComment`]. */
+export type EditCommentParams = {
+  /** Its new text, in markdown. */
+  body: string;
+  /** The comment: one of the user's. */
+  comment: CommentId;
+};
 
 /** Params of the [`Edit`] notification: one change made by a replica. */
 export type EditParams = {
@@ -1173,6 +1265,18 @@ export type ListParams3 = {
   workspace: WorkspaceId;
 };
 
+/** Params of [`List`]. */
+export type ListParams4 = {
+  /** Only threads started in this diff. */
+  diff?: string | null;
+  /** …and this file (`/`-separated, relative to `root`; in any root if `root` is omitted). */
+  path?: string | null;
+  /** Only threads in this root… */
+  root?: RootId | null;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
 /** Result of [`List`]: a snapshot of every known workspace. */
 export type ListResult = {
   /** The event-log `seq` this snapshot reflects. Subscribe to [`Events`] with `since` set to it to get every later change. */
@@ -1362,6 +1466,26 @@ export type PathParams = {
   root: RootId;
   /** The workspace. */
   workspace: WorkspaceId;
+};
+
+/** A comment of the pending review, with what it is about. */
+export type PendingComment = {
+  /** The code the thread is about, resolved now. */
+  anchor: ThreadAnchor;
+  /** The comment. */
+  comment: Comment;
+  /** The diff the thread was started in. */
+  diff?: string | null;
+  /** Its thread. */
+  thread: ThreadId;
+};
+
+/** Result of [`Pending`]. */
+export type PendingReview = {
+  /** They, by thread (oldest first), then oldest first. */
+  comments: Array<PendingComment>;
+  /** How many comments are pending. */
+  count: number;
 };
 
 /** One answer to a permission request. */
@@ -1701,6 +1825,16 @@ export type ReplyParams = {
   id: QuestionId;
 };
 
+/** Params of [`Reply`]. */
+export type ReplyParams2 = {
+  /** The comment, in markdown. */
+  body: string;
+  /** Add it to the pending review. */
+  pending?: boolean;
+  /** The thread. */
+  thread: ThreadId;
+};
+
 /** Where a root's repository is. */
 export type RepoInfo = {
   /** The root's path within the work tree (`""` when the root is the top). A git path `p` is the root-relative path `p` minus `prefix + "/"`. */
@@ -1795,6 +1929,14 @@ export type RevertParams = {
 export type RevertResult = {
   /** The revision of the reverting change. */
   rev: number;
+};
+
+/** Params of [`Pending`] and [`Discard`]. */
+export type ReviewParams = {
+  /** Only comments on threads started in this diff. */
+  diff?: string | null;
+  /** The workspace. */
+  workspace: WorkspaceId;
 };
 
 /** Something that could go wrong with a step's code. */
@@ -2479,6 +2621,82 @@ export type TextEdit = {
 /** The file's text encoding. Only UTF-8 is supported for now; other files fail to open with [`UNSUPPORTED_ENCODING`](super::codes::UNSUPPORTED_ENCODING). */
 export type TextEncoding = "utf8" | "utf8Bom";
 
+/** A comment thread. */
+export type Thread = {
+  /** The code it is about. */
+  anchor: ThreadAnchor;
+  /** Where it lives besides Coqo. */
+  backend: Backend;
+  /** The comments, oldest first; at least one. */
+  comments: Array<Comment>;
+  /** Started, Unix milliseconds. */
+  createdAt: number;
+  /** The diff it was started in (a diff source's identity, such as `git:0:index..worktree`), if any. */
+  diff?: string | null;
+  /** Id. */
+  id: ThreadId;
+  /** Resolved, Unix milliseconds. */
+  resolvedAt?: number | null;
+  /** The `threads/changes` seq of this state. */
+  seq: number;
+  /** Open or resolved. */
+  status: ThreadStatus;
+  /** Last changed, Unix milliseconds. */
+  updatedAt: number;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** The code a thread is about. */
+export type ThreadAnchor = {
+  /** The lines as they were when the thread was started; absent for a thread on the whole file. */
+  code?: CodeAnchor | null;
+  /** The lines now, 1-based; as they were when orphaned. Absent for a thread on the whole file. */
+  lines?: ThreadLines | null;
+  /** `/`-separated path of the file, relative to the root. */
+  path: string;
+  /** Where `code` is in `version` now (absent with `code`). Its range is never in an open buffer: it is in the version as git sees it. */
+  resolution?: AnchorResolution | null;
+  /** The root `path` is relative to. */
+  root: RootId;
+  /** The diff side it was started on. */
+  side: ThreadSide;
+  /** The version of the file the lines are in: `worktree` for the new side of unstaged changes, `index` for their old side, `{"rev": "HEAD"}`, … A diff shows the thread on whichever side shows this version. */
+  version: DiffSide;
+};
+
+/** An event of [`Changes`]. */
+export type ThreadEvent = {
+  /** The thread. */
+  thread: Thread;
+  type: "changed";
+} | {
+  /** Its id. */
+  id: ThreadId;
+  type: "deleted";
+  /** Its workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Identifies a thread. Assigned by the daemon, never reused. */
+export type ThreadId = number;
+
+/** Lines of a file, 1-based, `end` inclusive (as diffs number them). */
+export type ThreadLines = {
+  /** The last line. */
+  end: number;
+  /** The first line. */
+  start: number;
+};
+
+/** Result of [`List`]. */
+export type ThreadList = {
+  /** The `threads/changes` seq this list reflects; subscribe with `since: seq` to keep it current. */
+  seq: number;
+  /** The threads, oldest first, open and resolved. */
+  threads: Array<Thread>;
+};
+
 /** One message the user sent in a thread ([`Ask`], [`Reply`]). */
 export type ThreadMessage = {
   /** Sent, Unix milliseconds. */
@@ -2488,6 +2706,18 @@ export type ThreadMessage = {
   /** The session turn it started: the agent's reply is that turn. */
   turn: number;
 };
+
+/** Params of [`Get`], [`Resolve`] and [`Reopen`]. */
+export type ThreadParams = {
+  /** The thread. */
+  id: ThreadId;
+};
+
+/** The side of a diff a thread was started on. */
+export type ThreadSide = "old" | "new";
+
+/** Whether a thread still needs attention. */
+export type ThreadStatus = "open" | "resolved";
 
 /** A tool call, as first reported. */
 export type ToolCall = {
@@ -3162,6 +3392,26 @@ export interface Requests {
   "walkthroughs/setStepState": { params: SetStepStateParams; result: WalkthroughSummary };
   /** An agent publishes a walkthrough; every problem of a bad draft is reported at once. (client→server) */
   "walkthroughs/create": { params: CreateParams2; result: Walkthrough };
+  /** A workspace's comment threads, anchors resolved now, with the changes seq. (client→server) */
+  "threads/list": { params: ListParams4; result: ThreadList };
+  /** One thread, anchors resolved now. (client→server) */
+  "threads/get": { params: ThreadParams; result: Thread };
+  /** Start a thread on lines of a file version (or the whole file). (client→server) */
+  "threads/create": { params: CreateParams3; result: Thread };
+  /** Add the user's comment to a thread. (client→server) */
+  "threads/reply": { params: ReplyParams2; result: Thread };
+  /** Change one of the user's comments. (client→server) */
+  "threads/editComment": { params: EditCommentParams; result: Thread };
+  /** Delete one of the user's comments; an empty thread goes with it. (client→server) */
+  "threads/deleteComment": { params: CommentParams; result: DeleteCommentResult };
+  /** Mark a thread resolved. (client→server) */
+  "threads/resolve": { params: ThreadParams; result: Thread };
+  /** Open a resolved thread again. (client→server) */
+  "threads/reopen": { params: ThreadParams; result: Thread };
+  /** The user's pending review: the comments not sent yet. (client→server) */
+  "review/pending": { params: ReviewParams; result: PendingReview };
+  /** Delete the pending review's comments. (client→server) */
+  "review/discard": { params: ReviewParams; result: DiscardResult };
 }
 
 /** Notifications: method name → params. */
@@ -3206,6 +3456,8 @@ export interface Topics {
   "alerts/changes": { params: ChangesParams6; event: Alert };
   /** Walkthroughs published, updated or deleted (live only). */
   "walkthroughs/changes": { params: ChangesParams7; event: WalkthroughChange };
+  /** Threads whose state changed, as their latest state, and deleted ones (resumable). */
+  "threads/changes": { params: ChangesParams8; event: ThreadEvent };
 }
 
 /** Encode one frame: u32 big-endian length, then the JSON payload. */

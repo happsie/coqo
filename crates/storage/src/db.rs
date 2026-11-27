@@ -266,6 +266,50 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
             ALTER TABLE questions ADD COLUMN thread TEXT;
         ",
     },
+    Migration {
+        version: 12,
+        name: "review threads",
+        // Comment threads on diff lines and the pending review (#94,
+        // `threads/*`, `review/*`). `anchor` is the JSON of the thread's
+        // anchor: root, root-relative path, diff side, the file version
+        // (`DiffSide`) and, unless the thread is on the whole file, the
+        // `coqo-anchors` anchor as made (`anchor`) and as last rebased
+        // (`current`). `backend` is `local` or `github`; `diff` the diff
+        // source's identity it was started in. A deleted thread keeps its
+        // row (`deleted` = 1, no comments) so `threads/changes` can replay
+        // the deletion. `change_seq` orders changes and only grows.
+        // Comments: `author` is the JSON `Author`; `pending` is 1 while the
+        // comment is in the user's pending review. Timestamps are Unix
+        // milliseconds.
+        sql: "
+            CREATE TABLE review_threads (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace   TEXT    NOT NULL,
+                backend     TEXT    NOT NULL,
+                diff        TEXT,
+                anchor      TEXT    NOT NULL,
+                status      TEXT    NOT NULL,
+                created_at  INTEGER NOT NULL,
+                updated_at  INTEGER NOT NULL,
+                resolved_at INTEGER,
+                deleted     INTEGER NOT NULL DEFAULT 0,
+                change_seq  INTEGER NOT NULL
+            );
+            CREATE INDEX review_threads_workspace ON review_threads (workspace, deleted, id);
+            CREATE UNIQUE INDEX review_threads_change_seq ON review_threads (change_seq);
+            CREATE TABLE review_comments (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread     INTEGER NOT NULL REFERENCES review_threads (id) ON DELETE CASCADE,
+                author     TEXT    NOT NULL,
+                body       TEXT    NOT NULL,
+                pending    INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                edited_at  INTEGER
+            );
+            CREATE INDEX review_comments_thread ON review_comments (thread, id);
+            CREATE INDEX review_comments_pending ON review_comments (pending, thread);
+        ",
+    },
 ];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.

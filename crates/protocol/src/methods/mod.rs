@@ -28,6 +28,8 @@
 //!   blame and log of a root's repository (the `coqo.git` mod).
 //! - [`walkthroughs`]: `walkthroughs/*`, code walkthroughs agents publish
 //!   after a change, and the reader's progress.
+//! - [`threads`]: `threads/*` and `review/*`, comment threads on diff lines
+//!   and the user's pending review.
 
 pub mod agents;
 pub mod alerts;
@@ -39,6 +41,7 @@ pub mod mcp;
 pub mod questions;
 pub mod syntax;
 pub mod terminal;
+pub mod threads;
 pub mod walkthroughs;
 pub mod workspace;
 
@@ -133,4 +136,12 @@ pub mod codes {
     /// [`WalkthroughProblems`](super::walkthroughs::WalkthroughProblems),
     /// every problem with its JSON path.
     pub const INVALID_WALKTHROUGH: i64 = 1702;
+
+    /// No comment thread has the given id (it was deleted).
+    pub const UNKNOWN_THREAD: i64 = 1801;
+    /// No comment has the given id (it was deleted).
+    pub const UNKNOWN_COMMENT: i64 = 1802;
+    /// The comment is not the caller's to change: an agent's reply, or one
+    /// from GitHub.
+    pub const NOT_YOUR_COMMENT: i64 = 1803;
 }

@@ -188,6 +188,30 @@ impl GitService {
         .await
     }
 
+    /// A file's text as `version` has it, for a root-relative `path`;
+    /// `None` if that version has no such file, or it is not UTF-8 text.
+    /// Not a route: review threads anchor to the lines a diff side shows.
+    pub async fn read_text(
+        &self,
+        workspace: &WorkspaceId,
+        root: RootId,
+        path: &str,
+        version: gm::DiffSide,
+    ) -> Result<Option<String>, ErrorObject> {
+        let path = path.to_owned();
+        let version = side(version);
+        self.with_repo(workspace, root, move |repo| {
+            let path = match repo.prefix() {
+                "" => path,
+                prefix => format!("{prefix}/{path}"),
+            };
+            Ok(repo
+                .read_file(&version, &path)?
+                .and_then(|bytes| String::from_utf8(bytes).ok()))
+        })
+        .await
+    }
+
     /// `git/diffFiles`.
     pub async fn diff_files(
         &self,
