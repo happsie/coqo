@@ -97,7 +97,7 @@ Some details:
 - **`when`** clauses are context expressions such as `editor.focused`, evaluated by the workbench. v1 stores them as text.
 - Keybindings and menu items have no id of their own. When the host registers them from the manifest, it names them `<mod id>.keybinding-<n>` and `<mod id>.menu-<n>`.
 
-Two points have no manifest key, because they hold runtime handles for in-process mods: `command_handlers` (`Arc<dyn CommandHandler>`, filled by `ModContext::register_command`) and any point a crate defines with its own `ContributionPoint` marker type.
+Two points have no manifest key, because they hold runtime handles for in-process mods: `command_handlers` (`Arc<dyn CommandHandler>`, filled by `ModContext::register_command`) `agent_provider_impls` (`Arc<dyn AgentProvider>`, owned by `coqo-agents` and filled together with `agent_providers` by `coqo_agents::register_provider`) and any other point a crate defines with its own `ContributionPoint` marker type.
 
 ## Lifecycle
 
