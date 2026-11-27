@@ -15,6 +15,7 @@ export const ErrorCodes = {
   INVALID_EDIT: 1204,
   INVALID_PARAMS: -32602,
   INVALID_REQUEST: -32600,
+  INVALID_WALKTHROUGH: 1702,
   IO_ERROR: 1009,
   METHOD_NOT_FOUND: -32601,
   NOT_A_DIRECTORY: 1006,
@@ -43,6 +44,7 @@ export const ErrorCodes = {
   UNKNOWN_SESSION: 1101,
   UNKNOWN_SUBSCRIPTION: -32004,
   UNKNOWN_TOOL: 1401,
+  UNKNOWN_WALKTHROUGH: 1701,
   UNKNOWN_WORKSPACE: 1001,
   UNSUPPORTED: 1106,
   UNSUPPORTED_ENCODING: 1202,
@@ -200,6 +202,20 @@ export type AlertTarget = {
 export type AlertsChanged = {
   /** The alerts that changed (each is also an `alerts/changes` event). */
   changed: Array<AlertId>;
+};
+
+/** Lines of a file a step is about, as the file is now (open buffers with their unsaved edits). */
+export type AnchorDraft = {
+  /** Last line, 1-based, inclusive. Default: `start_line`. */
+  end_line?: number | null;
+  /** The file, relative to the root or absolute inside the workspace. */
+  path: string;
+  /** Root id from `editor_context`. Default: the scope's root, or the root an absolute path is in. */
+  root?: RootId | null;
+  /** First line, 1-based. */
+  start_line: number;
+  /** Code that must be in those lines (a line of it is enough; whitespace is ignored), so a stale line number is caught instead of pinning the wrong code. */
+  text?: string | null;
 };
 
 /** A spot in a text: 0-based line, byte column within the line and byte offset from the start (UTF-8, as in `buffer/*`). */
@@ -399,6 +415,9 @@ export type CallResult = {
   text: string;
 };
 
+/** What happened to a walkthrough. */
+export type ChangeKind = "published" | "updated" | "deleted";
+
 /** A file that differs, in [`DiffFilesResult`]. */
 export type ChangedFile = {
   /** Added lines (0 for binary files). */
@@ -446,6 +465,12 @@ export type ChangesParams5 = {
 /** Params of the [`Changes`] topic. */
 export type ChangesParams6 = {
   /** Only this workspace's alerts. */
+  workspace?: WorkspaceId | null;
+};
+
+/** Params of the [`Changes`] topic. */
+export type ChangesParams7 = {
+  /** Only this workspace's walkthroughs. */
   workspace?: WorkspaceId | null;
 };
 
@@ -600,6 +625,16 @@ export type CreateParams = {
   workspace: WorkspaceId;
 };
 
+/** Params of [`Create`]. */
+export type CreateParams2 = {
+  /** The publishing agent session. */
+  session: string;
+  /** The [`WalkthroughDraft`], as the agent wrote it. Checked by the daemon, which reports every problem at once, so it is any JSON here. */
+  walkthrough: WalkthroughDraft;
+  /** The publishing session's workspace. */
+  workspace: WorkspaceId;
+};
+
 /** Params of `sessions/create`. */
 export type CreateSessionParams = {
   /** The agent's working directory (absolute; the workspace root). */
@@ -616,6 +651,14 @@ export type CreateSessionParams = {
 
 /** Who last changed a criterion. */
 export type CriterionAuthor = "agent" | "user";
+
+/** An acceptance criterion a walkthrough addresses. */
+export type CriterionDraft = {
+  /** Its id: one of the session's (`AC1`) or a new one. */
+  id: string;
+  /** What must hold. Default: the session criterion's text; required for a criterion that is not the session's. */
+  text?: string | null;
+};
 
 /** Why a criterion has its status: a test, a command, a place in the code. */
 export type CriterionEvidence = {
@@ -672,6 +715,14 @@ export type DaemonStatus = {
   uptimeMs: number;
   /** The daemon's version, e.g. `0.1.0`. */
   version: string;
+};
+
+/** Params of [`Delete`]. */
+export type DeleteParams = {
+  /** Also delete its committed file, if it has one. Default: the file stays (it may be committed already; git is the user's). */
+  deleteFile?: boolean;
+  /** The walkthrough. */
+  id: WalkthroughId;
 };
 
 /** Params of [`DiffFiles`]. */
@@ -1100,6 +1151,14 @@ export type ListParams = {
 export type ListParams2 = {
   /** Only this workspace's alerts. */
   workspace?: WorkspaceId | null;
+};
+
+/** Params of [`List`]. */
+export type ListParams3 = {
+  /** Only this session's. */
+  session?: SessionId | null;
+  /** The workspace. */
+  workspace: WorkspaceId;
 };
 
 /** Result of [`List`]: a snapshot of every known workspace. */
@@ -1711,6 +1770,17 @@ export type RevertResult = {
   rev: number;
 };
 
+/** Something that could go wrong with a step's code. */
+export type Risk = {
+  /** How bad. */
+  severity: RiskSeverity;
+  /** What could go wrong, and what would show it. */
+  text: string;
+};
+
+/** How bad it would be if a risk came true. */
+export type RiskSeverity = "low" | "med" | "high";
+
 /** Identifies a root within its workspace. Stable for the root's lifetime and never reused within the workspace. */
 export type RootId = number;
 
@@ -1756,6 +1826,21 @@ export type SaveResult = {
   /** The revision of the save event; the file holds the text as of it. */
   savedRev: number;
 };
+
+/** What a walkthrough covers. */
+export type ScopeDraft = {
+  /** The git revision the change is against (a commit, branch or tag). Default for `worktree`: `HEAD`. Required for `commits` and `pr`. */
+  base?: string | null;
+  /** The last revision of the change. Required for `commits` and `pr`; not allowed for `worktree`. */
+  head?: string | null;
+  /** `worktree` (uncommitted changes; the usual case right after a change), `commits` or `pr`. */
+  kind: ScopeKind;
+  /** The workspace root (repository) of the change, from `editor_context`. Default: the first root. */
+  root?: RootId | null;
+};
+
+/** What a walkthrough covers. */
+export type ScopeKind = "worktree" | "commits" | "pr";
 
 /** The rows in view, the cursor and the modes: what a client draws. */
 export type Screen = {
@@ -1945,7 +2030,7 @@ export type SessionUpdate = {
   /** Turn number. */
   turn: number;
   update: "turn_ended";
-} | Question | {
+} | Question | WalkthroughSummary | {
   update: "closed";
 };
 
@@ -1997,6 +2082,16 @@ export type SetStatusParams = {
   state?: StatusState | null;
   /** One short line (whitespace is collapsed; cut at [`MAX_STATUS_CHARS`]). Must not be empty. */
   status: string;
+};
+
+/** Params of [`SetStepState`]. */
+export type SetStepStateParams = {
+  /** The walkthrough. */
+  id: WalkthroughId;
+  /** Where the reader is with it. */
+  state: StepState;
+  /** The step's id. */
+  step: string;
 };
 
 /** How important a note is. */
@@ -2132,8 +2227,69 @@ export type StatusResult = {
 /** The state an agent claims with its status (`set_status`). */
 export type StatusState = "working" | "blocked" | "done";
 
+/** One step of a stored walkthrough. */
+export type Step = {
+  /** The code, at least one location. */
+  anchors: Array<StepAnchor>;
+  /** Acceptance criteria (ids) it helps meet. */
+  criteriaRefs?: Array<string>;
+  /** Steps (ids) to read first. */
+  dependsOn?: Array<string>;
+  /** Unique within the walkthrough. */
+  id: string;
+  /** What it is about. */
+  kind: StepKind;
+  /** What could go wrong. */
+  risks?: Array<Risk>;
+  /** The step in a few words. */
+  title: string;
+  /** What the code does (markdown). */
+  what: string;
+  /** Why it is done this way (markdown). */
+  why: string;
+};
+
+/** One code location of a step. */
+export type StepAnchor = {
+  /** The code as published (ADR 0013). */
+  anchor: CodeAnchor;
+  /** Where it is now: set by [`Get`], absent elsewhere (and in committed files). */
+  resolution?: AnchorResolution | null;
+};
+
+/** One step of a walkthrough: code to read, and what, why and the risks. */
+export type StepDraft = {
+  /** The code the step is about: 1 to 16 line ranges. */
+  anchors: Array<AnchorDraft>;
+  /** The acceptance criteria (ids) this step helps meet. */
+  criteria_refs?: Array<string>;
+  /** Steps (ids) to read before this one. */
+  depends_on?: Array<string>;
+  /** Unique within the walkthrough (letters, digits, `.`, `_`, `-`; at most 32), for `depends_on`: `s1`, `discount-rule`. */
+  id: string;
+  /** What the step is about. */
+  kind: StepKind;
+  /** What could go wrong here. */
+  risks?: Array<Risk>;
+  /** The step in a few words. */
+  title: string;
+  /** What this code does (markdown). */
+  what: string;
+  /** Why it is done this way: the reasoning, the alternatives turned down. */
+  why: string;
+};
+
+/** What a step is about, so the reader knows where they are. */
+export type StepKind = "entry_point" | "flow" | "data_model" | "logic" | "edge_case" | "test" | "config" | "migration";
+
+/** Where the reader is with one step (the player's progress). */
+export type StepState = "unread" | "understood" | "question";
+
 /** Why a turn ended (ACP `StopReason`, plus Coqo's own). */
 export type StopReason = "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled" | "error" | "interrupted";
+
+/** Where a walkthrough is kept. */
+export type StorageMode = "local" | "committed";
 
 /** How a run of cells is drawn. */
 export type Style = {
@@ -2421,6 +2577,32 @@ export type ToolsResult = {
   tools: Array<ToolInfo>;
 };
 
+/** A changed hunk the agent marked as needing no explanation. */
+export type TrivialHunk = {
+  /** The hunk's lines in the new file, 0-based, `end` inclusive; absent for the whole file. */
+  lines?: LineRange | null;
+  /** `/`-separated path relative to the root. */
+  path: string;
+  /** Why it is trivial. */
+  reason?: string | null;
+  /** The root `path` is relative to. */
+  root: RootId;
+};
+
+/** A changed hunk that needs no explanation. */
+export type TrivialHunkDraft = {
+  /** Last line, inclusive. Default: `start_line`. */
+  end_line?: number | null;
+  /** The file, relative to the root or absolute inside the workspace. It may be deleted. */
+  path: string;
+  /** Why it is trivial ("formatting", "import order"). */
+  reason?: string | null;
+  /** Root id. Default: the scope's root, or the root an absolute path is in. */
+  root?: RootId | null;
+  /** First line of the hunk (1-based, in the new file). Default: the whole file. */
+  start_line?: number | null;
+};
+
 /** Params of `coqo/unsubscribe`. */
 export type UnsubscribeParams = {
   /** The subscription to stop. */
@@ -2439,6 +2621,171 @@ export type Usage = {
   model?: string | null;
   /** Tokens of context in use. */
   usedTokens?: number | null;
+};
+
+/** A published walkthrough. */
+export type Walkthrough = {
+  /** The acceptance criteria it addresses. */
+  acceptanceCriteria?: Array<WalkthroughCriterion>;
+  /** Published, Unix milliseconds. */
+  createdAt: number;
+  /** Who published it. */
+  createdBy: WalkthroughAuthor;
+  /** Id. */
+  id: WalkthroughId;
+  /** What it covers. */
+  scope: WalkthroughScope;
+  /** The reader's progress by step id; a step not listed is unread. Never written to committed files. */
+  stepStates?: Record<string, unknown>;
+  /** The steps, in reading order. */
+  steps: Array<Step>;
+  /** Where it is kept. */
+  storage?: WalkthroughStorage;
+  /** The change in a few sentences (markdown). */
+  summary: string;
+  /** What changed, in a few words. */
+  title: string;
+  /** Hunks that need no explanation. */
+  trivialHunks?: Array<TrivialHunk>;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Who published a walkthrough. */
+export type WalkthroughAuthor = {
+  /** Its provider (`claude-code`), or `agent` if the session is unknown. */
+  agent: string;
+  /** The agent session. */
+  session: SessionId;
+};
+
+/** An event of [`Changes`]. */
+export type WalkthroughChange = {
+  /** The walkthrough's id. */
+  id: WalkthroughId;
+  /** What happened. */
+  kind: ChangeKind;
+  /** It as it is now; absent when deleted. */
+  summary?: WalkthroughSummary | null;
+  /** Its workspace. */
+  workspace: WorkspaceId;
+};
+
+/** An acceptance criterion a walkthrough addresses, as it was when it was published. Steps refer to it by `id`; the session's live criteria (ADR 0017) say whether it holds now. */
+export type WalkthroughCriterion = {
+  /** Its id, e.g. `AC1`. */
+  id: string;
+  /** Its status in the session when published; absent for a criterion only the walkthrough names. */
+  status?: CriterionStatus | null;
+  /** What must hold. */
+  text: string;
+};
+
+/** A code walkthrough as an agent publishes it with `publish_walkthrough`: the change in the order a reader should follow it (entry point → flow → data → logic → edge cases → tests), every step anchored to code. Coqo fills in the id, the author and the time. Lines are 1-based. */
+export type WalkthroughDraft = {
+  /** The acceptance criteria the change addresses, by id. Default: every criterion of this session (`set_acceptance_criteria`). A criterion that is not the session's needs `text`. */
+  acceptance_criteria?: Array<CriterionDraft> | null;
+  /** What the walkthrough covers. */
+  scope: ScopeDraft;
+  /** The steps, in reading order: 1 to 100. */
+  steps: Array<StepDraft>;
+  /** The change in two to five sentences (markdown): what it does and why. */
+  summary: string;
+  /** What changed, in a few words ("Volume discount for bulk orders"). */
+  title: string;
+  /** Changed hunks no step needs to explain (formatting, imports, renames), so the coverage check does not flag them. */
+  trivial_hunks?: Array<TrivialHunkDraft>;
+};
+
+/** Identifies a walkthrough: a slug of its title and a random suffix, e.g. `volume-discount-3f2a9c1b`. Assigned by the daemon; also the committed file's name. */
+export type WalkthroughId = string;
+
+/** Result of [`List`]. */
+export type WalkthroughList = {
+  /** Newest first. */
+  walkthroughs: Array<WalkthroughSummary>;
+};
+
+/** A file location, for opening a walkthrough where it starts. */
+export type WalkthroughLocation = {
+  /** The anchored lines when published, 0-based, `end` inclusive. */
+  lines: LineRange;
+  /** `/`-separated path relative to the root. */
+  path: string;
+  /** The root. */
+  root: RootId;
+};
+
+/** Params of [`Get`]. */
+export type WalkthroughParams = {
+  /** The walkthrough. */
+  id: WalkthroughId;
+};
+
+/** One thing wrong with a draft. */
+export type WalkthroughProblem = {
+  /** What is wrong and how to fix it. */
+  message: string;
+  /** Where, as a JSON path into the draft: `steps[2].anchors[0].end_line` (empty for the whole draft). */
+  path: string;
+};
+
+/** The `data` of [`INVALID_WALKTHROUGH`](super::codes::INVALID_WALKTHROUGH). */
+export type WalkthroughProblems = {
+  /** Every problem found, in document order. */
+  problems: Array<WalkthroughProblem>;
+};
+
+/** What a stored walkthrough covers, with its revisions resolved. */
+export type WalkthroughScope = {
+  /** The base revision as the agent named it (`HEAD`, `main`). */
+  base?: string | null;
+  /** The base commit when published (absent outside a git repository). */
+  baseCommit?: string | null;
+  /** The head revision as named; absent for the working tree. */
+  head?: string | null;
+  /** The head commit when published; absent for the working tree. */
+  headCommit?: string | null;
+  /** Worktree, commits or a pull request. */
+  kind: ScopeKind;
+  /** The workspace root (repository) of the change. */
+  root: RootId;
+};
+
+/** Where a walkthrough is kept. */
+export type WalkthroughStorage = {
+  /** Why the committed file could not be written; the walkthrough is kept locally anyway. */
+  error?: string | null;
+  /** Local, or committed too. */
+  mode: StorageMode;
+  /** The committed file, relative to the scope's root (`.coqo/walkthroughs/<id>.json`). */
+  path?: string | null;
+};
+
+/** A walkthrough in a list, the transcript and change events. */
+export type WalkthroughSummary = {
+  /** Published, Unix milliseconds. */
+  createdAt: number;
+  /** Id. */
+  id: WalkthroughId;
+  /** How many are marked with a question. */
+  questions?: number;
+  /** Worktree, commits or a pull request. */
+  scope: ScopeKind;
+  /** The publishing session. */
+  session: SessionId;
+  /** The first step's first anchor, where a reader starts. */
+  start?: WalkthroughLocation | null;
+  /** How many steps. */
+  steps: number;
+  /** Local or committed. */
+  storage: StorageMode;
+  /** Title. */
+  title: string;
+  /** How many are marked understood. */
+  understood?: number;
+  /** The workspace. */
+  workspace: WorkspaceId;
 };
 
 /** Params of the [`Watch`] topic. */
@@ -2719,6 +3066,16 @@ export interface Requests {
   "alerts/settings": { params: null; result: AlertSettingsInfo };
   /** Change do-not-disturb or mute sources. (client→server) */
   "alerts/setSettings": { params: SetSettingsParams; result: AlertSettingsInfo };
+  /** A workspace's walkthroughs, newest first. (client→server) */
+  "walkthroughs/list": { params: ListParams3; result: WalkthroughList };
+  /** One walkthrough, anchors resolved against the files as they are now. (client→server) */
+  "walkthroughs/get": { params: WalkthroughParams; result: Walkthrough };
+  /** Forget a walkthrough (and optionally its committed file). (client→server) */
+  "walkthroughs/delete": { params: DeleteParams; result: boolean };
+  /** Mark a step unread, understood or with a question. (client→server) */
+  "walkthroughs/setStepState": { params: SetStepStateParams; result: WalkthroughSummary };
+  /** An agent publishes a walkthrough; every problem of a bad draft is reported at once. (client→server) */
+  "walkthroughs/create": { params: CreateParams2; result: Walkthrough };
 }
 
 /** Notifications: method name → params. */
@@ -2761,6 +3118,8 @@ export interface Topics {
   "git/changes": { params: ChangesParams5; event: GitChanges };
   /** Alerts whose state changed, as their latest state (resumable). */
   "alerts/changes": { params: ChangesParams6; event: Alert };
+  /** Walkthroughs published, updated or deleted (live only). */
+  "walkthroughs/changes": { params: ChangesParams7; event: WalkthroughChange };
 }
 
 /** Encode one frame: u32 big-endian length, then the JSON payload. */

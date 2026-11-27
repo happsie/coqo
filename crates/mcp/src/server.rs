@@ -8,8 +8,9 @@ use coqo_protocol::Client;
 use coqo_protocol::methods::workspace::WorkspaceId;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    ListToolsResult, PaginatedRequestParams, ProgressNotificationParam, ServerCapabilities,
-    ServerConfig, Tool as McpTool, ToolAnnotations,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProgressNotificationParam,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+    ResourceContents, ServerCapabilities, ServerConfig, Tool as McpTool, ToolAnnotations,
 };
 use rmcp::service::{NotificationContext, RequestContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -29,7 +30,8 @@ pub(crate) const INSTRUCTIONS: &str = "Coqo is the desktop editor the user works
      await_answer later); annotate to pin a non-blocking note to lines; set_status at the start \
      of each phase of a longer task, with state \"blocked\" when you need the user and \"done\" \
      at the end; set_acceptance_criteria at the start of a task to say what done means, and \
-     again as you verify each criterion. Paths are absolute or relative to a workspace root; \
+     again as you verify each criterion; publish_walkthrough when you finish a change, before \
+     saying it is done. Paths are absolute or relative to a workspace root; \
      lines and columns are 1-based. Other tools here come from Coqo mods and say when to use \
      them.";
 
@@ -75,6 +77,7 @@ impl ServerHandler for EditorServer {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_tool_list_changed()
+                .enable_resources()
                 .build(),
         )
         .with_server_info(Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION")))
@@ -133,8 +136,10 @@ impl ServerHandler for EditorServer {
         let args = request.arguments.unwrap_or_default();
         let definition = tool.definition();
         let call = async {
-            crate::schema::validate_arguments(&definition.input_schema, &args)
-                .map_err(ToolError::InvalidArguments)?;
+            if !definition.checks_own_arguments {
+                crate::schema::validate_arguments(&definition.input_schema, &args)
+                    .map_err(ToolError::InvalidArguments)?;
+            }
             tool.call(&cx, args).await
         };
         let result = tokio::select! {
@@ -155,6 +160,48 @@ impl ServerHandler for EditorServer {
             }
         };
         Ok(result.into())
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        Ok(ListResourcesResult::with_all_items(
+            crate::resources::all()
+                .iter()
+                .map(|r| {
+                    Resource::new(r.uri, r.name)
+                        .with_title(r.title)
+                        .with_description(r.description)
+                        .with_mime_type(r.mime_type)
+                        .with_size(r.text.len() as u64)
+                })
+                .collect(),
+        ))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        let Some(r) = crate::resources::all()
+            .iter()
+            .find(|r| r.uri == request.uri)
+        else {
+            return Err(ErrorData::resource_not_found(
+                format!("no resource {}", request.uri),
+                None,
+            ));
+        };
+        let contents = ResourceContents::TextResourceContents {
+            uri: r.uri.to_owned(),
+            mime_type: Some(r.mime_type.to_owned()),
+            text: r.text.to_owned(),
+            meta: None,
+        };
+        Ok(ReadResourceResult::new(vec![contents]).into())
     }
 
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {

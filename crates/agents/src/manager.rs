@@ -37,6 +37,7 @@ use coqo_protocol::methods::agents::{
     SessionUpdate, SetCriteriaParams, SetStatusParams, StatusProgress, StopReason, ToolCallUpdate,
 };
 use coqo_protocol::methods::questions::Question;
+use coqo_protocol::methods::walkthroughs::WalkthroughSummary;
 use coqo_protocol::{ErrorObject, EventFeed, Sequenced};
 use coqo_storage::Timestamp;
 use tokio::sync::{broadcast, oneshot};
@@ -1038,6 +1039,19 @@ impl SessionManager {
             return Ok(());
         }
         inner.record(&s, &mut st, SessionUpdate::Question(Box::new(question)))?;
+        Ok(())
+    }
+
+    /// Records a walkthrough the agent published (`walkthroughs/*`) in the
+    /// session's transcript. Nothing is recorded for a closed session.
+    pub fn record_walkthrough(&self, id: &SessionId, summary: WalkthroughSummary) -> Result<()> {
+        let inner = &self.inner;
+        let s = inner.session(id)?;
+        let mut st = lock(&s.state);
+        if st.info().closed {
+            return Ok(());
+        }
+        inner.record(&s, &mut st, SessionUpdate::Walkthrough(Box::new(summary)))?;
         Ok(())
     }
 

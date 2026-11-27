@@ -26,6 +26,8 @@
 //!   alert center).
 //! - [`git`]: `git/*`, status, diffs, staging, commits, branches, stash,
 //!   blame and log of a root's repository (the `coqo.git` mod).
+//! - [`walkthroughs`]: `walkthroughs/*`, code walkthroughs agents publish
+//!   after a change, and the reader's progress.
 
 pub mod agents;
 pub mod alerts;
@@ -37,6 +39,7 @@ pub mod mcp;
 pub mod questions;
 pub mod syntax;
 pub mod terminal;
+pub mod walkthroughs;
 pub mod workspace;
 
 /// Error codes of the application methods.
@@ -123,4 +126,11 @@ pub mod codes {
     /// `git` ran and failed (a hook, a conflict, nothing to commit); the
     /// message is what it said.
     pub const GIT_FAILED: i64 = 1603;
+
+    /// No walkthrough has the given id (it was deleted).
+    pub const UNKNOWN_WALKTHROUGH: i64 = 1701;
+    /// The walkthrough draft has problems; `data` is
+    /// [`WalkthroughProblems`](super::walkthroughs::WalkthroughProblems),
+    /// every problem with its JSON path.
+    pub const INVALID_WALKTHROUGH: i64 = 1702;
 }

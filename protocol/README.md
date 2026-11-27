@@ -140,6 +140,7 @@ In `coqod`, session tokens may call only these, and only for their own workspace
 | `syntax/symbols`, `syntax/outline`, `syntax/folding` | the workspace the `buffer` is open in |
 | `sessions/setStatus` | `session`: its own agent session only |
 | `sessions/setCriteria` | `session`: its own agent session only |
+| `walkthroughs/create` | `workspace` and `session`: its own agent session only |
 
 **Replicas belong to the connection that opened them.** A session token can edit and close only the replicas its own connection got from `buffer/open`, and can name only those in a later `buffer/open`. Any other replica (the UI's, another agent's, or an id it made up) gets `-32007 FORBIDDEN`; for `buffer/edit` that comes as `buffer/editRejected`. Replica ids appear in every change's `origin`, so knowing one proves nothing. When the connection closes (or the session's scope is revoked, which closes it), its replicas leave their buffers. `buffer/changes` and `syntax/*` stay bound to the workspace: anything they show, the token could read with `buffer/open` anyway. The daemon token may act as any replica.
 
@@ -258,7 +259,7 @@ Service `coqo.agents@1` (PLAN §7.3; types in `coqo_protocol::methods::agents`, 
 
 | Topic | Params | Events |
 |---|---|---|
-| `sessions/updates` | `{session}` | `SessionUpdate`, tagged by `update`: `user_message`, `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update` (with `diff` content and `locations`), `plan`, `available_commands`, `modes`, `current_mode`, `usage`, `auth_status`, `permission_requested`, `permission_resolved`, `state`, `turn_started`, `turn_ended`, `closed`. Seqs are per session, from 1, stable across restarts. |
+| `sessions/updates` | `{session}` | `SessionUpdate`, tagged by `update`: `user_message`, `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update` (with `diff` content and `locations`), `plan`, `available_commands`, `modes`, `current_mode`, `usage`, `auth_status`, `permission_requested`, `permission_resolved`, `state`, `turn_started`, `turn_ended`, `question`, `walkthrough` (a published walkthrough's summary), `closed`. Seqs are per session, from 1, stable across restarts. |
 | `sessions/changes` | `{workspace?}` | `SessionInfo` whenever a session's state, title, mode, status or closed flag changes. Resuming replays only each session's latest info, so seqs skip values. |
 
 **States** (`SessionInfo.state`, since `stateSince`): `idle` → `working` → (`needs_permission` → `working`) → `done`, or `idle` after a cancel, or `error` (with `stateReason`). Providers and daemon features may also report `needs_input` and `blocked`; while a permission request waits only `error` changes the state. A turn cut off by a daemon stop or crash ends with `stopReason: interrupted` and leaves the session in `error`; the next prompt resumes the provider session. The full table is in `crates/agents/src/state.rs` ([ADR 0015](../docs/adr/0015-agent-state-and-status.md)).
@@ -352,3 +353,21 @@ The always-on syntax layer of an open buffer (PLAN §7.1.1, [ADR 0011](../docs/a
 | 1205 | `SAVE_CONFLICT` | The file changed on disk; the change was merged, review and save again (or `force`). |
 | 1301 | `NO_SUCH_TERMINAL` | No terminal has that id. |
 | 1302 | `SPAWN_FAILED` | The PTY or the process could not be started. |
+| 1701 | `UNKNOWN_WALKTHROUGH` | No walkthrough has that id. |
+| 1702 | `INVALID_WALKTHROUGH` | The walkthrough draft has problems; `data` is `{problems: [{path, message}]}`, every problem with its JSON path. |
+
+### Walkthroughs (`walkthroughs/*`)
+
+Code walkthroughs agents publish after a change (PLAN §7.6, [ADR 0020](../docs/adr/0020-walkthroughs.md)). Agents write the draft that [`schema/walkthrough.schema.json`](schema/walkthrough.schema.json) describes (generated from `WalkthroughDraft`; also the MCP resource `coqo://schemas/walkthrough.json`).
+
+| Method | Params | Result |
+|---|---|---|
+| `walkthroughs/list` | `{workspace, session?}` | `{walkthroughs: WalkthroughSummary[]}`, newest first: `id`, `workspace`, `session`, `title`, `scope` (kind), `steps`, `understood`, `questions`, `start` (`{root, path, lines}` of the first step's first anchor, 0-based), `storage` (`local` or `committed`), `createdAt`. |
+| `walkthroughs/get` | `{id}` | `Walkthrough`: `id`, `workspace`, `title`, `summary`, `scope {kind, root, base?, head?, baseCommit?, headCommit?}`, `acceptanceCriteria [{id, text, status?}]`, `steps [{id, title, kind, anchors [{anchor: CodeAnchor, resolution}], what, why, risks, criteriaRefs, dependsOn}]`, `trivialHunks [{root, path, lines?, reason?}]`, `createdBy {session, agent}`, `createdAt`, `storage {mode, path?, error?}`, `stepStates`. Anchors are resolved against the files as they are now. |
+| `walkthroughs/setStepState` | `{id, step, state}` | `WalkthroughSummary`. `state` is `unread`, `understood` or `question`. |
+| `walkthroughs/delete` | `{id, deleteFile?}` | `true` if it existed. The committed file is deleted only with `deleteFile`. |
+| `walkthroughs/create` | `{workspace, session, walkthrough}` | `Walkthrough`. `walkthrough` is the draft as the agent wrote it; every problem is reported at once as `INVALID_WALKTHROUGH`. A session token may call it for its own workspace and session. In a workspace whose state has `walkthroughs.storage = "committed"`, it is also written to `.coqo/walkthroughs/<id>.json` in the scope's root (never committed). |
+
+| Topic | Params | Events |
+|---|---|---|
+| `walkthroughs/changes` | `{workspace?}` | `{kind: published \| updated \| deleted, id, workspace, summary?}`. Live only: list again after subscribing. |

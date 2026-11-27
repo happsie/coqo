@@ -71,6 +71,10 @@ pub struct ToolDefinition {
     pub input_schema: Map<String, Value>,
     /// Whether it only reads (MCP `readOnlyHint`).
     pub read_only: bool,
+    /// Whether the tool checks its arguments itself, so the server does not
+    /// check them against `input_schema` first (a tool that reports every
+    /// problem at once, which the schema check would cut short).
+    pub checks_own_arguments: bool,
 }
 
 impl ToolDefinition {
@@ -82,6 +86,7 @@ impl ToolDefinition {
             description: description.into(),
             input_schema: no_arguments(),
             read_only: false,
+            checks_own_arguments: false,
         }
     }
 
@@ -104,6 +109,13 @@ impl ToolDefinition {
     /// Mark it as read-only.
     pub fn read_only(mut self) -> Self {
         self.read_only = true;
+        self
+    }
+
+    /// Let the tool check its own arguments (see
+    /// [`checks_own_arguments`](Self::checks_own_arguments)).
+    pub fn checks_own_arguments(mut self) -> Self {
+        self.checks_own_arguments = true;
         self
     }
 }

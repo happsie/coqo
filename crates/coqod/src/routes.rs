@@ -27,6 +27,7 @@ use crate::git::{self, GitService};
 use crate::mcp_tools::{self, McpToolService};
 use crate::questions::{self, QuestionService};
 use crate::syntax::{self, SyntaxService};
+use crate::walkthroughs::{self, WalkthroughService};
 use crate::workspace::{self, WorkspaceService};
 use crate::{agents, alerts, methods, terminal};
 
@@ -59,12 +60,21 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     buffers::flush_on_shutdown(&buffers, ctx.shutdown.clone());
     let questions = QuestionService::open(
         &ctx.data.global_db(),
-        workspaces,
+        Arc::clone(&workspaces),
         Arc::clone(&buffers),
         Some(sessions.clone()),
     )?;
     let router = questions::register(router, Arc::clone(&questions));
     let router = alerts::register(router, alerts::open(ctx, sessions.clone(), questions)?);
+    let router = walkthroughs::register(
+        router,
+        WalkthroughService::open(
+            &ctx.data.global_db(),
+            workspaces,
+            Arc::clone(&buffers),
+            Some(sessions.clone()),
+        )?,
+    );
     let router = syntax::register(router, SyntaxService::new(Arc::clone(&buffers)));
     let router = buffers::register(router, buffers);
     // One set of terminals: the `terminal/*` routes and ACP agents' commands

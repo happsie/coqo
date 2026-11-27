@@ -36,6 +36,7 @@ pub const CORE_TOOLS: &[&str] = &[
     "await_answer",
     "annotate",
     "set_acceptance_criteria",
+    "publish_walkthrough",
 ];
 
 /// Params of [`Tools`] and the [`ToolsChanged`] topic.

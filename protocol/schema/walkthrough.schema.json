@@ -1,0 +1,402 @@
+{
+  "$comment": "Generated from crates/protocol (WalkthroughDraft) by `COQO_BLESS=1 cargo test -p coqo-protocol schema`. Do not edit.",
+  "$defs": {
+    "AnchorDraft": {
+      "additionalProperties": false,
+      "description": "Lines of a file a step is about, as the file is now (open buffers with\ntheir unsaved edits).",
+      "properties": {
+        "end_line": {
+          "description": "Last line, 1-based, inclusive. Default: `start_line`.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "The file, relative to the root or absolute inside the workspace.",
+          "type": "string"
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RootId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Root id from `editor_context`. Default: the scope's root, or the root\nan absolute path is in."
+        },
+        "start_line": {
+          "description": "First line, 1-based.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "text": {
+          "description": "Code that must be in those lines (a line of it is enough;\nwhitespace is ignored), so a stale line number is caught instead of\npinning the wrong code.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "start_line"
+      ],
+      "type": "object"
+    },
+    "CriterionDraft": {
+      "additionalProperties": false,
+      "description": "An acceptance criterion a walkthrough addresses.",
+      "properties": {
+        "id": {
+          "description": "Its id: one of the session's (`AC1`) or a new one.",
+          "type": "string"
+        },
+        "text": {
+          "description": "What must hold. Default: the session criterion's text; required for\na criterion that is not the session's.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "Risk": {
+      "additionalProperties": false,
+      "description": "Something that could go wrong with a step's code.",
+      "properties": {
+        "severity": {
+          "$ref": "#/$defs/RiskSeverity",
+          "description": "How bad."
+        },
+        "text": {
+          "description": "What could go wrong, and what would show it.",
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "severity",
+        "text"
+      ],
+      "type": "object"
+    },
+    "RiskSeverity": {
+      "description": "How bad it would be if a risk came true.",
+      "oneOf": [
+        {
+          "const": "low",
+          "description": "Unlikely, or cheap to fix.",
+          "type": "string"
+        },
+        {
+          "const": "med",
+          "description": "Worth a reviewer's attention.",
+          "type": "string"
+        },
+        {
+          "const": "high",
+          "description": "Could break users or data; review closely.",
+          "type": "string"
+        }
+      ]
+    },
+    "RootId": {
+      "description": "Identifies a root within its workspace. Stable for the root's lifetime and\nnever reused within the workspace.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "ScopeDraft": {
+      "additionalProperties": false,
+      "description": "What a walkthrough covers.",
+      "properties": {
+        "base": {
+          "description": "The git revision the change is against (a commit, branch or tag).\nDefault for `worktree`: `HEAD`. Required for `commits` and `pr`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head": {
+          "description": "The last revision of the change. Required for `commits` and `pr`;\nnot allowed for `worktree`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/ScopeKind",
+          "description": "`worktree` (uncommitted changes; the usual case right after a\nchange), `commits` or `pr`."
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RootId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The workspace root (repository) of the change, from\n`editor_context`. Default: the first root."
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ScopeKind": {
+      "description": "What a walkthrough covers.",
+      "oneOf": [
+        {
+          "const": "worktree",
+          "description": "The uncommitted changes in the working tree, against `base` (default\n`HEAD`). No `head`: the working tree is the head.",
+          "type": "string"
+        },
+        {
+          "const": "commits",
+          "description": "The commits from `base` (exclusive) to `head`.",
+          "type": "string"
+        },
+        {
+          "const": "pr",
+          "description": "A pull request: its base branch `base` and head branch `head`.",
+          "type": "string"
+        }
+      ]
+    },
+    "StepDraft": {
+      "additionalProperties": false,
+      "description": "One step of a walkthrough: code to read, and what, why and the risks.",
+      "properties": {
+        "anchors": {
+          "description": "The code the step is about: 1 to 16 line ranges.",
+          "items": {
+            "$ref": "#/$defs/AnchorDraft"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "type": "array"
+        },
+        "criteria_refs": {
+          "description": "The acceptance criteria (ids) this step helps meet.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "depends_on": {
+          "description": "Steps (ids) to read before this one.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Unique within the walkthrough (letters, digits, `.`, `_`, `-`; at\nmost 32), for `depends_on`: `s1`, `discount-rule`.",
+          "pattern": "^[A-Za-z0-9._-]{1,32}$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/StepKind",
+          "description": "What the step is about."
+        },
+        "risks": {
+          "description": "What could go wrong here.",
+          "items": {
+            "$ref": "#/$defs/Risk"
+          },
+          "maxItems": 16,
+          "type": "array"
+        },
+        "title": {
+          "description": "The step in a few words.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "what": {
+          "description": "What this code does (markdown).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "why": {
+          "description": "Why it is done this way: the reasoning, the alternatives turned\ndown.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "kind",
+        "anchors",
+        "what",
+        "why"
+      ],
+      "type": "object"
+    },
+    "StepKind": {
+      "description": "What a step is about, so the reader knows where they are.",
+      "oneOf": [
+        {
+          "const": "entry_point",
+          "description": "Where the change is entered: a route, a command, a public function.",
+          "type": "string"
+        },
+        {
+          "const": "flow",
+          "description": "How control or data moves from there.",
+          "type": "string"
+        },
+        {
+          "const": "data_model",
+          "description": "Types, schemas, structs the change adds or alters.",
+          "type": "string"
+        },
+        {
+          "const": "logic",
+          "description": "The core logic: rules, calculations, decisions.",
+          "type": "string"
+        },
+        {
+          "const": "edge_case",
+          "description": "Limits, errors, empty and concurrent cases.",
+          "type": "string"
+        },
+        {
+          "const": "test",
+          "description": "Tests that show the change works.",
+          "type": "string"
+        },
+        {
+          "const": "config",
+          "description": "Configuration, flags, build or dependency changes.",
+          "type": "string"
+        },
+        {
+          "const": "migration",
+          "description": "Data or schema migrations.",
+          "type": "string"
+        }
+      ]
+    },
+    "TrivialHunkDraft": {
+      "additionalProperties": false,
+      "description": "A changed hunk that needs no explanation.",
+      "properties": {
+        "end_line": {
+          "description": "Last line, inclusive. Default: `start_line`.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "The file, relative to the root or absolute inside the workspace. It\nmay be deleted.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why it is trivial (\"formatting\", \"import order\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RootId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Root id. Default: the scope's root, or the root an absolute path is\nin."
+        },
+        "start_line": {
+          "description": "First line of the hunk (1-based, in the new file). Default: the\nwhole file.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "coqo://schemas/walkthrough.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A code walkthrough as an agent publishes it with `publish_walkthrough`:\nthe change in the order a reader should follow it (entry point → flow →\ndata → logic → edge cases → tests), every step anchored to code. Coqo\nfills in the id, the author and the time. Lines are 1-based.",
+  "properties": {
+    "acceptance_criteria": {
+      "description": "The acceptance criteria the change addresses, by id. Default: every\ncriterion of this session (`set_acceptance_criteria`). A criterion\nthat is not the session's needs `text`.",
+      "items": {
+        "$ref": "#/$defs/CriterionDraft"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "scope": {
+      "$ref": "#/$defs/ScopeDraft",
+      "description": "What the walkthrough covers."
+    },
+    "steps": {
+      "description": "The steps, in reading order: 1 to 100.",
+      "items": {
+        "$ref": "#/$defs/StepDraft"
+      },
+      "maxItems": 100,
+      "minItems": 1,
+      "type": "array"
+    },
+    "summary": {
+      "description": "The change in two to five sentences (markdown): what it does and\nwhy.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "title": {
+      "description": "What changed, in a few words (\"Volume discount for bulk orders\").",
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+    },
+    "trivial_hunks": {
+      "description": "Changed hunks no step needs to explain (formatting, imports,\nrenames), so the coverage check does not flag them.",
+      "items": {
+        "$ref": "#/$defs/TrivialHunkDraft"
+      },
+      "maxItems": 500,
+      "type": "array"
+    }
+  },
+  "required": [
+    "title",
+    "summary",
+    "scope",
+    "steps"
+  ],
+  "title": "Coqo walkthrough",
+  "type": "object"
+}

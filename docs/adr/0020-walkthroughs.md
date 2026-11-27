@@ -1,0 +1,40 @@
+# 20. Walkthroughs: the schema, `publish_walkthrough` and where they are kept
+
+- **Status:** Accepted
+- **Date:** 2026-11-27
+- **Issue:** #97. Builds on ADR 0013 (anchors), 0014 (core tools), 0016 (anchor wire types) and 0017 (acceptance criteria).
+
+## Context
+
+PLAN §7.6: after a change the agent publishes a code walkthrough, the change in reading order with what, why and risks per step, anchored to code, which the user replays in Coqo. The player (#100), the coverage guard (#99) and the Claude Code skill (#98) build on the data model. Open points: the schema and its single source of truth, how a bad walkthrough is refused so the agent can fix it, where walkthroughs live (§13.1: local by default, opt-in committed, opt-in attached to the PR), and the protocol the UI uses.
+
+## Decision
+
+**Two shapes, one source.** `coqo_protocol::methods::walkthroughs` has the **draft** (`WalkthroughDraft`: what agents write, snake_case like every tool argument and like PLAN §7.6) and the **walkthrough** as stored and served (`Walkthrough`, camelCase like the rest of the protocol). `protocol/schema/walkthrough.schema.json` is generated from the draft types with schemars (`COQO_BLESS=1 cargo test -p coqo-protocol schema`) and checked against them; it is compiled into the protocol crate (`SCHEMA_JSON`), served as the MCP resource `coqo://schemas/walkthrough.json` and used as `publish_walkthrough`'s input schema. The draft has PLAN's fields minus the ones Coqo fills in (`id`, `created_by`, `created_at`):
+
+- `title`, `summary` (markdown), `scope { kind: worktree | commits | pr, base?, head?, root? }`.
+- `acceptance_criteria?`: `[{ id, text? }]`. Left out, it is every criterion of the session (ADR 0017), snapshotted with its text and status when published, so a walkthrough still reads right after the session or its criteria change. A criterion that is not the session's needs `text`.
+- `steps` (1 to 100): `{ id, title, kind: entry_point | flow | data_model | logic | edge_case | test | config | migration, anchors (1 to 16), what, why, risks [{ severity: low | med | high, text }], criteria_refs, depends_on }`.
+- An anchor is `{ path, root?, start_line, end_line?, text? }`, 1-based lines of the file **as it is now** (the open buffer with unsaved edits, else the file on disk). `text` is code that must be in those lines (whitespace ignored), which catches a stale line number instead of pinning the wrong code.
+- `trivial_hunks`: `[{ path, root?, start_line?, end_line?, reason? }]`, hunks the coverage guard (#99) must not flag; the file may be gone.
+
+The stored walkthrough adds the id (a slug of the title and 8 random hex digits: `volume-discount-3f2a9c1b`, also the committed file's name), `workspace`, `createdBy { session, agent }` (the session's provider), `createdAt`, `storage { mode, path?, error? }` and the reader's `stepStates`. Each step anchor is a `coqo-anchors` anchor of whole lines in its ADR 0016 wire form (`CodeAnchor`), with a `resolution` (`AnchorResolution`) filled in by `walkthroughs/get`. The scope keeps the revisions as named and the commits they resolved to (`baseCommit`, `headCommit`); a worktree scope without `base` is against `HEAD` when there is one.
+
+**Validation reports everything at once.** `walkthroughs/create` takes the draft as raw JSON and checks it in the daemon in three passes, collecting every problem with its JSON path (`steps[2].anchors[0].end_line`) and a message that says what to do: (1) the shape, parsed by hand from JSON so one bad field does not hide the rest the way serde's first error would; unknown fields are named with the one probably meant (`dependsOn` → `depends_on`), server-filled ones are refused as such; (2) references: unique step ids, `depends_on` naming existing other steps without cycles (the cycle is spelled out), `criteria_refs` naming the walkthrough's criteria, what each scope kind needs; (3) the workspace: anchor paths inside it and existing, lines inside the file and not blank, the quoted `text` there (if not, where it is: "it is at line 40"), trivial-hunk paths inside it, and `base` / `head` resolving in git. A refused draft is `INVALID_WALKTHROUGH` (1702) with `data: { problems: [{ path, message }] }` and every problem in the message; nothing is stored. The bridge does not check the arguments against the schema first (`ToolDefinition::checks_own_arguments`): its check stops at five problems and would make the agent fix them round by round.
+
+**Revisions** resolve with a read-only `git rev-parse --verify` (prompts and optional locks off, the revision never read as an option). The git mod (#91, ADR 0018) has diffs but no revision lookup; the scope switches to its API when it has one.
+
+**Storage.** Every walkthrough is a row of `walkthroughs` in `coqo.db` (global migration 10: the document as published, step states apart). *Alternative:* the per-workspace database PLAN §8 named; one table keyed by workspace gets a walkthrough by id alone, as `walkthroughs/get` does, like questions (ADR 0016). PLAN §8 is updated. The storage mode is per workspace, in its state: `walkthroughs.storage = "committed"` (`workspace/setState`; `settings.toml`, #26, is not there yet, and moves it there when it is). Committed walkthroughs are also written, atomically, to `.coqo/walkthroughs/<id>.json` in the scope's root (the `Walkthrough` without resolutions or step states), for the user to commit; Coqo never commits, and refuses to write through a symlinked `.coqo`. A failed write keeps the walkthrough locally and says why (`storage.error`). Reading committed walkthroughs back from a repository (a teammate's) and attaching to a PR (M8) are follow-ups.
+
+**Protocol.** For the UI, daemon token only: `walkthroughs/list { workspace, session? }` → summaries newest first (title, scope kind, step count, understood and question counts, the first step's location, storage mode); `walkthroughs/get { id }` with every anchor resolved against the files as they are now, by fingerprint (one read and parse per file); `walkthroughs/setStepState { id, step, state: unread | understood | question }` (the player's progress, #100); `walkthroughs/delete { id, deleteFile? }` (the committed file stays unless asked: it may be committed already); and the topic `walkthroughs/changes { workspace? }`, live (`published`, `updated`, `deleted` with the summary; list again after subscribing). For the bridge, `walkthroughs/create`, bound to the token's own workspace **and** session (`Access::check`); the session-token allowlist grows by it. Each publication is also a new `SessionUpdate::Walkthrough` (the summary) in the session's transcript.
+
+**The tool** is a core bridge tool (`crates/mcp/src/tools/walkthrough.rs`), a Coqo feature no harness has (ADR 0014). Its description says when: after finishing a change and before saying it is done, with the reading order and how to anchor. The bridge now serves MCP resources (`crates/mcp/src/resources.rs`), so far the schema.
+
+**UI until the player (#100).** The chat shows a card, "Walkthrough published: <title> · n steps", and the session panel a "Walkthroughs" card listing the session's; either opens the first step's lines in a file tab with them selected (`OpenLocation` grew an `end` line).
+
+## Consequences
+
+- An agent fixes a bad walkthrough in one round trip, and a walkthrough that is stored always points at real code with resolvable revisions.
+- Anchors are resolved on every `get` and not rebased in storage; the player re-resolves as the user edits. Live tracking like questions' (ADR 0016) can come with the player if needed.
+- The coverage guard (#99) has the scope's commits, the anchors and `trivialHunks`; the player (#100) has `get`, `setStepState` and `changes`.
+- The protocol grows `methods::walkthroughs`, two error codes (`UNKNOWN_WALKTHROUGH` 1701, `INVALID_WALKTHROUGH` 1702) and the `walkthrough` transcript update; a UI from before ignores the update, a daemon from before answers `METHOD_NOT_FOUND`.

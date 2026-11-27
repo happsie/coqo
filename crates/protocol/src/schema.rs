@@ -7,6 +7,8 @@
 //!   every method's params and result, plus a method table.
 //! - `protocol/ts/coqo-protocol.ts`: TypeScript types and a typed method map
 //!   derived from that schema, a stub for tooling and future clients.
+//! - `protocol/schema/walkthrough.schema.json`: JSON Schema of a walkthrough
+//!   draft, what agents publish (`publish_walkthrough`, PLAN §7.6).
 //!
 //! Regenerate with `COQO_BLESS=1 cargo test -p coqo-protocol schema`.
 
@@ -22,7 +24,8 @@ use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
 use crate::methods::{
-    self, agents, alerts, buffer, editor, fs, git, mcp, questions, syntax, terminal, workspace,
+    self, agents, alerts, buffer, editor, fs, git, mcp, questions, syntax, terminal, walkthroughs,
+    workspace,
 };
 use crate::subscription::ResumeGap;
 
@@ -89,6 +92,7 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
     g.subschema_for::<IncompatibleProtocol>();
     g.subschema_for::<ResumeGap>();
     g.subschema_for::<fs::FileTooLarge>();
+    g.subschema_for::<walkthroughs::WalkthroughProblems>();
     vec![
         request::<builtin::Hello>(
             g,
@@ -461,53 +465,96 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             g,
             "Alerts whose state changed, as their latest state (resumable).",
         ),
+        request::<walkthroughs::List>(
+            g,
+            "client→server",
+            "A workspace's walkthroughs, newest first.",
+        ),
+        request::<walkthroughs::Get>(
+            g,
+            "client→server",
+            "One walkthrough, anchors resolved against the files as they are now.",
+        ),
+        request::<walkthroughs::Delete>(
+            g,
+            "client→server",
+            "Forget a walkthrough (and optionally its committed file).",
+        ),
+        request::<walkthroughs::SetStepState>(
+            g,
+            "client→server",
+            "Mark a step unread, understood or with a question.",
+        ),
+        request::<walkthroughs::Create>(
+            g,
+            "client→server",
+            "An agent publishes a walkthrough; every problem of a bad draft is reported at once.",
+        ),
+        topic::<walkthroughs::Changes>(
+            g,
+            "Walkthroughs published, updated or deleted (live only).",
+        ),
     ]
 }
 
 fn error_codes() -> Value {
-    json!({
-        "PARSE_ERROR": codes::PARSE_ERROR,
-        "INVALID_REQUEST": codes::INVALID_REQUEST,
-        "METHOD_NOT_FOUND": codes::METHOD_NOT_FOUND,
-        "INVALID_PARAMS": codes::INVALID_PARAMS,
-        "INTERNAL_ERROR": codes::INTERNAL_ERROR,
-        "INCOMPATIBLE_PROTOCOL": codes::INCOMPATIBLE_PROTOCOL,
-        "NOT_INITIALIZED": codes::NOT_INITIALIZED,
-        "RESUME_GAP": codes::RESUME_GAP,
-        "UNKNOWN_SUBSCRIPTION": codes::UNKNOWN_SUBSCRIPTION,
-        "REQUEST_CANCELLED": codes::REQUEST_CANCELLED,
-        "UNKNOWN_WORKSPACE": methods::codes::UNKNOWN_WORKSPACE,
-        "UNKNOWN_ROOT": methods::codes::UNKNOWN_ROOT,
-        "PATH_OUTSIDE_WORKSPACE": methods::codes::PATH_OUTSIDE_WORKSPACE,
-        "NOT_FOUND": methods::codes::NOT_FOUND,
-        "FILE_TOO_LARGE": methods::codes::FILE_TOO_LARGE,
-        "NOT_A_DIRECTORY": methods::codes::NOT_A_DIRECTORY,
-        "NOT_A_FILE": methods::codes::NOT_A_FILE,
-        "WORKSPACE_CLOSED": methods::codes::WORKSPACE_CLOSED,
-        "IO_ERROR": methods::codes::IO_ERROR,
-        "UNAUTHORIZED": codes::UNAUTHORIZED,
-        "FORBIDDEN": codes::FORBIDDEN,
-        "UNKNOWN_SESSION": methods::codes::UNKNOWN_SESSION,
-        "UNKNOWN_PROVIDER": methods::codes::UNKNOWN_PROVIDER,
-        "SESSION_BUSY": methods::codes::SESSION_BUSY,
-        "SESSION_CLOSED": methods::codes::SESSION_CLOSED,
-        "UNKNOWN_PERMISSION_REQUEST": methods::codes::UNKNOWN_PERMISSION_REQUEST,
-        "UNSUPPORTED": methods::codes::UNSUPPORTED,
-        "AUTH_REQUIRED": methods::codes::AUTH_REQUIRED,
-        "PROVIDER_ERROR": methods::codes::PROVIDER_ERROR,
-        "STORAGE_ERROR": methods::codes::STORAGE_ERROR,
-        "UNKNOWN_BUFFER": methods::codes::UNKNOWN_BUFFER,
-        "UNSUPPORTED_ENCODING": methods::codes::UNSUPPORTED_ENCODING,
-        "REVISION_GONE": methods::codes::REVISION_GONE,
-        "INVALID_EDIT": methods::codes::INVALID_EDIT,
-        "SAVE_CONFLICT": methods::codes::SAVE_CONFLICT,
-        "NO_SUCH_TERMINAL": methods::codes::NO_SUCH_TERMINAL,
-        "SPAWN_FAILED": methods::codes::SPAWN_FAILED,
-        "UNKNOWN_TOOL": methods::codes::UNKNOWN_TOOL,
-        "NOT_A_REPOSITORY": methods::codes::NOT_A_REPOSITORY,
-        "STALE_SELECTION": methods::codes::STALE_SELECTION,
-        "GIT_FAILED": methods::codes::GIT_FAILED,
-    })
+    // A list, not `json!`: one macro call this long hits the recursion limit.
+    let all: &[(&str, i64)] = &[
+        ("PARSE_ERROR", codes::PARSE_ERROR),
+        ("INVALID_REQUEST", codes::INVALID_REQUEST),
+        ("METHOD_NOT_FOUND", codes::METHOD_NOT_FOUND),
+        ("INVALID_PARAMS", codes::INVALID_PARAMS),
+        ("INTERNAL_ERROR", codes::INTERNAL_ERROR),
+        ("INCOMPATIBLE_PROTOCOL", codes::INCOMPATIBLE_PROTOCOL),
+        ("NOT_INITIALIZED", codes::NOT_INITIALIZED),
+        ("RESUME_GAP", codes::RESUME_GAP),
+        ("UNKNOWN_SUBSCRIPTION", codes::UNKNOWN_SUBSCRIPTION),
+        ("REQUEST_CANCELLED", codes::REQUEST_CANCELLED),
+        ("UNKNOWN_WORKSPACE", methods::codes::UNKNOWN_WORKSPACE),
+        ("UNKNOWN_ROOT", methods::codes::UNKNOWN_ROOT),
+        (
+            "PATH_OUTSIDE_WORKSPACE",
+            methods::codes::PATH_OUTSIDE_WORKSPACE,
+        ),
+        ("NOT_FOUND", methods::codes::NOT_FOUND),
+        ("FILE_TOO_LARGE", methods::codes::FILE_TOO_LARGE),
+        ("NOT_A_DIRECTORY", methods::codes::NOT_A_DIRECTORY),
+        ("NOT_A_FILE", methods::codes::NOT_A_FILE),
+        ("WORKSPACE_CLOSED", methods::codes::WORKSPACE_CLOSED),
+        ("IO_ERROR", methods::codes::IO_ERROR),
+        ("UNAUTHORIZED", codes::UNAUTHORIZED),
+        ("FORBIDDEN", codes::FORBIDDEN),
+        ("UNKNOWN_SESSION", methods::codes::UNKNOWN_SESSION),
+        ("UNKNOWN_PROVIDER", methods::codes::UNKNOWN_PROVIDER),
+        ("SESSION_BUSY", methods::codes::SESSION_BUSY),
+        ("SESSION_CLOSED", methods::codes::SESSION_CLOSED),
+        (
+            "UNKNOWN_PERMISSION_REQUEST",
+            methods::codes::UNKNOWN_PERMISSION_REQUEST,
+        ),
+        ("UNSUPPORTED", methods::codes::UNSUPPORTED),
+        ("AUTH_REQUIRED", methods::codes::AUTH_REQUIRED),
+        ("PROVIDER_ERROR", methods::codes::PROVIDER_ERROR),
+        ("STORAGE_ERROR", methods::codes::STORAGE_ERROR),
+        ("UNKNOWN_BUFFER", methods::codes::UNKNOWN_BUFFER),
+        ("UNSUPPORTED_ENCODING", methods::codes::UNSUPPORTED_ENCODING),
+        ("REVISION_GONE", methods::codes::REVISION_GONE),
+        ("INVALID_EDIT", methods::codes::INVALID_EDIT),
+        ("SAVE_CONFLICT", methods::codes::SAVE_CONFLICT),
+        ("NO_SUCH_TERMINAL", methods::codes::NO_SUCH_TERMINAL),
+        ("SPAWN_FAILED", methods::codes::SPAWN_FAILED),
+        ("UNKNOWN_TOOL", methods::codes::UNKNOWN_TOOL),
+        ("NOT_A_REPOSITORY", methods::codes::NOT_A_REPOSITORY),
+        ("STALE_SELECTION", methods::codes::STALE_SELECTION),
+        ("GIT_FAILED", methods::codes::GIT_FAILED),
+        ("UNKNOWN_WALKTHROUGH", methods::codes::UNKNOWN_WALKTHROUGH),
+        ("INVALID_WALKTHROUGH", methods::codes::INVALID_WALKTHROUGH),
+    ];
+    Value::Object(
+        all.iter()
+            .map(|(name, code)| ((*name).to_owned(), json!(code)))
+            .collect(),
+    )
 }
 
 fn generate() -> (Value, Vec<Entry>) {
@@ -766,6 +813,46 @@ fn schema_files_are_up_to_date() {
     let json = serde_json::to_string_pretty(&doc).unwrap() + "\n";
     check_or_bless("protocol/schema/coqo-protocol.schema.json", &json);
     check_or_bless("protocol/ts/coqo-protocol.ts", &typescript(&doc, &entries));
+    let walkthrough = serde_json::to_string_pretty(&walkthrough_schema()).unwrap() + "\n";
+    check_or_bless("protocol/schema/walkthrough.schema.json", &walkthrough);
+}
+
+/// The schema of what agents publish (`publish_walkthrough`, served as the
+/// MCP resource `coqo://schemas/walkthrough.json`): self-contained, with
+/// its own `$defs`.
+fn walkthrough_schema() -> Value {
+    let g = SchemaSettings::draft2020_12().into_generator();
+    let mut schema = g
+        .into_root_schema_for::<walkthroughs::WalkthroughDraft>()
+        .to_value();
+    let obj = schema.as_object_mut().unwrap();
+    obj.insert("$id".into(), json!(walkthroughs::SCHEMA_URI));
+    obj.insert(
+        "$comment".into(),
+        json!("Generated from crates/protocol (WalkthroughDraft) by `COQO_BLESS=1 cargo test -p coqo-protocol schema`. Do not edit."),
+    );
+    canonical(schema)
+}
+
+#[test]
+fn the_walkthrough_schema_describes_the_draft() {
+    let schema = walkthrough_schema();
+    assert_eq!(schema["type"], "object");
+    assert_eq!(schema["additionalProperties"], false);
+    let required = schema["required"].as_array().unwrap();
+    for field in ["title", "summary", "scope", "steps"] {
+        assert!(required.contains(&json!(field)), "{field}");
+    }
+    let step = &schema["$defs"]["StepDraft"];
+    assert!(step["properties"]["criteria_refs"].is_object(), "{step}");
+    assert!(step["properties"]["depends_on"].is_object(), "{step}");
+    assert_eq!(step["additionalProperties"], false);
+    // The committed copy the bridge serves is this schema.
+    let committed: Value = serde_json::from_str(walkthroughs::SCHEMA_JSON).unwrap();
+    assert_eq!(
+        committed, schema,
+        "walkthrough.schema.json is out of date; regenerate with `COQO_BLESS=1 cargo test -p coqo-protocol schema`"
+    );
 }
 
 #[test]

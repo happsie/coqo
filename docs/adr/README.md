@@ -23,3 +23,4 @@ Architecture decisions for Coqo, one file per decision. See [ADR 0001](0001-reco
 | [0017](0017-acceptance-criteria.md) | Acceptance criteria per session (`set_acceptance_criteria`) | Accepted |
 | [0018](0018-git-mod-and-protocol.md) | The git mod and `git/*`: gix reads, CLI writes, line staging and `git/changes` | Accepted |
 | [0019](0019-alert-engine.md) | Alert engine: one alert per source and key, auto-resolved, in the daemon | Accepted |
+| [0020](0020-walkthroughs.md) | Walkthroughs: the schema, `publish_walkthrough` and where they are kept | Accepted |

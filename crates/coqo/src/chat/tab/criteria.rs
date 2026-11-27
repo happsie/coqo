@@ -194,6 +194,7 @@ impl ChatTab {
                     let action = OpenLocation {
                         path,
                         line: e.line.map(|l| l.saturating_sub(1)),
+                        end: None,
                     };
                     let focus = self.focus.clone();
                     row = row.child(
