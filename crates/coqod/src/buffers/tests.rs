@@ -31,6 +31,10 @@ use crate::workspace::{self, WatchConfig, WorkspaceService};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+/// [`BufferConfig::truncate_settle`] in these tests: long, so a test writer
+/// pausing briefly mid-write stays well inside it even on a loaded runner.
+const SETTLE: Duration = Duration::from_millis(500);
+
 struct Daemon {
     data: TempDir,
     folder: TempDir,
@@ -43,6 +47,7 @@ struct Daemon {
 fn config() -> BufferConfig {
     BufferConfig {
         unload_after: Duration::from_millis(300),
+        truncate_settle: SETTLE,
         ..BufferConfig::default()
     }
 }
@@ -230,6 +235,13 @@ async fn eventually(what: &str, mut f: impl FnMut() -> bool) {
     }
 }
 
+/// Replace a file the way many editors do (write aside, rename), so the
+/// watcher never sees it half-written. Tests about writers that truncate
+/// first use `fs::write`.
+fn replace_file(path: &std::path::Path, text: &str) {
+    super::disk::write_atomic(path, text.as_bytes()).unwrap();
+}
+
 fn rpc_error<T: std::fmt::Debug>(r: Result<T, ProtocolError>) -> ErrorObject {
     match r {
         Err(ProtocolError::Rpc(e)) => e,
@@ -301,14 +313,14 @@ async fn disk_changes_reload_clean_buffers_and_merge_into_dirty_ones() {
     let d = Daemon::new(&[("f.txt", "one\ntwo\nthree\n")]).await;
     let mut w = d.window("f.txt").await;
     // Clean: a plain reload.
-    fs::write(d.path("f.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+    replace_file(&d.path("f.txt"), "one\ntwo\nthree\nfour\n");
     let c = w.wait_for(|c| c.origin.kind == OriginKind::Disk).await;
     assert!(!c.dirty);
     assert_eq!(w.editor, "one\ntwo\nthree\nfour\n");
     // Dirty: the user's unsaved edit survives an external rewrite.
     w.edit(TextEdit::insert(3, "!")).await;
     w.sync_to(c.rev + 1).await;
-    fs::write(d.path("f.txt"), "one\nTWO\nthree\nfour\n").unwrap();
+    replace_file(&d.path("f.txt"), "one\nTWO\nthree\nfour\n");
     let c = w.wait_for(|c| c.origin.kind == OriginKind::Disk).await;
     assert!(c.dirty);
     assert!(!c.conflict);
@@ -325,6 +337,51 @@ async fn disk_changes_reload_clean_buffers_and_merge_into_dirty_ones() {
         fs::read_to_string(d.path("f.txt")).unwrap(),
         "one!\nTWO\nthree\nfour\n"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_read_empty_mid_write_is_not_merged_empty() {
+    use std::io::Write as _;
+    let d = Daemon::new(&[("w.rs", "fn a() {}\n")]).await;
+    let path = d.path("w.rs");
+    let mut w = d.window("w.rs").await;
+    w.edit(TextEdit::insert(0, "// mine\n")).await;
+    w.sync_to(1).await;
+    // A writer that truncates the file, then writes it.
+    let truncate = || drop(fs::File::create(&path).unwrap());
+    let write = |text: &str| {
+        let mut f = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.write_all(text.as_bytes()).unwrap();
+    };
+
+    // An announced agent write is waited for, however long it pauses.
+    d.buffers
+        .expect_agent_write("s-1", &path, Some("fn a() {}".into()), "fn b() {}".into());
+    truncate();
+    tokio::time::sleep(SETTLE * 2).await;
+    write("fn b() {}\n");
+    let c = w.next().await;
+    assert_eq!(c.origin.kind, OriginKind::Agent, "{c:?}");
+    assert_eq!(c.origin.id.as_deref(), Some("s-1"));
+    assert_eq!(w.editor, "// mine\nfn b() {}\n");
+
+    // Any other writer gets the settle time.
+    truncate();
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    write("fn c() {}\n");
+    let c = w.next().await;
+    assert_eq!(c.origin.kind, OriginKind::Disk);
+    assert_eq!(
+        w.editor, "// mine\nfn c() {}\n",
+        "one change, no empty moment"
+    );
+
+    // A file that stays empty was emptied: the deletion is merged.
+    truncate();
+    let c = w.next().await;
+    assert_eq!(c.origin.kind, OriginKind::Disk);
+    assert!(c.dirty);
+    assert_eq!(w.editor, "// mine\n");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

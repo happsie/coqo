@@ -20,6 +20,14 @@
 //!   and diffed against the buffer's disk baseline (not the live text), then
 //!   merged as a `disk` change, or an `agent` change if it matches a write
 //!   announced with [`BufferService::expect_agent_write`].
+//! - **Writes in progress.** A writer that truncates and then writes (many
+//!   tools, `std::fs::write` among them) leaves the file empty for a moment,
+//!   and the watcher can read it then. An empty read of a non-empty file is
+//!   therefore held back for [`BufferConfig::truncate_settle`] and the file
+//!   read again; while an announced agent write of some text to the file is
+//!   pending, it is held until that text lands (up to [`MAX_AGENT_HOLD`]).
+//!   Merging the empty moment would turn one change into a deletion plus a
+//!   re-insertion, lose the agent attribution and misplace unsaved edits.
 //! - **Save** writes atomically and then makes the written text the disk
 //!   baseline, so the watcher seeing Coqo's own write is a no-op. If the file
 //!   changed on disk since it was read, the change is merged first and the
@@ -73,6 +81,10 @@ pub struct BufferConfig {
     pub snapshot_every: usize,
     /// How long an announced agent write waits for the file to change.
     pub agent_write_ttl: Duration,
+    /// How long an open file that reads as empty (but was not) is given to
+    /// get its new contents before the emptiness is merged: a writer that
+    /// truncates first is usually mid-write.
+    pub truncate_settle: Duration,
     /// Largest file that can be opened.
     pub max_file_bytes: u64,
     /// How much change history each buffer keeps.
@@ -86,11 +98,16 @@ impl Default for BufferConfig {
             replay: 4096,
             snapshot_every: 512,
             agent_write_ttl: Duration::from_secs(120),
+            truncate_settle: Duration::from_millis(250),
             max_file_bytes: MAX_READ_LIMIT,
             log: LogLimits::default(),
         }
     }
 }
+
+/// The longest an empty read is held back while an announced agent write
+/// to the file is pending (see *Writes in progress* above).
+pub const MAX_AGENT_HOLD: Duration = Duration::from_secs(5);
 
 fn unknown_buffer(id: BufferId) -> ErrorObject {
     ErrorObject::new(
@@ -574,9 +591,45 @@ impl BufferService {
     /// Re-read `b`'s file and merge it if it changed.
     async fn check_disk(&self, b: &OpenBuffer) {
         let _io = b.io.lock().await;
-        if b.unloaded.load(Ordering::Acquire) {
+        let started = tokio::time::Instant::now();
+        let mut held = false;
+        loop {
+            if b.unloaded.load(Ordering::Acquire) {
+                return;
+            }
+            let Some(disk) = self.read_disk(b).await else {
+                return;
+            };
+            if disk.len() == 0 && self.maybe_mid_write(b, held, started.elapsed()) {
+                tracing::debug!(path = %b.real.display(), "open file reads as empty; waiting for the rest of the write");
+                held = true;
+                tokio::time::sleep(self.config.truncate_settle).await;
+                continue;
+            }
+            self.merge_disk(b, disk);
             return;
         }
+    }
+
+    /// Whether `b`'s file reading as empty may be a writer's truncation, to
+    /// be read again before merging. `held`: it was held back already, for
+    /// `waited` so far.
+    fn maybe_mid_write(&self, b: &OpenBuffer, held: bool, waited: Duration) -> bool {
+        let st = b.lock();
+        let before = st.buf.disk();
+        if before.len() == 0 {
+            return false; // no change at all
+        }
+        let ttl = self.config.agent_write_ttl;
+        let mut writes = self.agent_writes.lock().unwrap_or_else(|e| e.into_inner());
+        if writes.awaits_text(&b.real, ttl) {
+            return waited < MAX_AGENT_HOLD;
+        }
+        !held && !writes.explains(&b.real, before, &Rope::new(), ttl)
+    }
+
+    /// Read and decode `b`'s file; `None` if it cannot be (logged).
+    async fn read_disk(&self, b: &OpenBuffer) -> Option<Rope> {
         let (path, limit) = (b.real.clone(), self.config.max_file_bytes);
         let read = tokio::task::spawn_blocking(move || disk::read(&path, limit)).await;
         let bytes = match read {
@@ -584,25 +637,24 @@ impl BufferService {
             Ok(Err(disk::ReadError::Io(e))) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Deleted (or mid-rename); the buffer keeps its text.
                 tracing::debug!(path = %b.real.display(), "open file is gone from disk");
-                return;
+                return None;
             }
             Ok(Err(e)) => {
                 tracing::warn!(path = %b.real.display(), error = ?e, "cannot re-read an open file");
-                return;
+                return None;
             }
             Err(e) => {
                 tracing::warn!(error = %e, "re-reading an open file failed");
-                return;
+                return None;
             }
         };
-        let decoded = match buftext::decode(bytes) {
-            Ok(d) => d,
+        match buftext::decode(bytes) {
+            Ok(d) => Some(Rope::from_str(&d.text)),
             Err(e) => {
                 tracing::warn!(path = %b.real.display(), error = %e, "open file is no longer UTF-8; keeping the buffer");
-                return;
+                None
             }
-        };
-        self.merge_disk(b, Rope::from_str(&decoded.text));
+        }
     }
 
     fn merge_disk(&self, b: &OpenBuffer, new_disk: Rope) {
