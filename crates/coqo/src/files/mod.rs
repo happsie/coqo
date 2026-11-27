@@ -7,10 +7,12 @@
 //! (`SidebarPanes`, `register_tab_kind`), so it moves out unchanged.
 //!
 //! Keyboard in the tree: Up/Down select, Right expands (or enters), Left
-//! collapses (or goes to the parent), Enter opens.
+//! collapses (or goes to the parent), Enter opens. In a file tab: `Ctrl S`
+//! (`Cmd S`) saves, `Ctrl F` finds, `Ctrl Z` / `Ctrl Y` undo and redo this
+//! tab's own edits.
 
+pub mod editor;
 pub mod glyph;
-pub mod preview;
 pub mod tree;
 
 use coqo_ui::{
@@ -48,8 +50,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("left", Collapse, context),
         KeyBinding::new("enter", Confirm, context),
     ]);
-    register_tab_kind(cx, preview::KIND, |state, window, cx| {
-        preview::restore(state, window, cx)
+    editor::init(cx);
+    register_tab_kind(cx, editor::KIND, |state, window, cx| {
+        editor::restore(state, window, cx)
     });
     SidebarPanes::register(
         cx,

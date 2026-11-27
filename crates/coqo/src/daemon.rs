@@ -37,7 +37,8 @@ use std::{future::Future, sync::Arc, time::Duration};
 
 use coqo_client::{ConnectError, ConnectOptions, DaemonPaths, connect, connect_or_spawn};
 use coqo_protocol::{
-    Client, ClientConfig, ErrorObject, Method, ProtocolError, Sequenced, Topic, codes,
+    Client, ClientConfig, ErrorObject, Method, Notification, NotificationMethod, ProtocolError,
+    Sequenced, Topic, codes,
 };
 use coqo_ui::{
     ActiveTokens as _,
@@ -46,6 +47,7 @@ use coqo_ui::{
         IntoElement as _, ParentElement as _, StatefulInteractiveElement as _, Styled as _, Task,
         div, px,
     },
+    serde_json,
     slots::{Slot, Slots},
     widgets::{Icon, TestSupportExt as _, icon, status_dot},
 };
@@ -190,6 +192,32 @@ impl<E> EventStream<E> {
     }
 }
 
+/// A server → client notification that is not a subscription event, such
+/// as `buffer/editRejected`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServerNotification {
+    pub method: String,
+    pub params: Option<serde_json::Value>,
+}
+
+impl ServerNotification {
+    /// The params, if this is an `N` notification with valid params.
+    pub fn parse<N: NotificationMethod>(&self) -> Option<N::Params> {
+        if self.method != N::NAME {
+            return None;
+        }
+        let params = self.params.clone().unwrap_or(serde_json::Value::Null);
+        serde_json::from_value(params).ok()
+    }
+}
+
+/// Emits every [`ServerNotification`] of every connection, in order. Get it
+/// with [`Daemon::notifications`]; it outlives reconnects.
+#[derive(Debug, Default)]
+pub struct ServerNotifications;
+
+impl EventEmitter<ServerNotification> for ServerNotifications {}
+
 /// The UI's daemon connection. See the module docs.
 pub struct Daemon {
     /// Kept in an `Option` so dropping can shut it down without blocking.
@@ -199,12 +227,16 @@ pub struct Daemon {
     client: Option<Client>,
     /// The same client, for [`DaemonHandle`]s.
     shared: watch::Sender<Option<Client>>,
+    /// Client → server notifications of the current connection, in order.
+    outbox: Option<mpsc::UnboundedSender<(&'static str, Option<serde_json::Value>)>>,
     /// Bumped per attempt, so a stale attempt's result is ignored.
     generation: u64,
     /// Reconnect once by itself after a drop, not after a failed attempt.
     auto_reconnect: bool,
+    notifications: Entity<ServerNotifications>,
     _connecting: Option<Task<()>>,
     _watching: Option<Task<()>>,
+    _notifying: Option<Task<()>>,
 }
 
 impl std::fmt::Debug for Daemon {
@@ -254,10 +286,13 @@ impl Daemon {
             state: ConnectionState::Connecting,
             client: None,
             shared: watch::channel(None).0,
+            outbox: None,
             generation: 0,
             auto_reconnect: false,
+            notifications: cx.new(|_| ServerNotifications),
             _connecting: None,
             _watching: None,
+            _notifying: None,
         };
         this.connect(cx);
         this
@@ -278,12 +313,20 @@ impl Daemon {
         self.client.is_some()
     }
 
+    /// Server → client notifications (not topic events), across reconnects.
+    pub fn notifications(&self) -> Entity<ServerNotifications> {
+        self.notifications.clone()
+    }
+
     fn runtime(&self) -> &Runtime {
         self.runtime.as_deref().expect("runtime lives until drop")
     }
 
     fn set_client(&mut self, client: Option<Client>) {
         self.shared.send_replace(client.clone());
+        if client.is_none() {
+            self.outbox = None;
+        }
         self.client = client;
     }
 
@@ -315,6 +358,7 @@ impl Daemon {
         let paths = self.config.paths.clone();
         let options = self.config.options.clone();
         let spawn = self.config.spawn;
+        let (forward, mut forwarded) = mpsc::unbounded_channel::<Notification>();
         let attempt = self.runtime().spawn(async move {
             let (client, notifications, spawned) = if spawn {
                 let c = connect_or_spawn(&paths, &options).await?;
@@ -323,11 +367,25 @@ impl Daemon {
                 let (client, notifications) = connect(&paths, options.client.clone()).await?;
                 (client, notifications, false)
             };
-            // Nothing reads plain notifications yet; drain them so the
-            // connection's buffer stays empty.
-            tokio::spawn(notifications.for_each(|_| async {}));
+            // Hand plain notifications to the UI thread (`notifications()`).
+            tokio::spawn(notifications.for_each(move |n| {
+                let _ = forward.send(n);
+                async {}
+            }));
             Ok::<_, ConnectError>((client, spawned))
         });
+        let sink = self.notifications.downgrade();
+        self._notifying = Some(cx.spawn(async move |_, cx| {
+            while let Some(n) = forwarded.recv().await {
+                let note = ServerNotification {
+                    method: n.method,
+                    params: n.params,
+                };
+                if sink.update(cx, |_, cx| cx.emit(note)).is_err() {
+                    break;
+                }
+            }
+        }));
         self._connecting = Some(cx.spawn(async move |this, cx| {
             let result = match attempt.await {
                 Ok(result) => result.map_err(|e| e.to_string()),
@@ -360,6 +418,18 @@ impl Daemon {
                     let _ = closed.await;
                     this.update(cx, |this, cx| this.lost(generation, cx)).ok();
                 }));
+                // Client notifications go out one by one, in the order sent.
+                let (outbox, mut queued) =
+                    mpsc::unbounded_channel::<(&'static str, Option<serde_json::Value>)>();
+                let sender = client.clone();
+                self.runtime().spawn(async move {
+                    while let Some((method, params)) = queued.recv().await {
+                        if sender.notify_raw(method, params).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+                self.outbox = Some(outbox);
                 self.set_client(Some(client));
                 self.auto_reconnect = true;
                 cx.emit(DaemonEvent::Connected);
@@ -419,6 +489,22 @@ impl Daemon {
                 },
             }
         }
+    }
+
+    /// Send the notification `N` (fire and forget). Notifications are sent in
+    /// the order of these calls.
+    pub fn notify<N: NotificationMethod>(&self, params: N::Params) -> Result<(), DaemonError> {
+        let outbox = self
+            .outbox
+            .as_ref()
+            .filter(|_| self.client.is_some())
+            .ok_or(DaemonError::NotConnected)?;
+        let params = serde_json::to_value(&params)
+            .map_err(|e| DaemonError::Protocol(format!("params of {}: {e}", N::NAME)))?;
+        let params = (!params.is_null()).then_some(params);
+        outbox
+            .send((N::NAME, params))
+            .map_err(|_| DaemonError::NotConnected)
     }
 
     /// Subscribe to topic `T` from now on (no replay).
