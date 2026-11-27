@@ -257,6 +257,27 @@ Replicated text buffers ([ADR 0006](../docs/adr/0006-buffer-replication.md), det
 
 **Disk changes:** while a buffer is open the daemon follows the workspace's `fs/changes`. A changed file is diffed against the text last read or written (not the live buffer) and merged around unsaved edits; it is attributed to an agent session when it matches a tool-call diff the agent host announced, else `origin.kind` is `disk`. A clean buffer simply reloads.
 
+### Terminals (`terminal/*`)
+
+`terminal/*` serves PTYs owned by the daemon (types in `coqo_protocol::methods::terminal`). The emulator state, meaning the grid, 10 000 lines of scrollback and the modes, stays in the daemon, so a terminal outlives the client that opened it.
+
+| Method | Params → result |
+|---|---|
+| `terminal/spawn` | `{program?, args?, cwd?, env?, size, title?}` → `TerminalInfo`. Omit `program` for the login shell. |
+| `terminal/list` | → every `TerminalInfo`, running or exited |
+| `terminal/snapshot` | `{id}` → `{seq, info, screen}` |
+| `terminal/input` | `{id, data}`: text, key escape sequences or a paste. Scrolls the view to the bottom. |
+| `terminal/resize` | `{id, size: {cols, rows}}` |
+| `terminal/scroll` | `{id, scroll}`, where `scroll` is `{"lines": n}` (positive goes up), `"pageUp"`, `"pageDown"`, `"top"` or `"bottom"` |
+| `terminal/close` | `{id}` → `true` if it existed. Sends SIGHUP to the process group and the PTY's foreground job, then SIGKILL after 1.5 s. |
+| topic `terminal/output` | params `{id}`. Events: `frame`, `title`, `cwd` (OSC 7), `commandFinished` (OSC 133;D), `bell` and `exited`. |
+
+**A client mirrors the screen.** A `Screen` is the rows in view as sparse style runs (`{col, text, wide?, style?}`), plus the cursor, the modes (`appCursor`, `bracketedPaste`, `altScreen`, …), `display_offset` and `history_size`. To attach, take a snapshot, subscribe from its `seq`, and apply each `frame` to the snapshot's screen (`Screen::apply` in Rust). A frame carries only the rows whose content changed since the previous frame, together with the cursor and modes, and the daemon batches frames at about 60 Hz. Rows are absolute, so applying a frame twice does no harm. A frame with `full: true` follows a resize: the client starts over from blank rows.
+
+**Scrollback is the daemon's.** `terminal/scroll` moves the terminal's one viewport, which every attached client shares, and the next frame shows it.
+
+**Input order.** Requests on a connection run concurrently, so a client sends the next `terminal/input` only after the previous one has answered, merging keystrokes typed in the meantime. The UI does the same for resize and scroll.
+
 | Code | Name | Meaning |
 |---|---|---|
 | 1001 | `UNKNOWN_WORKSPACE` | No workspace has that id. |
@@ -282,3 +303,5 @@ Replicated text buffers ([ADR 0006](../docs/adr/0006-buffer-replication.md), det
 | 1203 | `REVISION_GONE` | The revision is no longer in the buffer's log (or is ahead of it); reopen. |
 | 1204 | `INVALID_EDIT` | Unsorted, overlapping or out-of-range edits, or a split UTF-8 character. |
 | 1205 | `SAVE_CONFLICT` | The file changed on disk; the change was merged, review and save again (or `force`). |
+| 1301 | `NO_SUCH_TERMINAL` | No terminal has that id. |
+| 1302 | `SPAWN_FAILED` | The PTY or the process could not be started. |

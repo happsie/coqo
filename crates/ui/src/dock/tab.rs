@@ -57,6 +57,11 @@ pub trait TabItem: Render {
     fn focus_handle(&self, cx: &App) -> Option<FocusHandle> {
         None
     }
+
+    /// The user closed the tab (or its group). Not called when the window or
+    /// the app closes, so a tab that owns something outside the UI (a
+    /// terminal, a session) can end it here and keep it across restarts.
+    fn on_close(&mut self, cx: &mut Context<Self>) {}
 }
 
 trait TabHandle {
@@ -70,6 +75,7 @@ trait TabHandle {
     fn render_label(&self, selected: bool, window: &mut Window, cx: &App) -> Option<AnyElement>;
     fn focus_handle(&self, cx: &App) -> Option<FocusHandle>;
     fn observe(&self, cx: &mut Context<super::Dock>) -> Subscription;
+    fn on_close(&self, cx: &mut App);
 }
 
 impl<T: TabItem + 'static> TabHandle for Entity<T> {
@@ -102,6 +108,9 @@ impl<T: TabItem + 'static> TabHandle for Entity<T> {
     }
     fn observe(&self, cx: &mut Context<super::Dock>) -> Subscription {
         cx.observe(self, |_, _, cx| cx.notify())
+    }
+    fn on_close(&self, cx: &mut App) {
+        self.update(cx, |tab, cx| tab.on_close(cx));
     }
 }
 
@@ -158,6 +167,9 @@ impl AnyTab {
     }
     pub(crate) fn observe(&self, cx: &mut Context<super::Dock>) -> Subscription {
         self.0.observe(cx)
+    }
+    pub(crate) fn on_close(&self, cx: &mut App) {
+        self.0.on_close(cx);
     }
 }
 

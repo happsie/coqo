@@ -18,6 +18,9 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
+# Terminal emulation (grid, scrollback, escape sequences). Apache-2.0; the
+# crate Alacritty and Zed use.
+alacritty_terminal = "0.26"
 anyhow = "1"
 coqo-agents = { path = "../agents" }
 coqo-buffers = { path = "../buffers" }
@@ -31,8 +34,10 @@ coqo-storage = { path = "../storage" }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getrandom = { version = "0.3", features = ["std"] }
 ignore = "0.4"
-nix = { version = "0.30", default-features = false, features = ["fs", "process"] }
+nix = { version = "0.30", default-features = false, features = ["fs", "process", "signal"] }
 notify = "8"
+# Cross-platform PTYs (MIT, from wezterm).
+portable-pty = "0.9"
 rusqlite = "0.43"
 serde = "1"
 serde_json = "1"

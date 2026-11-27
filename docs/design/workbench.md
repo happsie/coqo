@@ -51,7 +51,7 @@ register_tab_kind(cx, "file", |state, window, cx| {
 dock.update(cx, |dock, cx| dock.open_tab(AnyTab::new(editor), window, cx));
 ```
 
-`open_tab_at(tab, TabTarget::Split { group, edge }, …)` opens beside a group, and `TabItem::render_label` replaces the default icon and title (for a file-type letter, or a "needs input" badge).
+`open_tab_at(tab, TabTarget::Split { group, edge }, …)` opens beside a group, and `TabItem::render_label` replaces the default icon and title (for a file-type letter, or a "needs input" badge). `TabItem::on_close` runs when the user closes the tab or its group, never when the window or app closes, so a tab that owns something outside the UI (a terminal, see [terminal.md](terminal.md)) can end it there and keep it across restarts.
 
 **A sidebar pane** (file tree, git): register a `SidebarPane`. Its builder gets the window's dock, to open tabs.
 

@@ -12,6 +12,7 @@
 //!   grant each connection.
 //! - [`Method`], [`NotificationMethod`], [`Topic`]: typed method
 //!   definitions, used by the [`Client`] and the server [`Router`].
+//! - [`methods`]: the application methods and topics (terminals, …).
 //! - [`subscription`]: sequenced event streams with resume-from-seq, and
 //!   [`SeqLog`], an in-memory source.
 //! - [`daemon`]: `daemon/status` and `daemon/shutdown`, the daemon's own

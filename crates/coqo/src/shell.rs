@@ -338,6 +338,11 @@ impl Render for Shell {
             .font_family(m.font_ui.clone())
             .text_size(m.text_md)
             .text_color(p.text.hsla())
+            .on_action(
+                cx.listener(|this, _: &crate::terminal::NewTerminal, window, cx| {
+                    crate::terminal::open_new(&this.dock, window, cx);
+                }),
+            )
             .child(top)
             .child(
                 div()

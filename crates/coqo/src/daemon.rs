@@ -33,11 +33,7 @@
 //! daemon reconnects once on its own, spawning a new `coqod`; if that fails
 //! it waits for [`Daemon::retry`] (the `daemon-status` pill's Retry button).
 
-use std::{
-    future::Future,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use coqo_client::{ConnectError, ConnectOptions, DaemonPaths, connect, connect_or_spawn};
 use coqo_protocol::{
@@ -56,7 +52,7 @@ use coqo_ui::{
 use futures_util::StreamExt as _;
 use tokio::{
     runtime::{Handle, Runtime},
-    sync::mpsc,
+    sync::{mpsc, watch},
 };
 
 /// The build id this UI announces in the handshake: `$COQO_BUILD` at compile
@@ -202,7 +198,7 @@ pub struct Daemon {
     state: ConnectionState,
     client: Option<Client>,
     /// The same client, for [`DaemonHandle`]s.
-    shared: Arc<Mutex<Option<Client>>>,
+    shared: watch::Sender<Option<Client>>,
     /// Bumped per attempt, so a stale attempt's result is ignored.
     generation: u64,
     /// Reconnect once by itself after a drop, not after a failed attempt.
@@ -257,7 +253,7 @@ impl Daemon {
             config,
             state: ConnectionState::Connecting,
             client: None,
-            shared: Arc::default(),
+            shared: watch::channel(None).0,
             generation: 0,
             auto_reconnect: false,
             _connecting: None,
@@ -287,7 +283,7 @@ impl Daemon {
     }
 
     fn set_client(&mut self, client: Option<Client>) {
-        *self.shared.lock().unwrap_or_else(|e| e.into_inner()) = client.clone();
+        self.shared.send_replace(client.clone());
         self.client = client;
     }
 
@@ -296,7 +292,7 @@ impl Daemon {
     pub fn handle(&self) -> DaemonHandle {
         DaemonHandle {
             runtime: self.runtime().handle().clone(),
-            client: Arc::clone(&self.shared),
+            client: self.shared.subscribe(),
         }
     }
 
@@ -491,11 +487,14 @@ impl Daemon {
 
 /// Sends requests over the [`Daemon`]'s current connection without an
 /// `App`. Cheap to clone; it follows reconnects and fails with
-/// [`DaemonError::NotConnected`] while there is no connection.
+/// [`DaemonError::NotConnected`] while there is no connection. Code that
+/// runs on the connection's runtime (terminal I/O) can also
+/// [`spawn`](Self::spawn) there and [wait](Self::wait_for_client) for a
+/// connection.
 #[derive(Clone)]
 pub struct DaemonHandle {
     runtime: Handle,
-    client: Arc<Mutex<Option<Client>>>,
+    client: watch::Receiver<Option<Client>>,
 }
 
 impl std::fmt::Debug for DaemonHandle {
@@ -508,10 +507,23 @@ impl std::fmt::Debug for DaemonHandle {
 
 impl DaemonHandle {
     fn client(&self) -> Option<Client> {
-        self.client
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.client.borrow().clone()
+    }
+
+    /// Run `task` on the connection's runtime.
+    pub fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
+        self.runtime.spawn(task);
+    }
+
+    /// The live client, waiting up to `wait` for a connection (at startup,
+    /// or while reconnecting). Call it on the connection's runtime.
+    pub async fn wait_for_client(&self, wait: Duration) -> Result<Client, DaemonError> {
+        let mut rx = self.client.clone();
+        let live = rx.wait_for(|c| c.as_ref().is_some_and(|c| !c.is_closed()));
+        match tokio::time::timeout(wait, live).await {
+            Ok(Ok(client)) => client.clone().ok_or(DaemonError::NotConnected),
+            _ => Err(DaemonError::NotConnected),
+        }
     }
 
     /// Whether a connection is up.
