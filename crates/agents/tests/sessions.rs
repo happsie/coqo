@@ -1175,3 +1175,185 @@ async fn setup_status_and_actions_over_the_protocol() {
         assert_eq!(app_error(err), code);
     }
 }
+
+async fn set_status(
+    client: &Client,
+    id: &SessionId,
+    status: &str,
+    state: Option<StatusState>,
+    progress: Option<(u64, u64)>,
+) -> Result<SessionInfo, ProtocolError> {
+    client
+        .request::<SetStatus>(SetStatusParams {
+            session: id.clone(),
+            status: status.into(),
+            state,
+            progress: progress.map(|(current, total)| StatusProgress { current, total }),
+        })
+        .await
+}
+
+/// The next `sessions/changes` event of session `id`.
+async fn next_change(changes: &mut Subscription<Changes>, id: &SessionId) -> SessionInfo {
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let change = changes.next().await.expect("open").expect("ok").event;
+            if &change.id == id {
+                return change;
+            }
+        }
+    })
+    .await
+    .expect("a change in time")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_agents_status_follows_its_turns() {
+    let go = Arc::new(Notify::new());
+    let resume = Arc::new(Notify::new());
+    let provider = ScriptedProvider::new()
+        .turn([Step::Wait(Arc::clone(&go)), Step::Stop(StopReason::EndTurn)])
+        .turn([
+            Step::Wait(Arc::clone(&resume)),
+            Step::Stop(StopReason::EndTurn),
+        ]);
+    let d = daemon(SessionStore::open_in_memory().unwrap(), &provider);
+    let client = d.connect().await;
+    let created = create(&client).await;
+    let id = created.id.clone();
+    assert_eq!(created.state_since, Some(created.created_at));
+    assert!(created.status.is_none());
+    let head = client
+        .request::<List>(ListSessionsParams::default())
+        .await
+        .unwrap()
+        .seq;
+    let mut changes = client
+        .subscribe::<Changes>(ChangesParams::default(), Some(head))
+        .await
+        .unwrap();
+
+    // Between turns a status is just text; the state stays.
+    let info = set_status(&client, &id, "  Reading\nthe code ", None, None)
+        .await
+        .unwrap();
+    assert_eq!(info.state, AgentState::Idle);
+    let status = info.status.clone().unwrap();
+    assert_eq!(status.text, "Reading the code");
+    assert_eq!((status.turn, status.progress), (None, None));
+    assert_eq!(next_change(&mut changes, &id).await, info);
+
+    // A turn clears it; during the turn the agent reports progress.
+    prompt(&client, &id, "fix the tests").await.unwrap();
+    let working = next_change(&mut changes, &id).await;
+    assert_eq!(working.state, AgentState::Working);
+    assert!(working.status.is_none(), "{working:?}");
+    assert!(working.state_since >= created.state_since);
+    let info = set_status(&client, &id, "Running the tests", None, Some((7, 5)))
+        .await
+        .unwrap();
+    let status = info.status.clone().unwrap();
+    assert_eq!(
+        status.progress,
+        Some(StatusProgress {
+            current: 5,
+            total: 5
+        }),
+        "current is capped"
+    );
+    assert_eq!(status.turn, Some(1));
+    assert_eq!(next_change(&mut changes, &id).await, info);
+    // The same again changes nothing and keeps its time.
+    let again = set_status(&client, &id, "Running the tests", None, Some((5, 5)))
+        .await
+        .unwrap();
+    assert_eq!(again, info);
+    // Blocked: the status is the reason, recorded in the transcript too.
+    let blocked = set_status(
+        &client,
+        &id,
+        "Need DATABASE_URL",
+        Some(StatusState::Blocked),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(blocked.state, AgentState::Blocked);
+    assert_eq!(blocked.state_reason.as_deref(), Some("Need DATABASE_URL"));
+    assert!(blocked.state_since >= working.state_since);
+    assert_eq!(next_change(&mut changes, &id).await, blocked);
+    let snap = snapshot(&client, &id).await;
+    assert_eq!(snap.info, blocked);
+    let mut sub = subscribe(&client, &id, Some(snap.head - 1)).await;
+    let last = until(&mut sub, |_| true).await;
+    assert_eq!(
+        last[0].event,
+        SessionUpdate::State {
+            state: AgentState::Blocked,
+            reason: Some("Need DATABASE_URL".into())
+        }
+    );
+    // Working again, then done: the turn still runs, so it works.
+    let info = set_status(&client, &id, "Retrying", Some(StatusState::Working), None)
+        .await
+        .unwrap();
+    assert_eq!((info.state, info.state_reason), (AgentState::Working, None));
+    let info = set_status(
+        &client,
+        &id,
+        "All 12 tests pass",
+        Some(StatusState::Done),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(info.state, AgentState::Working);
+    go.notify_one();
+    // The turn ends done, keeping the outcome.
+    let snap = wait_for(&client, &id, |s| !s.running).await;
+    assert_eq!(snap.info.state, AgentState::Done);
+    assert_eq!(
+        snap.info.status.as_ref().map(|s| s.text.as_str()),
+        Some("All 12 tests pass")
+    );
+
+    // A plain status does not outlive its turn.
+    prompt(&client, &id, "and the docs").await.unwrap();
+    wait_for(&client, &id, |s| s.running).await;
+    set_status(&client, &id, "Editing README.md", None, Some((1, 3)))
+        .await
+        .unwrap();
+    resume.notify_one();
+    let snap = wait_for(&client, &id, |s| !s.running).await;
+    assert_eq!(snap.info.state, AgentState::Done);
+    assert!(snap.info.status.is_none(), "{:?}", snap.info.status);
+
+    // A daemon feature's report (a question, #73).
+    let asked = d
+        .manager
+        .report_state(&id, AgentState::NeedsInput, Some("Which DB?".into()))
+        .unwrap();
+    assert_eq!(asked.state, AgentState::NeedsInput);
+    assert_eq!(asked.state_reason.as_deref(), Some("Which DB?"));
+
+    // Bad statuses.
+    for (status, progress) in [(" \n", None), ("ok", Some((0, 0)))] {
+        let err = set_status(&client, &id, status, None, progress)
+            .await
+            .unwrap_err();
+        assert_eq!(app_error(err), codes::INVALID_PARAMS, "{status:?}");
+    }
+    let err = set_status(&client, &SessionId("nope".into()), "x", None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(app_error(err), app_codes::UNKNOWN_SESSION);
+    client
+        .request::<Close>(SessionParams {
+            session: id.clone(),
+        })
+        .await
+        .unwrap();
+    let err = set_status(&client, &id, "x", None, None).await.unwrap_err();
+    assert_eq!(app_error(err), app_codes::SESSION_CLOSED);
+    assert_eq!(d.busy.held(), 0);
+}

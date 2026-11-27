@@ -213,6 +213,11 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "Answer a pending permission request.",
         ),
         request::<agents::SetMode>(g, "client→server", "Switch a session's mode."),
+        request::<agents::SetStatus>(
+            g,
+            "client→server",
+            "The agent's status line, progress and claimed state (session tokens: own session).",
+        ),
         request::<agents::Close>(
             g,
             "client→server",
@@ -666,6 +671,7 @@ fn schema_covers_every_builtin_method() {
         agents::RunAction::NAME,
         agents::Create::NAME,
         agents::Prompt::NAME,
+        agents::SetStatus::NAME,
         agents::PermissionRules::NAME,
         agents::DeletePermissionRule::NAME,
         agents::Updates::NAME,

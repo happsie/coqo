@@ -18,8 +18,8 @@ use coqo_agents::{
         AgentState, AuthKind, AuthStatus, AvailableCommand, ContentBlock, PermissionOption,
         PermissionOptionKind, PermissionOutcome, PlanEntry, PlanEntryStatus, ProviderAction,
         ProviderActionRun, ProviderCapabilities, ProviderStatus, RuleDecision, SessionInfo,
-        StopReason, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus,
-        ToolCallUpdate, ToolKind,
+        SetStatusParams, StatusProgress, StatusState, StopReason, ToolCall, ToolCallContent,
+        ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
     },
     testing::{Call, ScriptedProvider, Step, test_modes},
 };
@@ -59,6 +59,7 @@ struct TestDaemon {
     // Serves until dropped.
     _runtime: Runtime,
     paths: DaemonPaths,
+    manager: SessionManager,
 }
 
 impl TestDaemon {
@@ -89,7 +90,7 @@ impl TestDaemon {
             SessionManager::open(store, Arc::new(providers), ManagerOptions::default()).unwrap();
         let workspaces = Arc::new(coqod::workspace::WorkspaceService::open(data).unwrap());
         let router = coqod::workspace::register(Router::new(), workspaces);
-        let router = coqo_agents::rpc::register(router, manager);
+        let router = coqo_agents::rpc::register(router, manager.clone());
         let server = Server::new(router, ServerConfig::new("coqod", "test"));
         RuntimeDir::create(paths.runtime_dir()).unwrap();
         let listener = tokio::net::UnixListener::bind(paths.socket()).unwrap();
@@ -98,6 +99,7 @@ impl TestDaemon {
         Self {
             _runtime: runtime,
             paths,
+            manager,
         }
     }
 }
@@ -450,6 +452,86 @@ fn tool_calls_show_their_diff_and_open_their_files() {
         ui.cx
             .read(|cx| dock.read(cx).find_tab(editor::KIND, &key, cx).is_some())
     });
+}
+
+#[test]
+fn the_agents_status_shows_in_the_panel_the_list_and_the_tab() {
+    let next = Arc::new(Notify::new());
+    let provider =
+        ScriptedProvider::new().turn([Step::Wait(next.clone()), Step::Stop(StopReason::EndTurn)]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.frame(|window, _| {
+        assert!(window.try_find("chat-status").is_some(), "the status card");
+        assert!(window.try_find("chat-status-progress").is_none());
+    });
+    ui.send(&chat, "Fix the tests");
+    ui.wait_for("the turn", |ui| running(ui, &chat));
+    let id = ui.listed()[0].id.clone();
+    let set = |status: &str, state, progress| SetStatusParams {
+        session: id.clone(),
+        status: status.into(),
+        state,
+        progress,
+    };
+
+    // The agent reports progress: the panel, the list row and the tab follow.
+    fixture
+        .daemon
+        .manager
+        .set_status(set(
+            "Running the tests",
+            None,
+            Some(StatusProgress {
+                current: 2,
+                total: 5,
+            }),
+        ))
+        .unwrap();
+    ui.wait_for("the status line", |ui| {
+        ui.cx.read(|cx| chat.read(cx).status_line(cx)).as_deref()
+            == Some("Running the tests · 2 of 5")
+    });
+    ui.frame(|window, _| {
+        assert!(window.try_find("chat-status-text").is_some());
+        assert!(window.try_find("chat-status-progress").is_some());
+        assert!(window.try_find(("chat-row-status", 0usize)).is_some());
+        assert!(
+            window.try_find("chat-tab-badge").is_none(),
+            "working needs no badge"
+        );
+    });
+    let row = crate::chat::status_line(&ui.listed()[0]);
+    assert_eq!(row.as_deref(), Some("Running the tests · 2 of 5"));
+
+    // Blocked: the tab asks for attention, the row says why.
+    fixture
+        .daemon
+        .manager
+        .set_status(set("Need DATABASE_URL", Some(StatusState::Blocked), None))
+        .unwrap();
+    ui.wait_for("blocked", |ui| ui.listed()[0].state == AgentState::Blocked);
+    ui.frame(|window, _| {
+        assert!(
+            window.try_find("chat-tab-badge").is_some(),
+            "the blocked badge"
+        );
+        assert!(window.try_find("chat-status-progress").is_none());
+    });
+    assert_eq!(
+        crate::chat::status_line(&ui.listed()[0]).as_deref(),
+        Some("Need DATABASE_URL")
+    );
+
+    // The turn ends: blocked stays, with its status.
+    next.notify_one();
+    ui.wait_for("the end of the turn", |ui| !running(ui, &chat));
+    assert_eq!(ui.listed()[0].state, AgentState::Blocked);
+    assert_eq!(
+        ui.cx.read(|cx| chat.read(cx).status_line(cx)).as_deref(),
+        Some("Need DATABASE_URL")
+    );
 }
 
 fn ask() -> PermissionAsk {
@@ -1181,10 +1263,34 @@ fn chat_screenshots() {
         title: Some(title.into()),
         state,
         state_reason: None,
+        state_since: None,
+        status: None,
         mode: Some("default".into()),
         closed: false,
         created_at: at,
         updated_at: at,
+    };
+    let with_status = |mut i: SessionInfo, text: &str, progress: Option<(u64, u64)>| {
+        i.status = Some(coqo_agents::model::AgentStatus {
+            text: text.into(),
+            state: None,
+            progress: progress.map(|(current, total)| StatusProgress { current, total }),
+            turn: Some(1),
+            updated_at: i.updated_at,
+        });
+        i
+    };
+    let shipping = move || {
+        with_status(
+            info(
+                "s1",
+                "Free shipping threshold",
+                AgentState::NeedsPermission,
+                3,
+            ),
+            "Writing tests for the threshold",
+            Some((2, 4)),
+        )
     };
     let diff = |path: &str, old: Option<&str>, new: &str| ToolCallContent::Diff {
         path: format!("/work/shop/{path}"),
@@ -1360,18 +1466,14 @@ fn chat_screenshots() {
                 }
                 l.upsert(info("s3", "Bump the HTTP client", AgentState::Done, 1), cx);
                 l.upsert(
-                    info("s2", "Fix the flaky login test", AgentState::Working, 2),
-                    cx,
-                );
-                l.upsert(
-                    info(
-                        "s1",
-                        "Free shipping threshold",
-                        AgentState::NeedsPermission,
-                        3,
+                    with_status(
+                        info("s2", "Fix the flaky login test", AgentState::Working, 2),
+                        "Running the login tests",
+                        Some((3, 8)),
                     ),
                     cx,
                 );
+                l.upsert(shipping(), cx);
             });
             let store = Rc::new(MemoryLayoutStore::default());
             cx.new(|cx| {
@@ -1381,16 +1483,7 @@ fn chat_screenshots() {
                 }
                 let chat = cx.new(|cx| {
                     let mut chat = ChatTab::new(SessionId("s1".into()), window, cx);
-                    chat.set_preview(
-                        info(
-                            "s1",
-                            "Free shipping threshold",
-                            AgentState::NeedsPermission,
-                            3,
-                        ),
-                        "Claude Code",
-                        cx,
-                    );
+                    chat.set_preview(shipping(), "Claude Code", cx);
                     chat.apply((1..).zip(updates).collect(), cx);
                     chat.set_preview_rules(rules, cx);
                     if composing {

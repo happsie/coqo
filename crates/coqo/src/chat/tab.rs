@@ -2,7 +2,7 @@
 
 //! The chat tab (design board 1): a centred reading column with the
 //! transcript in a virtual list and the composer below it, and the session
-//! panel (plan, changed files) on the right.
+//! panel (state and the agent's status, plan, changed files) on the right.
 //!
 //! The tab attaches with `sessions/get` (info, title, provider) and
 //! `sessions/updates` from seq 0, so a restored tab replays the whole
@@ -35,7 +35,7 @@ use coqo_ui::{
         AnyElement, App, AppContext as _, Context, ElementId, Entity, FocusHandle, Focusable as _,
         FontWeight, Hsla, InteractiveElement as _, IntoElement, ListAlignment, ListState,
         ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-        Subscription, Task, Window, div, list, prelude::FluentBuilder as _, px,
+        Subscription, Task, Window, div, list, prelude::FluentBuilder as _, px, relative,
     },
     input::{PromptInput, PromptInputEvent},
     serde_json::{Value, json},
@@ -47,8 +47,10 @@ use super::{
     CancelTurn, KIND, OpenLocation, RunInTerminal, SIGN_IN_HELP, agent_dot, attention_label,
     diff::{DiffLine, DiffPreview, LineKind, file_name},
     list::ChatList,
+    state_color, state_name,
     transcript::{Entry, NoticeKind, ToolEntry, Transcript, block_text},
 };
+use crate::activity::AgentActivity;
 use crate::daemon::{Daemon, DaemonError, DaemonEvent, EventStream};
 
 /// Width of the reading column.
@@ -389,12 +391,29 @@ impl ChatTab {
         self.transcript.closed || self.info.as_ref().is_some_and(|i| i.closed)
     }
 
-    /// The latest info: from the sidebar list (kept current by
-    /// `sessions/changes`) or the snapshot.
+    /// The latest info: from the sidebar list or the app's agent activity
+    /// (both kept current by `sessions/changes`), or the snapshot.
     fn latest_info<'a>(&'a self, cx: &'a App) -> Option<&'a SessionInfo> {
         ChatList::global(cx)
             .and_then(|l| l.read(cx).info(&self.session))
+            .or_else(|| AgentActivity::global(cx).and_then(|a| a.read(cx).info(&self.session)))
             .or(self.info.as_ref())
+    }
+
+    /// The agent's status line with its progress, as the chat list shows it
+    /// (see [`super::status_line`]).
+    #[cfg(test)]
+    pub fn status_line(&self, cx: &App) -> Option<String> {
+        self.latest_info(cx).and_then(super::status_line)
+    }
+
+    /// Why the session is in its state (`error`, `blocked`, `needs_input`).
+    fn state_reason<'a>(&'a self, cx: &'a App) -> Option<&'a str> {
+        if self.transcript.head > 0 {
+            self.transcript.state_reason.as_deref()
+        } else {
+            self.latest_info(cx).and_then(|i| i.state_reason.as_deref())
+        }
     }
 
     fn state(&self, cx: &App) -> AgentState {
@@ -1071,6 +1090,125 @@ impl ChatTab {
         banners
     }
 
+    /// The panel's first card: the state, the agent's status line (or why
+    /// it waits) and its progress (the status's, else the plan's).
+    fn render_status(&self, cx: &App) -> AnyElement {
+        let t = cx.tokens();
+        let (p, m) = (&t.palette, &t.metrics);
+        let state = self.state(cx);
+        let color = state_color(state, p);
+        let status = self.latest_info(cx).and_then(|i| i.status.as_ref());
+        let text = status
+            .map(|s| s.text.clone())
+            .or_else(|| self.state_reason(cx).map(str::to_owned))
+            .filter(|t| !t.is_empty());
+        let quiet = match state {
+            AgentState::Idle => "Ready for a prompt",
+            AgentState::Working => "Working on your prompt",
+            AgentState::NeedsInput => "Waiting for your answer",
+            AgentState::NeedsPermission => "Waiting for your permission",
+            AgentState::Blocked => "Needs your help to go on",
+            AgentState::Error => "The last turn failed",
+            AgentState::Done => "Finished the last turn",
+        };
+        let plan = &self.transcript.plan;
+        let progress = status
+            .and_then(|s| s.progress)
+            .map(|p| (p.current, p.total, false));
+        let progress = progress.or_else(|| {
+            let done = plan
+                .iter()
+                .filter(|e| e.status == PlanEntryStatus::Completed)
+                .count() as u64;
+            (!plan.is_empty() && state != AgentState::Idle).then_some((
+                done,
+                plan.len() as u64,
+                true,
+            ))
+        });
+        let mut card = div()
+            .id("chat-status")
+            .test_support()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .px(px(14.))
+            .py(px(12.))
+            .rounded(px(14.))
+            .bg(p.panel_raised.hsla())
+            .text_size(m.text_sm)
+            .child(
+                div().flex().child(
+                    div()
+                        .id("chat-status-pill")
+                        .test_support()
+                        .px(px(9.))
+                        .py(px(3.))
+                        .rounded(px(8.))
+                        .bg(color.alpha(0.18))
+                        .text_color(color.hsla())
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::BOLD)
+                        .child(state_name(state).to_uppercase()),
+                ),
+            )
+            .child(
+                div()
+                    .id("chat-status-text")
+                    .test_support()
+                    .px_1()
+                    .when_some(text.clone(), |d, text| {
+                        d.text_color(p.text.hsla()).child(text)
+                    })
+                    .when(text.is_none(), |d| {
+                        d.text_color(p.text_subtle.hsla()).child(quiet)
+                    }),
+            );
+        if let Some((current, total, from_plan)) = progress {
+            let fraction = if total == 0 {
+                0.
+            } else {
+                (current as f32 / total as f32).clamp(0., 1.)
+            };
+            let label = if from_plan {
+                format!("Plan: {current} of {total} done")
+            } else {
+                format!("{current} of {total}")
+            };
+            card = card.child(
+                div()
+                    .id("chat-status-progress")
+                    .test_support()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .px_1()
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(px(4.))
+                            .rounded(px(2.))
+                            .bg(p.surface.hsla())
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(relative(fraction))
+                                    .rounded(px(2.))
+                                    .bg(color.hsla()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(m.text_label)
+                            .text_color(p.text_muted.hsla())
+                            .child(label),
+                    ),
+            );
+        }
+        card.into_any_element()
+    }
+
     fn render_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.tokens();
         let (p, m) = (t.palette.clone(), t.metrics.clone());
@@ -1193,6 +1331,7 @@ impl ChatTab {
             .py(px(14.))
             .border_l_1()
             .border_color(p.surface.hsla())
+            .child(self.render_status(cx))
             .child(plan)
             .child(changes)
             .child(self.render_rules(cx))

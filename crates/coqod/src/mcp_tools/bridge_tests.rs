@@ -4,12 +4,19 @@
 //! (`coqo_mcp::serve`), which holds a session token for workspace A and
 //! calls the real router in-process. Results are right, the editor context
 //! a UI publishes reaches `editor_context`, `editor_reveal` reaches a UI
-//! following reveals, a bridge pointed at another workspace gets nothing,
-//! and a mod's tool appears with `tools/list_changed` and is callable.
+//! following reveals, `set_status` reaches the session and the UI's
+//! `sessions/changes`, a bridge pointed at another workspace or session gets
+//! nothing, and a mod's tool appears with `tools/list_changed` and is
+//! callable.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use coqo_agents::model::{
+    self as agm, AgentState, ChangesParams, CreateSessionParams, ListSessionsParams, PromptParams,
+    SessionId, SessionInfo, SessionParams, StopReason,
+};
+use coqo_agents::testing::{ScriptedProvider, Step};
 use coqo_kernel::ProviderKind;
 use coqo_mcp::{BridgeError, BridgeOptions, Exit, ToolRegistry};
 use coqo_mod_api::Manifest;
@@ -25,6 +32,7 @@ use tempfile::TempDir;
 use tokio::io::{
     AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, DuplexStream, Lines, ReadHalf, WriteHalf,
 };
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use super::tests::{ACME_MANIFEST, Acme, PROBE_TOOL};
@@ -41,8 +49,13 @@ struct Harness {
 
 impl Harness {
     fn start() -> Self {
+        Self::start_with(ScriptedProvider::new())
+    }
+
+    /// With `agent` as the `fake` provider, once the mods start.
+    fn start_with(agent: ScriptedProvider) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = routes::tests::context(dir.path());
+        let ctx = routes::tests::context_with(dir.path(), agent);
         let mut config = ServerConfig::new("coqod", "test");
         config.authenticator = Some(Arc::new(ctx.auth.clone()));
         let server = Server::new(routes::router(&ctx).unwrap(), config);
@@ -111,11 +124,17 @@ struct Agent {
 impl Agent {
     /// A bridge for `workspace` on `daemon`, initialized.
     async fn start(daemon: Client, workspace: &WorkspaceInfo) -> Self {
+        Self::start_as(daemon, workspace, "s-1").await
+    }
+
+    /// A bridge for `workspace` and agent session `session` on `daemon`,
+    /// initialized.
+    async fn start_as(daemon: Client, workspace: &WorkspaceInfo, session: &str) -> Self {
         let registry = ToolRegistry::new();
         coqo_mcp::tools::core(&registry);
         let options = BridgeOptions {
             workspace: workspace.id.clone(),
-            session: "s-1".into(),
+            session: session.into(),
             build: "test".into(),
         };
         let (agent_io, bridge_io) = tokio::io::duplex(1 << 20);
@@ -534,4 +553,157 @@ async fn mod_tools_come_and_go() {
         "{names:?}"
     );
     assert!(names.iter().any(|n| n == PROBE_TOOL), "{names:?}");
+}
+
+/// The next `sessions/changes` event of `session`.
+async fn next_change(
+    changes: &mut coqo_protocol::Subscription<agm::Changes>,
+    session: &SessionId,
+) -> SessionInfo {
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let change = changes.next().await.expect("open").expect("ok").event;
+            if &change.id == session {
+                return change;
+            }
+        }
+    })
+    .await
+    .expect("a change in time")
+}
+
+#[tokio::test]
+async fn set_status_reaches_the_session_and_the_ui() {
+    let go = Arc::new(Notify::new());
+    let provider = ScriptedProvider::new()
+        .turn([Step::Wait(Arc::clone(&go)), Step::Stop(StopReason::EndTurn)]);
+    let h = Harness::start_with(provider);
+    h.ctx.mods.start().await;
+    let ui = h.ui().await;
+    let (a_dir, a) = project(&ui).await;
+    let create = || CreateSessionParams {
+        provider: "fake".into(),
+        cwd: a_dir.path().to_str().unwrap().to_owned(),
+        workspace: Some(a.id.0.clone()),
+        title: Some("Fix the tests".into()),
+        mode: None,
+    };
+    let session = ui.request::<agm::Create>(create()).await.unwrap().id;
+    let other = ui.request::<agm::Create>(create()).await.unwrap().id;
+    let seq = ui
+        .request::<agm::List>(ListSessionsParams::default())
+        .await
+        .unwrap()
+        .seq;
+    let mut changes = ui
+        .subscribe::<agm::Changes>(ChangesParams::default(), Some(seq))
+        .await
+        .unwrap();
+    ui.request::<agm::Prompt>(PromptParams {
+        session: session.clone(),
+        content: vec![agm::ContentBlock::text("fix the tests")],
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        next_change(&mut changes, &session).await.state,
+        AgentState::Working
+    );
+
+    let token = h
+        .ctx
+        .auth
+        .mint_session(a.id.0.clone(), session.0.clone())
+        .unwrap();
+    let mut agent = Agent::start_as(h.connect(token.clone()).await, &a, &session.0).await;
+    assert!(agent.names().await.iter().any(|n| n == "set_status"));
+    let tool = agent.request("tools/list", json!({})).await["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "set_status")
+        .cloned()
+        .unwrap();
+    assert_eq!(tool["inputSchema"]["required"], json!(["status"]));
+
+    // Progress: the UI sees it on sessions/changes.
+    let r = agent
+        .ok(
+            "set_status",
+            json!({ "status": "Running the tests", "progress": { "current": 2, "total": 5 } }),
+        )
+        .await;
+    assert!(text(&r).contains("Running the tests"), "{r}");
+    assert!(text(&r).contains("2 of 5"), "{r}");
+    assert_eq!(r["structuredContent"]["state"], "working");
+    let seen = next_change(&mut changes, &session).await;
+    let status = seen.status.clone().unwrap();
+    assert_eq!(status.text, "Running the tests");
+    assert_eq!(status.progress.map(|p| (p.current, p.total)), Some((2, 5)));
+
+    // Blocked: the session needs the user.
+    let r = agent
+        .ok(
+            "set_status",
+            json!({ "status": "Need DATABASE_URL to run the integration tests", "state": "blocked" }),
+        )
+        .await;
+    assert_eq!(r["structuredContent"]["state"], "blocked");
+    let seen = next_change(&mut changes, &session).await;
+    assert_eq!(seen.state, AgentState::Blocked);
+    assert_eq!(
+        seen.state_reason.as_deref(),
+        Some("Need DATABASE_URL to run the integration tests")
+    );
+
+    // Bad arguments never reach the daemon.
+    let e = agent
+        .error(
+            "set_status",
+            json!({ "status": "x", "state": "needs_input" }),
+        )
+        .await;
+    assert!(e.contains("invalid arguments"), "{e}");
+
+    // A bridge told it works for another session, with this session's
+    // token, reaches nothing: the route checks the token's session.
+    let ticket = h
+        .ctx
+        .auth
+        .mint_session(a.id.0.clone(), session.0.clone())
+        .unwrap();
+    let mut lying = Agent::start_as(h.connect(ticket).await, &a, &other.0).await;
+    let e = lying
+        .error("set_status", json!({ "status": "Not mine" }))
+        .await;
+    assert!(e.contains("outside this connection's scope"), "{e}");
+    let snap = ui
+        .request::<agm::Get>(SessionParams {
+            session: other.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(snap.info.status.is_none(), "{:?}", snap.info);
+
+    // The turn ends; the agent said it is blocked, so that stays.
+    go.notify_one();
+    let ended = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let s = ui
+                .request::<agm::Get>(SessionParams {
+                    session: session.clone(),
+                })
+                .await
+                .unwrap();
+            if !s.running {
+                return s;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(ended.info.state, AgentState::Blocked);
+    assert!(ended.info.status.is_some());
+    drop(a_dir);
 }

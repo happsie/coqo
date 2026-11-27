@@ -66,6 +66,56 @@
         }
       ]
     },
+    "AgentStatus": {
+      "description": "What the agent says it is doing (`sessions/setStatus`, the `set_status`\nMCP tool).",
+      "properties": {
+        "progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StatusProgress"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Progress, if the work is countable."
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StatusState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The state the agent claimed with it, if any."
+        },
+        "text": {
+          "description": "One short line, at most [`MAX_STATUS_CHARS`] characters.",
+          "type": "string"
+        },
+        "turn": {
+          "description": "The turn it was set in (`None` between turns).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "description": "When it was set, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "text",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
     "AuthKind": {
       "description": "Where the agent's usage is billed (from ACP `auth/status`).",
       "oneOf": [
@@ -2906,6 +2956,25 @@
             "null"
           ]
         },
+        "stateSince": {
+          "description": "When `state` last changed, Unix milliseconds (how long it has\nwaited, for alerts and the agents overview).",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the agent says it is doing, if it said so this turn (or its\n`blocked` or `done` outcome)."
+        },
         "title": {
           "description": "Title for tabs and the sidebar.",
           "type": [
@@ -3511,6 +3580,46 @@
       ],
       "type": "object"
     },
+    "SetStatusParams": {
+      "description": "Params of `sessions/setStatus`.",
+      "properties": {
+        "progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StatusProgress"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Progress (`total` at least 1; `current` is capped at `total`)."
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The session."
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StatusState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The state the agent claims: `working` clears an earlier `blocked`,\n`blocked` asks for the user (the status says why), `done` marks the\ntask finished (the session is `done` once the turn ends)."
+        },
+        "status": {
+          "description": "One short line (whitespace is collapsed; cut at\n[`MAX_STATUS_CHARS`]). Must not be empty.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session",
+        "status"
+      ],
+      "type": "object"
+    },
     "ShutdownParams": {
       "description": "Params of `daemon/shutdown`.",
       "properties": {
@@ -3617,6 +3726,48 @@
         }
       },
       "type": "object"
+    },
+    "StatusProgress": {
+      "description": "Countable progress: `current` of `total` steps done.",
+      "properties": {
+        "current": {
+          "description": "Steps done (at most `total`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total": {
+          "description": "All steps (at least 1).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "current",
+        "total"
+      ],
+      "type": "object"
+    },
+    "StatusState": {
+      "description": "The state an agent claims with its status (`set_status`).",
+      "oneOf": [
+        {
+          "const": "working",
+          "description": "Still working (clears an earlier `blocked`).",
+          "type": "string"
+        },
+        {
+          "const": "blocked",
+          "description": "Cannot continue without the user; the status says why.",
+          "type": "string"
+        },
+        {
+          "const": "done",
+          "description": "The task is finished; the status is the outcome.",
+          "type": "string"
+        }
+      ]
     },
     "StopReason": {
       "description": "Why a turn ended (ACP `StopReason`, plus Coqo's own).",
@@ -5460,6 +5611,17 @@
       },
       "result": {
         "type": "null"
+      }
+    },
+    "sessions/setStatus": {
+      "description": "The agent's status line, progress and claimed state (session tokens: own session).",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SetStatusParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionInfo"
       }
     },
     "sessions/updates": {

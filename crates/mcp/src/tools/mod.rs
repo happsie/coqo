@@ -14,6 +14,7 @@
 //! | `file_outline` | a file's symbols as a tree (tree-sitter) | `buffer/open`, `syntax/outline` |
 //! | `editor_context` | open tabs, active file, selections, visible lines | `editor/getContext` |
 //! | `editor_reveal` | open a file in the editor and select a range | `editor/reveal` |
+//! | `set_status` | tell the user what the agent is doing (status line, progress, state) | `sessions/setStatus` |
 //!
 //! [`daemon`] adds the tools mods contribute in the daemon (`mcp/*`).
 //!
@@ -31,15 +32,17 @@ use crate::registry::{Tool, ToolContext, ToolError, ToolRegistry};
 pub mod daemon;
 mod editor;
 mod files;
+mod status;
 mod syntax;
 
 pub use editor::{EditorContextTool, EditorRevealTool};
 pub use files::{FindFilesTool, ListFilesTool, ReadFileTool, WorkspaceInfoTool};
+pub use status::SetStatusTool;
 pub use syntax::FileOutlineTool;
 
 /// Register the core tools.
 pub fn core(registry: &ToolRegistry) {
-    let tools: [Arc<dyn Tool>; 7] = [
+    let tools: [Arc<dyn Tool>; 8] = [
         Arc::new(WorkspaceInfoTool),
         Arc::new(ReadFileTool),
         Arc::new(ListFilesTool),
@@ -47,6 +50,7 @@ pub fn core(registry: &ToolRegistry) {
         Arc::new(FileOutlineTool),
         Arc::new(EditorContextTool),
         Arc::new(EditorRevealTool),
+        Arc::new(SetStatusTool),
     ];
     for error in registry.update(&[], tools.into()) {
         tracing::warn!(error = %error, "cannot register a core tool");

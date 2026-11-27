@@ -7,7 +7,9 @@
 //!   the layout and reattaches to the daemon (`sessions/get`, then
 //!   `sessions/updates` from seq 0).
 //! - [`list::ChatList`]: the current workspace's sessions for the sidebar,
-//!   with a status dot each.
+//!   with a status dot each and the agent's status line ([`status_line`]).
+//! - The session panel opens with the session's state, the agent's status
+//!   line (`set_status`) and its progress.
 //! - [`NewChat`] (`Ctrl/Cmd+Shift+N`, and the **+** next to CHATS): a session
 //!   in the open workspace with the first available provider.
 //!
@@ -35,7 +37,7 @@ pub mod transcript;
 use coqo_protocol::methods::{
     agents::{
         AgentState, Create, CreateSessionParams, ProviderAction, ProviderActionRun, ProviderInfo,
-        Providers, RunAction, RunActionParams, SessionId,
+        Providers, RunAction, RunActionParams, SessionId, SessionInfo,
     },
     codes as app_codes,
     terminal::SpawnParams,
@@ -143,7 +145,35 @@ pub fn agent_dot(state: AgentState, id: impl Into<ElementId>, cx: &App) -> AnyEl
     }
 }
 
-fn state_color(state: AgentState, p: &coqo_ui::Palette) -> Rgb {
+/// A state's name, for labels: `Working`, `Needs input`, …
+pub fn state_name(state: AgentState) -> &'static str {
+    match state {
+        AgentState::Idle => "Idle",
+        AgentState::Working => "Working",
+        AgentState::NeedsInput => "Needs input",
+        AgentState::NeedsPermission => "Needs permission",
+        AgentState::Blocked => "Blocked",
+        AgentState::Error => "Error",
+        AgentState::Done => "Done",
+    }
+}
+
+/// What a session is doing in one line, for the chat list and the rail's
+/// tooltip: the agent's status with its progress (`Running the tests · 2 of
+/// 5`), else why it needs the user.
+pub fn status_line(info: &SessionInfo) -> Option<String> {
+    if let Some(status) = &info.status {
+        return Some(match status.progress {
+            Some(p) => format!("{} · {} of {}", status.text, p.current, p.total),
+            None => status.text.clone(),
+        });
+    }
+    info.state_reason
+        .clone()
+        .filter(|r| info.state.needs_attention() && !r.is_empty())
+}
+
+pub(crate) fn state_color(state: AgentState, p: &coqo_ui::Palette) -> Rgb {
     match state {
         AgentState::Idle | AgentState::Done => p.sage,
         AgentState::Working => p.blue,

@@ -68,6 +68,20 @@ export type AddRootParams = {
 /** What an agent session is doing. */
 export type AgentState = "idle" | "working" | "needs_input" | "needs_permission" | "blocked" | "error" | "done";
 
+/** What the agent says it is doing (`sessions/setStatus`, the `set_status` MCP tool). */
+export type AgentStatus = {
+  /** Progress, if the work is countable. */
+  progress?: StatusProgress | null;
+  /** The state the agent claimed with it, if any. */
+  state?: StatusState | null;
+  /** One short line, at most [`MAX_STATUS_CHARS`] characters. */
+  text: string;
+  /** The turn it was set in (`None` between turns). */
+  turn?: number | null;
+  /** When it was set, Unix milliseconds. */
+  updatedAt: number;
+};
+
 /** Where the agent's usage is billed (from ACP `auth/status`). */
 export type AuthKind = "account" | "api_key" | "gateway" | "external" | "none" | "unknown";
 
@@ -1037,6 +1051,10 @@ export type SessionInfo = {
   state: AgentState;
   /** Why, for `error`, `blocked` and `needs_input`. */
   stateReason?: string | null;
+  /** When `state` last changed, Unix milliseconds (how long it has waited, for alerts and the agents overview). */
+  stateSince?: number | null;
+  /** What the agent says it is doing, if it said so this turn (or its `blocked` or `done` outcome). */
+  status?: AgentStatus | null;
   /** Title for tabs and the sidebar. */
   title?: string | null;
   /** Last change to this info, Unix milliseconds. */
@@ -1183,6 +1201,18 @@ export type SetStateParams = {
   value: unknown;
 };
 
+/** Params of `sessions/setStatus`. */
+export type SetStatusParams = {
+  /** Progress (`total` at least 1; `current` is capped at `total`). */
+  progress?: StatusProgress | null;
+  /** The session. */
+  session: SessionId;
+  /** The state the agent claims: `working` clears an earlier `blocked`, `blocked` asks for the user (the status says why), `done` marks the task finished (the session is `done` once the turn ends). */
+  state?: StatusState | null;
+  /** One short line (whitespace is collapsed; cut at [`MAX_STATUS_CHARS`]). Must not be empty. */
+  status: string;
+};
+
 /** Params of `daemon/shutdown`. */
 export type ShutdownParams = {
   /** Stop even if work is busy. */
@@ -1221,6 +1251,17 @@ export type SpawnParams = {
   /** Tab title until the program sets one. Defaults to the program name. */
   title?: string | null;
 };
+
+/** Countable progress: `current` of `total` steps done. */
+export type StatusProgress = {
+  /** Steps done (at most `total`). */
+  current: number;
+  /** All steps (at least 1). */
+  total: number;
+};
+
+/** The state an agent claims with its status (`set_status`). */
+export type StatusState = "working" | "blocked" | "done";
 
 /** Why a turn ended (ACP `StopReason`, plus Coqo's own). */
 export type StopReason = "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled" | "error" | "interrupted";
@@ -1674,6 +1715,8 @@ export interface Requests {
   "sessions/respondPermission": { params: RespondPermissionParams; result: null };
   /** Switch a session's mode. (client→server) */
   "sessions/setMode": { params: SetModeParams; result: null };
+  /** The agent's status line, progress and claimed state (session tokens: own session). (client→server) */
+  "sessions/setStatus": { params: SetStatusParams; result: SessionInfo };
   /** End a session; its transcript stays readable. Result is true if it was open. (client→server) */
   "sessions/close": { params: SessionParams; result: boolean };
   /** A workspace's permission rules (auto-approve and auto-reject), oldest first. (client→server) */

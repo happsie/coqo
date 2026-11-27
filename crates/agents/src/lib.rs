@@ -12,7 +12,8 @@
 //!   whether or not a UI is attached; every update is persisted
 //!   ([`SessionStore`]) and streamed; the agent state machine
 //!   (`idle · working · needs_input · needs_permission · blocked · error ·
-//!   done`) lives here.
+//!   done`) lives here, with the agent's own status line on top
+//!   ([`SessionManager::set_status`], the `set_status` MCP tool).
 //! - `rules`: per-workspace permission rules that answer a permission
 //!   request before it reaches the UI (an allowlist: default is ask).
 //! - [`rpc::register`]: the protocol routes (`agents/providers`,
@@ -61,6 +62,7 @@ mod provider;
 mod registry;
 pub mod rpc;
 mod rules;
+mod state;
 mod store;
 pub mod testing;
 

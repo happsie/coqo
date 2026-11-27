@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Session persistence in the global database (`agent_sessions`,
-//! `agent_session_updates`; global migration 3), and the workspaces'
+//! `agent_session_updates`; global migrations 3 and 5), and the workspaces'
 //! permission rules (`agent_permission_rules`; global migration 4).
 //!
 //! Synchronous and short: the manager calls it while holding a session's
@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use coqo_protocol::methods::agents::{
-    AgentState, PermissionRule, PermissionRuleId, PermissionRuleSpec, RuleDecision, SessionId,
-    SessionInfo, SessionUpdate, ToolKind,
+    AgentState, AgentStatus, PermissionRule, PermissionRuleId, PermissionRuleSpec, RuleDecision,
+    SessionId, SessionInfo, SessionUpdate, ToolKind,
 };
 use coqo_storage::{GlobalDb, StorageError};
 use rusqlite::{OptionalExtension, Row, params};
@@ -68,8 +68,15 @@ fn parse_state(s: &str) -> AgentState {
 }
 
 const SELECT: &str = "SELECT id, provider, workspace, cwd, title, state, state_reason, mode, \
-                      closed, created_at, updated_at, provider_session, change_seq \
+                      closed, created_at, updated_at, provider_session, change_seq, \
+                      state_since, status \
                       FROM agent_sessions";
+
+/// A stored status; one that no longer parses is dropped (it is only a
+/// hint), not an error.
+fn parse_status(json: Option<String>) -> Option<AgentStatus> {
+    serde_json::from_str(&json?).ok()
+}
 
 fn session_row(row: &Row<'_>) -> rusqlite::Result<(StoredSession, u64)> {
     let state: String = row.get(5)?;
@@ -83,6 +90,8 @@ fn session_row(row: &Row<'_>) -> rusqlite::Result<(StoredSession, u64)> {
                 title: row.get(4)?,
                 state: parse_state(&state),
                 state_reason: row.get(6)?,
+                state_since: row.get(13)?,
+                status: parse_status(row.get(14)?),
                 mode: row.get(7)?,
                 closed: row.get(8)?,
                 created_at: row.get(9)?,
@@ -116,19 +125,21 @@ impl SessionStore {
 
     /// Inserts or updates a session row with change seq `change_seq`.
     pub fn save(&self, session: &StoredSession, change_seq: u64) -> Result<()> {
-        let db = self.db();
         let i = &session.info;
+        let status = i.status.as_ref().map(serde_json::to_string).transpose()?;
+        let db = self.db();
         db.connection()
             .prepare_cached(
                 "INSERT INTO agent_sessions (id, provider, workspace, cwd, title, state,
                      state_reason, mode, closed, provider_session, created_at, updated_at,
-                     change_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                     change_seq, state_since, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                  ON CONFLICT (id) DO UPDATE SET
                      title = excluded.title, state = excluded.state,
                      state_reason = excluded.state_reason, mode = excluded.mode,
                      closed = excluded.closed, provider_session = excluded.provider_session,
-                     updated_at = excluded.updated_at, change_seq = excluded.change_seq",
+                     updated_at = excluded.updated_at, change_seq = excluded.change_seq,
+                     state_since = excluded.state_since, status = excluded.status",
             )?
             .execute(params![
                 i.id.0,
@@ -144,6 +155,8 @@ impl SessionStore {
                 i.created_at,
                 i.updated_at,
                 i64_of(change_seq),
+                i.state_since,
+                status,
             ])?;
         Ok(())
     }
@@ -384,7 +397,7 @@ fn rule_row(row: &Row<'_>) -> rusqlite::Result<PermissionRule> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use coqo_protocol::methods::agents::ContentBlock;
+    use coqo_protocol::methods::agents::{ContentBlock, StatusProgress, StatusState};
 
     fn session(id: &str, ws: Option<&str>, updated_at: i64) -> StoredSession {
         StoredSession {
@@ -396,6 +409,8 @@ mod tests {
                 title: None,
                 state: AgentState::Idle,
                 state_reason: None,
+                state_since: None,
+                status: None,
                 mode: None,
                 closed: false,
                 created_at: 1,
@@ -413,6 +428,17 @@ mod tests {
         store.save(&session("b", None, 20), 2).unwrap();
         a.info.state = AgentState::Working;
         a.info.updated_at = 30;
+        a.info.state_since = Some(30);
+        a.info.status = Some(AgentStatus {
+            text: "Running the tests".into(),
+            state: Some(StatusState::Working),
+            progress: Some(StatusProgress {
+                current: 2,
+                total: 5,
+            }),
+            turn: Some(1),
+            updated_at: 29,
+        });
         store.save(&a, 3).unwrap();
 
         assert_eq!(store.get(&a.info.id).unwrap(), Some(a.clone()));

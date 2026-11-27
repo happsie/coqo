@@ -6,15 +6,17 @@
 
 use coqo_protocol::methods::agents::{
     Cancel, Changes, Close, Create, DeletePermissionRule, Get, List, PermissionRules, Prompt,
-    Providers, RespondPermission, RunAction, SetMode, Updates,
+    Providers, RespondPermission, RunAction, SetMode, SetStatus, Updates,
 };
 use coqo_protocol::{Access, Router};
 
 use crate::manager::SessionManager;
 
-/// Adds the agent methods and topics, served by `manager`. All of them
-/// need the daemon token: they reach every session and workspace, and run
-/// provider actions. A session token (`coqod mcp`) gets `FORBIDDEN`.
+/// Adds the agent methods and topics, served by `manager`. All of them but
+/// one need the daemon token: they reach every session and workspace, and
+/// run provider actions, so a session token (`coqod mcp`) gets `FORBIDDEN`.
+/// The exception is `sessions/setStatus`, which a session token may call
+/// for its own session (the `set_status` MCP tool).
 pub fn register(router: Router, manager: SessionManager) -> Router {
     let m = manager;
     let providers = m.clone();
@@ -26,6 +28,7 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
     let cancel = m.clone();
     let respond = m.clone();
     let set_mode = m.clone();
+    let set_status = m.clone();
     let close = m.clone();
     let rules = m.clone();
     let delete_rule = m.clone();
@@ -73,6 +76,10 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
         .method_with::<SetMode, _, _>(Access::daemon(), move |_, p| {
             let m = set_mode.clone();
             async move { m.set_mode(&p.session, p.mode_id).await.map_err(Into::into) }
+        })
+        .method_with::<SetStatus, _, _>(Access::session(|p| &p.session.0), move |_, p| {
+            let r = set_status.set_status(p).map_err(Into::into);
+            async move { r }
         })
         .method_with::<Close, _, _>(Access::daemon(), move |_, p| {
             let m = close.clone();
