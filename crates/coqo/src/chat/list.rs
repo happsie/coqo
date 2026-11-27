@@ -22,7 +22,7 @@ use coqo_ui::{
 use super::{KIND, agent_dot, new_chat, open_session};
 use crate::{
     daemon::{Daemon, DaemonEvent},
-    workspace::{Workspaces, WorkspacesEvent},
+    workspace::{KnownWorkspaces, WindowWorkspaceChanged, Workspaces},
 };
 
 /// The current workspace's chats.
@@ -67,12 +67,13 @@ impl ChatList {
                 DaemonEvent::Disconnected => this._loading = None,
             }));
         }
-        if let Some(workspaces) = Workspaces::global(cx) {
-            subscriptions.push(cx.subscribe(&workspaces, |this, _, event, cx| {
-                if *event == WorkspacesEvent::CurrentChanged {
+        // The list is app-wide and follows the focused window's workspace.
+        if let Some(known) = KnownWorkspaces::global(cx) {
+            subscriptions.push(
+                cx.subscribe(&known, |this, _, _: &WindowWorkspaceChanged, cx| {
                     this.reload(cx);
-                }
-            }));
+                }),
+            );
         }
         let mut this = Self {
             workspace: None,

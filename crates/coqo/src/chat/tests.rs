@@ -542,8 +542,18 @@ fn a_restarted_ui_replays_the_transcript_and_follows_the_stream() {
         .shell
         .update(&mut first.cx, |shell, cx| shell.save_now(cx));
     let session = first.cx.read(|cx| chat.read(cx).session().clone());
+    // Layouts are kept per workspace.
+    let workspace = first.cx.read(|cx| {
+        Workspaces::global(cx)
+            .unwrap()
+            .read(cx)
+            .current()
+            .unwrap()
+            .id
+            .clone()
+    });
     drop(first);
-    assert!(store.load(DEFAULT_WORKSPACE).unwrap().is_some());
+    assert!(store.load(&workspace.0).unwrap().is_some());
 
     // A new UI process: the layout brings the tab back, and it replays.
     let mut second = open_ui(&fixture, store);

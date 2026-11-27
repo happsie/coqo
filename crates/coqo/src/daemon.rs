@@ -22,15 +22,27 @@
 //! cx.subscribe(&daemon, |this, _, event: &DaemonEvent, cx| { … });
 //! ```
 //!
+//! State that the daemon keeps (workspaces, sessions, buffers) is better
+//! followed with [`Resumable`](crate::resume::Resumable): a snapshot plus a
+//! subscription from its `seq` that resumes across reconnects. Code without
+//! an `App` at hand (a layout store saving on quit) sends requests through a
+//! [`DaemonHandle`].
+//!
 //! On start the daemon is attached to, or spawned (`connect_or_spawn`).
 //! When the connection drops (the daemon crashed or was shut down), the
 //! daemon reconnects once on its own, spawning a new `coqod`; if that fails
 //! it waits for [`Daemon::retry`] (the `daemon-status` pill's Retry button).
 
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use coqo_client::{ConnectError, ConnectOptions, DaemonPaths, connect, connect_or_spawn};
-use coqo_protocol::{Client, ClientConfig, ErrorObject, Method, ProtocolError, Sequenced, Topic};
+use coqo_protocol::{
+    Client, ClientConfig, ErrorObject, Method, ProtocolError, Sequenced, Topic, codes,
+};
 use coqo_ui::{
     ActiveTokens as _,
     gpui::{
@@ -42,7 +54,10 @@ use coqo_ui::{
     widgets::{Icon, TestSupportExt as _, icon, status_dot},
 };
 use futures_util::StreamExt as _;
-use tokio::{runtime::Runtime, sync::mpsc};
+use tokio::{
+    runtime::{Handle, Runtime},
+    sync::mpsc,
+};
 
 /// The build id this UI announces in the handshake: `$COQO_BUILD` at compile
 /// time (release builds), else the version.
@@ -129,6 +144,12 @@ impl DaemonError {
             _ => None,
         }
     }
+
+    /// Whether a subscription cannot resume from the requested `seq`
+    /// (`RESUME_GAP`): take a fresh snapshot.
+    pub fn is_resume_gap(&self) -> bool {
+        self.code() == Some(codes::RESUME_GAP)
+    }
 }
 
 impl std::fmt::Display for DaemonError {
@@ -180,6 +201,8 @@ pub struct Daemon {
     config: DaemonConfig,
     state: ConnectionState,
     client: Option<Client>,
+    /// The same client, for [`DaemonHandle`]s.
+    shared: Arc<Mutex<Option<Client>>>,
     /// Bumped per attempt, so a stale attempt's result is ignored.
     generation: u64,
     /// Reconnect once by itself after a drop, not after a failed attempt.
@@ -234,6 +257,7 @@ impl Daemon {
             config,
             state: ConnectionState::Connecting,
             client: None,
+            shared: Arc::default(),
             generation: 0,
             auto_reconnect: false,
             _connecting: None,
@@ -262,6 +286,20 @@ impl Daemon {
         self.runtime.as_deref().expect("runtime lives until drop")
     }
 
+    fn set_client(&mut self, client: Option<Client>) {
+        *self.shared.lock().unwrap_or_else(|e| e.into_inner()) = client.clone();
+        self.client = client;
+    }
+
+    /// A handle for sending requests without an `App`, e.g. from a layout
+    /// store saving on quit. It follows reconnects.
+    pub fn handle(&self) -> DaemonHandle {
+        DaemonHandle {
+            runtime: self.runtime().handle().clone(),
+            client: Arc::clone(&self.shared),
+        }
+    }
+
     /// Try to connect again (after a failure). No-op while connected or
     /// connecting.
     pub fn retry(&mut self, cx: &mut Context<Self>) {
@@ -273,7 +311,7 @@ impl Daemon {
     fn connect(&mut self, cx: &mut Context<Self>) {
         self.generation += 1;
         let generation = self.generation;
-        self.client = None;
+        self.set_client(None);
         self._watching = None;
         self.state = ConnectionState::Connecting;
         cx.notify();
@@ -326,7 +364,7 @@ impl Daemon {
                     let _ = closed.await;
                     this.update(cx, |this, cx| this.lost(generation, cx)).ok();
                 }));
-                self.client = Some(client);
+                self.set_client(Some(client));
                 self.auto_reconnect = true;
                 cx.emit(DaemonEvent::Connected);
             }
@@ -343,7 +381,7 @@ impl Daemon {
         if generation != self.generation {
             return;
         }
-        self.client = None;
+        self.set_client(None);
         self._watching = None;
         self.state = ConnectionState::Disconnected {
             error: "the connection to coqod closed".into(),
@@ -438,6 +476,58 @@ impl Daemon {
                 });
                 Ok::<_, ProtocolError>(EventStream { rx })
             })
+        });
+        async move {
+            match call {
+                None => Err(DaemonError::NotConnected),
+                Some(call) => match call.await {
+                    Ok(result) => result.map_err(DaemonError::from),
+                    Err(e) => Err(DaemonError::Protocol(e.to_string())),
+                },
+            }
+        }
+    }
+}
+
+/// Sends requests over the [`Daemon`]'s current connection without an
+/// `App`. Cheap to clone; it follows reconnects and fails with
+/// [`DaemonError::NotConnected`] while there is no connection.
+#[derive(Clone)]
+pub struct DaemonHandle {
+    runtime: Handle,
+    client: Arc<Mutex<Option<Client>>>,
+}
+
+impl std::fmt::Debug for DaemonHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DaemonHandle")
+            .field("connected", &self.is_connected())
+            .finish()
+    }
+}
+
+impl DaemonHandle {
+    fn client(&self) -> Option<Client> {
+        self.client
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Whether a connection is up.
+    pub fn is_connected(&self) -> bool {
+        self.client().is_some()
+    }
+
+    /// Call `M` on the daemon, like [`Daemon::request`]. The request is sent
+    /// right away, even if the future is dropped.
+    pub fn request<M: Method>(
+        &self,
+        params: M::Params,
+    ) -> impl Future<Output = Result<M::Result, DaemonError>> + Send + 'static + use<M> {
+        let call = self.client().map(|client| {
+            self.runtime
+                .spawn(async move { client.request::<M>(params).await })
         });
         async move {
             match call {

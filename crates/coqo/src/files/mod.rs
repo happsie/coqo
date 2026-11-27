@@ -48,8 +48,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("left", Collapse, context),
         KeyBinding::new("enter", Confirm, context),
     ]);
-    register_tab_kind(cx, preview::KIND, |state, _, cx| {
-        preview::restore(state, cx)
+    register_tab_kind(cx, preview::KIND, |state, window, cx| {
+        preview::restore(state, window, cx)
     });
     SidebarPanes::register(
         cx,

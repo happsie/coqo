@@ -34,7 +34,7 @@ use super::{Collapse, Confirm, Expand, SelectNext, SelectPrev, preview::FilePrev
 use crate::{
     daemon::{Daemon, DaemonError, DaemonEvent},
     welcome::shortcut,
-    workspace::{Workspaces, WorkspacesEvent, prompt_open_folder},
+    workspace::{Workspaces, WorkspacesEvent, prompt_open_folder_in},
 };
 
 /// Height of one row.
@@ -72,6 +72,8 @@ impl Row {
 /// The Files pane's view.
 pub struct FileTree {
     dock: WeakEntity<Dock>,
+    /// The window's workspace.
+    workspaces: Option<Entity<Workspaces>>,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
     workspace: Option<WorkspaceInfo>,
@@ -126,11 +128,12 @@ fn is_inside(path: &str, dir: &str) -> bool {
 }
 
 impl FileTree {
-    pub fn new(dock: WeakEntity<Dock>, _: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(dock: WeakEntity<Dock>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
-        if let Some(workspaces) = Workspaces::global(cx) {
+        let workspaces = Workspaces::for_window(window, cx);
+        if let Some(workspaces) = &workspaces {
             subscriptions.push(cx.subscribe(
-                &workspaces,
+                workspaces,
                 |this, workspaces, event, cx| match event {
                     WorkspacesEvent::CurrentChanged => {
                         let info = workspaces.read(cx).current().cloned();
@@ -141,7 +144,7 @@ impl FileTree {
                     }
                 },
             ));
-            subscriptions.push(cx.observe(&workspaces, |_, _, cx| cx.notify()));
+            subscriptions.push(cx.observe(workspaces, |_, _, cx| cx.notify()));
         }
         if let Some(daemon) = Daemon::global(cx) {
             subscriptions.push(cx.subscribe(&daemon, |this, _, event, cx| {
@@ -153,8 +156,12 @@ impl FileTree {
             }));
             subscriptions.push(cx.observe(&daemon, |_, _, cx| cx.notify()));
         }
+        let current = workspaces
+            .as_ref()
+            .and_then(|w| w.read(cx).current().cloned());
         let mut this = Self {
             dock,
+            workspaces,
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
             workspace: None,
@@ -167,7 +174,6 @@ impl FileTree {
             selected: None,
             _subscriptions: subscriptions,
         };
-        let current = Workspaces::global(cx).and_then(|w| w.read(cx).current().cloned());
         this.set_workspace(current, cx);
         this
     }
@@ -490,7 +496,9 @@ impl FileTree {
             return;
         };
         let (workspace, root, path) = (workspace.id.clone(), row.root, row.path.clone());
-        let preview: Entity<FilePreview> = cx.new(|cx| FilePreview::new(workspace, root, path, cx));
+        let workspaces = self.workspaces.clone();
+        let preview: Entity<FilePreview> =
+            cx.new(|cx| FilePreview::new(workspaces.as_ref(), workspace, root, path, cx));
         dock.update(cx, |dock, cx| {
             dock.open_tab(AnyTab::new(preview), window, cx);
         });
@@ -595,7 +603,7 @@ impl FileTree {
         };
         let daemon = Daemon::global(cx);
         let connected = daemon.as_ref().is_some_and(|d| d.read(cx).is_connected());
-        let workspaces = Workspaces::global(cx);
+        let workspaces = self.workspaces.clone();
         if let Some(info) = &self.workspace {
             let single_root = (!self.multi_root()).then(|| (info.roots[0].id, String::new()));
             if let Some(err) = single_root.as_ref().and_then(|k| self.errors.get(k)) {
@@ -639,7 +647,14 @@ impl FileTree {
         .child(icon(Icon::FolderOpen, px(14.), p.text_muted.hsla()))
         .child("Open Folder…")
         .child(kbd(shortcut("Ctrl O"), cx))
-        .on_click(|_, _, cx| prompt_open_folder(cx));
+        .on_click({
+            let workspaces = workspaces.as_ref().map(|w| w.downgrade());
+            move |_, _, cx| {
+                if let Some(workspaces) = workspaces.clone() {
+                    prompt_open_folder_in(workspaces, cx);
+                }
+            }
+        });
         Some(
             div()
                 .flex()
