@@ -25,7 +25,7 @@
 //! Lines and columns in tool arguments and results are **1-based**, as
 //! editors and `cat -n` show them; the protocol's are 0-based.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use coqo_protocol::methods::workspace::{self as wsm, RootId, WorkspaceInfo, WorkspaceParams};
@@ -184,22 +184,65 @@ pub(crate) async fn target(
 }
 
 /// The root an absolute `path` is in, and the path relative to it.
+///
+/// The path is matched as given first. Failing that, it is matched with
+/// symlinks resolved on both sides, so a file named through a symlinked
+/// folder still maps to its root: an agent whose working directory is a
+/// symlink to the project, or a macOS temp folder (`/var` is a symlink to
+/// `/private/var`, and roots are stored canonical). A file that does not
+/// exist yet resolves through its nearest existing ancestor. A path that
+/// resolves outside every root is refused. This only maps the path to a
+/// root; the daemon's path checks decide what the call may touch.
 pub(crate) fn locate(
     ws: &WorkspaceInfo,
     path: &str,
     root: Option<RootId>,
 ) -> Result<(RootId, String), ToolError> {
     let path = Path::new(path);
-    for r in ws.roots.iter().filter(|r| root.is_none_or(|id| r.id == id)) {
-        if let Ok(rel) = path.strip_prefix(&r.path) {
-            let rel: Vec<_> = rel.iter().map(|c| c.to_string_lossy()).collect();
-            return Ok((r.id, rel.join("/")));
+    let roots = || ws.roots.iter().filter(|r| root.is_none_or(|id| r.id == id));
+    for r in roots() {
+        if let Some(rel) = relative(path, Path::new(&r.path)) {
+            return Ok((r.id, rel));
+        }
+    }
+    if let Some(resolved) = resolve(path) {
+        for r in roots() {
+            let Ok(root_path) = std::fs::canonicalize(&r.path) else {
+                continue;
+            };
+            if let Some(rel) = relative(&resolved, &root_path) {
+                return Ok((r.id, rel));
+            }
         }
     }
     Err(ToolError::InvalidArguments(format!(
         "{} is outside the workspace's roots",
         path.display()
     )))
+}
+
+/// `path` relative to `root`, `/`-separated, if it is inside.
+fn relative(path: &Path, root: &Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?;
+    let rel: Vec<_> = rel.iter().map(|c| c.to_string_lossy()).collect();
+    Some(rel.join("/"))
+}
+
+/// `path` with every symlink resolved: its nearest existing ancestor made
+/// canonical, and the rest (which does not exist yet) appended. `None` if
+/// nothing of it exists, or the missing rest steps up with `..`.
+fn resolve(path: &Path) -> Option<PathBuf> {
+    let mut existing = path;
+    let mut missing = Vec::new();
+    loop {
+        if let Ok(mut resolved) = std::fs::canonicalize(existing) {
+            resolved.extend(missing.iter().rev());
+            return Some(resolved);
+        }
+        // `file_name` is `None` for a path ending in `..`.
+        missing.push(existing.file_name()?);
+        existing = existing.parent()?;
+    }
 }
 
 #[cfg(test)]
@@ -247,5 +290,72 @@ mod tests {
         assert!(locate(&ws, "/src/application/x", None).is_err());
         assert_eq!(absolute(&ws, RootId(1), "a/b.rs"), "/src/lib/a/b.rs");
         assert_eq!(absolute(&ws, RootId(0), ""), "/src/app");
+    }
+
+    /// A workspace with one root at `path`, stored canonical as the daemon
+    /// stores it.
+    fn ws_at(path: &Path) -> WorkspaceInfo {
+        let mut ws = ws();
+        ws.roots.truncate(1);
+        ws.roots[0].path = path.canonicalize().unwrap().to_string_lossy().into_owned();
+        ws
+    }
+
+    fn at(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absolute_paths_through_symlinks_map_to_their_root() {
+        use std::os::unix::fs::symlink;
+
+        let base = tempfile::tempdir().unwrap();
+        let project = base.path().join("project");
+        let outside = base.path().join("outside");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(project.join("src/a.rs"), "").unwrap();
+        // The agent's view of the project: through a symlink to it.
+        let link = base.path().join("link");
+        symlink(&project, &link).unwrap();
+        // A link inside the root to a folder outside it.
+        symlink(&outside, project.join("escape")).unwrap();
+        let ws = ws_at(&project);
+        let ok = |path: &Path| locate(&ws, &at(path), None).unwrap();
+
+        assert_eq!(ok(&link.join("src/a.rs")), (RootId(0), "src/a.rs".into()));
+        assert_eq!(ok(&link), (RootId(0), String::new()));
+        // Files (and folders) that do not exist yet.
+        assert_eq!(
+            ok(&link.join("src/new.rs")),
+            (RootId(0), "src/new.rs".into())
+        );
+        assert_eq!(ok(&link.join("new/b.rs")), (RootId(0), "new/b.rs".into()));
+        // A symlinked parent of the root, like macOS's `/var` → `/private/var`.
+        let var = tempfile::tempdir().unwrap();
+        let private_var = var.path().join("var");
+        symlink(base.path(), &private_var).unwrap();
+        assert_eq!(
+            ok(&private_var.join("project/src/a.rs")),
+            (RootId(0), "src/a.rs".into())
+        );
+        // A temp folder as given (not canonical on macOS).
+        assert_eq!(
+            ok(&project.join("src/a.rs")),
+            (RootId(0), "src/a.rs".into())
+        );
+
+        // Still refused: whatever resolves outside the root.
+        for path in [
+            outside.join("x.rs"),
+            link.join("escape/x.rs"),
+            link.join("../outside/x.rs"),
+            link.join("missing/../../outside/x.rs"),
+            base.path().join("nothing/here.rs"),
+        ] {
+            assert!(locate(&ws, &at(&path), None).is_err(), "{}", path.display());
+        }
+        assert!(locate(&ws, &at(&link.join("src/a.rs")), Some(RootId(1))).is_err());
     }
 }

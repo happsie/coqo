@@ -259,7 +259,7 @@ fn root(ws: &WorkspaceInfo) -> &str {
 async fn core_tools_end_to_end() {
     let h = Harness::start();
     let ui = h.ui().await;
-    let (_a_dir, a) = project(&ui).await;
+    let (a_dir, a) = project(&ui).await;
     let token = h.ctx.auth.mint_session(a.id.0.clone(), "s-1").unwrap();
     let mut agent = Agent::start(h.connect(token).await, &a).await;
 
@@ -383,6 +383,26 @@ async fn core_tools_end_to_end() {
         event.range,
         Some(Range::new(Position::new(3, 7), Position::new(3, 11)))
     );
+
+    // Through a symlink to the root (an agent whose cwd is one), and as
+    // the temp folder was given (not canonical on macOS).
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("project");
+    std::os::unix::fs::symlink(a_dir.path(), &link).unwrap();
+    for path in [link.join("README.md"), a_dir.path().join("README.md")] {
+        let r = agent.ok("editor_reveal", json!({ "path": path })).await;
+        assert_eq!(
+            r["structuredContent"]["path"],
+            json!(format!("{}/README.md", root(&a)))
+        );
+        let event = tokio::time::timeout(TIMEOUT, reveals.next())
+            .await
+            .expect("a reveal in time")
+            .unwrap()
+            .unwrap()
+            .event;
+        assert_eq!(event.path, "README.md");
+    }
 
     // Bad arguments are tool errors the model can read.
     assert!(
