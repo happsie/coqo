@@ -40,6 +40,7 @@ use coqo_protocol::methods::{
         Providers, RunAction, RunActionParams, SessionId, SessionInfo,
     },
     codes as app_codes,
+    editor::{Position, Range},
     terminal::{SpawnParams, TerminalId},
 };
 use coqo_ui::{
@@ -86,7 +87,8 @@ coqo_ui::gpui::actions!(
     ]
 );
 
-/// Open a file a tool call touched (absolute path) in a file tab.
+/// Open a file a tool call or a criterion's evidence names (absolute path)
+/// in a file tab, at `line` (0-based) if given.
 #[derive(Clone, Debug, PartialEq, Eq, Action)]
 #[action(namespace = chat, no_json)]
 pub struct OpenLocation {
@@ -486,15 +488,28 @@ pub fn open_location(
         return;
     };
     let key = editor::key(&workspace.id, root, &path);
-    if let Some(id) = dock.read(cx).find_tab(editor::KIND, &key, cx) {
-        dock.update(cx, |dock, cx| dock.activate_tab(id, window, cx));
-        return;
+    let file = match dock.read(cx).find_tab(editor::KIND, &key, cx) {
+        Some(id) => {
+            dock.update(cx, |dock, cx| dock.activate_tab(id, window, cx));
+            dock.read(cx)
+                .tab(id)
+                .and_then(AnyTab::downcast::<FileEditor>)
+        }
+        None => {
+            let id = workspace.id.clone();
+            let tab = cx.new(|cx| FileEditor::new(id, root, path, window, cx));
+            dock.update(cx, |dock, cx| {
+                dock.open_tab(AnyTab::new(tab.clone()), window, cx);
+            });
+            Some(tab)
+        }
+    };
+    if let (Some(file), Some(line)) = (file, location.line) {
+        let at = Position::new(line, 0);
+        file.update(cx, |file, cx| {
+            file.reveal(Some(Range::new(at, at)), window, cx)
+        });
     }
-    let id = workspace.id.clone();
-    let tab = cx.new(|cx| FileEditor::new(id, root, path, window, cx));
-    dock.update(cx, |dock, cx| {
-        dock.open_tab(AnyTab::new(tab), window, cx);
-    });
 }
 
 #[cfg(test)]

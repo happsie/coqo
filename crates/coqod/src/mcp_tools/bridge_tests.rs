@@ -4,8 +4,8 @@
 //! (`coqo_mcp::serve`), which holds a session token for workspace A and
 //! calls the real router in-process. Results are right, the editor context
 //! a UI publishes reaches `editor_context`, `editor_reveal` reaches a UI
-//! following reveals, `set_status` reaches the session and the UI's
-//! `sessions/changes`, a bridge pointed at another workspace or session gets
+//! following reveals, `set_status` and `set_acceptance_criteria` reach the
+//! session and the UI's `sessions/changes`, a bridge pointed at another workspace or session gets
 //! nothing, and a mod's tool appears with `tools/list_changed` and is
 //! callable.
 
@@ -705,5 +705,147 @@ async fn set_status_reaches_the_session_and_the_ui() {
     .unwrap();
     assert_eq!(ended.info.state, AgentState::Blocked);
     assert!(ended.info.status.is_some());
+    drop(a_dir);
+}
+
+#[tokio::test]
+async fn acceptance_criteria_reach_the_session_and_the_ui() {
+    let h = Harness::start();
+    h.ctx.mods.start().await;
+    let ui = h.ui().await;
+    let (a_dir, a) = project(&ui).await;
+    let create = || CreateSessionParams {
+        provider: "fake".into(),
+        cwd: a_dir.path().to_str().unwrap().to_owned(),
+        workspace: Some(a.id.0.clone()),
+        title: Some("Volume discount".into()),
+        mode: None,
+    };
+    let session = ui.request::<agm::Create>(create()).await.unwrap().id;
+    let other = ui.request::<agm::Create>(create()).await.unwrap().id;
+    let seq = ui
+        .request::<agm::List>(ListSessionsParams::default())
+        .await
+        .unwrap()
+        .seq;
+    let mut changes = ui
+        .subscribe::<agm::Changes>(ChangesParams::default(), Some(seq))
+        .await
+        .unwrap();
+
+    let token = h
+        .ctx
+        .auth
+        .mint_session(a.id.0.clone(), session.0.clone())
+        .unwrap();
+    let mut agent = Agent::start_as(h.connect(token.clone()).await, &a, &session.0).await;
+    assert!(
+        agent
+            .names()
+            .await
+            .iter()
+            .any(|n| n == "set_acceptance_criteria")
+    );
+
+    // The agent registers its criteria at the start of the task.
+    let r = agent
+        .ok(
+            "set_acceptance_criteria",
+            json!({
+                "criteria": [
+                    { "text": "100+ units get 10% off" },
+                    { "text": "Discount capped at 500 EUR" },
+                ],
+                "replace": true,
+            }),
+        )
+        .await;
+    assert!(
+        text(&r).contains("- AC1 [pending] 100+ units get 10% off"),
+        "{r}"
+    );
+    assert_eq!(r["structuredContent"]["criteria"][1]["id"], "AC2");
+    let seen = next_change(&mut changes, &session).await;
+    assert_eq!(seen.criteria.len(), 2);
+    assert_eq!(seen.criteria[0].changed_by, agm::CriterionAuthor::Agent);
+
+    // It verifies one, with a test as evidence.
+    let r = agent
+        .ok(
+            "set_acceptance_criteria",
+            json!({ "criteria": [{
+                "id": "AC1",
+                "status": "met",
+                "evidence": [{ "text": "test volume_discount passes", "path": "src/main.rs", "line": 4 }],
+            }] }),
+        )
+        .await;
+    assert!(text(&r).contains("(1 of 2 met)"), "{r}");
+    let seen = next_change(&mut changes, &session).await;
+    let ac1 = &seen.criteria[0];
+    assert_eq!(ac1.status, agm::CriterionStatus::Met);
+    let expected = a_dir.path().join("src/main.rs");
+    assert_eq!(
+        ac1.evidence[0].path.as_deref(),
+        Some(expected.to_str().unwrap())
+    );
+
+    // The user marks the other one failed (the daemon token): the agent
+    // sees it on its next call.
+    ui.request::<agm::SetCriteria>(agm::SetCriteriaParams {
+        session: session.clone(),
+        criteria: vec![agm::CriterionInput {
+            id: Some("AC2".into()),
+            status: Some(agm::CriterionStatus::Failed),
+            ..agm::CriterionInput::default()
+        }],
+        replace: false,
+    })
+    .await
+    .unwrap();
+    let r = agent
+        .ok("set_acceptance_criteria", json!({ "criteria": [] }))
+        .await;
+    assert!(text(&r).contains("- AC2 [failed, set by the user]"), "{r}");
+
+    // Bad arguments never reach the daemon; bad ids are the daemon's to
+    // refuse.
+    let e = agent
+        .error(
+            "set_acceptance_criteria",
+            json!({ "criteria": [{ "status": "done" }] }),
+        )
+        .await;
+    assert!(e.contains("invalid arguments"), "{e}");
+    let e = agent
+        .error(
+            "set_acceptance_criteria",
+            json!({ "criteria": [{ "id": "AC7", "status": "met" }] }),
+        )
+        .await;
+    assert!(e.contains("needs `text`"), "{e}");
+
+    // A bridge told it works for another session, with this session's
+    // token, reaches nothing.
+    let ticket = h
+        .ctx
+        .auth
+        .mint_session(a.id.0.clone(), session.0.clone())
+        .unwrap();
+    let mut lying = Agent::start_as(h.connect(ticket).await, &a, &other.0).await;
+    let e = lying
+        .error(
+            "set_acceptance_criteria",
+            json!({ "criteria": [{ "text": "Not mine" }] }),
+        )
+        .await;
+    assert!(e.contains("outside this connection's scope"), "{e}");
+    let snap = ui
+        .request::<agm::Get>(SessionParams {
+            session: other.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(snap.info.criteria.is_empty(), "{:?}", snap.info);
     drop(a_dir);
 }

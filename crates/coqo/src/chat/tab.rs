@@ -2,7 +2,8 @@
 
 //! The chat tab (design board 1): a centred reading column with the
 //! transcript in a virtual list and the composer below it, and the session
-//! panel (state and the agent's status, plan, changed files) on the right.
+//! panel (state and the agent's status, plan, acceptance criteria, changed
+//! files) on the right.
 //!
 //! The tab attaches with `sessions/get` (info, title, provider) and
 //! `sessions/updates` from seq 0, so a restored tab replays the whole
@@ -11,9 +12,11 @@
 //!
 //! The composer (mentions, slash commands, the provider and mode dropdowns,
 //! prompt history) is in [`composer`]; permission cards, their keys and the
-//! workspace's permission rules are in [`permission`].
+//! workspace's permission rules are in [`permission`]; the acceptance
+//! criteria card is in [`criteria`].
 
 mod composer;
+mod criteria;
 mod permission;
 
 use std::collections::{HashMap, HashSet};
@@ -1368,6 +1371,7 @@ impl ChatTab {
             .border_color(p.surface.hsla())
             .child(self.render_status(cx))
             .child(plan)
+            .child(self.render_criteria(cx))
             .child(changes)
             .child(self.render_rules(cx))
             .into_any_element()

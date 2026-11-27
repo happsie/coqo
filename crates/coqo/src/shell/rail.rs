@@ -855,6 +855,7 @@ mod screenshots {
             state_reason: None,
             state_since: None,
             status: None,
+            criteria: Vec::new(),
             mode: None,
             closed: false,
             created_at: 0,

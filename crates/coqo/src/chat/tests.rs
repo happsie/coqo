@@ -1314,6 +1314,7 @@ fn chat_screenshots() {
         state_reason: None,
         state_since: None,
         status: None,
+        criteria: Vec::new(),
         mode: Some("default".into()),
         closed: false,
         created_at: at,
@@ -1330,7 +1331,19 @@ fn chat_screenshots() {
         i
     };
     let shipping = move || {
-        with_status(
+        use coqo_agents::model::{
+            AcceptanceCriterion, CriterionAuthor, CriterionEvidence, CriterionStatus,
+        };
+        let criterion =
+            |id: &str, text: &str, status, evidence: Vec<CriterionEvidence>| AcceptanceCriterion {
+                id: id.into(),
+                text: text.into(),
+                status,
+                evidence,
+                changed_by: CriterionAuthor::Agent,
+                updated_at: 3,
+            };
+        let mut i = with_status(
             info(
                 "s1",
                 "Free shipping threshold",
@@ -1339,7 +1352,36 @@ fn chat_screenshots() {
             ),
             "Writing tests for the threshold",
             Some((2, 4)),
-        )
+        );
+        i.criteria = vec![
+            criterion(
+                "AC1",
+                "Orders of 50 EUR or more ship free",
+                CriterionStatus::Met,
+                vec![CriterionEvidence {
+                    text: "test free_from_threshold passes".into(),
+                    path: Some("/work/shop/src/shipping.rs".into()),
+                    line: Some(7),
+                }],
+            ),
+            criterion(
+                "AC2",
+                "Smaller orders keep the flat fee",
+                CriterionStatus::Pending,
+                vec![],
+            ),
+            criterion(
+                "AC3",
+                "Totals show the saving",
+                CriterionStatus::Failed,
+                vec![CriterionEvidence {
+                    text: "Cart::totals drops the discount line".into(),
+                    path: None,
+                    line: None,
+                }],
+            ),
+        ];
+        i
     };
     let diff = |path: &str, old: Option<&str>, new: &str| ToolCallContent::Diff {
         path: format!("/work/shop/{path}"),
@@ -1574,4 +1616,107 @@ fn chat_screenshots() {
         image.save(&path).expect("save png");
         println!("wrote {}", path.display());
     }
+}
+
+#[test]
+fn acceptance_criteria_show_in_the_panel_and_the_user_can_mark_them() {
+    use coqo_agents::model::{
+        CriterionAuthor, CriterionEvidence, CriterionInput, CriterionStatus, SetCriteriaParams,
+    };
+    let next = Arc::new(Notify::new());
+    let provider =
+        ScriptedProvider::new().turn([Step::Wait(next.clone()), Step::Stop(StopReason::EndTurn)]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.frame(|window, _| {
+        assert!(window.try_find("chat-criteria").is_some(), "the empty card");
+        assert!(window.try_find(("chat-criterion", 0usize)).is_none());
+    });
+    ui.send(&chat, "Add the volume discount");
+    ui.wait_for("the turn", |ui| running(ui, &chat));
+    let id = ui.listed()[0].id.clone();
+
+    // The agent registers two criteria and verifies one (as the MCP tool
+    // does, through the manager).
+    let manager = &fixture.daemon.manager;
+    manager
+        .set_criteria(
+            SetCriteriaParams {
+                session: id.clone(),
+                criteria: vec![
+                    CriterionInput {
+                        text: Some("100+ units get 10% off".into()),
+                        status: Some(CriterionStatus::Met),
+                        evidence: Some(vec![CriterionEvidence {
+                            text: "test volume_discount passes".into(),
+                            path: Some("src/main.rs".into()),
+                            line: Some(1),
+                        }]),
+                        ..CriterionInput::default()
+                    },
+                    CriterionInput {
+                        text: Some("Discount capped at 500 EUR".into()),
+                        ..CriterionInput::default()
+                    },
+                ],
+                replace: true,
+            },
+            CriterionAuthor::Agent,
+        )
+        .unwrap();
+    ui.wait_for("the criteria", |ui| {
+        ui.cx.read(|cx| chat.read(cx).criteria(cx).len()) == 2
+    });
+    ui.frame(|window, _| {
+        assert!(window.try_find(("chat-criterion", 0usize)).is_some());
+        assert!(window.try_find(("chat-criterion", 1usize)).is_some());
+        assert!(window.try_find("chat-criteria-count").is_some());
+        assert!(
+            window
+                .try_find(name("chat-criterion-evidence-0-0"))
+                .is_some()
+        );
+        assert!(
+            window
+                .try_find(("chat-criterion-by-user", 1usize))
+                .is_none()
+        );
+    });
+
+    // The user marks the pending one met: the daemon has it, as theirs.
+    ui.frame(|window, cx| window.click(("chat-criterion-mark", 1usize), cx));
+    ui.wait_for("the user's mark", |ui| {
+        ui.cx
+            .read(|cx| chat.read(cx).criteria(cx).get(1).map(|c| c.status))
+            == Some(CriterionStatus::Met)
+    });
+    let snapshot = manager.snapshot(&id).unwrap();
+    assert_eq!(snapshot.info.criteria[1].changed_by, CriterionAuthor::User);
+    ui.frame(|window, _| {
+        assert!(
+            window
+                .try_find(("chat-criterion-by-user", 1usize))
+                .is_some()
+        );
+    });
+
+    // Evidence with a file opens it.
+    ui.frame(|window, cx| window.click(name("chat-criterion-evidence-0-0"), cx));
+    let ws = ui.cx.read(|cx| {
+        Workspaces::global(cx)
+            .unwrap()
+            .read(cx)
+            .current()
+            .unwrap()
+            .clone()
+    });
+    let key = editor::key(&ws.id, ws.roots[0].id, "src/main.rs");
+    let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
+    ui.wait_for("the file tab", |ui| {
+        ui.cx
+            .read(|cx| dock.read(cx).find_tab(editor::KIND, &key, cx).is_some())
+    });
+    next.notify_one();
+    ui.wait_for("the end of the turn", |ui| !running(ui, &chat));
 }

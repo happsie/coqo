@@ -1,6 +1,47 @@
 {
   "$comment": "Generated from crates/protocol by `COQO_BLESS=1 cargo test -p coqo-protocol schema`. Do not edit.",
   "$defs": {
+    "AcceptanceCriterion": {
+      "description": "One acceptance criterion of a session's task.",
+      "properties": {
+        "changedBy": {
+          "$ref": "#/$defs/CriterionAuthor",
+          "description": "Who changed it last."
+        },
+        "evidence": {
+          "description": "Why it has that status.",
+          "items": {
+            "$ref": "#/$defs/CriterionEvidence"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Stable id within the session (`AC1`, or the agent's own), which\nwalkthroughs and trace scenarios refer to.",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/CriterionStatus",
+          "description": "Whether it holds."
+        },
+        "text": {
+          "description": "What must hold, one sentence.",
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "When it last changed, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "status",
+        "changedBy",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
     "AddRootParams": {
       "description": "Params of [`AddRoot`].",
       "properties": {
@@ -976,6 +1017,116 @@
         "cwd"
       ],
       "type": "object"
+    },
+    "CriterionAuthor": {
+      "description": "Who last changed a criterion.",
+      "oneOf": [
+        {
+          "const": "agent",
+          "description": "The session's agent (a session token: the MCP tool).",
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "description": "The user (the daemon token: the UI or the CLI).",
+          "type": "string"
+        }
+      ]
+    },
+    "CriterionEvidence": {
+      "description": "Why a criterion has its status: a test, a command, a place in the code.",
+      "properties": {
+        "line": {
+          "description": "Line in `path`, **1-based**.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "A file that shows it: absolute (a relative path is taken from the\nsession's `cwd`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "What shows it, in a few words (\"test `volume_discount_caps` passes\").",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "CriterionInput": {
+      "description": "One entry of `sessions/setCriteria`: a new criterion, or a change to\nthe one with `id`.",
+      "properties": {
+        "evidence": {
+          "description": "Replaces its evidence (`[]` clears it).",
+          "items": {
+            "$ref": "#/$defs/CriterionEvidence"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "The criterion to change; a new one gets this id (or `AC<n>`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CriterionStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its status; a new criterion is `pending`."
+        },
+        "text": {
+          "description": "Its text; required for a new criterion.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "CriterionStatus": {
+      "description": "Whether an acceptance criterion holds.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Not checked yet.",
+          "type": "string"
+        },
+        {
+          "const": "met",
+          "description": "Verified to hold; the evidence says how.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Checked and does not hold.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Cannot be checked here (needs the user, an environment, …).",
+          "type": "string"
+        }
+      ]
     },
     "Cursor": {
       "description": "The cursor, in screen coordinates.",
@@ -3625,6 +3776,13 @@
           "format": "int64",
           "type": "integer"
         },
+        "criteria": {
+          "description": "The task's acceptance criteria, in order (`sessions/setCriteria`).",
+          "items": {
+            "$ref": "#/$defs/AcceptanceCriterion"
+          },
+          "type": "array"
+        },
         "cwd": {
           "description": "The agent's working directory (the workspace root).",
           "type": "string"
@@ -4252,6 +4410,31 @@
           "type": "object"
         }
       ]
+    },
+    "SetCriteriaParams": {
+      "description": "Params of `sessions/setCriteria`.",
+      "properties": {
+        "criteria": {
+          "description": "New criteria and changes, in order.",
+          "items": {
+            "$ref": "#/$defs/CriterionInput"
+          },
+          "type": "array"
+        },
+        "replace": {
+          "description": "The list becomes exactly `criteria`, in that order: criteria not\nnamed are dropped, named ones keep what their entry does not change.\nOtherwise an entry with a known id changes that criterion in place\nand the others are added at the end.",
+          "type": "boolean"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The session."
+        }
+      },
+      "required": [
+        "session",
+        "criteria"
+      ],
+      "type": "object"
     },
     "SetModeParams": {
       "description": "Params of `sessions/setMode`.",
@@ -6428,6 +6611,17 @@
       },
       "result": {
         "type": "null"
+      }
+    },
+    "sessions/setCriteria": {
+      "description": "Set or update the session's acceptance criteria (session tokens: own session).",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SetCriteriaParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionInfo"
       }
     },
     "sessions/setMode": {

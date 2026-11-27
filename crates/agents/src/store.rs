@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Session persistence in the global database (`agent_sessions`,
-//! `agent_session_updates`; global migrations 3 and 5), and the workspaces'
+//! `agent_session_updates`; global migrations 3, 5 and 7), and the workspaces'
 //! permission rules (`agent_permission_rules`; global migration 4).
 //!
 //! Synchronous and short: the manager calls it while holding a session's
@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use coqo_protocol::methods::agents::{
-    AgentState, AgentStatus, PermissionRule, PermissionRuleId, PermissionRuleSpec, RuleDecision,
-    SessionId, SessionInfo, SessionUpdate, ToolKind,
+    AcceptanceCriterion, AgentState, AgentStatus, PermissionRule, PermissionRuleId,
+    PermissionRuleSpec, RuleDecision, SessionId, SessionInfo, SessionUpdate, ToolKind,
 };
 use coqo_storage::{GlobalDb, StorageError};
 use rusqlite::{OptionalExtension, Row, params};
@@ -69,13 +69,25 @@ fn parse_state(s: &str) -> AgentState {
 
 const SELECT: &str = "SELECT id, provider, workspace, cwd, title, state, state_reason, mode, \
                       closed, created_at, updated_at, provider_session, change_seq, \
-                      state_since, status \
+                      state_since, status, criteria \
                       FROM agent_sessions";
 
 /// A stored status; one that no longer parses is dropped (it is only a
 /// hint), not an error.
 fn parse_status(json: Option<String>) -> Option<AgentStatus> {
     serde_json::from_str(&json?).ok()
+}
+
+/// Stored acceptance criteria; ones that no longer parse are dropped with
+/// a warning rather than failing the session.
+fn parse_criteria(json: Option<String>) -> Vec<AcceptanceCriterion> {
+    let Some(json) = json else {
+        return Vec::new();
+    };
+    serde_json::from_str(&json).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "dropping stored acceptance criteria that do not parse");
+        Vec::new()
+    })
 }
 
 fn session_row(row: &Row<'_>) -> rusqlite::Result<(StoredSession, u64)> {
@@ -92,6 +104,7 @@ fn session_row(row: &Row<'_>) -> rusqlite::Result<(StoredSession, u64)> {
                 state_reason: row.get(6)?,
                 state_since: row.get(13)?,
                 status: parse_status(row.get(14)?),
+                criteria: parse_criteria(row.get(15)?),
                 mode: row.get(7)?,
                 closed: row.get(8)?,
                 created_at: row.get(9)?,
@@ -127,19 +140,24 @@ impl SessionStore {
     pub fn save(&self, session: &StoredSession, change_seq: u64) -> Result<()> {
         let i = &session.info;
         let status = i.status.as_ref().map(serde_json::to_string).transpose()?;
+        let criteria = (!i.criteria.is_empty())
+            .then(|| serde_json::to_string(&i.criteria))
+            .transpose()?;
         let db = self.db();
         db.connection()
             .prepare_cached(
                 "INSERT INTO agent_sessions (id, provider, workspace, cwd, title, state,
                      state_reason, mode, closed, provider_session, created_at, updated_at,
-                     change_seq, state_since, status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                     change_seq, state_since, status, criteria)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                     ?16)
                  ON CONFLICT (id) DO UPDATE SET
                      title = excluded.title, state = excluded.state,
                      state_reason = excluded.state_reason, mode = excluded.mode,
                      closed = excluded.closed, provider_session = excluded.provider_session,
                      updated_at = excluded.updated_at, change_seq = excluded.change_seq,
-                     state_since = excluded.state_since, status = excluded.status",
+                     state_since = excluded.state_since, status = excluded.status,
+                     criteria = excluded.criteria",
             )?
             .execute(params![
                 i.id.0,
@@ -157,6 +175,7 @@ impl SessionStore {
                 i64_of(change_seq),
                 i.state_since,
                 status,
+                criteria,
             ])?;
         Ok(())
     }
@@ -397,7 +416,10 @@ fn rule_row(row: &Row<'_>) -> rusqlite::Result<PermissionRule> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use coqo_protocol::methods::agents::{ContentBlock, StatusProgress, StatusState};
+    use coqo_protocol::methods::agents::{
+        ContentBlock, CriterionAuthor, CriterionEvidence, CriterionStatus, StatusProgress,
+        StatusState,
+    };
 
     fn session(id: &str, ws: Option<&str>, updated_at: i64) -> StoredSession {
         StoredSession {
@@ -411,6 +433,7 @@ mod tests {
                 state_reason: None,
                 state_since: None,
                 status: None,
+                criteria: Vec::new(),
                 mode: None,
                 closed: false,
                 created_at: 1,
@@ -439,6 +462,18 @@ mod tests {
             turn: Some(1),
             updated_at: 29,
         });
+        a.info.criteria = vec![AcceptanceCriterion {
+            id: "AC1".into(),
+            text: "100+ units get 10% off".into(),
+            status: CriterionStatus::Met,
+            evidence: vec![CriterionEvidence {
+                text: "test volume_discount passes".into(),
+                path: Some("/w/src/lib.rs".into()),
+                line: Some(12),
+            }],
+            changed_by: CriterionAuthor::Agent,
+            updated_at: 28,
+        }];
         store.save(&a, 3).unwrap();
 
         assert_eq!(store.get(&a.info.id).unwrap(), Some(a.clone()));

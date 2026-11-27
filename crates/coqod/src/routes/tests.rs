@@ -57,6 +57,7 @@ const SESSION_ROUTES: &[(&str, AccessKind)] = &[
     ("mcp/toolsChanged", AccessKind::Workspace),
     ("questions/create", AccessKind::Check),
     ("questions/watch", AccessKind::Check),
+    ("sessions/setCriteria", AccessKind::Session),
     ("sessions/setStatus", AccessKind::Session),
     ("syntax/folding", AccessKind::Check),
     ("syntax/outline", AccessKind::Check),
@@ -316,6 +317,11 @@ fn probes(
             json!({ "session": session, "status": "Probing" }),
         ),
         (
+            agm::SetCriteria::NAME,
+            RouteKind::Method,
+            json!({ "session": session, "criteria": [{ "text": "Probing works" }] }),
+        ),
+        (
             "buffer/close",
             RouteKind::Method,
             json!({ "buffer": buffer, "replica": replica }),
@@ -456,6 +462,14 @@ async fn a_session_token_reaches_only_its_own_workspace() {
             status: "Not mine".into(),
             state: None,
             progress: None,
+        })
+        .await;
+    assert_eq!(code(&other), Some(codes::FORBIDDEN), "{other:?}");
+    let other = agent
+        .request::<agm::SetCriteria>(agm::SetCriteriaParams {
+            session: b_session.clone(),
+            criteria: vec![],
+            replace: true,
         })
         .await;
     assert_eq!(code(&other), Some(codes::FORBIDDEN), "{other:?}");

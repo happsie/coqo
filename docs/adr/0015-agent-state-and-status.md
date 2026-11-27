@@ -46,4 +46,4 @@ PLAN §7.9 lists the agent states (`idle · working · needs_input · needs_perm
 - The agent can raise a `blocked` alert at will; that is the point, and it is limited to its own session.
 - The status line is the agent's words, shown as text only; the UI never renders it as markdown or links.
 - A UI from before this change ignores the new fields; a daemon from before it answers `sessions/setStatus` with `METHOD_NOT_FOUND`, which the tool shows the agent as an error.
-- Migration 5 is append-only; a later global migration must take version 6.
+- Migration 5 is append-only; a later global migration must take version 6 (anchored questions took it, ADR 0016; the acceptance criteria 7, ADR 0017).

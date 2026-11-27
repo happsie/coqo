@@ -13,7 +13,9 @@
 //!   ([`SessionStore`]) and streamed; the agent state machine
 //!   (`idle · working · needs_input · needs_permission · blocked · error ·
 //!   done`) lives here, with the agent's own status line on top
-//!   ([`SessionManager::set_status`], the `set_status` MCP tool).
+//!   ([`SessionManager::set_status`], the `set_status` MCP tool), and the
+//!   task's acceptance criteria ([`SessionManager::set_criteria`], the
+//!   `set_acceptance_criteria` MCP tool).
 //! - `rules`: per-workspace permission rules that answer a permission
 //!   request before it reaches the UI (an allowlist: default is ask).
 //! - [`rpc::register`]: the protocol routes (`agents/providers`,
@@ -54,6 +56,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod criteria;
 mod error;
 mod feed;
 mod fold;
