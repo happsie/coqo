@@ -145,6 +145,7 @@ Honest notes:
 - JSON-RPC 2.0 with length-prefixed frames over the Unix socket. MessagePack encoding is negotiable for hot paths (buffer ops, trace streams). Supports request/response, notifications, and **subscriptions** with sequence numbers.
 - Versioned, documented schema (`protocol/`). The Rust types in `crates/protocol` are the source of truth. A JSON Schema and a TypeScript client stub are generated from them for tooling and possible future UIs ([ADR 0003](adr/0003-coqo-protocol-v0.md)).
 - The handshake (`coqo/hello`: protocol version + build) is frozen across versions. Equal major versions are compatible, and an incompatible one is reported as a clear error, never a hang. Subscriptions resume from the last seen sequence number, or fail with a resume-gap error that tells the client to re-snapshot.
+- **Buffers** replicate as a daemon-authoritative op-log: UI replicas apply their own edits immediately and send ranged edits (`buffer/edit`, UTF-8 byte offsets) against a buffer revision; the daemon publishes every accepted change on the `buffer/changes` topic, with the buffer revision as its sequence number, and agents edit at head. See [ADR 0006](adr/0006-buffer-replication.md) for the messages, undo and anchors.
 - Because the protocol is transport-agnostic, running `coqod` on a remote machine over SSH later is straightforward. That gives remote development without changing the UI.
 
 ---
@@ -414,7 +415,7 @@ docs/                    PLAN.md, ADRs, protocol docs
 | **S3** | Claude via ACP, policy-safe auth, daemon-owned sessions | Claude Agent ACP adapter: lifecycle, MCP injection, permissions, `available_commands`, `session/load` after daemon restart, billing-source detection; terminal mode + `--mcp-config` in a daemon PTY | Terminal mode only for subscription users. **Go** ([ADR 0005](adr/0005-claude-integration.md)) |
 | **S4** | GPUI editor capability | gpui-component editor: 100k-line file, 500 decorations, anchored popovers, inline ghost values, side-by-side diff of a 5k-line file, multi-cursor feel | Own editor element on rope + tree-sitter |
 | **S5** | Packaging and notifications | Notarized `.app` with daemon helper + notifications; AppImage/deb/rpm/Flatpak; Wayland + X11 | Per-platform workarounds |
-| **S6** | UI↔daemon buffer replication | Op-log vs `yrs` CRDT: typing latency under 1 ms locally, concurrent agent + user edits, reattach with unsaved changes | Daemon-authoritative with optimistic local apply |
+| **S6** | UI↔daemon buffer replication | Op-log vs `yrs` CRDT: typing latency under 1 ms locally, concurrent agent + user edits, reattach with unsaved changes. **Decided ([ADR 0006](adr/0006-buffer-replication.md)): daemon-authoritative op-log with optimistic local apply** | `yrs` CRDT replicas behind the same `buffer/*` messages |
 | **S7** | WASM mod API ergonomics | WIT world for commands + MCP tool + declarative view; author one mod in Rust and one in TS via `jco` | Process mods as the primary third-party tier |
 
 Other risks:

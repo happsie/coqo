@@ -1,0 +1,10 @@
+[package]
+name = "s6-editor-map"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Headless check: applying remote edits to gpui-component's editor without losing cursors or undo."
+
+[dependencies]
+gpui-kit = { version = "=0.11.0", features = ["test-support"] }
