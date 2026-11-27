@@ -22,7 +22,7 @@ use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
 use crate::methods::{
-    self, agents, buffer, editor, fs, git, mcp, questions, syntax, terminal, workspace,
+    self, agents, alerts, buffer, editor, fs, git, mcp, questions, syntax, terminal, workspace,
 };
 use crate::subscription::ResumeGap;
 
@@ -434,6 +434,32 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
         topic::<git::Changes>(
             g,
             "A root's repository may have changed: work tree, index, HEAD, refs or stash (live only).",
+        ),
+        request::<alerts::List>(
+            g,
+            "client→server",
+            "The alerts not dismissed, newest first, with the changes seq.",
+        ),
+        request::<alerts::MarkRead>(
+            g,
+            "client→server",
+            "Mark alerts (or an agent session's) read.",
+        ),
+        request::<alerts::Dismiss>(g, "client→server", "Hide alerts."),
+        request::<alerts::DismissAll>(g, "client→server", "Hide every alert, or a workspace's."),
+        request::<alerts::GetSettings>(
+            g,
+            "client→server",
+            "Do-not-disturb and the alert sources, muted or not.",
+        ),
+        request::<alerts::SetSettings>(
+            g,
+            "client→server",
+            "Change do-not-disturb or mute sources.",
+        ),
+        topic::<alerts::Changes>(
+            g,
+            "Alerts whose state changed, as their latest state (resumable).",
         ),
     ]
 }

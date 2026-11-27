@@ -14,6 +14,8 @@
 //!   permissions, and static contributions.
 //! - [`contrib`]: the value types of the v1 contribution points.
 //! - [`id`]: validated ids for mods, services and contributions.
+//! - [`alerts`]: `coqo.alerts@1`, the service mods' alert sources raise
+//!   alerts through.
 //! - [`ModHost`]: the object-safe interface hosts implement (the kernel for
 //!   core mods; the WASM and process hosts forward to their guests), and
 //!   [`testing::TestHost`], an in-memory one for tests.
@@ -50,6 +52,7 @@
 
 #![warn(missing_docs)]
 
+pub mod alerts;
 pub mod contrib;
 mod erased;
 mod error;

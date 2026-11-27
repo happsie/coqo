@@ -39,6 +39,8 @@ coqo-storage = { path = "../storage" }
 # Git pane tests make fixture repositories with its helpers.
 coqo-mod-git = { path = "../../mods/git" }
 tempfile = "3"
+# Stops the alert tests' agent source.
+tokio-util = "0.7"
 
 [lints]
 workspace = true

@@ -335,6 +335,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 - **Workspace rail:** a vertical strip at the far left with one icon per workspace. Switch with `Cmd/Ctrl+1..9`. All workspaces live in the daemon, and background workspaces keep their agents running. "New workspace from worktree" supports running agents on several tasks at once.
 - **Agent states:** `idle · working · needs_input · needs_permission · blocked · error · done`, derived from provider events by one state machine, with the agent's own status line (`set_status`) on top and `state_since` for how long it has waited ([ADR 0015](adr/0015-agent-state-and-status.md)).
 - **Alert sources:** permission requests, `ask_question`, `set_status`, a finished turn, agent errors, review requested, CI failed, trace run finished.
+- **Alert engine** (in the daemon, [ADR 0019](adr/0019-alert-engine.md)): one alert per source and key (an agent session has at most one standing alert), resolved by itself when the condition clears, kept in `coqo.db`; `alerts/*` methods and the resumable `alerts/changes` topic for the UI, and the `coqo.alerts@1` service for mods' alert sources.
 - **UI:** badges on the rail and tabs, an **Agents overview** panel showing all sessions across workspaces with their state and how long they have waited, a notification center, and OS notifications (the daemon sends them, and clicking one opens or focuses the UI at the exact question). Includes do-not-disturb and per-source settings. The CLI shows the same data: `coqo agents`.
 
 ### 7.10 Live trace (DAP)

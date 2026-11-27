@@ -33,6 +33,7 @@
 //! Clients reach the daemon through `coqo-client`, never this crate.
 
 pub mod agents;
+pub mod alerts;
 pub mod auth;
 pub mod buffers;
 pub mod cli;

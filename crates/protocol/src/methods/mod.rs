@@ -22,10 +22,13 @@
 //! - [`mcp`]: `mcp/*`, the MCP tools mods contribute, for `coqod mcp`.
 //! - [`questions`]: `questions/*`, questions and notes agents pin to code,
 //!   and the user's answers.
+//! - [`alerts`]: `alerts/*`, what needs the user across workspaces (the
+//!   alert center).
 //! - [`git`]: `git/*`, status, diffs, staging, commits, branches, stash,
 //!   blame and log of a root's repository (the `coqo.git` mod).
 
 pub mod agents;
+pub mod alerts;
 pub mod buffer;
 pub mod editor;
 pub mod fs;

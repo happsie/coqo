@@ -8,6 +8,7 @@
 //! connection (`windows`). CLI subcommands arrive in later issues (PLAN §12).
 
 mod activity;
+mod alerts;
 mod chat;
 mod daemon;
 mod files;

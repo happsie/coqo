@@ -18,21 +18,29 @@
 //!   remove it from the list (`workspace/remove`, which never touches its
 //!   folders).
 //! - **+** opens a folder as a new workspace.
+//! - The **bell** shows the unread alerts (a `sand` count when one needs
+//!   you, `rose` when one failed) and opens the alert center
+//!   ([`crate::alerts`]); opening an alert there is a [`RailEvent`] the
+//!   window acts on.
 
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use coqo_protocol::methods::{
     agents::{AgentState, SessionInfo},
+    alerts::Alert,
     workspace::{WorkspaceId, WorkspaceInfo},
 };
 use coqo_ui::{
     ActiveTokens as _, Appearance, Rgb,
     gpui::{
         Animation, AnimationExt as _, AnyElement, App, AppContext as _, BoxShadow, Context, Entity,
-        FontWeight, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
-        ParentElement as _, Render, SharedString, Stateful, StatefulInteractiveElement as _,
-        Styled as _, Subscription, Window, deferred, div, hsla, linear_color_stop, linear_gradient,
-        point, prelude::FluentBuilder as _, pulsating_between, px,
+        EventEmitter, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
+        MouseDownEvent, ParentElement as _, Render, SharedString, Stateful,
+        StatefulInteractiveElement as _, Styled as _, Subscription, Window, deferred, div, hsla,
+        linear_color_stop, linear_gradient, point, prelude::FluentBuilder as _, pulsating_between,
+        px,
     },
     input::{PromptInput, PromptInputEvent},
     widgets::{Icon, TestSupportExt as _, icon, kbd, popover},
@@ -40,6 +48,10 @@ use coqo_ui::{
 
 use crate::{
     activity::{AgentActivity, WorkspaceActivity},
+    alerts::{
+        AlertCenter,
+        view::{self as alert_view, CenterActions},
+    },
     chat::{agent_dot, status_line},
     welcome::shortcut,
     windows,
@@ -90,6 +102,17 @@ impl Dot {
     }
 }
 
+/// What the rail asks its window to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RailEvent {
+    /// Open where an alert points (the alert center's row was clicked).
+    OpenAlert(Alert),
+}
+
+/// A click on the bell this soon after the alert center closed by a click
+/// outside it is that same click: it should not open the center again.
+const REOPEN_GUARD: Duration = Duration::from_millis(250);
+
 /// A rename in progress.
 struct Renaming {
     id: WorkspaceId,
@@ -103,8 +126,13 @@ pub struct Rail {
     /// The workspace whose context menu is open.
     menu: Option<WorkspaceId>,
     renaming: Option<Renaming>,
+    /// Whether the alert center is open.
+    alerts_open: bool,
+    alerts_closed_at: Option<Instant>,
     _subscriptions: Vec<Subscription>,
 }
+
+impl EventEmitter<RailEvent> for Rail {}
 
 impl std::fmt::Debug for Rail {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -139,10 +167,15 @@ impl Rail {
         if let Some(activity) = AgentActivity::global(cx) {
             subscriptions.push(cx.observe(&activity, |_, _, cx| cx.notify()));
         }
+        if let Some(center) = AlertCenter::global(cx) {
+            subscriptions.push(cx.observe(&center, |_, _, cx| cx.notify()));
+        }
         Self {
             workspaces,
             menu: None,
             renaming: None,
+            alerts_open: false,
+            alerts_closed_at: None,
             _subscriptions: subscriptions,
         }
     }
@@ -186,7 +219,44 @@ impl Rail {
         cx.notify();
     }
 
+    /// Whether the alert center is open.
+    #[allow(dead_code)] // Tests use it.
+    pub fn alerts_open(&self) -> bool {
+        self.alerts_open
+    }
+
+    /// Open the alert center, or close it.
+    pub fn toggle_alerts(&mut self, cx: &mut Context<Self>) {
+        if !self.alerts_open
+            && self
+                .alerts_closed_at
+                .is_some_and(|t| t.elapsed() < REOPEN_GUARD)
+        {
+            return;
+        }
+        self.menu = None;
+        self.renaming = None;
+        self.alerts_open = !self.alerts_open;
+        cx.notify();
+    }
+
+    fn close_alerts(&mut self, cx: &mut Context<Self>) {
+        if self.alerts_open {
+            self.alerts_open = false;
+            self.alerts_closed_at = Some(Instant::now());
+            cx.notify();
+        }
+    }
+
+    /// Open where `alert` points: the window does it.
+    fn open_alert(&mut self, alert: Alert, cx: &mut Context<Self>) {
+        self.alerts_open = false;
+        cx.emit(RailEvent::OpenAlert(alert));
+        cx.notify();
+    }
+
     fn open_menu(&mut self, id: WorkspaceId, cx: &mut Context<Self>) {
+        self.alerts_open = false;
         self.renaming = None;
         self.menu = Some(id);
         cx.notify();
@@ -309,12 +379,95 @@ impl Render for Rail {
                     .on_click(move |_, _, cx| prompt_open_folder_in(open_folder.clone(), cx)),
             )
             .child(div().flex_1())
-            .child(rail_button("alerts", cx).child(icon(Icon::Bell, px(20.), muted)))
+            .child(self.render_bell(cx))
             .child(rail_button("settings", cx).child(icon(Icon::Settings, px(20.), muted)))
     }
 }
 
 impl Rail {
+    /// The bell, its unread badge, and the alert center when open.
+    fn render_bell(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let center = AlertCenter::global(cx);
+        let badge = center.as_ref().and_then(|c| c.read(cx).badge());
+        let label: SharedString = match badge {
+            Some(b) => format!("Alerts · {} unread", b.unread).into(),
+            None => "Alerts".into(),
+        };
+        let bell = rail_button("alerts", cx)
+            .test_support()
+            .cursor_pointer()
+            .when(self.alerts_open, |b| b.bg(p.surface.hsla()))
+            .hover(|s| s.bg(p.surface.hsla()))
+            .child(icon(
+                Icon::Bell,
+                px(20.),
+                if self.alerts_open {
+                    p.text
+                } else {
+                    p.text_muted
+                }
+                .hsla(),
+            ))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_alerts(cx)))
+            .tooltip(move |_, cx| {
+                let label = label.clone();
+                cx.new(|_| RailTooltip {
+                    name: label,
+                    key: None,
+                    sessions: Vec::new(),
+                })
+                .into()
+            });
+        let mut slot = div()
+            .relative()
+            .size(m.rail_button)
+            .flex_none()
+            .child(bell)
+            .children(badge.map(|b| alert_view::bell_badge(b, cx)));
+        if self.alerts_open
+            && let Some(center) = center
+        {
+            let rail = cx.entity().downgrade();
+            let (dismiss, dnd, all) = (center.downgrade(), center.downgrade(), center.downgrade());
+            let actions = CenterActions {
+                open: Rc::new(move |alert, _, cx| {
+                    let alert = alert.clone();
+                    rail.update(cx, |rail, cx| rail.open_alert(alert, cx)).ok();
+                }),
+                dismiss: Rc::new(move |id, _, cx| {
+                    dismiss.update(cx, |c, cx| c.dismiss(id, cx)).ok();
+                }),
+                toggle_dnd: Rc::new(move |_, cx| {
+                    dnd.update(cx, |c, cx| {
+                        let on = !c.do_not_disturb();
+                        c.set_do_not_disturb(on, cx);
+                    })
+                    .ok();
+                }),
+                dismiss_all: Rc::new(move |_, cx| {
+                    all.update(cx, |c, cx| c.dismiss_all(cx)).ok();
+                }),
+            };
+            let card = div()
+                .id("alerts-popup")
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_alerts(cx)))
+                .child(alert_view::center(center.read(cx), &actions, cx));
+            slot = slot.child(
+                deferred(
+                    div()
+                        .absolute()
+                        .left(m.rail_button + px(10.))
+                        .bottom(px(-6.))
+                        .child(card),
+                )
+                .with_priority(3),
+            );
+        }
+        slot.into_any_element()
+    }
+
     fn render_workspace(
         &self,
         ix: usize,

@@ -184,6 +184,44 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
             ALTER TABLE agent_sessions ADD COLUMN criteria TEXT;
         ",
     },
+    Migration {
+        version: 8,
+        name: "alerts",
+        // The alert engine (#76, `alerts/*`). One row per source and key
+        // (raising again replaces it). `target` is the JSON `AlertTarget`;
+        // `read` and `dismissed` are 0 or 1; `resolved_at` is set when the
+        // condition cleared. `change_seq` orders changes for the
+        // `alerts/changes` topic and only grows. `alert_settings` holds the
+        // user's settings as JSON values by key (`do_not_disturb`,
+        // `muted`). Timestamps are Unix milliseconds.
+        sql: "
+            CREATE TABLE alerts (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                source      TEXT    NOT NULL,
+                key         TEXT    NOT NULL,
+                workspace   TEXT,
+                session     TEXT,
+                kind        TEXT    NOT NULL,
+                title       TEXT    NOT NULL,
+                body        TEXT,
+                target      TEXT,
+                created_at  INTEGER NOT NULL,
+                updated_at  INTEGER NOT NULL,
+                read        INTEGER NOT NULL DEFAULT 0,
+                dismissed   INTEGER NOT NULL DEFAULT 0,
+                resolved_at INTEGER,
+                change_seq  INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX alerts_source_key ON alerts (source, key);
+            CREATE UNIQUE INDEX alerts_change_seq ON alerts (change_seq);
+            CREATE INDEX alerts_listed ON alerts (dismissed, created_at);
+            CREATE INDEX alerts_session ON alerts (session, read);
+            CREATE TABLE alert_settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+        ",
+    },
 ];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.

@@ -157,6 +157,330 @@
       ],
       "type": "object"
     },
+    "Alert": {
+      "description": "One alert, as it is now.",
+      "properties": {
+        "body": {
+          "description": "More detail (the question, the error), plain text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "description": "When this occurrence was raised, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "dismissed": {
+          "description": "Whether the user dismissed it (hidden from the list).",
+          "type": "boolean"
+        },
+        "id": {
+          "$ref": "#/$defs/AlertId",
+          "description": "Id."
+        },
+        "key": {
+          "description": "The source's key for it: raising under the same source and key\nreplaces it. A session's id for the agent sources.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/AlertKind",
+          "description": "How much it wants the user."
+        },
+        "read": {
+          "description": "Whether the user has seen it (a resolved alert counts as read).",
+          "type": "boolean"
+        },
+        "resolvedAt": {
+          "description": "When the condition cleared, if it has: Unix milliseconds.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "seq": {
+          "description": "The `alerts/changes` seq of this state.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The agent session it is about, if any."
+        },
+        "source": {
+          "description": "The source that raised it: a core source (`agents.permission`,\n`agents.question`, `agents.blocked`, `agents.error`, `agents.done`)\nor a mod's alert source id.",
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AlertTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where opening it goes."
+        },
+        "title": {
+          "description": "One line: \"Permission requested: Run cargo test\".",
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "When it last changed, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The workspace it is about; absent for one about no workspace."
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "key",
+        "kind",
+        "title",
+        "createdAt",
+        "updatedAt",
+        "read",
+        "dismissed",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "AlertId": {
+      "description": "Identifies an alert. Assigned by the daemon, never reused; an alert\nraised again under its source and key keeps its id.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "AlertKind": {
+      "description": "How much an alert wants the user.",
+      "oneOf": [
+        {
+          "const": "needs_you",
+          "description": "Something waits for the user: a permission request, a question, a\nblocked agent (sand).",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "Something failed (rose).",
+          "type": "string"
+        },
+        {
+          "const": "done",
+          "description": "Something finished (sage).",
+          "type": "string"
+        },
+        {
+          "const": "info",
+          "description": "Worth knowing (blue).",
+          "type": "string"
+        }
+      ]
+    },
+    "AlertList": {
+      "description": "Result of [`List`].",
+      "properties": {
+        "alerts": {
+          "description": "The alerts not dismissed, most recently raised first, at most\n[`LIST_LIMIT`].",
+          "items": {
+            "$ref": "#/$defs/Alert"
+          },
+          "type": "array"
+        },
+        "seq": {
+          "description": "The `alerts/changes` seq this list reflects; subscribe with\n`since: seq` to keep it current.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "alerts",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "AlertSettings": {
+      "description": "The user's alert settings.",
+      "properties": {
+        "doNotDisturb": {
+          "default": false,
+          "description": "Do not disturb: alerts are still recorded, but nothing pops up\n(no toasts, no desktop notifications).",
+          "type": "boolean"
+        },
+        "muted": {
+          "description": "Sources that raise nothing, by id.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "AlertSettingsInfo": {
+      "description": "Result of [`GetSettings`].",
+      "properties": {
+        "settings": {
+          "$ref": "#/$defs/AlertSettings",
+          "description": "The settings."
+        },
+        "sources": {
+          "description": "Every source: the core ones, then mods', by id.",
+          "items": {
+            "$ref": "#/$defs/AlertSourceInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "settings",
+        "sources"
+      ],
+      "type": "object"
+    },
+    "AlertSourceInfo": {
+      "description": "A source of alerts, for the per-source settings.",
+      "properties": {
+        "description": {
+          "description": "What it alerts about.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Id, as in [`Alert::source`].",
+          "type": "string"
+        },
+        "muted": {
+          "description": "Whether it is muted.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "muted"
+      ],
+      "type": "object"
+    },
+    "AlertTarget": {
+      "description": "Where opening an alert takes the user, in the alert's workspace.",
+      "oneOf": [
+        {
+          "description": "An agent session's chat tab.",
+          "properties": {
+            "kind": {
+              "const": "session",
+              "type": "string"
+            },
+            "session": {
+              "$ref": "#/$defs/SessionId",
+              "description": "The session."
+            }
+          },
+          "required": [
+            "kind",
+            "session"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A question an agent asked: its popover in the editor, at\n`location` (where the question is pinned, as asked), or the chat.",
+          "properties": {
+            "kind": {
+              "const": "question",
+              "type": "string"
+            },
+            "location": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FileLocation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Its first code location."
+            },
+            "question": {
+              "$ref": "#/$defs/QuestionId",
+              "description": "The question."
+            },
+            "session": {
+              "$ref": "#/$defs/SessionId",
+              "description": "The asking session."
+            }
+          },
+          "required": [
+            "kind",
+            "session",
+            "question"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A file.",
+          "properties": {
+            "kind": {
+              "const": "file",
+              "type": "string"
+            },
+            "location": {
+              "$ref": "#/$defs/FileLocation",
+              "description": "Where."
+            }
+          },
+          "required": [
+            "kind",
+            "location"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AlertsChanged": {
+      "description": "Result of [`MarkRead`], [`Dismiss`] and [`DismissAll`].",
+      "properties": {
+        "changed": {
+          "description": "The alerts that changed (each is also an `alerts/changes` event).",
+          "items": {
+            "$ref": "#/$defs/AlertId"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "changed"
+      ],
+      "type": "object"
+    },
     "AnchorPoint": {
       "description": "A spot in a text: 0-based line, byte column within the line and byte\noffset from the start (UTF-8, as in `buffer/*`).",
       "properties": {
@@ -847,6 +1171,23 @@
       "required": [
         "workspace"
       ],
+      "type": "object"
+    },
+    "ChangesParams6": {
+      "description": "Params of the [`Changes`] topic.",
+      "properties": {
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only this workspace's alerts."
+        }
+      },
       "type": "object"
     },
     "CloseParams": {
@@ -1799,6 +2140,39 @@
       ],
       "type": "object"
     },
+    "DismissAllParams": {
+      "description": "Params of [`DismissAll`].",
+      "properties": {
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only this workspace's; every alert if absent."
+        }
+      },
+      "type": "object"
+    },
+    "DismissParams": {
+      "description": "Params of [`Dismiss`].",
+      "properties": {
+        "ids": {
+          "description": "The alerts.",
+          "items": {
+            "$ref": "#/$defs/AlertId"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "ids"
+      ],
+      "type": "object"
+    },
     "EdgeKind": {
       "description": "How a graph line meets a row.",
       "oneOf": [
@@ -2141,6 +2515,33 @@
         "hunks",
         "additions",
         "deletions"
+      ],
+      "type": "object"
+    },
+    "FileLocation": {
+      "description": "A place in a file of the alert's workspace.",
+      "properties": {
+        "line": {
+          "description": "The 0-based line, if a line is meant.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "`/`-separated path relative to the root.",
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root `path` is relative to."
+        }
+      },
+      "required": [
+        "root",
+        "path"
       ],
       "type": "object"
     },
@@ -2859,6 +3260,23 @@
       ],
       "type": "object"
     },
+    "ListParams2": {
+      "description": "Params of [`List`].",
+      "properties": {
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only this workspace's alerts."
+        }
+      },
+      "type": "object"
+    },
     "ListResult": {
       "description": "Result of [`List`]: a snapshot of every known workspace.",
       "properties": {
@@ -3015,6 +3433,30 @@
         "commits",
         "more"
       ],
+      "type": "object"
+    },
+    "MarkReadParams": {
+      "description": "Params of [`MarkRead`].",
+      "properties": {
+        "ids": {
+          "description": "These alerts.",
+          "items": {
+            "$ref": "#/$defs/AlertId"
+          },
+          "type": "array"
+        },
+        "session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "And every unread alert of this agent session (its chat is on\nscreen)."
+        }
+      },
       "type": "object"
     },
     "Modes": {
@@ -5511,6 +5953,33 @@
       ],
       "type": "object"
     },
+    "SetSettingsParams": {
+      "description": "Params of [`SetSettings`]: what to change.",
+      "properties": {
+        "doNotDisturb": {
+          "description": "Turn do-not-disturb on or off.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mute": {
+          "description": "Mute these sources.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "unmute": {
+          "description": "Unmute these sources.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "SetStateParams": {
       "description": "Params of [`SetState`].",
       "properties": {
@@ -7493,6 +7962,83 @@
       },
       "result": {
         "$ref": "#/$defs/ProviderInfo"
+      }
+    },
+    "alerts/changes": {
+      "description": "Alerts whose state changed, as their latest state (resumable).",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/Alert"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/ChangesParams6"
+      }
+    },
+    "alerts/dismiss": {
+      "description": "Hide alerts.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/DismissParams"
+      },
+      "result": {
+        "$ref": "#/$defs/AlertsChanged"
+      }
+    },
+    "alerts/dismissAll": {
+      "description": "Hide every alert, or a workspace's.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/DismissAllParams"
+      },
+      "result": {
+        "$ref": "#/$defs/AlertsChanged"
+      }
+    },
+    "alerts/list": {
+      "description": "The alerts not dismissed, newest first, with the changes seq.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ListParams2"
+      },
+      "result": {
+        "$ref": "#/$defs/AlertList"
+      }
+    },
+    "alerts/markRead": {
+      "description": "Mark alerts (or an agent session's) read.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/MarkReadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/AlertsChanged"
+      }
+    },
+    "alerts/setSettings": {
+      "description": "Change do-not-disturb or mute sources.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SetSettingsParams"
+      },
+      "result": {
+        "$ref": "#/$defs/AlertSettingsInfo"
+      }
+    },
+    "alerts/settings": {
+      "description": "Do-not-disturb and the alert sources, muted or not.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "type": "null"
+      },
+      "result": {
+        "$ref": "#/$defs/AlertSettingsInfo"
       }
     },
     "buffer/changes": {

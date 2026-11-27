@@ -101,6 +101,107 @@ export type AgentStatus = {
   updatedAt: number;
 };
 
+/** One alert, as it is now. */
+export type Alert = {
+  /** More detail (the question, the error), plain text. */
+  body?: string | null;
+  /** When this occurrence was raised, Unix milliseconds. */
+  createdAt: number;
+  /** Whether the user dismissed it (hidden from the list). */
+  dismissed: boolean;
+  /** Id. */
+  id: AlertId;
+  /** The source's key for it: raising under the same source and key replaces it. A session's id for the agent sources. */
+  key: string;
+  /** How much it wants the user. */
+  kind: AlertKind;
+  /** Whether the user has seen it (a resolved alert counts as read). */
+  read: boolean;
+  /** When the condition cleared, if it has: Unix milliseconds. */
+  resolvedAt?: number | null;
+  /** The `alerts/changes` seq of this state. */
+  seq: number;
+  /** The agent session it is about, if any. */
+  session?: SessionId | null;
+  /** The source that raised it: a core source (`agents.permission`, `agents.question`, `agents.blocked`, `agents.error`, `agents.done`) or a mod's alert source id. */
+  source: string;
+  /** Where opening it goes. */
+  target?: AlertTarget | null;
+  /** One line: "Permission requested: Run cargo test". */
+  title: string;
+  /** When it last changed, Unix milliseconds. */
+  updatedAt: number;
+  /** The workspace it is about; absent for one about no workspace. */
+  workspace?: WorkspaceId | null;
+};
+
+/** Identifies an alert. Assigned by the daemon, never reused; an alert raised again under its source and key keeps its id. */
+export type AlertId = number;
+
+/** How much an alert wants the user. */
+export type AlertKind = "needs_you" | "error" | "done" | "info";
+
+/** Result of [`List`]. */
+export type AlertList = {
+  /** The alerts not dismissed, most recently raised first, at most [`LIST_LIMIT`]. */
+  alerts: Array<Alert>;
+  /** The `alerts/changes` seq this list reflects; subscribe with `since: seq` to keep it current. */
+  seq: number;
+};
+
+/** The user's alert settings. */
+export type AlertSettings = {
+  /** Do not disturb: alerts are still recorded, but nothing pops up (no toasts, no desktop notifications). */
+  doNotDisturb?: boolean;
+  /** Sources that raise nothing, by id. */
+  muted?: Array<string>;
+};
+
+/** Result of [`GetSettings`]. */
+export type AlertSettingsInfo = {
+  /** The settings. */
+  settings: AlertSettings;
+  /** Every source: the core ones, then mods', by id. */
+  sources: Array<AlertSourceInfo>;
+};
+
+/** A source of alerts, for the per-source settings. */
+export type AlertSourceInfo = {
+  /** What it alerts about. */
+  description?: string | null;
+  /** Id, as in [`Alert::source`]. */
+  id: string;
+  /** Whether it is muted. */
+  muted: boolean;
+  /** Display name. */
+  name: string;
+};
+
+/** Where opening an alert takes the user, in the alert's workspace. */
+export type AlertTarget = {
+  kind: "session";
+  /** The session. */
+  session: SessionId;
+} | {
+  kind: "question";
+  /** Its first code location. */
+  location?: FileLocation | null;
+  /** The question. */
+  question: QuestionId;
+  /** The asking session. */
+  session: SessionId;
+} | {
+  kind: "file";
+  /** Where. */
+  location: FileLocation;
+};
+
+/** Result of [`MarkRead`], [`Dismiss`] and [`DismissAll`]. */
+export type AlertsChanged = {
+  /** The alerts that changed (each is also an `alerts/changes` event). */
+  changed: Array<AlertId>;
+};
+
 /** A spot in a text: 0-based line, byte column within the line and byte offset from the start (UTF-8, as in `buffer/*`). */
 export type AnchorPoint = {
   /** Byte column within the line. */
@@ -340,6 +441,12 @@ export type ChangesParams4 = {
 export type ChangesParams5 = {
   /** The workspace to watch. It must be open. */
   workspace: WorkspaceId;
+};
+
+/** Params of the [`Changes`] topic. */
+export type ChangesParams6 = {
+  /** Only this workspace's alerts. */
+  workspace?: WorkspaceId | null;
 };
 
 /** Params of [`Close`]. */
@@ -636,6 +743,18 @@ export type DirEntry = {
   symlink: boolean;
 };
 
+/** Params of [`DismissAll`]. */
+export type DismissAllParams = {
+  /** Only this workspace's; every alert if absent. */
+  workspace?: WorkspaceId | null;
+};
+
+/** Params of [`Dismiss`]. */
+export type DismissParams = {
+  /** The alerts. */
+  ids: Array<AlertId>;
+};
+
 /** How a graph line meets a row. */
 export type EdgeKind = "through" | "in" | "out";
 
@@ -740,6 +859,16 @@ export type FileDiff = {
   old?: FileSide | null;
   /** The file, repository-relative. */
   path: string;
+};
+
+/** A place in a file of the alert's workspace. */
+export type FileLocation = {
+  /** The 0-based line, if a line is meant. */
+  line?: number | null;
+  /** `/`-separated path relative to the root. */
+  path: string;
+  /** The root `path` is relative to. */
+  root: RootId;
 };
 
 /** A file as one diff side has it. */
@@ -967,6 +1096,12 @@ export type ListParams = {
   workspace: WorkspaceId;
 };
 
+/** Params of [`List`]. */
+export type ListParams2 = {
+  /** Only this workspace's alerts. */
+  workspace?: WorkspaceId | null;
+};
+
 /** Result of [`List`]: a snapshot of every known workspace. */
 export type ListResult = {
   /** The event-log `seq` this snapshot reflects. Subscribe to [`Events`] with `since` set to it to get every later change. */
@@ -1023,6 +1158,14 @@ export type LogResult = {
   commits: Array<LogCommit>;
   /** More commits follow: ask again with `skip` past these. */
   more: boolean;
+};
+
+/** Params of [`MarkRead`]. */
+export type MarkReadParams = {
+  /** These alerts. */
+  ids?: Array<AlertId>;
+  /** And every unread alert of this agent session (its chat is on screen). */
+  session?: SessionId | null;
 };
 
 /** Terminal modes that change how a client encodes input. */
@@ -1822,6 +1965,16 @@ export type SetModeParams = {
   session: SessionId;
 };
 
+/** Params of [`SetSettings`]: what to change. */
+export type SetSettingsParams = {
+  /** Turn do-not-disturb on or off. */
+  doNotDisturb?: boolean | null;
+  /** Mute these sources. */
+  mute?: Array<string>;
+  /** Unmute these sources. */
+  unmute?: Array<string>;
+};
+
 /** Params of [`SetState`]. */
 export type SetStateParams = {
   /** The workspace. */
@@ -2537,6 +2690,18 @@ export interface Requests {
   "git/blame": { params: BlameParams; result: BlameResult };
   /** Commits newest first, a page at a time, with graph lanes. (client→server) */
   "git/log": { params: LogParams; result: LogResult };
+  /** The alerts not dismissed, newest first, with the changes seq. (client→server) */
+  "alerts/list": { params: ListParams2; result: AlertList };
+  /** Mark alerts (or an agent session's) read. (client→server) */
+  "alerts/markRead": { params: MarkReadParams; result: AlertsChanged };
+  /** Hide alerts. (client→server) */
+  "alerts/dismiss": { params: DismissParams; result: AlertsChanged };
+  /** Hide every alert, or a workspace's. (client→server) */
+  "alerts/dismissAll": { params: DismissAllParams; result: AlertsChanged };
+  /** Do-not-disturb and the alert sources, muted or not. (client→server) */
+  "alerts/settings": { params: null; result: AlertSettingsInfo };
+  /** Change do-not-disturb or mute sources. (client→server) */
+  "alerts/setSettings": { params: SetSettingsParams; result: AlertSettingsInfo };
 }
 
 /** Notifications: method name → params. */
@@ -2577,6 +2742,8 @@ export interface Topics {
   "questions/watch": { params: WatchParams; event: Question };
   /** A root's repository may have changed: work tree, index, HEAD, refs or stash (live only). */
   "git/changes": { params: ChangesParams5; event: GitChanges };
+  /** Alerts whose state changed, as their latest state (resumable). */
+  "alerts/changes": { params: ChangesParams6; event: Alert };
 }
 
 /** Encode one frame: u32 big-endian length, then the JSON payload. */
