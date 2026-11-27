@@ -934,7 +934,7 @@ fn asking_about_selected_lines_pins_a_thread_with_the_agents_reply() {
     ui.frame(|window, cx| {
         code.update(cx, |code, cx| {
             code.focus(window, cx);
-            code.set_selections(&[start..stop], cx);
+            code.set_selections(std::slice::from_ref(&(start..stop)), cx);
         })
     });
     ui.wait_for("the ask button", |ui| ui.exists("code-ask"));
@@ -1235,7 +1235,9 @@ If the cap should hold for what they pay, subtract the bonus first and cap \
             SHOT.find("    capped -").unwrap(),
         );
         cx.update_window(handle, |_, window, cx| {
-            code.update(cx, |code, cx| code.set_selections(&[start..stop], cx));
+            code.update(cx, |code, cx| {
+                code.set_selections(std::slice::from_ref(&(start..stop)), cx)
+            });
             tab.update(cx, |tab, cx| tab.ask_about(15..17, window, cx));
         })
         .unwrap();
