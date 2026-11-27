@@ -33,10 +33,8 @@ use coqo_ui::{
         StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, hsla, point,
         px,
     },
-    slots::{PaneBuilder, SidebarPane, SidebarPanes, Slot, Slots},
-    widgets::{
-        Icon, TestSupportExt as _, icon, kbd, panel, raised, section_label, status_dot, tab,
-    },
+    slots::{PaneBuilder, SidebarPanes, Slot, Slots},
+    widgets::{Icon, TestSupportExt as _, icon, kbd, panel, raised, status_dot, tab},
 };
 
 use crate::{
@@ -75,13 +73,7 @@ pub fn init(cx: &mut App) {
     files::init(cx);
     chat::init(cx);
     activity::init(cx);
-    SidebarPanes::register(
-        cx,
-        SidebarPane::new("git", "Git", 10, |_, _, cx| {
-            cx.new(|_| NotePane::new("sidebar-git-pane", "Changes", "No repository"))
-                .into()
-        }),
-    );
+    crate::git::init(cx);
 }
 
 /// The drag payload of the sidebar's resize edge.
@@ -762,16 +754,6 @@ fn register_builtin_slots(cx: &mut App) {
     });
 }
 
-fn empty_note(text: impl Into<SharedString>, cx: &App) -> Div {
-    let t = cx.tokens();
-    div()
-        .px_2()
-        .py_1()
-        .text_size(t.metrics.text_sm)
-        .text_color(t.palette.text_subtle.hsla())
-        .child(text.into())
-}
-
 /// What an empty tab area shows.
 fn empty_state(_: &mut Window, cx: &mut App) -> AnyElement {
     let t = cx.tokens();
@@ -808,33 +790,6 @@ fn empty_state(_: &mut Window, cx: &mut App) -> AnyElement {
                 .child(kbd(shortcut("Ctrl K"), cx)),
         )
         .into_any_element()
-}
-
-/// A sidebar pane with a section label and a note, for panes whose content
-/// hasn't been built yet.
-struct NotePane {
-    id: &'static str,
-    label: &'static str,
-    note: &'static str,
-}
-
-impl NotePane {
-    fn new(id: &'static str, label: &'static str, note: &'static str) -> Self {
-        Self { id, label, note }
-    }
-}
-
-impl Render for NotePane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id(self.id)
-            .test_support()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(section_label(self.label, cx))
-            .child(empty_note(self.note, cx))
-    }
 }
 
 struct EmptyDrag;

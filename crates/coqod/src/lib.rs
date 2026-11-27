@@ -21,6 +21,8 @@
 //!   (`questions/*`), their anchors kept on the code, and the answers.
 //! - [`terminal`]: daemon-owned PTYs (`terminal/*`).
 //! - [`cli`]: command-line arguments.
+//! - [`git`]: `git/*`, everyday git on a root's repository, from the
+//!   `coqo.git` mod, and `git/changes`.
 //! - [`buffers`]: replicated text buffers (`buffer/*`): open, edit, save,
 //!   disk changes and the unsaved-edit journal.
 //! - [`syntax`]: symbols, outline and folding of open buffers
@@ -37,6 +39,7 @@ pub mod cli;
 pub mod daemon;
 pub mod editor;
 pub mod editor_mcp;
+pub mod git;
 pub mod lifecycle;
 pub mod mcp_tools;
 pub mod methods;

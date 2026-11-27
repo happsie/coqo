@@ -1,0 +1,23 @@
+[package]
+name = "coqo-mod-git"
+description = "The git mod: status, diffs, hunk and line staging, commit, branches, stash, blame and log. gix for reads, the git CLI for writes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# Mods may depend only on coqo-mod-api (plus third-party crates); see
+# scripts/check-mod-boundary.sh.
+[dependencies]
+coqo-mod-api = { path = "../../crates/mod-api" }
+# Reads (status, diffs, blame, log, refs). MIT OR Apache-2.0. Not git2:
+# libgit2 is GPL with a linking exception.
+gix = { version = "0.91", default-features = false, features = ["status", "blame", "revision", "sha1", "parallel"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

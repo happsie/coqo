@@ -36,6 +36,8 @@ coqo-agents = { path = "../agents" }
 coqo-mcp = { path = "../mcp" }
 coqo-mod-api = { path = "../mod-api" }
 coqo-storage = { path = "../storage" }
+# Git pane tests make fixture repositories with its helpers.
+coqo-mod-git = { path = "../../mods/git" }
 tempfile = "3"
 
 [lints]

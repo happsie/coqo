@@ -23,6 +23,7 @@ use coqo_protocol::Router;
 use crate::buffers::{self, BufferConfig, BufferService};
 use crate::daemon::DaemonContext;
 use crate::editor::{self, EditorService};
+use crate::git::{self, GitService};
 use crate::mcp_tools::{self, McpToolService};
 use crate::questions::{self, QuestionService};
 use crate::syntax::{self, SyntaxService};
@@ -44,6 +45,10 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     let router = editor::register(router, EditorService::new(Arc::clone(&workspaces)));
     let sessions = agents::open(ctx)?;
     let router = agents::register(router, sessions.clone());
+    let router = git::register(
+        router,
+        GitService::new(Arc::clone(&workspaces), ctx.mods.clone()),
+    );
     let buffers = BufferService::new(
         Arc::clone(&workspaces),
         ctx.data.clone(),

@@ -11,6 +11,7 @@ mod activity;
 mod chat;
 mod daemon;
 mod files;
+mod git;
 mod layout;
 mod resume;
 mod shell;

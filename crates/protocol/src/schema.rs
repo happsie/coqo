@@ -22,7 +22,7 @@ use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
 use crate::methods::{
-    self, agents, buffer, editor, fs, mcp, questions, syntax, terminal, workspace,
+    self, agents, buffer, editor, fs, git, mcp, questions, syntax, terminal, workspace,
 };
 use crate::subscription::ResumeGap;
 
@@ -383,6 +383,58 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             g,
             "One question for the agent that asked: its state now, then every change.",
         ),
+        request::<git::Status>(
+            g,
+            "client→server",
+            "A root's repository: branch and changed paths.",
+        ),
+        request::<git::Diff>(
+            g,
+            "client→server",
+            "One file's hunks between two sides (work tree, index, a revision).",
+        ),
+        request::<git::DiffFiles>(
+            g,
+            "client→server",
+            "The files that differ between two sides, with line counts.",
+        ),
+        request::<git::Stage>(
+            g,
+            "client→server",
+            "Stage whole files, or chosen lines of one file.",
+        ),
+        request::<git::Unstage>(
+            g,
+            "client→server",
+            "Unstage whole files, or chosen lines of one file.",
+        ),
+        request::<git::Commit>(g, "client→server", "Commit what is staged, or amend."),
+        request::<git::Branches>(g, "client→server", "Local and remote branches."),
+        request::<git::SwitchBranch>(g, "client→server", "Switch to a branch."),
+        request::<git::CreateBranch>(
+            g,
+            "client→server",
+            "Create a branch, and optionally switch to it.",
+        ),
+        request::<git::StashList>(g, "client→server", "The stash, newest first."),
+        request::<git::StashPush>(g, "client→server", "Stash the changes."),
+        request::<git::StashPop>(g, "client→server", "Apply a stash and drop it."),
+        request::<git::StashApply>(g, "client→server", "Apply a stash and keep it."),
+        request::<git::StashDrop>(g, "client→server", "Drop a stash."),
+        request::<git::Blame>(
+            g,
+            "client→server",
+            "Which commit last changed each line of a file.",
+        ),
+        request::<git::Log>(
+            g,
+            "client→server",
+            "Commits newest first, a page at a time, with graph lanes.",
+        ),
+        topic::<git::Changes>(
+            g,
+            "A root's repository may have changed: work tree, index, HEAD, refs or stash (live only).",
+        ),
     ]
 }
 
@@ -426,6 +478,9 @@ fn error_codes() -> Value {
         "NO_SUCH_TERMINAL": methods::codes::NO_SUCH_TERMINAL,
         "SPAWN_FAILED": methods::codes::SPAWN_FAILED,
         "UNKNOWN_TOOL": methods::codes::UNKNOWN_TOOL,
+        "NOT_A_REPOSITORY": methods::codes::NOT_A_REPOSITORY,
+        "STALE_SELECTION": methods::codes::STALE_SELECTION,
+        "GIT_FAILED": methods::codes::GIT_FAILED,
     })
 }
 
@@ -781,4 +836,38 @@ fn application_wire_shapes() {
     let list: fs::PathParams =
         serde_json::from_value(json!({"workspace": "ws-1", "root": 1})).unwrap();
     assert_eq!(list.path, "");
+}
+
+/// The git wire shapes the UI and later clients (diff view, review threads,
+/// walkthroughs) rely on.
+#[test]
+fn git_wire_shapes() {
+    use git::{DiffParams, DiffSide, StageParams};
+    let p: DiffParams = serde_json::from_value(json!({
+        "workspace": "ws-1", "root": 1, "path": "src/a.rs",
+        "base": {"rev": "main"}, "head": "worktree"
+    }))
+    .unwrap();
+    assert_eq!(p.base, DiffSide::Rev("main".into()));
+    assert_eq!(p.head, DiffSide::Worktree);
+    assert_eq!(
+        serde_json::to_value(DiffSide::Index).unwrap(),
+        json!("index")
+    );
+    let s: StageParams = serde_json::from_value(json!({
+        "workspace": "ws-1", "root": 1, "paths": ["a"], "lines": {"added": [3]}
+    }))
+    .unwrap();
+    assert_eq!(s.lines.unwrap().added, vec![3]);
+    let entry = git::StatusEntry {
+        path: "a".into(),
+        staged: Some(git::FileChange::Added),
+        unstaged: Some(git::FileChange::Modified),
+        conflict: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&entry).unwrap(),
+        json!({"path": "a", "staged": "added", "unstaged": "modified"})
+    );
+    assert_eq!(entry.letter(), Some('M'));
 }

@@ -596,6 +596,15 @@ impl WorkspaceService {
         .await
     }
 
+    /// A workspace's roots and their canonical folders, for services that
+    /// work on whole roots (git).
+    pub(crate) async fn roots(
+        self: &Arc<Self>,
+        workspace: WorkspaceId,
+    ) -> Result<Vec<(RootId, PathBuf)>, ErrorObject> {
+        self.blocking(move |s| s.roots_of(&workspace)).await
+    }
+
     /// The `fs/changes` topic. Starts the workspace's watcher if needed.
     pub async fn fs_changes(
         self: &Arc<Self>,

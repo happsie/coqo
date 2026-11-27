@@ -22,11 +22,14 @@
 //! - [`mcp`]: `mcp/*`, the MCP tools mods contribute, for `coqod mcp`.
 //! - [`questions`]: `questions/*`, questions and notes agents pin to code,
 //!   and the user's answers.
+//! - [`git`]: `git/*`, status, diffs, staging, commits, branches, stash,
+//!   blame and log of a root's repository (the `coqo.git` mod).
 
 pub mod agents;
 pub mod buffer;
 pub mod editor;
 pub mod fs;
+pub mod git;
 pub mod mcp;
 pub mod questions;
 pub mod syntax;
@@ -108,4 +111,13 @@ pub mod codes {
     pub const UNKNOWN_QUESTION: i64 = 1501;
     /// The question was already answered or dismissed.
     pub const QUESTION_CLOSED: i64 = 1502;
+    /// The root is not in a git work tree (or the repository is bare), or
+    /// the git mod is not active.
+    pub const NOT_A_REPOSITORY: i64 = 1601;
+    /// The chosen lines are not in the file's current diff: it changed since
+    /// it was shown. Fetch the diff again.
+    pub const STALE_SELECTION: i64 = 1602;
+    /// `git` ran and failed (a hook, a conflict, nothing to commit); the
+    /// message is what it said.
+    pub const GIT_FAILED: i64 = 1603;
 }
