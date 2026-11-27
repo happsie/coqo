@@ -14,6 +14,8 @@
 //!   [`SeqLog`], an in-memory source.
 //! - [`daemon`]: `daemon/status` and `daemon/shutdown`, the daemon's own
 //!   lifecycle methods.
+//! - [`methods`]: the daemon's application methods and topics
+//!   (`workspace/*`, `fs/*`), shared by clients and `coqod`.
 //!
 //! The client and server work over any `AsyncRead + AsyncWrite` byte stream;
 //! [`unix`] has Unix socket helpers.
@@ -52,6 +54,7 @@ pub mod frame;
 pub mod handshake;
 pub mod message;
 pub mod method;
+pub mod methods;
 pub mod server;
 pub mod subscription;
 mod transport;

@@ -23,7 +23,12 @@ coqo-client = { path = "../client" }
 coqo-kernel = { path = "../kernel" }
 coqo-protocol = { path = "../protocol" }
 coqo-storage = { path = "../storage" }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+ignore = "0.4"
 nix = { version = "0.30", default-features = false, features = ["fs", "process"] }
+notify = "8"
+rusqlite = "0.43"
+serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = "0.7"
@@ -32,7 +37,7 @@ tracing = "0.1"
 [dev-dependencies]
 nix = { version = "0.30", default-features = false, features = ["fs", "process", "signal"] }
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
 
 [lints]
 workspace = true

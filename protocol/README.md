@@ -157,3 +157,48 @@ A **topic** is a named stream of events. Each event has a sequence number `seq` 
 | -32005 | `REQUEST_CANCELLED` | The request was cancelled. |
 
 Application methods use codes outside `-32768..=-32000`.
+
+## Application methods
+
+The daemon's own methods and topics are declared in `coqo_protocol::methods` and implemented in `coqod`. The schema files list every params, result and event type.
+
+### Workspaces (`workspace/*`)
+
+A workspace is one or more folder roots with a stable id (`ws-…`), a name, `createdAt`/`lastOpenedAt` (Unix ms) and an `open` flag, plus a key/value state document the UI owns (open tabs, layout hints, settings overrides). They are stored in `coqo.db` and survive UI and daemon restarts.
+
+| Method | Params → result |
+|---|---|
+| `workspace/open` | `{path}` or `{id}`, optional `name` → `WorkspaceInfo`. Idempotent per canonical folder: a workspace whose first root is that folder is reused. |
+| `workspace/list` | → `{workspaces, seq}`, most recently opened first. `seq` is the event-log position the snapshot reflects. |
+| `workspace/get`, `workspace/close` | `{id}` → `WorkspaceInfo` |
+| `workspace/remove` | `{id}` → `true` if it existed. Deletes daemon-side data only, never the folders. |
+| `workspace/addRoot`, `workspace/removeRoot` | `{id, path, name?}` / `{id, root}` → `WorkspaceInfo`. Root ids are never reused; the last root cannot be removed. |
+| `workspace/rename` | `{id, name}` → `WorkspaceInfo` |
+| `workspace/getState` | `{id}` → `{entries, seq}` |
+| `workspace/setState` | `{id, key, value}` → `null`. `value: null` removes the entry. |
+
+Topic **`workspace/events`** (`{workspace?}`) carries `opened`, `closed`, `changed` (name or roots), `removed` and `stateChanged` events, tagged by `type`. It is backed by the persistent event log, so `seq`s are stable across daemon restarts and skip values that belong to other features. Reattach: `workspace/list`, then subscribe with `since` set to its `seq`.
+
+### Files (`fs/*`)
+
+Read-only access for the file tree. Paths are `{workspace, root, path}` with a `/`-separated `path` relative to the root (`""` is the root). Absolute paths, `..` and paths that resolve through a symlink to outside the workspace's roots fail with `PATH_OUTSIDE_WORKSPACE`. Entries carry an `ignored` flag from `.gitignore` files, `.git/info/exclude` and the global git excludes; `.git` is always ignored.
+
+| Method | Params → result |
+|---|---|
+| `fs/list` | `PathParams` → `{entries: [{name, kind, symlink, size, mtime?, ignored}]}`, directories first. `kind` is `file`, `dir` or `other` (symlinks report their target's kind; broken or escaping ones are `other`). |
+| `fs/stat` | `PathParams` → `{kind, symlink, size, mtime?, ignored}` |
+| `fs/read` | `{workspace, root, path, maxBytes?}` → `{text?, binary, size, mtime?}`. Default limit 4 MiB, at most 8 MiB; larger files fail with `FILE_TOO_LARGE` and `data: {size, limit}`. |
+
+Topic **`fs/changes`** (`{workspace}`, which must be open) carries `{root, paths, rescan}` batches, debounced (about 100 ms), with paths sorted and deduplicated. Changes inside `.git` and inside ignored directories are left out, but an ignored entry appearing directly in a visible directory is reported. `rescan: true` means too much changed (or the watcher lost events): re-list what you show. The stream is live only; after a reconnect, re-list and subscribe again. Closing the workspace ends it.
+
+| Code | Name | Meaning |
+|---|---|---|
+| 1001 | `UNKNOWN_WORKSPACE` | No workspace has that id. |
+| 1002 | `UNKNOWN_ROOT` | The workspace has no root with that id. |
+| 1003 | `PATH_OUTSIDE_WORKSPACE` | Not a workspace-relative path, or it resolves outside the roots. |
+| 1004 | `NOT_FOUND` | The path does not exist. |
+| 1005 | `FILE_TOO_LARGE` | Above the read limit; `data: {size, limit}`. |
+| 1006 | `NOT_A_DIRECTORY` | A directory was expected. |
+| 1007 | `NOT_A_FILE` | A regular file was expected. |
+| 1008 | `WORKSPACE_CLOSED` | The operation needs an open workspace. |
+| 1009 | `IO_ERROR` | Permissions or another I/O error. |

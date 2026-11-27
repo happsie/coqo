@@ -170,6 +170,46 @@ async fn status_reports_the_daemon() {
     assert_eq!(env.paths().recorded_pid().unwrap(), Some(daemon.child.id()));
 }
 
+/// The real daemon serves the workspace model (#22), and workspaces live in
+/// its data directory, so they survive a daemon restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn workspaces_survive_a_daemon_restart() {
+    use coqo_protocol::methods::{fs, workspace};
+    let env = Env::new();
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(folder.path().join("README.md"), "# hi\n").unwrap();
+    let opened = {
+        let mut daemon = env.foreground(&["--idle-exit", "5m"]).await;
+        let client = env.client().await;
+        let ws = client
+            .request::<workspace::Open>(workspace::OpenParams {
+                path: Some(folder.path().to_str().unwrap().into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let listed = client
+            .request::<fs::ListDir>(fs::PathParams {
+                workspace: ws.id.clone(),
+                root: ws.roots[0].id,
+                path: String::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(listed.entries[0].name, "README.md");
+        client
+            .request::<Shutdown>(ShutdownParams { force: true })
+            .await
+            .unwrap();
+        assert!(daemon.exit().await.success());
+        ws
+    };
+    let _daemon = env.foreground(&["--idle-exit", "5m"]).await;
+    let client = env.client().await;
+    let list = client.request::<workspace::List>(()).await.unwrap();
+    assert_eq!(list.workspaces, vec![opened]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn two_clients_attach_at_once() {
     let env = Env::new();

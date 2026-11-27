@@ -1,6 +1,44 @@
 {
   "$comment": "Generated from crates/protocol by `COQO_BLESS=1 cargo test -p coqo-protocol schema`. Do not edit.",
   "$defs": {
+    "AddRootParams": {
+      "description": "Params of [`AddRoot`].",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        },
+        "name": {
+          "description": "Display name (default: the folder name).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Folder to add. Adding a folder that is already a root is a no-op.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path"
+      ],
+      "type": "object"
+    },
+    "ChangesParams": {
+      "description": "Params of the [`Changes`] topic.",
+      "properties": {
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace to watch. It must be open."
+        }
+      },
+      "required": [
+        "workspace"
+      ],
+      "type": "object"
+    },
     "DaemonStatus": {
       "description": "Result of `daemon/status`.",
       "properties": {
@@ -65,6 +103,49 @@
       ],
       "type": "object"
     },
+    "DirEntry": {
+      "description": "One entry of a directory listing.",
+      "properties": {
+        "ignored": {
+          "description": "Whether ignore rules exclude it.",
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/EntryKind",
+          "description": "What it is. For a symlink, the kind of its target."
+        },
+        "mtime": {
+          "description": "Last modification, in Unix milliseconds, if known.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "File name (the last path component).",
+          "type": "string"
+        },
+        "size": {
+          "description": "Size in bytes (of the target, for a symlink; 0 for directories).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "symlink": {
+          "description": "Whether the entry itself is a symlink.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "symlink",
+        "size",
+        "ignored"
+      ],
+      "type": "object"
+    },
     "Encoding": {
       "description": "How a frame's payload is encoded.\n\nJSON is mandatory and is always used for the handshake. MessagePack is\noptional and is switched on for the rest of the connection when both\nsides list it in the handshake; it is intended for hot paths (buffer ops,\ntrace streams).",
       "oneOf": [
@@ -76,6 +157,26 @@
         {
           "const": "msgpack",
           "description": "MessagePack, with structs encoded as maps keyed by field name.",
+          "type": "string"
+        }
+      ]
+    },
+    "EntryKind": {
+      "description": "What a path points at.",
+      "oneOf": [
+        {
+          "const": "file",
+          "description": "A regular file.",
+          "type": "string"
+        },
+        {
+          "const": "dir",
+          "description": "A directory.",
+          "type": "string"
+        },
+        {
+          "const": "other",
+          "description": "Anything else: sockets, devices, and symlinks that are broken or point\noutside the workspace.",
           "type": "string"
         }
       ]
@@ -123,6 +224,109 @@
         "subscription",
         "seq",
         "event"
+      ],
+      "type": "object"
+    },
+    "EventsParams": {
+      "description": "Params of the [`Events`] topic.",
+      "properties": {
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only events of this workspace; omit for every workspace."
+        }
+      },
+      "type": "object"
+    },
+    "FileStat": {
+      "description": "Result of [`Stat`].",
+      "properties": {
+        "ignored": {
+          "description": "Whether ignore rules exclude it.",
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/EntryKind",
+          "description": "What it is. For a symlink, the kind of its target."
+        },
+        "mtime": {
+          "description": "Last modification, in Unix milliseconds, if known.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "size": {
+          "description": "Size in bytes (0 for directories).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "symlink": {
+          "description": "Whether the path itself is a symlink.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "symlink",
+        "size",
+        "ignored"
+      ],
+      "type": "object"
+    },
+    "FileTooLarge": {
+      "description": "`data` of a [`FILE_TOO_LARGE`](super::codes::FILE_TOO_LARGE) error.",
+      "properties": {
+        "limit": {
+          "description": "The limit that applied.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "size": {
+          "description": "The file's size in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "size",
+        "limit"
+      ],
+      "type": "object"
+    },
+    "FsChanges": {
+      "description": "One event of the [`Changes`] topic: paths under one root that changed\nduring a debounce window (about 100 ms).\n\nPaths are reported, not operations: the client re-lists or re-stats them\n(a path that no longer exists was removed). Changes deep inside ignored\ndirectories (such as `target/` or `node_modules/`) and inside `.git` are\nnot reported, but an ignored entry appearing or disappearing directly in\na non-ignored directory is.",
+      "properties": {
+        "paths": {
+          "description": "Changed paths, sorted and without duplicates. Empty when `rescan`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "rescan": {
+          "description": "Too much changed to report individually (or the watcher lost events):\nre-list everything under this root that the client shows.",
+          "type": "boolean"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root the paths are relative to."
+        }
+      },
+      "required": [
+        "root",
+        "paths",
+        "rescan"
       ],
       "type": "object"
     },
@@ -226,6 +430,99 @@
       ],
       "type": "object"
     },
+    "ListDirResult": {
+      "description": "Result of [`ListDir`].",
+      "properties": {
+        "entries": {
+          "description": "Entries: directories first, then files, each sorted by name.",
+          "items": {
+            "$ref": "#/$defs/DirEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "type": "object"
+    },
+    "ListResult": {
+      "description": "Result of [`List`]: a snapshot of every known workspace.",
+      "properties": {
+        "seq": {
+          "description": "The event-log `seq` this snapshot reflects. Subscribe to [`Events`]\nwith `since` set to it to get every later change.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "workspaces": {
+          "description": "Every known workspace, most recently opened first.",
+          "items": {
+            "$ref": "#/$defs/WorkspaceInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "workspaces",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "OpenParams": {
+      "description": "Params of [`Open`]. Give exactly one of `path` and `id`.",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reopen a known workspace."
+        },
+        "name": {
+          "description": "Name for a newly created workspace (default: the folder name).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Open the workspace for this folder, creating it if needed. A\nworkspace whose first root is this folder (after canonicalising\nthe path) is reused, so opening the same folder twice is idempotent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "PathParams": {
+      "description": "Params naming a path in a workspace.",
+      "properties": {
+        "path": {
+          "default": "",
+          "description": "`/`-separated path relative to the root; `\"\"` for the root itself.",
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root the path is relative to."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root"
+      ],
+      "type": "object"
+    },
     "ProtocolVersion": {
       "description": "A protocol version: `major.minor`.",
       "properties": {
@@ -245,6 +542,109 @@
       "required": [
         "major",
         "minor"
+      ],
+      "type": "object"
+    },
+    "ReadParams": {
+      "description": "Params of [`ReadFile`].",
+      "properties": {
+        "maxBytes": {
+          "description": "Fail with [`FILE_TOO_LARGE`](super::codes::FILE_TOO_LARGE) if the\nfile is larger. Default [`DEFAULT_READ_LIMIT`], at most\n[`MAX_READ_LIMIT`].",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "`/`-separated path relative to the root.",
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root the path is relative to."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root",
+        "path"
+      ],
+      "type": "object"
+    },
+    "ReadResult": {
+      "description": "Result of [`ReadFile`].",
+      "properties": {
+        "binary": {
+          "description": "Whether the file is not valid UTF-8 (then `text` is absent).",
+          "type": "boolean"
+        },
+        "mtime": {
+          "description": "Last modification, in Unix milliseconds, if known.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "size": {
+          "description": "Size in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "description": "The contents, if they are valid UTF-8.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "binary",
+        "size"
+      ],
+      "type": "object"
+    },
+    "RemoveRootParams": {
+      "description": "Params of [`RemoveRoot`].",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root to remove. The last root cannot be removed."
+        }
+      },
+      "required": [
+        "id",
+        "root"
+      ],
+      "type": "object"
+    },
+    "RenameParams": {
+      "description": "Params of [`Rename`].",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        },
+        "name": {
+          "description": "The new display name (not empty).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
       ],
       "type": "object"
     },
@@ -274,6 +674,34 @@
         "needed",
         "oldest",
         "head"
+      ],
+      "type": "object"
+    },
+    "RootId": {
+      "description": "Identifies a root within its workspace. Stable for the root's lifetime and\nnever reused within the workspace.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "SetStateParams": {
+      "description": "Params of [`SetState`].",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        },
+        "key": {
+          "description": "The entry to set (1–128 characters).",
+          "type": "string"
+        },
+        "value": {
+          "description": "The new value; `null` removes the entry."
+        }
+      },
+      "required": [
+        "id",
+        "key",
+        "value"
       ],
       "type": "object"
     },
@@ -437,21 +865,238 @@
         "connection"
       ],
       "type": "object"
+    },
+    "WorkspaceEvent": {
+      "description": "One event of the [`Events`] topic.",
+      "oneOf": [
+        {
+          "description": "A workspace was opened (or created and opened).",
+          "properties": {
+            "type": {
+              "const": "opened",
+              "type": "string"
+            },
+            "workspace": {
+              "$ref": "#/$defs/WorkspaceInfo",
+              "description": "The workspace after the change."
+            }
+          },
+          "required": [
+            "type",
+            "workspace"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A workspace was closed.",
+          "properties": {
+            "type": {
+              "const": "closed",
+              "type": "string"
+            },
+            "workspace": {
+              "$ref": "#/$defs/WorkspaceInfo",
+              "description": "The workspace after the change."
+            }
+          },
+          "required": [
+            "type",
+            "workspace"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A workspace's name or roots changed.",
+          "properties": {
+            "type": {
+              "const": "changed",
+              "type": "string"
+            },
+            "workspace": {
+              "$ref": "#/$defs/WorkspaceInfo",
+              "description": "The workspace after the change."
+            }
+          },
+          "required": [
+            "type",
+            "workspace"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A workspace was removed (forgotten; its folders are untouched).",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/WorkspaceId",
+              "description": "The removed workspace."
+            },
+            "type": {
+              "const": "removed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A state entry was set or removed.",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/WorkspaceId",
+              "description": "The workspace."
+            },
+            "key": {
+              "description": "The entry.",
+              "type": "string"
+            },
+            "type": {
+              "const": "stateChanged",
+              "type": "string"
+            },
+            "value": {
+              "description": "The new value; `null` if it was removed."
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "key",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WorkspaceId": {
+      "description": "Stable identifier of a workspace, e.g. `ws-3f2a9c1d0b7e4a65`.",
+      "type": "string"
+    },
+    "WorkspaceInfo": {
+      "description": "A workspace as the daemon knows it.",
+      "properties": {
+        "createdAt": {
+          "description": "When the workspace was created, in Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "id": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "Stable id."
+        },
+        "lastOpenedAt": {
+          "description": "When the workspace was last opened, in Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Display name.",
+          "type": "string"
+        },
+        "open": {
+          "description": "Whether the workspace is open (watched, shown in the rail).",
+          "type": "boolean"
+        },
+        "roots": {
+          "description": "Folder roots, in display order. Never empty.",
+          "items": {
+            "$ref": "#/$defs/WorkspaceRoot"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "roots",
+        "createdAt",
+        "lastOpenedAt",
+        "open"
+      ],
+      "type": "object"
+    },
+    "WorkspaceParams": {
+      "description": "Params naming one workspace.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "WorkspaceRoot": {
+      "description": "One folder root of a workspace.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root's id within the workspace."
+        },
+        "name": {
+          "description": "Display name (the folder name by default).",
+          "type": "string"
+        },
+        "path": {
+          "description": "Absolute, canonical path of the folder.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "name"
+      ],
+      "type": "object"
+    },
+    "WorkspaceState": {
+      "description": "A workspace's persisted state document, e.g. `tabs`, `layout`,\n`settings`. The keys and values belong to the UI; the daemon only stores\nthem.",
+      "properties": {
+        "entries": {
+          "additionalProperties": true,
+          "description": "State entries by key.",
+          "type": "object"
+        },
+        "seq": {
+          "description": "The event-log `seq` this snapshot reflects (see [`ListResult::seq`]).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "entries",
+        "seq"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Coqo Protocol",
   "x-error-codes": {
+    "FILE_TOO_LARGE": 1005,
     "INCOMPATIBLE_PROTOCOL": -32001,
     "INTERNAL_ERROR": -32603,
     "INVALID_PARAMS": -32602,
     "INVALID_REQUEST": -32600,
+    "IO_ERROR": 1009,
     "METHOD_NOT_FOUND": -32601,
+    "NOT_A_DIRECTORY": 1006,
+    "NOT_A_FILE": 1007,
+    "NOT_FOUND": 1004,
     "NOT_INITIALIZED": -32002,
     "PARSE_ERROR": -32700,
+    "PATH_OUTSIDE_WORKSPACE": 1003,
     "REQUEST_CANCELLED": -32005,
     "RESUME_GAP": -32003,
-    "UNKNOWN_SUBSCRIPTION": -32004
+    "UNKNOWN_ROOT": 1002,
+    "UNKNOWN_SUBSCRIPTION": -32004,
+    "UNKNOWN_WORKSPACE": 1001,
+    "WORKSPACE_CLOSED": 1008
   },
   "x-framing": "u32 big-endian payload length, then one JSON-RPC 2.0 message (JSON, or MessagePack if negotiated)",
   "x-methods": {
@@ -524,6 +1169,171 @@
       },
       "result": {
         "$ref": "#/$defs/DaemonStatus"
+      }
+    },
+    "fs/changes": {
+      "description": "Debounced file-system changes in an open workspace (live only).",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/FsChanges"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/ChangesParams"
+      }
+    },
+    "fs/list": {
+      "description": "List a directory in a workspace root.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/PathParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ListDirResult"
+      }
+    },
+    "fs/read": {
+      "description": "Read a file in a workspace root, up to a size limit.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ReadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ReadResult"
+      }
+    },
+    "fs/stat": {
+      "description": "Metadata of one path in a workspace root.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/PathParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FileStat"
+      }
+    },
+    "workspace/addRoot": {
+      "description": "Add a folder root to a workspace.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/AddRootParams"
+      },
+      "result": {
+        "$ref": "#/$defs/WorkspaceInfo"
+      }
+    },
+    "workspace/close": {
+      "description": "Close a workspace (stops its watchers).",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/WorkspaceParams"
+      },
+      "result": {
+        "$ref": "#/$defs/WorkspaceInfo"
+      }
+    },
+    "workspace/events": {
+      "description": "Workspace changes, from the persistent event log (resumable with since).",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/WorkspaceEvent"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/EventsParams"
+      }
+    },
+    "workspace/get": {
+      "description": "One workspace.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/WorkspaceParams"
+      },
+      "result": {
+        "$ref": "#/$defs/WorkspaceInfo"
+      }
+    },
+    "workspace/getState": {
+      "description": "A workspace's persisted state document (tabs, layout, settings overrides).",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/WorkspaceParams"
+      },
+      "result": {
+        "$ref": "#/$defs/WorkspaceState"
+      }
+    },
+    "workspace/list": {
+      "description": "Every known workspace, with the event-log seq the snapshot reflects.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "type": "null"
+      },
+      "result": {
+        "$ref": "#/$defs/ListResult"
+      }
+    },
+    "workspace/open": {
+      "description": "Open (creating if needed) the workspace for a folder, or reopen one by id.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/OpenParams"
+      },
+      "result": {
+        "$ref": "#/$defs/WorkspaceInfo"
+      }
+    },
+    "workspace/remove": {
+      "description": "Forget a workspace and its daemon-side data. Result is true if it existed.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/WorkspaceParams"
+      },
+      "result": {
+        "type": "boolean"
+      }
+    },
+    "workspace/removeRoot": {
+      "description": "Remove a folder root from a workspace.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/RemoveRootParams"
+      },
+      "result": {
+        "$ref": "#/$defs/WorkspaceInfo"
+      }
+    },
+    "workspace/rename": {
+      "description": "Rename a workspace.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/RenameParams"
+      },
+      "result": {
+        "$ref": "#/$defs/WorkspaceInfo"
+      }
+    },
+    "workspace/setState": {
+      "description": "Set (or, with null, remove) one workspace state entry.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SetStateParams"
+      },
+      "result": {
+        "type": "null"
       }
     }
   },

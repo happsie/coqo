@@ -19,23 +19,58 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Schema of the global database, `coqo.db`.
 ///
 /// Append new migrations at the end; never edit one that has shipped.
-pub const GLOBAL_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "event log",
-    // AUTOINCREMENT keeps `seq` strictly increasing even after retention
-    // deletes the newest rows, so a reader's "last seen seq" is never reused.
-    sql: "
-        CREATE TABLE event_log (
-            seq       INTEGER PRIMARY KEY AUTOINCREMENT,
-            workspace TEXT,
-            kind      TEXT    NOT NULL,
-            payload   BLOB    NOT NULL,
-            ts        INTEGER NOT NULL
-        );
-        CREATE INDEX event_log_workspace_seq ON event_log (workspace, seq);
-        CREATE INDEX event_log_ts ON event_log (ts);
-    ",
-}];
+pub const GLOBAL_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "event log",
+        // AUTOINCREMENT keeps `seq` strictly increasing even after retention
+        // deletes the newest rows, so a reader's "last seen seq" is never reused.
+        sql: "
+            CREATE TABLE event_log (
+                seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace TEXT,
+                kind      TEXT    NOT NULL,
+                payload   BLOB    NOT NULL,
+                ts        INTEGER NOT NULL
+            );
+            CREATE INDEX event_log_workspace_seq ON event_log (workspace, seq);
+            CREATE INDEX event_log_ts ON event_log (ts);
+        ",
+    },
+    Migration {
+        version: 2,
+        name: "workspaces",
+        // Workspaces (#22): folder roots with stable ids, plus the UI's
+        // per-workspace state document (tabs, layout hints, settings
+        // overrides) as JSON values by key. Timestamps are Unix milliseconds.
+        sql: "
+            CREATE TABLE workspaces (
+                id             TEXT    PRIMARY KEY NOT NULL,
+                name           TEXT    NOT NULL,
+                created_at     INTEGER NOT NULL,
+                last_opened_at INTEGER NOT NULL,
+                open           INTEGER NOT NULL DEFAULT 0,
+                next_root_id   INTEGER NOT NULL DEFAULT 1
+            ) WITHOUT ROWID;
+            CREATE TABLE workspace_roots (
+                workspace TEXT    NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+                root_id   INTEGER NOT NULL,
+                position  INTEGER NOT NULL,
+                path      TEXT    NOT NULL,
+                name      TEXT    NOT NULL,
+                PRIMARY KEY (workspace, root_id),
+                UNIQUE (workspace, path)
+            ) WITHOUT ROWID;
+            CREATE INDEX workspace_roots_path ON workspace_roots (path);
+            CREATE TABLE workspace_state (
+                workspace TEXT NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+                key       TEXT NOT NULL,
+                value     TEXT NOT NULL,
+                PRIMARY KEY (workspace, key)
+            ) WITHOUT ROWID;
+        ",
+    },
+];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.
 ///
@@ -89,8 +124,9 @@ fn configure(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// The global database, `coqo.db`: workspaces, sessions, transcripts, alerts
-/// and the **event log** (PLAN §8).
+/// The global database, `coqo.db`: workspaces (tables `workspaces`,
+/// `workspace_roots`, `workspace_state`), sessions, transcripts, alerts and
+/// the **event log** (PLAN §8).
 ///
 /// A `GlobalDb` owns one connection and is `Send` but not `Sync`. WAL mode
 /// lets several connections to the same file coexist, so open one per thread
