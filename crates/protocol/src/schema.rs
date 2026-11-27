@@ -213,6 +213,16 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "End a session; its transcript stays readable. Result is true if it was open.",
         ),
+        request::<agents::PermissionRules>(
+            g,
+            "client→server",
+            "A workspace's permission rules (auto-approve and auto-reject), oldest first.",
+        ),
+        request::<agents::DeletePermissionRule>(
+            g,
+            "client→server",
+            "Delete a permission rule. Result is true if it existed.",
+        ),
         topic::<agents::Updates>(
             g,
             "One session's persisted transcript (resumable with since; seqs per session).",
@@ -604,6 +614,8 @@ fn schema_covers_every_builtin_method() {
         agents::Providers::NAME,
         agents::Create::NAME,
         agents::Prompt::NAME,
+        agents::PermissionRules::NAME,
+        agents::DeletePermissionRule::NAME,
         agents::Updates::NAME,
         agents::Changes::NAME,
         buffer::Open::NAME,

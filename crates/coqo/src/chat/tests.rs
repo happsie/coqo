@@ -17,8 +17,8 @@ use coqo_agents::{
     model::{
         AgentState, AuthKind, AuthStatus, AvailableCommand, ContentBlock, PermissionOption,
         PermissionOptionKind, PermissionOutcome, PlanEntry, PlanEntryStatus, ProviderCapabilities,
-        SessionInfo, StopReason, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation,
-        ToolCallStatus, ToolCallUpdate, ToolKind,
+        RuleDecision, SessionInfo, StopReason, ToolCall, ToolCallContent, ToolCallId,
+        ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
     },
     testing::{Call, ScriptedProvider, Step, test_modes},
 };
@@ -512,6 +512,179 @@ fn permission_buttons_answer_with_the_chosen_option() {
     ));
 }
 
+/// A request to run `command`, as an ACP agent sends it, with every kind
+/// of option.
+fn run(id: &str, command: &str) -> Step {
+    let option = |id: &str, name: &str, kind| PermissionOption {
+        id: id.into(),
+        name: name.into(),
+        kind,
+    };
+    Step::Permission(PermissionAsk {
+        title: format!("`{command}`"),
+        tool_call: Some(ToolCallUpdate {
+            id: ToolCallId(id.into()),
+            kind: Some(ToolKind::Execute),
+            raw_input: Some(coqo_ui::serde_json::json!({ "command": command })),
+            ..ToolCallUpdate::default()
+        }),
+        options: vec![
+            option("reject", "Deny", PermissionOptionKind::RejectOnce),
+            option("always", "Always allow", PermissionOptionKind::AllowAlways),
+            option("allow-once", "Allow once", PermissionOptionKind::AllowOnce),
+        ],
+    })
+}
+
+fn selected(option: &str) -> PermissionOutcome {
+    PermissionOutcome::Selected {
+        option_id: option.into(),
+    }
+}
+
+fn pending(ui: &mut Ui, chat: &Entity<ChatTab>) -> Option<usize> {
+    ui.entries(chat)
+        .iter()
+        .position(|e| matches!(e, Entry::Permission { outcome: None, .. }))
+}
+
+fn turns_ended(ui: &mut Ui, chat: &Entity<ChatTab>) {
+    ui.wait_for("the turn's end", |ui| !running(ui, chat));
+}
+
+#[test]
+fn focus_jumps_to_a_permission_request_and_enter_or_esc_answer_it() {
+    let provider = ScriptedProvider::new()
+        .turn([run("t1", "cargo test -p shop"), chunk("Tests pass")])
+        .turn([run("t2", "cargo publish"), chunk("Not published")]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+
+    ui.send(&chat, "Run the tests");
+    ui.wait_for("the permission card", |ui| pending(ui, &chat).is_some());
+    let ix = pending(&mut ui, &chat).unwrap();
+    ui.wait_for("the focus on the card", |ui| {
+        let chat = chat.clone();
+        ui.frame(|window, cx| chat.read(cx).permission_focused(window))
+    });
+    ui.frame(|window, _| {
+        assert!(
+            window.try_find(("chat-permission-command", ix)).is_some(),
+            "the command is previewed"
+        );
+    });
+    ui.press("enter");
+    ui.wait_for("the answer", |ui| ui.agent_text(&chat) == "Tests pass");
+    turns_ended(&mut ui, &chat);
+    ui.wait_for("the focus back in the composer", |ui| {
+        let chat = chat.clone();
+        ui.frame(|window, cx| {
+            let composer = chat.read(cx).composer().read(cx).focus_handle(cx);
+            composer.is_focused(window)
+        })
+    });
+
+    ui.send(&chat, "Publish it");
+    ui.wait_for("the second card", |ui| pending(ui, &chat).is_some());
+    ui.wait_for("the focus on the card", |ui| {
+        let chat = chat.clone();
+        ui.frame(|window, cx| chat.read(cx).permission_focused(window))
+    });
+    ui.press("escape");
+    ui.wait_for("the second answer", |ui| {
+        ui.agent_text(&chat) == "Tests pass|Not published"
+    });
+    assert_eq!(
+        fixture.provider.outcomes(),
+        [selected("allow-once"), selected("reject")],
+        "Enter allows once and Esc denies once, by kind; the turn goes on"
+    );
+}
+
+#[test]
+fn a_remembered_rule_answers_the_next_matching_request_without_a_card() {
+    let provider = ScriptedProvider::new()
+        .turn([run("t1", "cargo test -p shop"), chunk("one")])
+        .turn([run("t2", "cargo test"), chunk("two")])
+        .turn([run("t3", "cargo build"), chunk("three")])
+        .turn([run("t4", "cargo test --release"), chunk("four")]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.wait_for("the empty rules list", |ui| ui.shows("chat-rules"));
+
+    // Asked: tick "remember for this workspace", then allow once.
+    ui.send(&chat, "Run the tests");
+    ui.wait_for("the permission card", |ui| pending(ui, &chat).is_some());
+    let ix = pending(&mut ui, &chat).unwrap();
+    let remember = format!("chat-permission-{ix}-remember");
+    ui.wait_for("the remember box", |ui| ui.shows(&remember));
+    ui.frame(|window, cx| window.click(name(&remember), cx));
+    let allow = format!("chat-permission-{ix}-allow-once");
+    ui.frame(|window, cx| window.click(name(&allow), cx));
+    ui.wait_for("the answer", |ui| ui.agent_text(&chat) == "one");
+    ui.wait_for("the rule in the panel", |ui| {
+        let chat = chat.clone();
+        ui.cx.read(|cx| chat.read(cx).rules().len() == 1)
+    });
+    let rule = ui.cx.read(|cx| chat.read(cx).rules()[0].clone());
+    assert_eq!(
+        (rule.tool, rule.pattern.as_str(), rule.decision),
+        (ToolKind::Execute, "cargo test", RuleDecision::Allow)
+    );
+    ui.wait_for("the rule's row", |ui| {
+        ui.frame(|window, _| window.try_find(("chat-rule", rule.id.0)).is_some())
+    });
+    assert!(matches!(
+        &ui.entries(&chat)[ix],
+        Entry::Permission { remembered: Some(r), .. } if r.id == rule.id
+    ));
+    turns_ended(&mut ui, &chat);
+
+    // The next matching request never shows a card.
+    ui.send(&chat, "Again");
+    ui.wait_for("the answer", |ui| ui.agent_text(&chat) == "one|two");
+    let auto = ui.entry_index(
+        &chat,
+        |e| matches!(e, Entry::Permission { by_rule: Some(r), .. } if r.id == rule.id),
+    );
+    ui.wait_for("the rule's line", |ui| {
+        ui.frame(|window, _| window.try_find(("chat-permission-auto", auto)).is_some())
+    });
+    assert!(ui.listed()[0].state != AgentState::NeedsPermission);
+
+    // Another command is still asked.
+    ui.send(&chat, "Build");
+    ui.wait_for("the third card", |ui| pending(ui, &chat).is_some());
+    let ix = pending(&mut ui, &chat).unwrap();
+    ui.wait_for("the needs-permission dot", |ui| {
+        ui.listed()[0].state == AgentState::NeedsPermission
+    });
+    let button = format!("chat-permission-{ix}-always");
+    ui.frame(|window, cx| window.click(name(&button), cx));
+    ui.wait_for("the answer", |ui| ui.agent_text(&chat) == "one|two|three");
+
+    // Deleted from the panel, the rule no longer answers.
+    ui.frame(|window, cx| window.click(("chat-rule-delete", rule.id.0), cx));
+    ui.wait_for("the rule gone", |ui| {
+        let chat = chat.clone();
+        ui.cx.read(|cx| chat.read(cx).rules().is_empty())
+    });
+    turns_ended(&mut ui, &chat);
+    ui.send(&chat, "Release");
+    ui.wait_for("the fourth card", |ui| pending(ui, &chat).is_some());
+    assert_eq!(
+        fixture.provider.outcomes(),
+        [
+            selected("allow-once"),
+            selected("allow-once"),
+            selected("always"),
+        ],
+        "the provider's own \"always\" option goes to the agent unchanged"
+    );
+}
+
 #[test]
 fn escape_and_stop_cancel_the_running_turn() {
     let never = Arc::new(Notify::new());
@@ -901,7 +1074,8 @@ fn up_in_an_empty_composer_recalls_earlier_prompts() {
 #[ignore = "needs a GPU; run manually"]
 fn chat_screenshots() {
     use coqo_agents::model::{
-        PermissionRequest, PermissionRequestId, SessionId, SessionUpdate, Usage,
+        PermissionRequest, PermissionRequestId, PermissionRule, PermissionRuleId,
+        PermissionRuleSpec, SessionId, SessionUpdate, Usage,
     };
     use coqo_ui::test::render_offscreen;
 
@@ -911,7 +1085,7 @@ fn chat_screenshots() {
     let info = |id: &str, title: &str, state: AgentState, at: i64| SessionInfo {
         id: SessionId(id.into()),
         provider: "claude-acp".into(),
-        workspace: None,
+        workspace: Some("ws-shop".into()),
         cwd: "/work/shop".into(),
         title: Some(title.into()),
         state,
@@ -938,6 +1112,19 @@ fn chat_screenshots() {
             raw_output: None,
         })
     };
+    let rule = |id: u64, tool, pattern: &str, decision| PermissionRule {
+        id: PermissionRuleId(id),
+        workspace: "ws-shop".into(),
+        tool,
+        pattern: pattern.into(),
+        decision,
+        created_at: 0,
+    };
+    let rules = vec![
+        rule(1, ToolKind::Execute, "cargo test", RuleDecision::Allow),
+        rule(2, ToolKind::Edit, "src/**", RuleDecision::Allow),
+        rule(3, ToolKind::Execute, "cargo publish", RuleDecision::Reject),
+    ];
     let step = |content: &str, status| PlanEntry {
         content: content.into(),
         priority: Default::default(),
@@ -995,6 +1182,25 @@ fn chat_screenshots() {
             )],
         ),
         tool("t3", "cargo test -p shop", ToolKind::Execute, vec![]),
+        SessionUpdate::PermissionRequested(PermissionRequest {
+            id: PermissionRequestId(1),
+            title: "`cargo test -p shop`".into(),
+            tool_call: Some(ToolCallUpdate {
+                id: ToolCallId("t3".into()),
+                raw_input: Some(coqo_ui::serde_json::json!({"command": "cargo test -p shop"})),
+                ..ToolCallUpdate::default()
+            }),
+            options: ask().options,
+            suggested_rule: None,
+        }),
+        SessionUpdate::PermissionResolved {
+            request_id: PermissionRequestId(1),
+            outcome: PermissionOutcome::Selected {
+                option_id: "allow-once".into(),
+            },
+            by_rule: Some(rules[0].clone()),
+            remembered: None,
+        },
         SessionUpdate::Plan {
             entries: vec![
                 step("Threshold in ShippingPolicy", PlanEntryStatus::Completed),
@@ -1004,7 +1210,7 @@ fn chat_screenshots() {
             ],
         },
         SessionUpdate::PermissionRequested(PermissionRequest {
-            id: PermissionRequestId(1),
+            id: PermissionRequestId(2),
             title: "Write tests/shipping.rs".into(),
             tool_call: Some(ToolCallUpdate {
                 id: ToolCallId("t4".into()),
@@ -1013,9 +1219,14 @@ fn chat_screenshots() {
                     None,
                     "#[test]\nfn free_from_threshold() {\n    assert_eq!(policy().fee(eur(60)), Money::ZERO);\n}\n",
                 )]),
+                kind: Some(ToolKind::Edit),
                 ..ToolCallUpdate::default()
             }),
             options: ask().options,
+            suggested_rule: Some(PermissionRuleSpec {
+                tool: ToolKind::Edit,
+                pattern: "tests/**".into(),
+            }),
         }),
         SessionUpdate::State {
             state: AgentState::NeedsPermission,
@@ -1030,6 +1241,7 @@ fn chat_screenshots() {
     ];
     for (name, appearance, composing) in shots {
         let updates = updates.clone();
+        let rules = rules.clone();
         let image = render_offscreen(appearance, size(1440., 900.), move |window, cx| {
             crate::shell::init(cx);
             let list = ChatList::global(cx).unwrap();
@@ -1065,6 +1277,7 @@ fn chat_screenshots() {
                         cx,
                     );
                     chat.apply((1..).zip(updates).collect(), cx);
+                    chat.set_preview_rules(rules, cx);
                     if composing {
                         // An @-mention chip, and the popover for `@ship`.
                         chat.set_preview_files(

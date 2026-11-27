@@ -13,8 +13,8 @@ use std::collections::HashMap;
 
 use coqo_protocol::methods::agents::{
     AgentState, AuthKind, AuthStatus, AvailableCommand, ContentBlock, PermissionOutcome,
-    PermissionRequest, PermissionRequestId, PlanEntry, SessionModes, SessionUpdate, StopReason,
-    ToolCall, ToolCallContent, ToolCallId, ToolCallUpdate, Usage,
+    PermissionRequest, PermissionRequestId, PermissionRule, PlanEntry, SessionModes, SessionUpdate,
+    StopReason, ToolCall, ToolCallContent, ToolCallId, ToolCallUpdate, Usage,
 };
 
 use super::diff::DiffPreview;
@@ -130,6 +130,10 @@ pub enum Entry {
     Permission {
         request: Box<PermissionRequest>,
         outcome: Option<PermissionOutcome>,
+        /// The workspace rule that answered it without asking.
+        by_rule: Option<Box<PermissionRule>>,
+        /// The rule the user's answer created.
+        remembered: Option<Box<PermissionRule>>,
     },
     Notice {
         kind: NoticeKind,
@@ -308,6 +312,8 @@ impl Transcript {
                     Entry::Permission {
                         request: Box::new(request),
                         outcome: None,
+                        by_rule: None,
+                        remembered: None,
                     },
                     changes,
                 );
@@ -315,11 +321,20 @@ impl Transcript {
             SessionUpdate::PermissionResolved {
                 request_id,
                 outcome: answer,
+                by_rule: rule,
+                remembered: created,
             } => {
                 if let Some(&ix) = self.permissions.get(&request_id)
-                    && let Entry::Permission { outcome, .. } = &mut self.entries[ix]
+                    && let Entry::Permission {
+                        outcome,
+                        by_rule,
+                        remembered,
+                        ..
+                    } = &mut self.entries[ix]
                 {
                     *outcome = Some(answer);
+                    *by_rule = rule.map(Box::new);
+                    *remembered = created.map(Box::new);
                     changes.update(ix);
                 }
             }
@@ -436,17 +451,29 @@ impl Transcript {
             .or(Some(modes.current_mode_id.as_str()))
     }
 
-    /// Permission requests still waiting for an answer (for the alerts of
-    /// #65).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Permission requests still waiting for an answer, oldest first.
     pub fn pending_permissions(&self) -> impl Iterator<Item = &PermissionRequest> {
         self.entries.iter().filter_map(|e| match e {
             Entry::Permission {
                 request,
                 outcome: None,
+                ..
             } => Some(&**request),
             _ => None,
         })
+    }
+
+    /// The entry of permission request `id`.
+    pub fn permission_index(&self, id: PermissionRequestId) -> Option<usize> {
+        self.permissions.get(&id).copied()
+    }
+
+    /// The tool call `id`, as reported so far.
+    pub fn tool(&self, id: &ToolCallId) -> Option<&ToolEntry> {
+        match self.entries.get(*self.tools.get(id)?)? {
+            Entry::Tool(tool) => Some(tool),
+            _ => None,
+        }
     }
 
     /// Files the agent changed or proposes to change, with `+`/`−` counts
@@ -617,6 +644,7 @@ mod tests {
                         name: "Allow".into(),
                         kind: PermissionOptionKind::AllowOnce,
                     }],
+                    suggested_rule: None,
                 }),
             ),
         ]);
@@ -630,6 +658,8 @@ mod tests {
                 outcome: PermissionOutcome::Selected {
                     option_id: "allow".into(),
                 },
+                by_rule: None,
+                remembered: None,
             },
         )]);
         assert_eq!(t.pending_permissions().count(), 0);

@@ -10,9 +10,11 @@
 //! resubscribes from the last seq it applied; a `RESUME_GAP` starts over.
 //!
 //! The composer (mentions, slash commands, the provider and mode dropdowns,
-//! prompt history) is in [`composer`].
+//! prompt history) is in [`composer`]; permission cards, their keys and the
+//! workspace's permission rules are in [`permission`].
 
 mod composer;
+mod permission;
 
 use std::collections::{HashMap, HashSet};
 
@@ -37,14 +39,14 @@ use coqo_ui::{
     input::{PromptInput, PromptInputEvent},
     serde_json::{Value, json},
     text::markdown,
-    widgets::{Icon, TestSupportExt as _, icon, primary, raised, section_label},
+    widgets::{Icon, TestSupportExt as _, icon, section_label},
 };
 
 use super::{
     CancelTurn, KIND, OpenLocation, SIGN_IN_HELP, agent_dot, attention_label,
     diff::{DiffLine, DiffPreview, LineKind, file_name},
     list::ChatList,
-    transcript::{Entry, NoticeKind, ToolEntry, Transcript, block_text, diffs_of},
+    transcript::{Entry, NoticeKind, ToolEntry, Transcript, block_text},
 };
 use crate::daemon::{Daemon, DaemonError, DaemonEvent, EventStream};
 
@@ -82,6 +84,8 @@ pub struct ChatTab {
     history: Option<usize>,
     /// A provider switch is creating the new session.
     switching: bool,
+    /// Permission focus, "remember" ticks and the workspace's rules.
+    permissions: permission::Permissions,
     _updates: Option<Task<()>>,
     _index: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -154,6 +158,7 @@ impl ChatTab {
             targets: HashMap::new(),
             history: None,
             switching: false,
+            permissions: permission::Permissions::new(cx.focus_handle()),
             _updates: None,
             _index: None,
             _subscriptions: subscriptions,
@@ -282,6 +287,7 @@ impl ChatTab {
             t.commands = snapshot.available_commands;
         }
         self.info = Some(snapshot.info);
+        self.ensure_rules(cx);
         cx.notify();
     }
 
@@ -300,11 +306,13 @@ impl ChatTab {
 
     /// Apply updates and tell the list which rows changed.
     pub fn apply(&mut self, updates: Vec<(u64, SessionUpdate)>, cx: &mut Context<Self>) {
+        self.note_permission_updates(&updates, cx);
         let before = self.transcript.entries.len();
         let changes = self.transcript.apply_all(updates);
         if changes.is_empty() {
             return;
         }
+        self.jump_to_pending();
         let after = self.transcript.entries.len();
         if after > before {
             self.list.splice(before..before, after - before);
@@ -325,7 +333,9 @@ impl ChatTab {
         }
     }
 
-    /// Answer a permission request with one of its options.
+    /// Answer a permission request with one of its options; with its
+    /// "remember for this workspace" ticked, the daemon also stores the
+    /// request's suggested rule.
     pub fn respond(
         &mut self,
         request: PermissionRequestId,
@@ -333,14 +343,18 @@ impl ChatTab {
         cx: &mut Context<Self>,
     ) {
         if let Some(daemon) = Self::daemon(cx) {
+            let remember = self.permissions.remember.contains(&request);
             let call = daemon
                 .read(cx)
                 .request::<RespondPermission>(RespondPermissionParams {
                     session: self.session.clone(),
                     request_id: request,
                     outcome: PermissionOutcome::Selected { option_id: option },
+                    remember,
                 });
             self.spawn_request(call, "Couldn't answer the permission request", cx);
+            self.after_answer(request);
+            cx.notify();
         }
     }
 
@@ -560,12 +574,7 @@ fn format_tokens(n: u64) -> String {
 }
 
 impl ChatTab {
-    fn render_entry(
-        &mut self,
-        ix: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_entry(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let Some(entry) = self.transcript.entries.get(ix).cloned() else {
             return div().into_any_element();
         };
@@ -579,9 +588,19 @@ impl ChatTab {
                 .into_any_element(),
             Entry::Thought { text } => self.render_thought(ix, text, cx),
             Entry::Tool(tool) => self.render_tool(ix, &tool, cx),
-            Entry::Permission { request, outcome } => {
-                self.render_permission(ix, &request, outcome.as_ref(), window, cx)
-            }
+            Entry::Permission {
+                request,
+                outcome,
+                by_rule,
+                remembered,
+            } => self.render_permission(
+                ix,
+                &request,
+                outcome.as_ref(),
+                by_rule.as_deref(),
+                remembered.as_deref(),
+                cx,
+            ),
             Entry::Notice { kind, text } => self.render_notice(ix, kind, text, cx),
         };
         let top = if ix == 0 { px(18.) } else { px(0.) };
@@ -947,115 +966,6 @@ impl ChatTab {
             .into_any_element()
     }
 
-    fn render_permission(
-        &self,
-        ix: usize,
-        request: &PermissionRequest,
-        outcome: Option<&PermissionOutcome>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let t = cx.tokens();
-        let (p, m) = (t.palette.clone(), t.metrics.clone());
-        let diffs = request
-            .tool_call
-            .as_ref()
-            .and_then(|tc| tc.content.as_ref())
-            .map(|c| diffs_of(c))
-            .unwrap_or_default();
-        let pending = outcome.is_none() && !self.is_closed();
-        let mut card = div()
-            .id(("chat-permission", ix))
-            .test_support()
-            .flex()
-            .flex_col()
-            .gap(px(12.))
-            .px(px(16.))
-            .py(px(14.))
-            .rounded(px(16.))
-            .bg(if pending {
-                p.sand.alpha(0.08)
-            } else {
-                p.surface.hsla()
-            })
-            .when(pending, |d| d.border_1().border_color(p.sand.alpha(0.3)))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .child(icon(
-                        Icon::ShieldAlert,
-                        px(18.),
-                        if pending {
-                            p.sand.hsla()
-                        } else {
-                            p.text_subtle.hsla()
-                        },
-                    ))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(request.title.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(m.text_sm)
-                                    .text_color(p.text_muted.hsla())
-                                    .child(if pending {
-                                        "The agent asks for permission".to_owned()
-                                    } else {
-                                        resolved_label(request, outcome)
-                                    }),
-                            ),
-                    ),
-            );
-        if pending {
-            for diff in &diffs {
-                card = card.child(
-                    div()
-                        .font_family(m.font_mono.clone())
-                        .text_size(px(12.))
-                        .child(self.render_diff(diff, cx)),
-                );
-            }
-            let mut options = request.options.clone();
-            options.sort_by_key(|o| option_rank(o.kind));
-            let mut buttons = div().flex().flex_wrap().gap(px(6.));
-            for option in options {
-                let base = div()
-                    .px(px(14.))
-                    .py(px(7.))
-                    .rounded(m.radius_control)
-                    .text_size(m.text_sm)
-                    .cursor_pointer();
-                let base = if option.kind == PermissionOptionKind::AllowOnce {
-                    primary(base, cx)
-                } else {
-                    raised(base, cx).text_color(p.text.hsla())
-                };
-                let (id, request_id) = (option.id.clone(), request.id);
-                buttons = buttons.child(
-                    base.id(ElementId::Name(
-                        format!("chat-permission-{ix}-{}", option.id).into(),
-                    ))
-                    .test_support()
-                    .child(option.name.clone())
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.respond(request_id, id.clone(), cx)),
-                    ),
-                );
-            }
-            card = card.child(buttons);
-        }
-        card.into_any_element()
-    }
-
     fn render_notice(&self, ix: usize, kind: NoticeKind, text: String, cx: &App) -> AnyElement {
         let t = cx.tokens();
         let (p, m) = (&t.palette, &t.metrics);
@@ -1261,6 +1171,7 @@ impl ChatTab {
             .border_color(p.surface.hsla())
             .child(plan)
             .child(changes)
+            .child(self.render_rules(cx))
             .into_any_element()
     }
 }
@@ -1319,7 +1230,8 @@ fn usage_label(t: &Transcript) -> Option<String> {
 }
 
 impl Render for ChatTab {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.apply_focus(window, cx);
         let banners = self.render_banners(cx);
         let composer = self.render_composer(cx);
         let panel = self.render_panel(cx);
@@ -1328,7 +1240,7 @@ impl Render for ChatTab {
         let p = &t.palette;
         let transcript = list(
             self.list.clone(),
-            cx.processor(|this, ix: usize, window, cx| this.render_entry(ix, window, cx)),
+            cx.processor(|this, ix: usize, _, cx| this.render_entry(ix, cx)),
         )
         .size_full();
         let empty = self.transcript.entries.is_empty();

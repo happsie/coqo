@@ -382,7 +382,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 - **Daemon socket:** a user-only directory (verified, never adopted: no symlinks, no other owner, no group or other access), 0600 permissions, a peer credential check (`SO_PEERCRED` / `LOCAL_PEERCRED`), a per-start daemon token in `coqod.token` (0600) that every `coqo/hello` must present, and per-session MCP tokens scoped to a workspace. The daemon token is an ephemeral capability in a user-only runtime file, not a long-lived secret, so it does not go in the keychain. See [ADR 0007](adr/0007-daemon-lifecycle.md).
 - WASM mods are sandboxed through WASI capabilities. Process mods and core mods are trusted and declare their permissions. Every mod install shows its permission list.
 - Trace redaction runs before writing, and tracing is never used against production.
-- Agent permission prompts are always shown, and auto-approve rules can be set per workspace.
+- Agent permission prompts are always shown, and auto-approve rules can be set per workspace. Rules are an allowlist kept by the daemon: they only match simple commands (word-wise prefix) and files inside the workspace's roots (glob), never shell operators, paths outside the workspace or programs such as `rm`, `sudo` or `curl`; everything else is asked ([chat design](design/chat.md#permissions)).
 - Claude credential rules as in §7.3.
 
 ## 10. Repository structure (Cargo workspace)

@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Session persistence in the global database (`agent_sessions`,
-//! `agent_session_updates`; global migration 3).
+//! `agent_session_updates`; global migration 3), and the workspaces'
+//! permission rules (`agent_permission_rules`; global migration 4).
 //!
 //! Synchronous and short: the manager calls it while holding a session's
 //! lock, so updates are written in the order they are streamed.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use coqo_protocol::methods::agents::{AgentState, SessionId, SessionInfo, SessionUpdate};
+use coqo_protocol::methods::agents::{
+    AgentState, PermissionRule, PermissionRuleId, PermissionRuleSpec, RuleDecision, SessionId,
+    SessionInfo, SessionUpdate, ToolKind,
+};
 use coqo_storage::{GlobalDb, StorageError};
 use rusqlite::{OptionalExtension, Row, params};
 
@@ -271,6 +275,110 @@ impl SessionStore {
             .map(|(seq, payload)| Ok((u64_of(seq), serde_json::from_str(&payload)?)))
             .collect()
     }
+
+    // ---- permission rules (`agent_permission_rules`, global migration 4) -----
+
+    /// The folder roots of workspace `workspace` (from `workspace_roots`,
+    /// which the workspace service keeps), in order. Empty if it has none.
+    pub fn workspace_roots(&self, workspace: &str) -> Result<Vec<PathBuf>> {
+        let db = self.db();
+        let mut stmt = db.connection().prepare_cached(
+            "SELECT path FROM workspace_roots WHERE workspace = ?1 ORDER BY position, root_id",
+        )?;
+        let rows = stmt
+            .query_map([workspace], |r| r.get::<_, String>(0).map(PathBuf::from))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
+    /// Workspace `workspace`'s permission rules, oldest first.
+    pub fn rules(&self, workspace: &str) -> Result<Vec<PermissionRule>> {
+        let db = self.db();
+        let mut stmt = db
+            .connection()
+            .prepare_cached(&format!("{RULE_SELECT} WHERE workspace = ?1 ORDER BY id"))?;
+        let rows = stmt
+            .query_map([workspace], rule_row)?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
+    /// Creates a rule, or changes the decision of the workspace's rule with
+    /// the same tool and pattern. Returns the rule.
+    pub fn put_rule(
+        &self,
+        workspace: &str,
+        spec: &PermissionRuleSpec,
+        decision: RuleDecision,
+        ts: i64,
+    ) -> Result<PermissionRule> {
+        let db = self.db();
+        let rule = db
+            .connection()
+            .prepare_cached(&format!(
+                "INSERT INTO agent_permission_rules (workspace, tool, pattern, decision, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (workspace, tool, pattern) DO UPDATE SET
+                     decision = excluded.decision, created_at = excluded.created_at
+                 RETURNING {RULE_COLUMNS}"
+            ))?
+            .query_row(
+                params![
+                    workspace,
+                    tool_str(spec.tool)?,
+                    spec.pattern,
+                    decision_str(decision)?,
+                    ts
+                ],
+                rule_row,
+            )?;
+        Ok(rule)
+    }
+
+    /// Deletes a rule. Returns whether it existed.
+    pub fn delete_rule(&self, id: PermissionRuleId) -> Result<bool> {
+        let db = self.db();
+        let n = db
+            .connection()
+            .prepare_cached("DELETE FROM agent_permission_rules WHERE id = ?1")?
+            .execute([i64_of(id.0)])?;
+        Ok(n > 0)
+    }
+}
+
+const RULE_COLUMNS: &str = "id, workspace, tool, pattern, decision, created_at";
+const RULE_SELECT: &str =
+    "SELECT id, workspace, tool, pattern, decision, created_at FROM agent_permission_rules";
+
+fn json_str(v: serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s,
+        other => other.to_string(),
+    }
+}
+
+fn tool_str(tool: ToolKind) -> Result<String> {
+    Ok(json_str(serde_json::to_value(tool)?))
+}
+
+fn decision_str(decision: RuleDecision) -> Result<String> {
+    Ok(json_str(serde_json::to_value(decision)?))
+}
+
+fn bad_column(e: serde_json::Error) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into())
+}
+
+fn rule_row(row: &Row<'_>) -> rusqlite::Result<PermissionRule> {
+    Ok(PermissionRule {
+        id: PermissionRuleId(u64_of(row.get(0)?)),
+        workspace: row.get(1)?,
+        tool: serde_json::from_value(serde_json::Value::String(row.get(2)?)).map_err(bad_column)?,
+        pattern: row.get(3)?,
+        decision: serde_json::from_value(serde_json::Value::String(row.get(4)?))
+            .map_err(bad_column)?,
+        created_at: row.get(5)?,
+    })
 }
 
 #[cfg(test)]
@@ -341,5 +449,83 @@ mod tests {
             vec![(2, SessionUpdate::Closed)]
         );
         assert_eq!(store.updates_since(&a.info.id, 0, 1).unwrap(), vec![(1, u)]);
+    }
+
+    #[test]
+    fn rules_upsert_list_and_delete() {
+        let store = SessionStore::open_in_memory().unwrap();
+        {
+            let db = store.db();
+            db.connection()
+                .execute_batch(
+                    "INSERT INTO workspaces (id, name, created_at, last_opened_at)
+                         VALUES ('ws', 'app', 0, 0), ('other', 'o', 0, 0);
+                     INSERT INTO workspace_roots (workspace, root_id, position, path, name)
+                         VALUES ('ws', 2, 1, '/b', 'b'), ('ws', 1, 0, '/a', 'a');",
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            store.workspace_roots("ws").unwrap(),
+            [PathBuf::from("/a"), PathBuf::from("/b")]
+        );
+        assert!(store.workspace_roots("none").unwrap().is_empty());
+
+        let spec = |tool, pattern: &str| PermissionRuleSpec {
+            tool,
+            pattern: pattern.into(),
+        };
+        let test = store
+            .put_rule(
+                "ws",
+                &spec(ToolKind::Execute, "cargo test"),
+                RuleDecision::Allow,
+                5,
+            )
+            .unwrap();
+        let src = store
+            .put_rule(
+                "ws",
+                &spec(ToolKind::Edit, "src/**"),
+                RuleDecision::Allow,
+                6,
+            )
+            .unwrap();
+        store
+            .put_rule("other", &spec(ToolKind::Read, "**"), RuleDecision::Allow, 7)
+            .unwrap();
+        assert_eq!(store.rules("ws").unwrap(), [test.clone(), src.clone()]);
+        assert_eq!(test.workspace, "ws");
+        assert_eq!(test.created_at, 5);
+
+        // The same tool and pattern again changes the decision, in place.
+        let flipped = store
+            .put_rule(
+                "ws",
+                &spec(ToolKind::Execute, "cargo test"),
+                RuleDecision::Reject,
+                8,
+            )
+            .unwrap();
+        assert_eq!(flipped.id, test.id);
+        assert_eq!(flipped.decision, RuleDecision::Reject);
+        assert_eq!(store.rules("ws").unwrap().len(), 2);
+
+        assert!(store.delete_rule(src.id).unwrap());
+        assert!(!store.delete_rule(src.id).unwrap());
+        assert_eq!(store.rules("ws").unwrap(), [flipped]);
+        // Rules go with their workspace.
+        store
+            .db()
+            .connection()
+            .execute("DELETE FROM workspaces WHERE id = 'ws'", [])
+            .unwrap();
+        assert!(store.rules("ws").unwrap().is_empty());
+        assert!(
+            store
+                .put_rule("gone", &spec(ToolKind::Read, "**"), RuleDecision::Allow, 9)
+                .is_err(),
+            "only for a known workspace"
+        );
     }
 }

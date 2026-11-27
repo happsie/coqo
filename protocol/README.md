@@ -223,9 +223,11 @@ Service `coqo.agents@1` (PLAN §7.3; types in `coqo_protocol::methods::agents`, 
 | `sessions/create` | `{provider, cwd, workspace?, title?, mode?}` | `SessionInfo`. The provider session starts right away, so modes and slash commands arrive before the first prompt. |
 | `sessions/prompt` | `{session, content: ContentBlock[]}` | `{turn, seq}` once the turn has started; `SESSION_BUSY` while one runs. |
 | `sessions/cancel` | `{session}` | `true` if a turn was running. Pending permission requests resolve as `cancelled`. |
-| `sessions/respondPermission` | `{session, requestId, outcome}` | `null`. `outcome` is `{"outcome": "selected", "optionId"}` or `{"outcome": "cancelled"}`. |
+| `sessions/respondPermission` | `{session, requestId, outcome, remember?}` | `null`. `outcome` is `{"outcome": "selected", "optionId"}` or `{"outcome": "cancelled"}`. With `remember: true` the request's `suggestedRule` is also stored for the session's workspace, as an allow or deny rule after the chosen option's kind; the option still goes to the agent unchanged. `INVALID_PARAMS` if the request has no `suggestedRule` or the outcome is `cancelled`. |
 | `sessions/setMode` | `{session, modeId}` | `null`. |
 | `sessions/close` | `{session}` | `true` if it was open. Cancels a running turn; the transcript stays readable. |
+| `agents/permissionRules` | `{workspace}` | `PermissionRule[]`, oldest first: `{id, workspace, tool, pattern, decision, createdAt}`. |
+| `agents/deletePermissionRule` | `{id}` | `true` if it existed. |
 
 | Topic | Params | Events |
 |---|---|---|
@@ -233,6 +235,8 @@ Service `coqo.agents@1` (PLAN §7.3; types in `coqo_protocol::methods::agents`, 
 | `sessions/changes` | `{workspace?}` | `SessionInfo` whenever a session's state, title, mode or closed flag changes. Resuming replays only each session's latest info, so seqs skip values. |
 
 **States** (`SessionInfo.state`): `idle` → `working` → (`needs_permission` → `working`) → `done`, or `idle` after a cancel, or `error` (with `stateReason`). Providers may also report `needs_input` and `blocked`. A turn cut off by a daemon stop or crash ends with `stopReason: interrupted` and leaves the session in `error`; the next prompt resumes the provider session.
+
+**Permission rules** (per workspace, in `coqo.db`, kept across restarts): before a permission request reaches any UI, the daemon checks the workspace's rules. `tool` is `execute` (`pattern` is a word-wise command prefix such as `cargo test`), `edit` or `read` (`pattern` is a glob over root-relative paths such as `src/**`); `decision` is `allow` or `reject`, and a reject rule wins. A rule only matches a request Coqo can read exactly: a simple command (no shell operators, redirections, substitutions, globs, `~` or `..`, absolute paths inside the workspace only, no code flags such as `-c`, never programs such as `rm`, `sudo`, `curl` or a shell), or files that all resolve inside the workspace's roots. Such a request carries `suggestedRule` (`{tool, pattern}`). A matched request is recorded as `permission_requested` followed at once by `permission_resolved` with `byRule` (the rule), answered with the `allow_once` option (else `allow_always`) or `reject_once` (else `reject_always`); the state stays `working`. A `permission_resolved` that created a rule carries it as `remembered`. Anything else is asked: the default is ask.
 
 **Reattach** (chat tab): `sessions/get`, then `coqo/subscribe` to `sessions/updates` with `since: 0` for the whole transcript or `since: <last seq seen>`; on `RESUME_GAP`, take a fresh snapshot.
 
