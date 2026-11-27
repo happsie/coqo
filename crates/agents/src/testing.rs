@@ -4,7 +4,8 @@
 //!
 //! Each prompt plays the next scripted turn: updates, permission requests,
 //! waits and a stop reason. Everything the manager asks of it is recorded in
-//! [`ScriptedProvider::calls`].
+//! [`ScriptedProvider::calls`], and the context of each start and resume in
+//! [`ScriptedProvider::contexts`].
 //!
 //! ```
 //! use coqo_agents::testing::{ScriptedProvider, Step};
@@ -97,11 +98,13 @@ struct Script {
     on_start: Vec<AgentUpdate>,
     on_resume: Vec<AgentUpdate>,
     fail_start: Option<ProviderError>,
+    fail_resume: Option<ProviderError>,
     /// The status reported, and what each action changes it to.
     status: Mutex<Option<ProviderStatus>>,
     actions: Vec<(String, Option<ProviderStatus>)>,
     turns: Mutex<VecDeque<Vec<Step>>>,
     calls: Mutex<Vec<Call>>,
+    contexts: Mutex<Vec<SessionContext>>,
     outcomes: Mutex<Vec<PermissionOutcome>>,
     next_session: AtomicU64,
 }
@@ -187,6 +190,11 @@ impl ScriptedProvider {
         self.edit(|s| s.fail_start = Some(error))
     }
 
+    /// Fail every `resume_session` with `error`.
+    pub fn fail_resume(self, error: ProviderError) -> Self {
+        self.edit(|s| s.fail_resume = Some(error))
+    }
+
     /// Reports `status` in `agents/providers`.
     pub fn status(self, status: ProviderStatus) -> Self {
         self.edit(|s| *lock(&s.status) = Some(status))
@@ -212,6 +220,13 @@ impl ScriptedProvider {
     /// Everything the manager asked, in order.
     pub fn calls(&self) -> Vec<Call> {
         lock(&self.script.calls).clone()
+    }
+
+    /// The context of each `start_session` and `resume_session`, in order:
+    /// what a real provider would launch the agent with, MCP servers
+    /// included.
+    pub fn contexts(&self) -> Vec<SessionContext> {
+        lock(&self.script.contexts).clone()
     }
 
     /// The answers to its permission requests, in order.
@@ -263,6 +278,7 @@ impl AgentProvider for ScriptedProvider {
             cwd: cx.cwd.display().to_string(),
             mcp_servers: cx.mcp_servers.iter().map(|m| m.name.clone()).collect(),
         });
+        lock(&self.script.contexts).push(cx);
         let result = match &self.script.fail_start {
             Some(e) => Err(e.clone()),
             None => {
@@ -282,6 +298,10 @@ impl AgentProvider for ScriptedProvider {
         events: SessionEvents,
     ) -> BoxFuture<'_, Result<Arc<dyn ProviderSession>, ProviderError>> {
         self.call(Call::Resume(request.provider_session.clone()));
+        lock(&self.script.contexts).push(request.context);
+        if let Some(e) = &self.script.fail_resume {
+            return Box::pin(std::future::ready(Err(e.clone())));
+        }
         for u in &self.script.on_resume {
             events.update(u.clone());
         }

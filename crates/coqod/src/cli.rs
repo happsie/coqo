@@ -40,8 +40,8 @@ Environment:
   COQO_DATA_DIR     Data directory (default: $XDG_DATA_HOME/coqo,
                     ~/Library/Application Support/Coqo).
   COQO_LOG          Log filter, e.g. `debug` or `coqod=debug,info`.
-  COQO_EDITOR_MCP   `1` to give agent sessions the coqo-editor MCP server
-                    (`coqod mcp`). Off by default for now.
+  COQO_EDITOR_MCP   `0` to leave the coqo-editor MCP server (`coqod mcp`)
+                    out of agent sessions, for debugging. On by default.
 ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

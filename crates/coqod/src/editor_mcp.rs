@@ -16,8 +16,12 @@
 //! tokens stop working and the bridge's connection is cut, so the bridge
 //! exits.
 //!
-//! The server is injected only with `COQO_EDITOR_MCP=1` for now
-//! ([`enabled`]); turning it on for every provider is #71.
+//! Every agent session with a workspace gets the server ([`source`]):
+//! each start and resume, and the fresh start after a failed resume. Set
+//! `COQO_EDITOR_MCP=0` to leave it out, for debugging an agent without it.
+//! Providers merge it with the agent's own MCP configuration: the Claude
+//! adapter loads the user's Claude Code settings (`settingSources` user,
+//! project and local) and adds Coqo's servers to them (ADR 0012).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,12 +37,52 @@ use tokio_util::sync::CancellationToken;
 use crate::auth::{Auth, TICKET_TTL};
 use crate::daemon::DaemonContext;
 
-/// Set to `1` (or `true`, `on`) to inject the server into agent sessions.
-pub const ENABLE_ENV: &str = "COQO_EDITOR_MCP";
+/// Set to `0` (or `false`, `off`) to leave the server out of agent
+/// sessions. It is on by default.
+pub const SWITCH_ENV: &str = "COQO_EDITOR_MCP";
 
-/// Whether [`ENABLE_ENV`] turns the server on.
-pub fn enabled() -> bool {
-    std::env::var(ENABLE_ENV).is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "on"))
+/// Whether a [`SWITCH_ENV`] value turns the server off.
+pub fn switched_off(value: Option<&str>) -> bool {
+    value.is_some_and(|v| {
+        let v = v.trim();
+        ["0", "false", "off", "no"]
+            .iter()
+            .any(|off| v.eq_ignore_ascii_case(off))
+    })
+}
+
+/// The session manager's MCP server source for this daemon
+/// (`ManagerOptions::mcp_servers`): `coqo-editor` for every session, unless
+/// [`SWITCH_ENV`] turns it off.
+pub fn source(ctx: &DaemonContext) -> Result<Option<McpServerSource>> {
+    if switched_off(std::env::var(SWITCH_ENV).ok().as_deref()) {
+        tracing::info!("{SWITCH_ENV} is off: agent sessions get no coqo-editor MCP server");
+        return Ok(None);
+    }
+    Ok(Some(EditorMcp::for_daemon(ctx)?.source()))
+}
+
+/// The running `coqod`, as an absolute path an agent can launch.
+///
+/// `current_exe` is already resolved on Linux (`/proc/self/exe`) but can be
+/// a symlink on macOS, so it is canonicalized. When the binary was replaced
+/// while the daemon runs (a rebuild under `target/release`), Linux names it
+/// `<path> (deleted)`. The bridge is then launched from the new binary at
+/// the same path, which speaks the same protocol unless the rebuild changed
+/// it.
+pub fn coqod_binary() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("cannot find the coqod binary")?;
+    let exe = match exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+        Some(path) if !exe.exists() => {
+            tracing::warn!(
+                path,
+                "coqod was replaced while running; agents launch the new binary"
+            );
+            PathBuf::from(path)
+        }
+        _ => exe,
+    };
+    Ok(exe.canonicalize().unwrap_or(exe))
 }
 
 /// How the daemon launches `coqod mcp` for a session.
@@ -58,7 +102,7 @@ impl EditorMcp {
     /// For this daemon: its own binary, runtime directory and tokens.
     pub fn for_daemon(ctx: &DaemonContext) -> Result<Self> {
         Ok(Self {
-            program: std::env::current_exe().context("cannot find the coqod binary")?,
+            program: coqod_binary()?,
             paths: ctx.paths.clone(),
             auth: ctx.auth.clone(),
             ttl: TICKET_TTL,

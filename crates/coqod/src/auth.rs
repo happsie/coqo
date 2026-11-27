@@ -51,7 +51,8 @@ pub fn generate_token() -> io::Result<SessionToken> {
 
 /// How long a one-time token from [`Auth::issue_ticket`] stays valid by
 /// default: an ACP agent starts its MCP servers within a few seconds of
-/// `session/new` (ADR 0005 measured 1-2 s).
+/// `session/new` (ADR 0005 measured 1-2 s; with the Claude adapter, the
+/// bridge redeems its token 0.5-0.9 s after it is issued, ADR 0012).
 pub const TICKET_TTL: Duration = Duration::from_secs(60);
 
 /// An agent session: (workspace, session).
@@ -75,6 +76,7 @@ struct Tokens {
 struct Ticket {
     token: SessionToken,
     scope: Scope,
+    issued: Instant,
     expires: Instant,
 }
 
@@ -162,10 +164,12 @@ impl Auth {
         ttl: Duration,
     ) -> io::Result<SessionToken> {
         let token = generate_token()?;
+        let issued = Instant::now();
         let ticket = Ticket {
             token: token.clone(),
             scope: session_scope(workspace, session),
-            expires: Instant::now() + ttl,
+            issued,
+            expires: issued + ttl,
         };
         let mut tokens = self.lock();
         let now = Instant::now();
@@ -235,7 +239,14 @@ impl Auth {
         }
         if let Some(i) = ticket {
             // One use only.
-            scope = Some(tokens.tickets.swap_remove(i).scope);
+            let ticket = tokens.tickets.swap_remove(i);
+            // How long agents take to start their MCP servers, to check
+            // `TICKET_TTL` against (ADR 0012).
+            tracing::debug!(
+                age = ?now.saturating_duration_since(ticket.issued),
+                "one-time token redeemed"
+            );
+            scope = Some(ticket.scope);
         }
         scope.ok_or_else(|| {
             Unauthorized(
