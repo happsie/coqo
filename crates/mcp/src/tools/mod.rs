@@ -2,17 +2,17 @@
 
 //! The tools every `coqo-editor` server offers (PLAN §7.4).
 //!
+//! A core tool exists only for what the agent's own tools cannot do: the
+//! editor's live state, the user, and Coqo's own features (ADR 0014,
+//! *Editor-only tools*). Reading, listing and searching files, outlines and
+//! code navigation are left to the harness (Claude Code's Read, Glob, Grep).
+//!
 //! Core tools run in the bridge and reach editor state through daemon
 //! methods on the session-scoped connection:
 //!
 //! | Tool | What | Daemon methods |
 //! |---|---|---|
-//! | `workspace_info` | the workspace's id, name and roots | `workspace/get` |
-//! | `read_file` | a text file as saved | `fs/read` |
-//! | `list_files` | a folder's entries, optionally recursive | `fs/list` |
-//! | `find_files` | files whose path matches a query | `fs/list` |
-//! | `file_outline` | a file's symbols as a tree (tree-sitter) | `buffer/open`, `syntax/outline` |
-//! | `editor_context` | open tabs, active file, selections, visible lines | `editor/getContext` |
+//! | `editor_context` | the workspace's roots, open tabs, active file, selections, visible lines | `workspace/get`, `editor/getContext` |
 //! | `editor_reveal` | open a file in the editor and select a range | `editor/reveal` |
 //! | `set_status` | tell the user what the agent is doing (status line, progress, state) | `sessions/setStatus` |
 //! | `ask_question` | a question pinned to code; waits for the answer unless `wait: false` | `questions/create`, `questions/watch` |
@@ -36,26 +36,17 @@ use crate::registry::{Tool, ToolContext, ToolError, ToolRegistry};
 mod criteria;
 pub mod daemon;
 mod editor;
-mod files;
 pub mod questions;
 mod status;
-mod syntax;
 
 pub use criteria::SetAcceptanceCriteriaTool;
 pub use editor::{EditorContextTool, EditorRevealTool};
-pub use files::{FindFilesTool, ListFilesTool, ReadFileTool, WorkspaceInfoTool};
 pub use questions::{AnnotateTool, AskQuestionTool, AwaitAnswerTool};
 pub use status::SetStatusTool;
-pub use syntax::FileOutlineTool;
 
 /// Register the core tools.
 pub fn core(registry: &ToolRegistry) {
-    let tools: [Arc<dyn Tool>; 12] = [
-        Arc::new(WorkspaceInfoTool),
-        Arc::new(ReadFileTool),
-        Arc::new(ListFilesTool),
-        Arc::new(FindFilesTool),
-        Arc::new(FileOutlineTool),
+    let tools: [Arc<dyn Tool>; 7] = [
         Arc::new(EditorContextTool),
         Arc::new(EditorRevealTool),
         Arc::new(SetStatusTool),
@@ -79,7 +70,8 @@ pub(crate) async fn workspace(cx: &ToolContext) -> Result<WorkspaceInfo, ToolErr
         .await?)
 }
 
-/// The `path` and `root` schema properties every file tool takes.
+/// The `path` and `root` schema properties every tool that names a file
+/// takes.
 pub(crate) fn path_properties(what: &str) -> Map<String, Value> {
     let Value::Object(props) = json!({
         "path": {
@@ -89,7 +81,7 @@ pub(crate) fn path_properties(what: &str) -> Map<String, Value> {
         "root": {
             "type": "integer",
             "minimum": 0,
-            "description": "Root id from workspace_info. Default: the first root, or the root an absolute path is in.",
+            "description": "Root id from editor_context. Default: the first root, or the root an absolute path is in.",
         },
     }) else {
         unreachable!("an object literal")

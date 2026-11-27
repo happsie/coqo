@@ -207,14 +207,16 @@ async fn coqod_mcp_serves_stdio_with_the_token_off_argv() {
     agent.initialize();
     let r = agent.request(
         "tools/call",
-        json!({ "name": "workspace_info", "arguments": {} }),
+        json!({ "name": "editor_context", "arguments": {} }),
     );
-    assert_eq!(r["result"]["structuredContent"]["id"], ws.id.0, "{r}");
+    let workspace = &r["result"]["structuredContent"]["workspace"];
+    assert_eq!(workspace["id"], ws.id.0, "{r}");
     let r = agent.request(
         "tools/call",
-        json!({ "name": "read_file", "arguments": { "path": "a.txt" } }),
+        json!({ "name": "editor_reveal", "arguments": { "path": "a.txt" } }),
     );
-    assert_eq!(r["result"]["content"][0]["text"], "text\n", "{r}");
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    assert_eq!(r["result"]["structuredContent"]["delivered"], false, "{r}");
 
     // stdin EOF: a clean exit.
     let (status, stderr) = agent.wait();

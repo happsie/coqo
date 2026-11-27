@@ -94,14 +94,11 @@ async fn project(ui: &Client) -> (TempDir, WorkspaceInfo) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
     };
-    write(".gitignore", "target/\n");
     write("README.md", "# Demo\n");
     write(
         "src/main.rs",
         "struct Circle { r: f64 }\n\nimpl Circle {\n    fn area(&self) -> f64 {\n        3.14 * self.r * self.r\n    }\n}\n\nfn main() {}\n",
     );
-    write("src/files/tree.rs", "pub fn tree() {}\n");
-    write("target/out.txt", "build output\n");
     let info = ui
         .request::<wsm::Open>(wsm::OpenParams {
             path: Some(dir.path().to_str().unwrap().to_owned()),
@@ -266,87 +263,33 @@ async fn core_tools_end_to_end() {
     let token = h.ctx.auth.mint_session(a.id.0.clone(), "s-1").unwrap();
     let mut agent = Agent::start(h.connect(token).await, &a).await;
 
-    let names = agent.names().await;
-    for name in [
-        "workspace_info",
-        "read_file",
-        "list_files",
-        "find_files",
-        "file_outline",
-        "editor_context",
-        "editor_reveal",
-        PROBE_TOOL,
-    ] {
-        assert!(names.iter().any(|n| n == name), "{name} in {names:?}");
-    }
-
-    // workspace_info, read_file
-    let info = agent.ok("workspace_info", json!({})).await;
-    assert_eq!(info["structuredContent"]["id"], json!(a.id));
-    let file = agent.ok("read_file", json!({ "path": "README.md" })).await;
-    assert_eq!(text(&file), "# Demo\n");
-
-    // list_files: ignored entries left out unless asked for.
-    let list = agent.ok("list_files", json!({})).await;
-    let listing = text(&list);
-    assert!(
-        listing.ends_with("\nsrc/") && listing.contains("\nREADME.md\n"),
-        "{listing}"
-    );
-    assert!(!listing.contains("target"), "{listing}");
-    let list = agent
-        .ok("list_files", json!({ "depth": 3, "include_ignored": true }))
-        .await;
-    let paths: Vec<_> = list["structuredContent"]["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| e["path"].as_str().unwrap().to_owned())
-        .collect();
-    for path in ["src/files/tree.rs", "target/out.txt", "src/main.rs"] {
-        assert!(paths.iter().any(|p| p == path), "{path} in {paths:?}");
-    }
-    let list = agent
-        .ok("list_files", json!({ "path": "src", "limit": 1 }))
-        .await;
-    assert_eq!(list["structuredContent"]["truncated"], true, "{list}");
-
-    // find_files: best matches first, absolute paths.
-    let found = agent.ok("find_files", json!({ "query": "tree" })).await;
-    let matches = found["structuredContent"]["matches"]
-        .as_array()
-        .unwrap()
-        .clone();
+    // Exactly the editor-only tools, plus mod tools (ADR 0014).
+    let mut names = agent.names().await;
+    names.sort();
     assert_eq!(
-        matches[0],
-        json!(format!("{}/src/files/tree.rs", root(&a))),
-        "{found}"
+        names,
+        [
+            "annotate",
+            "ask_question",
+            "await_answer",
+            "editor_context",
+            "editor_reveal",
+            PROBE_TOOL,
+            "set_acceptance_criteria",
+            "set_status",
+        ]
     );
-    let found = agent.ok("find_files", json!({ "query": "out.txt" })).await;
-    assert_eq!(found["structuredContent"]["total"], 0, "ignored: {found}");
 
-    // file_outline: tree-sitter symbols with 1-based lines.
-    let outline = agent
-        .ok("file_outline", json!({ "path": "src/main.rs" }))
-        .await;
-    let outline_text = text(&outline);
-    assert!(
-        outline_text.contains("struct Circle (line 1)"),
-        "{outline_text}"
-    );
-    assert!(
-        outline_text.contains("\nimpl Circle (lines 3-7)\n  method area (lines 4-6)\n"),
-        "{outline_text}"
-    );
-    assert!(
-        outline_text.contains("function main (line 9)"),
-        "{outline_text}"
-    );
-    assert_eq!(outline["structuredContent"]["language"], "rust");
-
-    // editor_context: nothing until a UI window publishes.
+    // editor_context: the workspace's roots and the session, and no
+    // window until a UI publishes.
     let cx = agent.ok("editor_context", json!({})).await;
     assert_eq!(cx["structuredContent"]["attached"], false);
+    assert_eq!(cx["structuredContent"]["workspace"]["id"], json!(a.id));
+    assert_eq!(cx["structuredContent"]["workspace"]["session"], "s-1");
+    assert_eq!(
+        cx["structuredContent"]["workspace"]["roots"][0]["path"],
+        json!(root(&a))
+    );
     ui.notify::<edm::PublishContext>(PublishContextParams {
         workspace: a.id.clone(),
         window: "w-1".into(),
@@ -444,9 +387,9 @@ async fn core_tools_end_to_end() {
     // Bad arguments are tool errors the model can read.
     assert!(
         agent
-            .error("list_files", json!({ "depth": 0 }))
+            .error("editor_reveal", json!({ "path": main, "line": 0 }))
             .await
-            .contains("`depth` must be at least 1")
+            .contains("`line` must be at least 1")
     );
     assert!(
         agent
@@ -456,7 +399,7 @@ async fn core_tools_end_to_end() {
     );
     assert!(
         agent
-            .error("file_outline", json!({ "path": "/etc/passwd" }))
+            .error("editor_reveal", json!({ "path": "/etc/passwd" }))
             .await
             .contains("outside the workspace")
     );
@@ -472,11 +415,6 @@ async fn other_workspaces_are_forbidden() {
     let token = h.ctx.auth.mint_session(a.id.0.clone(), "s-1").unwrap();
     let mut agent = Agent::start(h.connect(token).await, &b).await;
     for (name, args) in [
-        ("workspace_info", json!({})),
-        ("read_file", json!({ "path": "README.md" })),
-        ("list_files", json!({})),
-        ("find_files", json!({ "query": "main" })),
-        ("file_outline", json!({ "path": "src/main.rs" })),
         ("editor_context", json!({})),
         ("editor_reveal", json!({ "path": "src/main.rs" })),
     ] {
