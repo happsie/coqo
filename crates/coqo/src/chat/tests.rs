@@ -1804,7 +1804,7 @@ fn walkthrough_summary(
 }
 
 #[test]
-fn a_published_walkthrough_shows_as_a_card_and_opens_where_it_starts() {
+fn a_published_walkthrough_shows_as_a_card_and_opens_its_player() {
     let next = Arc::new(Notify::new());
     let provider =
         ScriptedProvider::new().turn([Step::Wait(next.clone()), Step::Stop(StopReason::EndTurn)]);
@@ -1861,13 +1861,16 @@ fn a_published_walkthrough_shows_as_a_card_and_opens_where_it_starts() {
         assert!(window.try_find(("chat-walkthrough-row", 0usize)).is_some());
     });
 
-    // Clicking the panel's row opens the first step's file.
+    // Clicking the panel's row opens the walkthrough's player (#100).
     ui.frame(|window, cx| window.click(("chat-walkthrough-row", 0usize), cx));
-    let key = editor::key(&ws.id, ws.roots[0].id, "src/main.rs");
+    let key = crate::walkthrough::player::key(&summary.id);
     let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
-    ui.wait_for("the file tab", |ui| {
-        ui.cx
-            .read(|cx| dock.read(cx).find_tab(editor::KIND, &key, cx).is_some())
+    ui.wait_for("the player tab", |ui| {
+        ui.cx.read(|cx| {
+            dock.read(cx)
+                .find_tab(crate::walkthrough::player::KIND, &key, cx)
+                .is_some()
+        })
     });
     next.notify_one();
     ui.wait_for("the end of the turn", |ui| !running(ui, &chat));

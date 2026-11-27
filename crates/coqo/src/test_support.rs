@@ -232,8 +232,8 @@ impl Fixture {
     }
 }
 
-/// The daemon's workspace, session, buffer, question and alert services on
-/// a socket, with a scripted agent as the provider "fake".
+/// The daemon's workspace, session, buffer, question, walkthrough and alert
+/// services on a socket, with a scripted agent as the provider "fake".
 pub struct AgentDaemon {
     pub runtime: Runtime,
     pub paths: DaemonPaths,
@@ -279,6 +279,13 @@ impl AgentDaemon {
             Some(manager.clone()),
         )
         .unwrap();
+        let walkthroughs = coqod::walkthroughs::WalkthroughService::open(
+            &db,
+            Arc::clone(&workspaces),
+            Arc::clone(&buffers),
+            Some(manager.clone()),
+        )
+        .unwrap();
         let alerts = coqod::alerts::AlertService::open(&db, None).unwrap();
         coqod::alerts::agents::AgentSource::new(
             Arc::clone(&alerts),
@@ -289,6 +296,7 @@ impl AgentDaemon {
         let router = coqod::workspace::register(Router::new(), workspaces);
         let router = coqo_agents::rpc::register(router, manager);
         let router = coqod::questions::register(router, questions);
+        let router = coqod::walkthroughs::register(router, walkthroughs);
         let router = coqod::buffers::register(router, buffers);
         let router = coqod::alerts::register(router, alerts);
         let server = Server::new(router, ServerConfig::new("coqod", "test"));

@@ -30,11 +30,11 @@ The stored walkthrough adds the id (a slug of the title and 8 random hex digits:
 
 **The tool** is a core bridge tool (`crates/mcp/src/tools/walkthrough.rs`), a Coqo feature no harness has (ADR 0014). Its description says when: after finishing a change and before saying it is done, with the reading order and how to anchor. The bridge now serves MCP resources (`crates/mcp/src/resources.rs`), so far the schema.
 
-**UI until the player (#100).** The chat shows a card, "Walkthrough published: <title> · n steps", and the session panel a "Walkthroughs" card listing the session's; either opens the first step's lines in a file tab with them selected (`OpenLocation` grew an `end` line).
+**UI.** The chat shows a card, "Walkthrough published: <title> · n steps", and the session panel a "Walkthroughs" card listing the session's; either opens the walkthrough's player (#100, [design](../design/walkthrough.md)) at the first unread step, with the step's popover at its code.
 
 ## Consequences
 
 - An agent fixes a bad walkthrough in one round trip, and a walkthrough that is stored always points at real code with resolvable revisions.
-- Anchors are resolved on every `get` and not rebased in storage; the player re-resolves as the user edits. Live tracking like questions' (ADR 0016) can come with the player if needed.
+- Anchors are resolved on every `get` and not rebased in storage; the player re-resolves as the user edits. The player (#100) re-reads on `walkthroughs/changes`; between reads its markers follow edits as the editor's markers do.
 - The coverage guard (#99) has the scope's commits, the anchors and `trivialHunks`; the player (#100) has `get`, `setStepState` and `changes`.
 - The protocol grows `methods::walkthroughs`, two error codes (`UNKNOWN_WALKTHROUGH` 1701, `INVALID_WALKTHROUGH` 1702) and the `walkthrough` transcript update; a UI from before ignores the update, a daemon from before answers `METHOD_NOT_FOUND`.
