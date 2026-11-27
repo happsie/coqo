@@ -1855,11 +1855,13 @@ fn uncovered_hunks_are_flagged_and_open_their_lines() {
         ui.cx
             .read(|cx| dock.read(cx).find_tab(editor::KIND, &key, cx).is_some())
     });
-    let start = editor::key(&ws.id, ws.roots[0].id, "src/other.rs");
+    let player = crate::walkthrough::player::key(&summary.id);
     assert!(
-        ui.cx
-            .read(|cx| dock.read(cx).find_tab(editor::KIND, &start, cx).is_none()),
-        "the card did not open its start too"
+        ui.cx.read(|cx| dock
+            .read(cx)
+            .find_tab(crate::walkthrough::player::KIND, &player, cx)
+            .is_none()),
+        "the card did not open the player too"
     );
     next.notify_one();
     ui.wait_for("the end of the turn", |ui| !running(ui, &chat));
