@@ -1361,6 +1361,54 @@
       ],
       "type": "object"
     },
+    "ChangedSinceParams": {
+      "description": "Params of `agents/changedSince`.",
+      "properties": {
+        "since": {
+          "description": "From when, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only this workspace's files. Default: every workspace's."
+        }
+      },
+      "required": [
+        "since"
+      ],
+      "type": "object"
+    },
+    "ChangedSinceResult": {
+      "description": "Result of `agents/changedSince`.",
+      "properties": {
+        "files": {
+          "description": "How many files agent sessions changed since then, each file counted\nonce.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessions": {
+          "description": "The same by session, most files first. A file counts for the session\nthat changed it last.",
+          "items": {
+            "$ref": "#/$defs/SessionFiles"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "files",
+        "sessions"
+      ],
+      "type": "object"
+    },
     "ChangesParams": {
       "description": "Params of the [`Changes`] topic.",
       "properties": {
@@ -2504,6 +2552,17 @@
         "idle": {
           "$ref": "#/$defs/IdleStatus",
           "description": "The idle policy and where the daemon is in it."
+        },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemoryUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The memory the daemon and every process it started (language\nservers, agents, terminals, process mods) use. Absent when the\nplatform can't tell."
         },
         "pid": {
           "description": "The daemon's process id.",
@@ -4485,6 +4544,28 @@
         "line",
         "start",
         "end"
+      ],
+      "type": "object"
+    },
+    "MemoryUsage": {
+      "description": "The memory of the daemon and its child processes (`daemon/status`).",
+      "properties": {
+        "processes": {
+          "description": "How many processes: the daemon and its descendants.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rssBytes": {
+          "description": "Their resident set size together, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "rssBytes",
+        "processes"
       ],
       "type": "object"
     },
@@ -7144,6 +7225,26 @@
       "required": [
         "id",
         "name"
+      ],
+      "type": "object"
+    },
+    "SessionFiles": {
+      "description": "How many files one session changed (`agents/changedSince`).",
+      "properties": {
+        "files": {
+          "description": "How many files it changed last.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The session."
+        }
+      },
+      "required": [
+        "session",
+        "files"
       ],
       "type": "object"
     },
@@ -11335,6 +11436,17 @@
       },
       "result": {
         "$ref": "#/$defs/ChangedByResult"
+      }
+    },
+    "agents/changedSince": {
+      "description": "How many files agent sessions changed since a time (every workspace, or one), in all and by session.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ChangedSinceParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ChangedSinceResult"
       }
     },
     "agents/deletePermissionRule": {

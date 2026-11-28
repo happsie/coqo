@@ -294,6 +294,11 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "Which agent sessions last changed files of a workspace, most recent first (with each one's title and provider).",
         ),
+        request::<agents::ChangedSince>(
+            g,
+            "client→server",
+            "How many files agent sessions changed since a time (every workspace, or one), in all and by session.",
+        ),
         topic::<agents::Updates>(
             g,
             "One session's persisted transcript (resumable with since; seqs per session).",
@@ -1010,6 +1015,7 @@ fn schema_covers_every_builtin_method() {
         agents::PermissionRules::NAME,
         agents::DeletePermissionRule::NAME,
         agents::ChangedBy::NAME,
+        agents::ChangedSince::NAME,
         agents::Updates::NAME,
         agents::Changes::NAME,
         buffer::Open::NAME,

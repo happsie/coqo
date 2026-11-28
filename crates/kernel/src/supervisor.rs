@@ -1016,9 +1016,6 @@ pub async fn resource_usage(pid: u32) -> io::Result<Option<ResourceUsage>> {
 
 #[cfg(target_os = "linux")]
 async fn rss_bytes(pid: u32) -> io::Result<Option<u64>> {
-    use std::sync::OnceLock;
-    static PAGE_SIZE: OnceLock<u64> = OnceLock::new();
-
     let statm = match tokio::fs::read_to_string(format!("/proc/{pid}/statm")).await {
         Ok(s) => s,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -1030,14 +1027,20 @@ async fn rss_bytes(pid: u32) -> io::Result<Option<u64>> {
         .nth(1)
         .and_then(|f| f.parse().ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed statm"))?;
-    let page_size = *PAGE_SIZE.get_or_init(|| {
+    Ok(Some(pages * page_size()))
+}
+
+#[cfg(target_os = "linux")]
+fn page_size() -> u64 {
+    use std::sync::OnceLock;
+    static PAGE_SIZE: OnceLock<u64> = OnceLock::new();
+    *PAGE_SIZE.get_or_init(|| {
         nix::unistd::sysconf(nix::unistd::SysconfVar::PAGE_SIZE)
             .ok()
             .flatten()
             .and_then(|v| u64::try_from(v).ok())
             .unwrap_or(4096)
-    });
-    Ok(Some(pages * page_size))
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -1072,9 +1075,160 @@ async fn rss_bytes(_pid: u32) -> io::Result<Option<u64>> {
     Ok(None)
 }
 
+/// Memory of a process and everything it started ([`tree_usage`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct TreeUsage {
+    /// Resident set size of them all, in bytes.
+    pub rss_bytes: u64,
+    /// How many processes: the one asked about and its descendants.
+    pub processes: u32,
+}
+
+/// Resource usage of process `pid` and all its descendants (its children,
+/// their children, …): for the daemon, itself and its language servers,
+/// agents, terminals and process mods. `Ok(None)` if there is no such
+/// process, or the platform can't tell.
+///
+/// On Linux this reads `/proc/<pid>/stat` of every process; on macOS it
+/// asks `ps` once.
+pub async fn tree_usage(pid: u32) -> io::Result<Option<TreeUsage>> {
+    let table = process_table().await?;
+    Ok(sum_tree(pid, &table))
+}
+
+/// One process: its parent and resident set size.
+#[derive(Debug, Clone, Copy)]
+struct ProcRow {
+    pid: u32,
+    ppid: u32,
+    rss_bytes: u64,
+}
+
+/// Sums the rows of `pid` and its descendants.
+fn sum_tree(pid: u32, table: &[ProcRow]) -> Option<TreeUsage> {
+    let root = table.iter().find(|r| r.pid == pid)?;
+    let mut children: BTreeMap<u32, Vec<&ProcRow>> = BTreeMap::new();
+    for row in table.iter().filter(|r| r.pid != r.ppid) {
+        children.entry(row.ppid).or_default().push(row);
+    }
+    let mut usage = TreeUsage {
+        rss_bytes: 0,
+        processes: 0,
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    let mut todo = vec![root];
+    while let Some(row) = todo.pop() {
+        if !seen.insert(row.pid) {
+            continue;
+        }
+        usage.rss_bytes = usage.rss_bytes.saturating_add(row.rss_bytes);
+        usage.processes = usage.processes.saturating_add(1);
+        todo.extend(children.get(&row.pid).into_iter().flatten());
+    }
+    Some(usage)
+}
+
+#[cfg(target_os = "linux")]
+async fn process_table() -> io::Result<Vec<ProcRow>> {
+    tokio::task::spawn_blocking(|| {
+        let page = page_size();
+        let mut rows = Vec::new();
+        for entry in std::fs::read_dir("/proc")?.flatten() {
+            let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse().ok()) else {
+                continue;
+            };
+            // Gone meanwhile: skip it.
+            let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+                continue;
+            };
+            if let Some((ppid, pages)) = parse_stat(&stat) {
+                rows.push(ProcRow {
+                    pid,
+                    ppid,
+                    rss_bytes: pages.saturating_mul(page),
+                });
+            }
+        }
+        Ok(rows)
+    })
+    .await
+    .map_err(io::Error::other)?
+}
+
+/// The parent and the resident pages of a `/proc/<pid>/stat` line. The
+/// command (field 2) is in parentheses and may hold spaces and `)`, so the
+/// fields are counted from the last `)`.
+#[cfg(any(target_os = "linux", test))]
+fn parse_stat(stat: &str) -> Option<(u32, u64)> {
+    let rest = &stat[stat.rfind(')')? + 1..];
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    // After the command: state (field 3), ppid (4), …, rss (24).
+    let ppid = fields.get(1)?.parse().ok()?;
+    let rss: i64 = fields.get(21)?.parse().ok()?;
+    Some((ppid, u64::try_from(rss).unwrap_or(0)))
+}
+
+#[cfg(target_os = "macos")]
+async fn process_table() -> io::Result<Vec<ProcRow>> {
+    let output = Command::new("ps")
+        .args(["-A", "-o", "pid=,ppid=,rss="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .await?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            let mut f = line.split_whitespace().map(str::parse::<u64>);
+            let (pid, ppid, kib) = (f.next()?.ok()?, f.next()?.ok()?, f.next()?.ok()?);
+            Some(ProcRow {
+                pid: u32::try_from(pid).ok()?,
+                ppid: u32::try_from(ppid).ok()?,
+                rss_bytes: kib.saturating_mul(1024),
+            })
+        })
+        .collect())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+async fn process_table() -> io::Result<Vec<ProcRow>> {
+    Ok(Vec::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stat_lines_give_the_parent_and_resident_pages() {
+        // A command with spaces and a `)` of its own.
+        let stat = "4242 (my (odd) cmd) S 17 4242 4242 0 -1 4194560 300 0 0 0 1 2 0 0 \
+                    20 0 1 0 12345 1000000 321 18446744073709551615";
+        assert_eq!(parse_stat(stat), Some((17, 321)));
+        assert_eq!(parse_stat("1 (init"), None);
+    }
+
+    #[test]
+    fn a_tree_sums_the_process_and_its_descendants() {
+        let row = |pid, ppid, rss_bytes| ProcRow {
+            pid,
+            ppid,
+            rss_bytes,
+        };
+        let table = [
+            row(1, 0, 5),
+            row(10, 1, 100),
+            row(11, 10, 20),
+            row(12, 11, 3),
+            row(13, 1, 7000),
+            row(14, 10, 1),
+        ];
+        let usage = sum_tree(10, &table).unwrap();
+        assert_eq!((usage.rss_bytes, usage.processes), (124, 4));
+        assert_eq!(sum_tree(99, &table), None);
+    }
 
     #[test]
     fn backoff_grows_and_caps() {

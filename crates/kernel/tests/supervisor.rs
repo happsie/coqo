@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use coqo_kernel::supervisor::resource_usage;
+use coqo_kernel::supervisor::{resource_usage, tree_usage};
 use coqo_kernel::{
     Backoff, ChildEvent, ChildHandle, ChildSpec, ChildState, ChildStdio, OutputStream, RestartMode,
     RestartPolicy, Supervisor,
@@ -167,6 +167,38 @@ async fn reports_rss_for_a_live_child_and_stops_it() {
             sleep(Duration::from_millis(10)).await;
         }
         panic!("stopped child still listed");
+    })
+    .await
+    .unwrap();
+}
+
+/// `tree_usage` counts a process and what it started (#265: the daemon's
+/// memory includes its language servers and agents).
+#[tokio::test]
+async fn tree_usage_includes_the_children() {
+    timeout(LIMIT, async {
+        // A shell that starts a grandchild: a tree of its own, which other
+        // tests running in this process don't change.
+        let supervisor = Supervisor::new();
+        let mut child = supervisor
+            .spawn(sh("tree", "sleep 5 & wait").restart(RestartPolicy::never()))
+            .unwrap();
+        events_until(&mut child, |e| matches!(e, ChildEvent::Started { .. })).await;
+        let pid = child.pid().unwrap();
+        let tree = loop {
+            let usage = tree_usage(pid).await.unwrap().expect("the shell");
+            if usage.processes == 2 {
+                break usage;
+            }
+            sleep(Duration::from_millis(10)).await;
+        };
+        assert!(tree.rss_bytes > 0, "{tree:?}");
+        // This process's tree holds it too.
+        let me = tree_usage(std::process::id()).await.unwrap().expect("me");
+        assert!(me.processes >= 3, "{me:?}");
+        assert!(me.rss_bytes > tree.rss_bytes, "{me:?} {tree:?}");
+        child.stop().await;
+        assert_eq!(tree_usage(pid).await.unwrap(), None);
     })
     .await
     .unwrap();

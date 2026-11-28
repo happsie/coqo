@@ -655,6 +655,25 @@ impl Shell {
             AgentTarget::Chat(session) => {
                 chat::open_session(self.dock.downgrade(), session.clone(), window, cx);
             }
+            AgentTarget::Walkthrough {
+                session,
+                walkthrough,
+            } => {
+                let workspace = self.workspaces.read(cx).current().map(|w| w.id.clone());
+                match workspace {
+                    Some(workspace) => {
+                        crate::walkthrough::open(
+                            &self.dock,
+                            workspace,
+                            walkthrough.clone(),
+                            None,
+                            window,
+                            cx,
+                        );
+                    }
+                    None => chat::open_session(self.dock.downgrade(), session.clone(), window, cx),
+                }
+            }
         }
     }
 

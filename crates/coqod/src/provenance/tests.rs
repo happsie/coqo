@@ -13,9 +13,9 @@ use coqo_agents::testing::{ScriptedProvider, Step};
 use coqo_agents::{AgentUpdate, ManagerOptions, SessionManager, SessionStore, StaticProviders};
 use coqo_mod_api::contrib::{AgentProviderInfo, AgentProviderKind};
 use coqo_protocol::methods::agents::{
-    ChangeStrength, ChangedByParams, ContentBlock, CreateSessionParams, SessionChange, SessionId,
-    StopReason, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus,
-    ToolCallUpdate, ToolKind,
+    ChangeStrength, ChangedByParams, ChangedSinceParams, ChangedSinceResult, ContentBlock,
+    CreateSessionParams, SessionChange, SessionId, StopReason, ToolCall, ToolCallContent,
+    ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use coqo_protocol::methods::workspace::{OpenParams, RootId, WorkspaceId};
 use coqo_storage::DataDirs;
@@ -241,6 +241,60 @@ async fn completed_tool_calls_record_the_files_they_changed() {
     assert!(!got[0].closed);
     assert_eq!(got[0].strength, ChangeStrength::Write);
     assert_eq!(paths_of(&got[0]), ["README.md", "src/lib.rs"]);
+}
+
+/// `agents/changedSince` (#265): the files changed from a time on, each
+/// counted once, for the session that changed it last.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn counts_the_files_changed_since_a_time() {
+    let provider = ScriptedProvider::new();
+    let h = harness(&provider).await;
+    let (lib, readme, notes) = (
+        h.path("src/lib.rs"),
+        h.path("README.md"),
+        h.path("notes.md"),
+    );
+    let edits = |calls: &[(&str, &str)]| {
+        let mut steps: Vec<Step> = calls
+            .iter()
+            .flat_map(|(id, path)| {
+                [
+                    Step::Update(edit_call(id, path, ToolKind::Edit, true)),
+                    Step::Update(status(id, ToolCallStatus::Completed)),
+                ]
+            })
+            .collect();
+        steps.push(Step::Stop(StopReason::EndTurn));
+        steps
+    };
+    provider.push_turn(edits(&[("t1", &lib), ("t2", &readme)]));
+    provider.push_turn(edits(&[("t3", &lib), ("t4", &notes)]));
+    let first = h.session("First").await;
+    let second = h.session("Second").await;
+    h.turn(&first).await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let between = coqo_storage::Timestamp::now().0;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    h.turn(&second).await;
+
+    let since = |since: i64, workspace: Option<WorkspaceId>| {
+        h.svc
+            .changed_since(&ChangedSinceParams { since, workspace })
+            .unwrap()
+    };
+    // From the start: three files, `src/lib.rs` the second session's.
+    let all = since(0, None);
+    assert_eq!(all.files, 3, "{all:?}");
+    let by: Vec<_> = all.sessions.iter().map(|s| (&s.session, s.files)).collect();
+    assert_eq!(by, [(&second, 2), (&first, 1)]);
+    // Only what the second turn changed.
+    let later = since(between, Some(h.workspace.clone()));
+    assert_eq!(later.files, 2, "{later:?}");
+    assert_eq!(later.sessions.len(), 1);
+    assert_eq!(later.sessions[0].session, second);
+    // Another workspace's, and from now on: nothing.
+    assert_eq!(since(0, Some(WorkspaceId("elsewhere".into()))).files, 0);
+    assert_eq!(since(i64::MAX, None), ChangedSinceResult::default());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
