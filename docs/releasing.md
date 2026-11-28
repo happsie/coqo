@@ -10,9 +10,20 @@ Notarization, dmg and AppImage are out of scope here (issue #124).
   This is the only target that is built.
 - `x86_64-apple-darwin` (Intel) is left out on purpose: no one needs it, and it
   would mean cross-compiling GPUI's Metal build.
-- Linux x64 is not built yet. `scripts/install.sh` already understands the
-  `x86_64-unknown-linux-gnu` layout (`coqo/bin/{coqo,coqod}`), so adding it
-  later is a matrix entry plus a packaging step.
+- `x86_64-unknown-linux-gnu`, built on `ubuntu-22.04` (the oldest runner, so
+  the glibc requirement stays low) with the same GPUI system libraries as
+  `ci.yml`. The build job prints the highest `GLIBC_*` symbol the binaries
+  need to its step summary; ubuntu-22.04 ships glibc 2.35, so the minimum is
+  **glibc 2.35 or older** (the dry run reports the exact figure: see the
+  run summary). That covers Ubuntu 22.04+, Debian 12+ and Fedora 36+.
+  The archive holds `coqo/bin/{coqo,coqod}` (stripped).
+  Runtime libraries a desktop needs: libxkbcommon (and libxkbcommon-x11),
+  Wayland or X11 (libwayland-client, libxcb), Vulkan (a loader plus a Mesa or
+  vendor driver), fontconfig, freetype. Any normal Fedora/Ubuntu desktop has
+  them.
+- A binary run from a dev checkout (`cargo run`) is a "development build"
+  and is never updated by the in-app updater; only installs made by
+  `install.sh` are.
 
 ## One-time key setup (maintainer)
 
@@ -47,7 +58,9 @@ this, and the workflow refuses to publish while it contains `PLACEHOLDER`.
 
 ## What the workflow does
 
-1. **build** (macOS arm64): `cargo build --release --locked` for `coqo` and
+1. **build** (macOS arm64 and Linux x86_64; the Linux one tars
+   `coqo/bin/{coqo,coqod}`, checks `file` says x86-64 ELF and that
+   `coqod --version` matches): `cargo build --release --locked` for `coqo` and
    `coqod`, assembles `Coqo.app` (`Info.plist`, bundle id `dev.coqo.Coqo`,
    both binaries in `Contents/MacOS/`), signs it ad hoc (`codesign -s -`),
    checks `lipo -info` says arm64 and that `--version` prints the workspace
@@ -56,7 +69,7 @@ this, and the workflow refuses to publish while it contains `PLACEHOLDER`.
    with minisign (pinned 0.12, download checked against a sha256 in
    `scripts/release/install-minisign.sh`), and verifies each signature with
    `crates/updater/release.pub`.
-3. **install-test** (macOS): runs `scripts/install.sh` against the signed
+3. **install-test** (macOS) and **install-test-linux** (ubuntu-22.04): run `scripts/install.sh` against the signed
    files, runs `coqod --version`, and checks that a tampered manifest is
    refused.
 4. **release** (tags only): `gh release create` with the archives, the
@@ -88,7 +101,9 @@ curl -fsSL https://raw.githubusercontent.com/happsie/coqo/main/scripts/install.s
 
 It installs to `~/Applications/Coqo.app` on macOS (curl does not set the
 Gatekeeper quarantine flag, so the ad-hoc signed app opens), and to
-`~/.local/share/coqo/bin` with symlinks in `~/.local/bin` on Linux.
+`~/.local/share/coqo/bin` with symlinks in `~/.local/bin` on Linux, plus
+`~/.local/share/applications/coqo.desktop` (and an icon if the archive ships
+`coqo/share/coqo.png`; none exists in the repo yet).
 `COQO_VERSION=X.Y.Z` picks a version.
 
 ### Trust model
