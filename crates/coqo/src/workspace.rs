@@ -15,6 +15,7 @@
 //!   `Ctrl/Cmd+1..9` ([`SwitchToWorkspace`]) switch the window to one of
 //!   them, and [`rename`] and [`remove`] change the list for every window.
 
+use coqo_ui::keys;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -30,8 +31,7 @@ use coqo_protocol::methods::{
 use coqo_ui::{
     gpui::{
         Action, AnyWindowHandle, App, AppContext as _, AsyncApp, Context, Entity, EntityId,
-        EventEmitter, Global, KeyBinding, PathPromptOptions, Subscription, Task, WeakEntity,
-        Window,
+        EventEmitter, Global, PathPromptOptions, Subscription, Task, WeakEntity, Window,
     },
     serde_json::Value,
 };
@@ -149,12 +149,12 @@ impl Global for WindowWorkspaces {}
 /// restores the most recently opened workspace. Call after
 /// [`daemon::init`](crate::daemon::init).
 pub fn init(path: Option<PathBuf>, cx: &mut App) -> Entity<KnownWorkspaces> {
-    cx.bind_keys([KeyBinding::new(OPEN_FOLDER_KEY, OpenFolder, None)]);
+    cx.bind_keys([keys::binding(OPEN_FOLDER_KEY, OpenFolder, None)]);
     cx.bind_keys(
         SWITCH_KEYS
             .iter()
             .enumerate()
-            .map(|(index, key)| KeyBinding::new(key, SwitchToWorkspace { index }, None)),
+            .map(|(index, key)| keys::binding(key, SwitchToWorkspace { index }, None)),
     );
     let first = match path {
         Some(path) => FirstWindow::Open(path),

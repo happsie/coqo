@@ -16,9 +16,10 @@ pub mod editor;
 pub mod glyph;
 pub mod tree;
 
+use coqo_ui::keys;
 use coqo_ui::{
     dock::register_tab_kind,
-    gpui::{App, AppContext as _, KeyBinding},
+    gpui::{App, AppContext as _},
     slots::{SidebarPane, SidebarPanes},
 };
 
@@ -45,11 +46,11 @@ coqo_ui::gpui::actions!(
 pub fn init(cx: &mut App) {
     let context = Some("FileTree");
     cx.bind_keys([
-        KeyBinding::new("down", SelectNext, context),
-        KeyBinding::new("up", SelectPrev, context),
-        KeyBinding::new("right", Expand, context),
-        KeyBinding::new("left", Collapse, context),
-        KeyBinding::new("enter", Confirm, context),
+        keys::binding("down", SelectNext, context),
+        keys::binding("up", SelectPrev, context),
+        keys::binding("right", Expand, context),
+        keys::binding("left", Collapse, context),
+        keys::binding("enter", Confirm, context),
     ]);
     editor::init(cx);
     register_tab_kind(cx, editor::KIND, |state, window, cx| {

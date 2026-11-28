@@ -27,10 +27,8 @@ use coqo_protocol::methods::{
     questions::{Question, QuestionId},
     workspace::WorkspaceId,
 };
-use coqo_ui::{
-    dock::register_tab_kind,
-    gpui::{App, KeyBinding},
-};
+use coqo_ui::keys;
+use coqo_ui::{dock::register_tab_kind, gpui::App};
 
 use crate::{
     questions::{self, primary_anchor},
@@ -73,10 +71,10 @@ pub const KEY_CONTEXT: &str = "AgentsOverview";
 /// Register the `agents` tab kind and the keys.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new(SHOW_AGENTS_KEY, ShowAgents, None),
-        KeyBinding::new("down", SelectNext, Some(KEY_CONTEXT)),
-        KeyBinding::new("up", SelectPrev, Some(KEY_CONTEXT)),
-        KeyBinding::new("enter", Confirm, Some(KEY_CONTEXT)),
+        keys::binding(SHOW_AGENTS_KEY, ShowAgents, None),
+        keys::binding("down", SelectNext, Some(KEY_CONTEXT)),
+        keys::binding("up", SelectPrev, Some(KEY_CONTEXT)),
+        keys::binding("enter", Confirm, Some(KEY_CONTEXT)),
     ]);
     register_tab_kind(cx, KIND, |_, window, cx| Some(view::new(window, cx)));
 }

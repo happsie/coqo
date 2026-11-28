@@ -24,7 +24,9 @@ pub use tab::{AnyTab, MissingTab, TabItem, TabRegistry, register_tab_kind};
 pub use tree::{Edge, NodeId, PaneNode, PaneTree, SplitAxis, TabGroup, TabId, TabState, TabTarget};
 pub use view::{Dock, DockEvent, DraggedTab, DropZone};
 
-use gpui_kit::{App, KeyBinding};
+use gpui_kit::App;
+
+use crate::keys;
 
 #[allow(unused_imports)]
 use crate::gpui; // The action derive spells its paths `gpui::…`.
@@ -52,9 +54,9 @@ pub(crate) fn init(cx: &mut App) {
     cx.default_global::<TabRegistry>();
     let context = Some("Dock");
     cx.bind_keys([
-        KeyBinding::new(KEYS[0], SplitRight, context),
-        KeyBinding::new(KEYS[1], SplitDown, context),
-        KeyBinding::new(KEYS[2], CloseTab, context),
-        KeyBinding::new(KEYS[3], CloseGroup, context),
+        keys::binding(KEYS[0], SplitRight, context),
+        keys::binding(KEYS[1], SplitDown, context),
+        keys::binding(KEYS[2], CloseTab, context),
+        keys::binding(KEYS[3], CloseGroup, context),
     ]);
 }

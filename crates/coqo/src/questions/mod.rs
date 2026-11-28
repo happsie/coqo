@@ -37,6 +37,7 @@ pub mod panel;
 pub mod popover;
 pub mod thread;
 
+use coqo_ui::keys;
 use std::{
     collections::HashMap,
     time::{SystemTime, UNIX_EPOCH},
@@ -54,8 +55,7 @@ use coqo_protocol::methods::{
 use coqo_ui::{
     ActiveTokens as _, Rgb,
     gpui::{
-        Action, App, AppContext as _, Context, Entity, EventEmitter, Global, KeyBinding,
-        Subscription, Task,
+        Action, App, AppContext as _, Context, Entity, EventEmitter, Global, Subscription, Task,
     },
     slots::{SidebarPane, SidebarPanes},
 };
@@ -98,10 +98,10 @@ pub struct OpenQuestion {
 /// Bind F8 / Shift+F8 and register the Questions pane.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("f8", NextQuestion, None),
-        KeyBinding::new("shift-f8", PreviousQuestion, None),
-        KeyBinding::new(ASK_KEYS[0], AskAboutCode, Some(FILE_KEY_CONTEXT)),
-        KeyBinding::new(ASK_KEYS[1], AskAboutCode, Some(FILE_KEY_CONTEXT)),
+        keys::binding("f8", NextQuestion, None),
+        keys::binding("shift-f8", PreviousQuestion, None),
+        keys::binding(ASK_KEYS[0], AskAboutCode, Some(FILE_KEY_CONTEXT)),
+        keys::binding(ASK_KEYS[1], AskAboutCode, Some(FILE_KEY_CONTEXT)),
     ]);
     popover::init(cx);
     SidebarPanes::register(

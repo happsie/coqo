@@ -83,7 +83,7 @@ Walkthroughs and pull requests bring their own sources.
 - `v`: toggle viewed;
 - `m`: toggle the layout.
 
-The keys are plain letters because the body is read-only, and a focused text field still gets its characters first (GPUI prefers character input when the focused element accepts text).
+The keys are plain letters because the body is read-only. GPUI matches a binding before the focused field gets the character, so a binding on `DiffReview` alone would fire while typing a comment (#266). Every Coqo binding is therefore made with `coqo_ui::keys::binding`: when its first keystroke is plain (no `ctrl`, `alt`, `cmd` or `fn`, and not a function key), its context becomes `(DiffReview) && !Input`. `Input` is the key context of gpui-component's text fields and of the code editor, and GPUI evaluates `!Input` against the whole focus path. Shortcuts with a modifier still work while typing. A test (`keys_tests.rs`) runs every init that `main` runs and fails if a plain-key binding lacks the exclusion.
 
 **The `git-diff` tab kind is kept, as one tab per root and side.**
 

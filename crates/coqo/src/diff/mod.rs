@@ -28,6 +28,7 @@ pub mod patch;
 pub mod source;
 pub mod viewed;
 
+use coqo_ui::keys;
 use std::{collections::HashMap, rc::Rc};
 
 use coqo_protocol::methods::git::{FileChange, FileDiff};
@@ -39,9 +40,9 @@ use coqo_ui::{
     },
     gpui::{
         AnyElement, App, AppContext as _, Context, ElementId, EventEmitter, FocusHandle,
-        FontWeight, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Render,
-        SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity,
-        Window, div, px,
+        FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+        StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
+        px,
     },
     widgets::{FluentBuilder as _, Icon, TestSupportExt as _, icon, kbd, raised, section_label},
 };
@@ -73,16 +74,16 @@ coqo_ui::gpui::actions!(
 
 const KEY_CONTEXT: &str = "DiffReview";
 
-/// Bind the review keys. Plain letters: the diff is read-only, and a text
-/// field inside it (a comment) still gets its characters first.
+/// Bind the review keys. Plain letters: the diff is read-only, and
+/// [`keys::binding`] keeps them out of a text field inside it (a comment).
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("j", NextHunk, Some(KEY_CONTEXT)),
-        KeyBinding::new("k", PreviousHunk, Some(KEY_CONTEXT)),
-        KeyBinding::new("shift-j", NextFile, Some(KEY_CONTEXT)),
-        KeyBinding::new("shift-k", PreviousFile, Some(KEY_CONTEXT)),
-        KeyBinding::new("v", ToggleViewed, Some(KEY_CONTEXT)),
-        KeyBinding::new("m", ToggleMode, Some(KEY_CONTEXT)),
+        keys::binding("j", NextHunk, Some(KEY_CONTEXT)),
+        keys::binding("k", PreviousHunk, Some(KEY_CONTEXT)),
+        keys::binding("shift-j", NextFile, Some(KEY_CONTEXT)),
+        keys::binding("shift-k", PreviousFile, Some(KEY_CONTEXT)),
+        keys::binding("v", ToggleViewed, Some(KEY_CONTEXT)),
+        keys::binding("m", ToggleMode, Some(KEY_CONTEXT)),
     ]);
 }
 

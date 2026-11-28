@@ -8,12 +8,13 @@
 //! window quits the UI (the app runs with `QuitMode::LastWindowClosed`);
 //! `coqod` keeps running under its idle policy.
 
+use coqo_ui::keys;
 use std::rc::Rc;
 
 use coqo_ui::{
     dock::store::LayoutStore,
     gpui::{
-        AnyWindowHandle, App, AppContext as _, Bounds, Entity, Global, KeyBinding, Point, Size,
+        AnyWindowHandle, App, AppContext as _, Bounds, Entity, Global, Point, Size,
         TitlebarOptions, WindowBounds, WindowOptions, px, size,
     },
 };
@@ -56,7 +57,7 @@ pub fn init(store: Rc<dyn LayoutStore>, cx: &mut App) {
         store,
         fixed_bounds: false,
     });
-    cx.bind_keys([KeyBinding::new(NEW_WINDOW_KEY, NewWindow, None)]);
+    cx.bind_keys([keys::binding(NEW_WINDOW_KEY, NewWindow, None)]);
     cx.on_action(|_: &NewWindow, cx| {
         if let Err(err) = open(cx) {
             eprintln!("coqo: failed to open a window: {err:#}");

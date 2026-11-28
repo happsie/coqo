@@ -37,6 +37,7 @@
 //!
 //! Binary, non-UTF-8 and very large files show a message instead.
 
+use coqo_ui::keys;
 use std::{
     collections::VecDeque,
     ops::Range,
@@ -63,9 +64,9 @@ use coqo_ui::{
     },
     gpui::{
         AnyElement, AnyView, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
-        Focusable as _, FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyBinding,
-        ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-        Subscription, Task, Window, div, px,
+        Focusable as _, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
+        Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+        Window, div, px,
     },
     serde_json::{Value, json},
     widgets::{Icon, TestSupportExt as _, icon, raised},
@@ -115,7 +116,7 @@ const SAVE_KEY: &str = "ctrl-s";
 
 /// Bind the file tab's keys.
 pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new(SAVE_KEY, Save, Some(KEY_CONTEXT))]);
+    cx.bind_keys([keys::binding(SAVE_KEY, Save, Some(KEY_CONTEXT))]);
 }
 
 /// What the tab shows.

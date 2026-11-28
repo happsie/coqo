@@ -43,12 +43,13 @@ use coqo_protocol::methods::{
     editor::{Position, Range},
     terminal::{SpawnParams, TerminalId},
 };
+use coqo_ui::keys;
 use coqo_ui::{
     ActiveTokens as _, Rgb,
     dock::{AnyTab, Dock, register_tab_kind},
     gpui::{
         Action, Animation, AnimationExt as _, AnyElement, App, AppContext as _, ElementId, Entity,
-        IntoElement as _, KeyBinding, Styled as _, WeakEntity, Window, pulsating_between,
+        IntoElement as _, Styled as _, WeakEntity, Window, pulsating_between,
     },
     widgets::status_dot,
 };
@@ -124,10 +125,10 @@ const NEW_CHAT_KEY: &str = "ctrl-shift-n";
 /// daemon and workspaces are initialised.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new(NEW_CHAT_KEY, NewChat, None),
-        KeyBinding::new("escape", CancelTurn, Some("ChatTab")),
-        KeyBinding::new("enter", AllowPermission, Some("ChatPermission")),
-        KeyBinding::new("escape", RejectPermission, Some("ChatPermission")),
+        keys::binding(NEW_CHAT_KEY, NewChat, None),
+        keys::binding("escape", CancelTurn, Some("ChatTab")),
+        keys::binding("enter", AllowPermission, Some("ChatPermission")),
+        keys::binding("escape", RejectPermission, Some("ChatPermission")),
     ]);
     register_tab_kind(cx, KIND, |state, window, cx| {
         tab::restore(state, window, cx).map(AnyTab::new)

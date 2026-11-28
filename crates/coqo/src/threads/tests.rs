@@ -26,8 +26,8 @@ use coqo_ui::{
     diff::{LineRange, Side},
     dock::store::MemoryLayoutStore,
     gpui::{
-        AnyWindowHandle, App, AppContext as _, Bounds, Entity, Point, Window, WindowBounds,
-        WindowOptions, px, size,
+        AnyWindowHandle, App, AppContext as _, Bounds, Entity, Focusable as _, Point, Window,
+        WindowBounds, WindowOptions, px, size,
     },
     test::{TestAppContext, TestWindowExt as _},
 };
@@ -38,7 +38,7 @@ use crate::{
     diff::{DiffView, source::SourceVersions},
     git::diff::{self as diff_tab, DiffTab},
     shell::{DEFAULT_WORKSPACE, Shell},
-    test_support::{TIMEOUT, TestDaemon},
+    test_support::{TIMEOUT, TYPED_KEYS, TYPED_TEXT, TestDaemon, record_key_actions},
     workspace,
 };
 
@@ -315,6 +315,150 @@ fn comment_on_a_line_reply_resolve_and_find_it_after_a_restart() {
             .first()
             .is_some_and(|t| t.status == ThreadStatus::Open)
     });
+}
+
+/// The diff view's state the shortcuts change: the mode, the file shown and
+/// each file's viewed mark.
+fn diff_state(ui: &mut Ui, view: &Entity<DiffView>) -> (String, Option<String>, Vec<bool>) {
+    ui.cx.read(|cx| {
+        let v = view.read(cx);
+        (
+            v.mode(cx).as_str().to_owned(),
+            v.selected_file().map(str::to_owned),
+            v.files().iter().map(|f| v.is_viewed(&f.path)).collect(),
+        )
+    })
+}
+
+#[test]
+fn typing_in_a_comment_never_fires_the_diff_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = Repo::init(&tmp.path().join("demo-repo"));
+    let lines: String = (1..=12).map(|i| format!("line {i}\n")).collect();
+    repo.write("src/a.rs", &lines);
+    repo.write("src/b.rs", &lines);
+    repo.commit_all("Two files");
+    repo.write("src/a.rs", &lines.replace("line 8\n", "eight\n"));
+    repo.write("src/b.rs", &lines.replace("line 2\n", "two\n"));
+    let mut ui = open_ui(repo.path().to_owned(), tmp);
+
+    ui.click("sidebar-git");
+    ui.wait_for("the change", |ui| ui.has(("git-unstaged-row", 0usize)));
+    ui.click(("git-unstaged-row", 0usize));
+    ui.wait_for("the review", |ui| {
+        ui.diff_tab().is_some_and(|tab| {
+            ui.cx.read(|cx| {
+                let t = tab.read(cx);
+                t.review().is_some()
+                    && t.view().read(cx).files().len() == 2
+                    && t.view().read(cx).selected_file().is_some()
+            })
+        })
+    });
+    let tab = ui.diff_tab().unwrap();
+    let (view, review) = ui.cx.read(|cx| {
+        let t = tab.read(cx);
+        (t.view().clone(), t.review().unwrap().clone())
+    });
+    ui.wait_for("the threads", |ui| {
+        ui.cx
+            .read(|cx| review.read(cx).store().read(cx).is_loaded())
+    });
+    let shown = ui
+        .cx
+        .read(|cx| view.read(cx).selected_file().unwrap().to_owned());
+    let before = diff_state(&mut ui, &view);
+    let (actions, _keys) = record_key_actions(&mut ui.cx);
+
+    // The composer: the text arrives intact, and the view doesn't move.
+    let changed = if shown == "src/a.rs" { 8 } else { 2 };
+    let range = LineRange::lines(shown.clone(), Side::New, changed, changed);
+    ui.frame(|window, cx| {
+        review.update(cx, |s, cx| s.open_composer(&range, window, cx));
+    });
+    let composer = ui
+        .cx
+        .read(|cx| review.read(cx).composer_input().cloned())
+        .unwrap();
+    assert!(ui.frame(|window, cx| composer.read(cx).focus_handle(cx).is_focused(window)));
+    ui.cx.simulate_keystrokes(ui.window, TYPED_KEYS);
+    ui.frame(|_, _| ());
+    assert_eq!(ui.cx.read(|cx| composer.read(cx).text(cx)), TYPED_TEXT);
+    assert_eq!(diff_state(&mut ui, &view), before);
+    // A modifier shortcut still works while typing: select all, then type
+    // over it.
+    let select_all = if cfg!(target_os = "macos") {
+        "cmd-a"
+    } else {
+        "ctrl-a"
+    };
+    ui.cx.simulate_keystrokes(ui.window, select_all);
+    ui.cx.simulate_keystrokes(ui.window, "x");
+    assert_eq!(ui.cx.read(|cx| composer.read(cx).text(cx)), "x");
+    ui.frame(|window, cx| composer.update(cx, |i, cx| i.set_text(TYPED_TEXT, window, cx)));
+    ui.click("thread-composer-add");
+    ui.wait_for("the thread", |ui| ui.threads(&review).len() == 1);
+    assert_eq!(ui.threads(&review)[0].comments[0].body, TYPED_TEXT);
+
+    // The reply field, likewise.
+    let id = ui.threads(&review)[0].id;
+    ui.wait_for("the reply field", |ui| {
+        ui.cx.read(|cx| review.read(cx).reply_input(id).is_some())
+    });
+    let reply = ui
+        .cx
+        .read(|cx| review.read(cx).reply_input(id).cloned())
+        .unwrap();
+    ui.frame(|window, cx| {
+        let handle = reply.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+    });
+    ui.cx.simulate_keystrokes(ui.window, TYPED_KEYS);
+    ui.frame(|_, _| ());
+    assert_eq!(ui.cx.read(|cx| reply.read(cx).text(cx)), TYPED_TEXT);
+    assert_eq!(diff_state(&mut ui, &view), before);
+    let fired: Vec<String> = actions
+        .borrow()
+        .iter()
+        .filter(|a| a.starts_with("diff_review::"))
+        .cloned()
+        .collect();
+    assert!(fired.is_empty(), "fired while typing: {fired:?}");
+
+    // With the view itself focused, the same keys are shortcuts again.
+    ui.frame(|window, cx| {
+        let handle = view.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+    });
+    ui.cx.simulate_keystrokes(ui.window, "j k");
+    assert_eq!(
+        actions
+            .borrow()
+            .iter()
+            .filter(|a| a.starts_with("diff_review::"))
+            .collect::<Vec<_>>(),
+        ["diff_review::NextHunk", "diff_review::PreviousHunk"]
+    );
+    ui.cx.simulate_keystrokes(ui.window, "m");
+    let mode = ui.cx.read(|cx| view.read(cx).mode(cx).as_str().to_owned());
+    assert_ne!(mode, before.0, "m switches the mode");
+    ui.cx.simulate_keystrokes(ui.window, "v");
+    assert!(
+        ui.cx.read(|cx| view.read(cx).is_viewed(&shown)),
+        "v marks it viewed"
+    );
+    let step = if ui.cx.read(|cx| view.read(cx).files()[0].path == shown) {
+        "J"
+    } else {
+        "K"
+    };
+    ui.cx.simulate_keystrokes(ui.window, step);
+    assert_ne!(
+        ui.cx
+            .read(|cx| view.read(cx).selected_file().map(str::to_owned)),
+        Some(shown),
+        "{step} shows the other file"
+    );
 }
 
 // ---- offscreen --------------------------------------------------------------
