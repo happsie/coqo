@@ -66,14 +66,11 @@ use coqo_ui::{
 
 use super::{WorkspaceThreads, author_label, in_turn, threads_for};
 use crate::{
-    chat::list::ChatList,
+    chat::{self, list::ChatList},
     diff::{DiffOverlay, DiffSource, DiffView, DiffViewEvent, source::SourceVersions},
     questions::ask::{self, AskTarget},
     workspace::Workspaces,
 };
-
-/// The provider a new chat prefers (as the ask popover's).
-const PREFERRED_PROVIDER: &str = "claude-acp";
 
 /// The send popover: where the review goes.
 struct SendState {
@@ -327,7 +324,7 @@ impl ReviewState {
         };
         match target {
             AskTarget::Session(id) => store.agent_name(&id, cx),
-            AskTarget::New => store.provider_label(Some(PREFERRED_PROVIDER)),
+            AskTarget::New => store.provider_label(Some(chat::PREFERRED_PROVIDER)),
         }
     }
 

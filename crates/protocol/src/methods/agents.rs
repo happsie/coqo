@@ -125,6 +125,10 @@ pub struct ProviderCapabilities {
     pub embedded_context: bool,
 }
 
+/// The id of the Claude Code provider (`coqo-agent-claude`, over the ACP
+/// adapter). Clients prefer it for a new session when it is available.
+pub const CLAUDE_PROVIDER_ID: &str = "claude-acp";
+
 /// An agent provider, for the chat's provider picker.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]

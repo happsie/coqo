@@ -65,7 +65,7 @@ pub use provider::{ClaudeOptions, ClaudeProvider, status};
 pub const MANIFEST: &str = include_str!("../coqo.mod.toml");
 
 /// The provider id.
-pub const PROVIDER_ID: &str = "claude-acp";
+pub const PROVIDER_ID: &str = coqo_agents::model::CLAUDE_PROVIDER_ID;
 
 /// The npm package of the Claude Agent ACP adapter.
 pub const ADAPTER_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp";

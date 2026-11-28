@@ -41,8 +41,9 @@ pub mod transcript;
 
 use coqo_protocol::methods::{
     agents::{
-        AgentState, Create, CreateSessionParams, ProviderAction, ProviderActionRun, ProviderInfo,
-        Providers, RunAction, RunActionParams, SessionId, SessionInfo,
+        AgentState, CLAUDE_PROVIDER_ID, Create, CreateSessionParams, ProviderAction,
+        ProviderActionRun, ProviderInfo, Providers, RunAction, RunActionParams, SessionId,
+        SessionInfo,
     },
     codes as app_codes,
     editor::{Position, Range},
@@ -293,6 +294,21 @@ fn list_problem(problem: Problem, cx: &mut App) {
             l.set_problem(problem.message, problem.provider, problem.actions, cx)
         });
     }
+}
+
+/// The provider that sessions Coqo starts for a feature prefer (an
+/// anchored question, a review sent to a new chat, a commit-message draft):
+/// Claude Code.
+pub const PREFERRED_PROVIDER: &str = CLAUDE_PROVIDER_ID;
+
+/// The provider such a session goes to: [`PREFERRED_PROVIDER`] when it is
+/// available, otherwise the first available one.
+pub fn preferred_provider(providers: &[ProviderInfo]) -> Option<&ProviderInfo> {
+    providers
+        .iter()
+        .filter(|p| p.available)
+        .find(|p| p.id == PREFERRED_PROVIDER)
+        .or_else(|| providers.iter().find(|p| p.available))
 }
 
 /// Why no provider is available: the first one that reports what is

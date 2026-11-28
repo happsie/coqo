@@ -37,10 +37,9 @@ use coqo_ui::gpui::{
     App, AppContext as _, AsyncApp, Context, EventEmitter, Subscription, Task, WeakEntity,
 };
 
+use crate::chat::preferred_provider;
 use crate::daemon::{Daemon, DaemonEvent};
 
-/// The provider drafts go to when it is available: Claude Code over ACP.
-pub const PREFERRED_PROVIDER: &str = "claude-acp";
 /// The draft session's title.
 pub const SESSION_TITLE: &str = "Commit message";
 /// The mode a draft runs in, when the agent has it: Claude Code's "Manual",
@@ -161,7 +160,7 @@ impl CommitDrafter {
     /// The provider a draft goes to: Claude Code when it is available, else
     /// the first available one.
     pub fn provider(&self) -> Option<&ProviderInfo> {
-        pick_provider(self.providers.as_deref()?)
+        preferred_provider(self.providers.as_deref()?)
     }
 
     /// Why the button can't draft now, for its tooltip; `None` when it
@@ -173,7 +172,7 @@ impl CommitDrafter {
         let Some(providers) = &self.providers else {
             return Some(LOOKING.into());
         };
-        if pick_provider(providers).is_none() {
+        if preferred_provider(providers).is_none() {
             let why = providers
                 .iter()
                 .find_map(|p| {
@@ -265,14 +264,6 @@ fn close(session: SessionId, cx: &App) {
     }
 }
 
-fn pick_provider(providers: &[ProviderInfo]) -> Option<&ProviderInfo> {
-    providers
-        .iter()
-        .filter(|p| p.available)
-        .find(|p| p.id == PREFERRED_PROVIDER)
-        .or_else(|| providers.iter().find(|p| p.available))
-}
-
 /// Call `M` on the daemon.
 async fn call<M: Method>(params: M::Params, cx: &mut AsyncApp) -> Result<M::Result, String> {
     let call = cx.update(|cx| {
@@ -307,7 +298,7 @@ async fn draft(
     let providers = call::<agm::Providers>((), cx)
         .await
         .map_err(|e| format!("Couldn't find an agent: {e}"))?;
-    let provider = pick_provider(&providers)
+    let provider = preferred_provider(&providers)
         .ok_or_else(|| "No agent is available to draft a message".to_owned())?
         .id
         .clone();
