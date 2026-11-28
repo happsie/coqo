@@ -26,6 +26,8 @@ pub struct SourceFile {
     /// The path [`DiffSource::file`] takes, and the diff's `path`.
     pub path: String,
     pub change: FileChange,
+    /// Where a renamed file was on the old side.
+    pub orig_path: Option<String>,
     pub additions: u32,
     pub deletions: u32,
     pub binary: bool,
@@ -96,7 +98,11 @@ pub trait DiffSource: 'static {
     fn files(&self, cx: &mut App) -> BoxFuture<'static, Result<Vec<SourceFile>, SourceError>>;
 
     /// One file's diff, ideally with [`FULL_CONTEXT`] so folds can open.
-    fn file(&self, path: &str, cx: &mut App) -> BoxFuture<'static, Result<FileDiff, SourceError>>;
+    fn file(
+        &self,
+        file: &SourceFile,
+        cx: &mut App,
+    ) -> BoxFuture<'static, Result<FileDiff, SourceError>>;
 
     /// The root and file versions compared, if the sides are versions of a
     /// workspace root's files. Comment threads need it.
@@ -118,6 +124,23 @@ pub trait DiffSource: 'static {
         _cx: &mut App,
     ) -> BoxFuture<'static, Result<(), SourceError>> {
         Box::pin(async { Err("this diff cannot be staged".to_owned()) })
+    }
+
+    /// Whether changed lines can be thrown away from the new side (the
+    /// work tree), back to the old side's version.
+    fn can_discard(&self) -> bool {
+        false
+    }
+
+    /// Discard `lines` of `path` (`git/discard`): they go back to the old
+    /// side's version. The view asks first.
+    fn discard(
+        &self,
+        _path: &str,
+        _lines: LineSelection,
+        _cx: &mut App,
+    ) -> BoxFuture<'static, Result<(), SourceError>> {
+        Box::pin(async { Err("this diff cannot discard changes".to_owned()) })
     }
 
     /// Call `changed` whenever the files may have changed, for as long as
@@ -239,6 +262,7 @@ impl DiffSource for GitDiffSource {
                 .map(|f| SourceFile {
                     path: f.path,
                     change: f.change,
+                    orig_path: f.orig_path,
                     additions: f.additions,
                     deletions: f.deletions,
                     binary: f.binary,
@@ -249,6 +273,7 @@ impl DiffSource for GitDiffSource {
                     files.push(SourceFile {
                         path,
                         change: FileChange::Untracked,
+                        orig_path: None,
                         additions: 0,
                         deletions: 0,
                         binary: false,
@@ -260,7 +285,11 @@ impl DiffSource for GitDiffSource {
         })
     }
 
-    fn file(&self, path: &str, cx: &mut App) -> BoxFuture<'static, Result<FileDiff, SourceError>> {
+    fn file(
+        &self,
+        file: &SourceFile,
+        cx: &mut App,
+    ) -> BoxFuture<'static, Result<FileDiff, SourceError>> {
         let Some(daemon) = Daemon::global(cx) else {
             return Box::pin(async { Err(message(DaemonError::NotConnected)) });
         };
@@ -268,7 +297,8 @@ impl DiffSource for GitDiffSource {
         let call = daemon.read(cx).request::<gm::Diff>(gm::DiffParams {
             workspace: self.workspace.clone(),
             root: self.root,
-            path: path.to_owned(),
+            path: file.path.clone(),
+            orig_path: file.orig_path.clone(),
             base,
             head,
             context: Some(FULL_CONTEXT),
@@ -311,10 +341,22 @@ impl DiffSource for GitDiffSource {
         let Some(daemon) = Daemon::global(cx) else {
             return Box::pin(async { Err(message(DaemonError::NotConnected)) });
         };
+        let mut paths = vec![path.to_owned()];
+        // A whole renamed file takes its old path along, so the pair moves
+        // together.
+        if lines.is_none() {
+            let staged = self.staged;
+            let orig = self.model.read(cx).root(self.root).and_then(|r| {
+                let e = r.status.as_ref()?.entries.iter().find(|e| e.path == path)?;
+                let change = if staged { e.staged } else { e.unstaged };
+                (change == Some(FileChange::Renamed)).then(|| e.orig_path.clone())?
+            });
+            paths.extend(orig);
+        }
         let params = gm::StageParams {
             workspace: self.workspace.clone(),
             root: self.root,
-            paths: vec![path.to_owned()],
+            paths,
             lines,
         };
         let daemon = daemon.read(cx);
@@ -325,6 +367,31 @@ impl DiffSource for GitDiffSource {
             let call = daemon.request::<gm::Stage>(params);
             Box::pin(async move { call.await.map_err(message) })
         }
+    }
+
+    fn can_discard(&self) -> bool {
+        !self.staged
+    }
+
+    fn discard(
+        &self,
+        path: &str,
+        lines: LineSelection,
+        cx: &mut App,
+    ) -> BoxFuture<'static, Result<(), SourceError>> {
+        if self.staged {
+            return Box::pin(async { Err("staged changes can't be discarded".to_owned()) });
+        }
+        let Some(daemon) = Daemon::global(cx) else {
+            return Box::pin(async { Err(message(DaemonError::NotConnected)) });
+        };
+        let call = daemon.read(cx).request::<gm::Discard>(gm::DiscardParams {
+            workspace: self.workspace.clone(),
+            root: self.root,
+            paths: vec![path.to_owned()],
+            lines: Some(lines),
+        });
+        Box::pin(async move { call.await.map(|_| ()).map_err(message) })
     }
 
     fn watch(
@@ -388,9 +455,13 @@ impl DiffSource for StaticSource {
         Box::pin(async move { Ok(files) })
     }
 
-    fn file(&self, path: &str, _: &mut App) -> BoxFuture<'static, Result<FileDiff, SourceError>> {
-        let diff = self.files.iter().find(|d| d.path == path).cloned();
-        let path = path.to_owned();
+    fn file(
+        &self,
+        file: &SourceFile,
+        _: &mut App,
+    ) -> BoxFuture<'static, Result<FileDiff, SourceError>> {
+        let diff = self.files.iter().find(|d| d.path == file.path).cloned();
+        let path = file.path.clone();
         Box::pin(async move { diff.ok_or_else(|| format!("{path} is not in this diff")) })
     }
 }
@@ -403,7 +474,9 @@ impl StaticSource {
             .iter()
             .map(|d| SourceFile {
                 path: d.path.clone(),
+                orig_path: d.orig_path.clone(),
                 change: match (&d.old, &d.new) {
+                    _ if d.orig_path.is_some() => FileChange::Renamed,
                     (None, _) => FileChange::Added,
                     (_, None) => FileChange::Deleted,
                     _ => FileChange::Modified,

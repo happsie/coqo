@@ -32,6 +32,7 @@ pub enum Tone {
     Green,
     Rose,
     Lavender,
+    Blue,
     Subtle,
 }
 
@@ -42,6 +43,7 @@ impl Tone {
             Tone::Green => p.green,
             Tone::Rose => p.rose,
             Tone::Lavender => p.lavender,
+            Tone::Blue => p.blue,
             Tone::Subtle => p.text_subtle,
         }
     }

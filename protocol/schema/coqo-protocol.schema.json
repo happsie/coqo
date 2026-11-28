@@ -1339,7 +1339,7 @@
         },
         "change": {
           "$ref": "#/$defs/FileChange",
-          "description": "`added`, `modified`, `deleted` or `typeChanged`."
+          "description": "`added`, `modified`, `deleted`, `typeChanged` or `renamed`."
         },
         "deletions": {
           "description": "Removed lines (0 for binary files).",
@@ -1347,8 +1347,15 @@
           "minimum": 0,
           "type": "integer"
         },
+        "origPath": {
+          "description": "Where a `renamed` file was on the old side.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "path": {
-          "description": "Repository-relative.",
+          "description": "Repository-relative (the new side's path).",
           "type": "string"
         }
       },
@@ -2797,8 +2804,15 @@
           "$ref": "#/$defs/DiffSide",
           "description": "The new side."
         },
+        "origPath": {
+          "description": "Its path on the old side, for a rename ([`ChangedFile::orig_path`],\n[`StatusEntry::orig_path`]). Default: `path`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "path": {
-          "description": "The file, repository-relative.",
+          "description": "The file, repository-relative: its path on the new side.",
           "type": "string"
         },
         "root": {
@@ -2890,7 +2904,57 @@
       ],
       "type": "object"
     },
+    "DiscardParams": {
+      "description": "Params of [`Discard`].",
+      "properties": {
+        "lines": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineSelection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only these lines of the file's unstaged diff (`index` → `worktree`,\n3 lines of context). Lines that are not in the current diff fail\nwith [`STALE_SELECTION`](super::codes::STALE_SELECTION)."
+        },
+        "paths": {
+          "description": "Repository-relative paths with unstaged changes. With `lines`,\nexactly one.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root",
+        "paths"
+      ],
+      "type": "object"
+    },
     "DiscardResult": {
+      "description": "Result of [`Discard`].",
+      "properties": {
+        "trashed": {
+          "description": "The untracked files, moved to the OS trash.",
+          "items": {
+            "$ref": "#/$defs/TrashedFile"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "DiscardResult2": {
       "description": "Result of [`Discard`].",
       "properties": {
         "discarded": {
@@ -3249,6 +3313,11 @@
           "const": "untracked",
           "description": "Not tracked (unstaged only).",
           "type": "string"
+        },
+        {
+          "const": "renamed",
+          "description": "Moved from another path (`origPath`), with contents at least 50%\nthe same: `git status` and `git diff -M` with git's default\nsettings. Staged: deleted from `HEAD` and added to the index;\nunstaged: deleted from the work tree and added with\n`--intent-to-add`.",
+          "type": "string"
         }
       ]
     },
@@ -3300,8 +3369,15 @@
           ],
           "description": "The old side's file; absent for an added file."
         },
+        "origPath": {
+          "description": "The old side's path, when it differs (a rename).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "path": {
-          "description": "The file, repository-relative.",
+          "description": "The file, repository-relative (the new side's path).",
           "type": "string"
         }
       },
@@ -8508,6 +8584,13 @@
           ],
           "description": "Set for an unmerged path (then `staged` and `unstaged` are absent)."
         },
+        "origPath": {
+          "description": "Where a `renamed` path came from: its path in `HEAD` (staged) or in\nthe index (unstaged). The old path has no entry of its own.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "path": {
           "description": "Repository-relative. An untracked folder git does not look into (a\nnested repository) ends in `/`.",
           "type": "string"
@@ -10246,6 +10329,38 @@
       ],
       "type": "object"
     },
+    "TrashedFile": {
+      "description": "An untracked file [`Discard`] moved to the trash.",
+      "properties": {
+        "noRestore": {
+          "description": "Why it can't be restored, for the user.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Repository-relative, as given.",
+          "type": "string"
+        },
+        "restore": {
+          "description": "What `fs/restore` takes to bring it back (undo), while this daemon\nruns; absent when it can't be, and `noRestore` says why.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rootPath": {
+          "description": "Root-relative: what `fs/restore` takes as `path`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "rootPath"
+      ],
+      "type": "object"
+    },
     "TrivialHunk": {
       "description": "A changed hunk the agent marked as needing no explanation.",
       "properties": {
@@ -11957,6 +12072,17 @@
         "$ref": "#/$defs/DiffFilesResult"
       }
     },
+    "git/discard": {
+      "description": "Throw away unstaged changes: files or lines back to the index version, untracked files to the trash.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/DiscardParams"
+      },
+      "result": {
+        "$ref": "#/$defs/DiscardResult"
+      }
+    },
     "git/log": {
       "description": "Commits newest first, a page at a time, with graph lanes.",
       "direction": "client→server",
@@ -12207,7 +12333,7 @@
         "$ref": "#/$defs/ReviewParams"
       },
       "result": {
-        "$ref": "#/$defs/DiscardResult"
+        "$ref": "#/$defs/DiscardResult2"
       }
     },
     "review/pending": {

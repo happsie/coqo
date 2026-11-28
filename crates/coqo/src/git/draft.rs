@@ -539,6 +539,7 @@ async fn staged_prompt(request: &DraftRequest, cx: &mut AsyncApp) -> Result<Stri
                 workspace: request.workspace.clone(),
                 root: request.root,
                 path: file.path.clone(),
+                orig_path: file.orig_path.clone(),
                 base: head(),
                 head: DiffSide::Index,
                 context: None,
@@ -593,9 +594,12 @@ pub fn prompt(files: &[ChangedFile], diffs: &[String], commits: &[String]) -> St
         files.len()
     ));
     for f in files.iter().take(MAX_LISTED_FILES) {
+        let path = match &f.orig_path {
+            Some(orig) => format!("{orig} → {}", f.path),
+            None => f.path.clone(),
+        };
         out.push_str(&format!(
-            "- {} ({}, +{} −{})\n",
-            f.path,
+            "- {path} ({}, +{} −{})\n",
             change_word(f.change),
             f.additions,
             f.deletions
@@ -632,18 +636,26 @@ fn change_word(change: gm::FileChange) -> &'static str {
         gm::FileChange::Deleted => "deleted",
         gm::FileChange::TypeChanged => "type changed",
         gm::FileChange::Untracked => "untracked",
+        gm::FileChange::Renamed => "renamed",
     }
 }
 
 /// `diff` as `git diff` prints it.
 pub fn unified(diff: &FileDiff) -> String {
-    let mut out = format!("diff --git a/{0} b/{0}\n", diff.path);
+    let from = diff.orig_path.as_deref().unwrap_or(&diff.path);
+    let mut out = format!("diff --git a/{from} b/{}\n", diff.path);
+    if from != diff.path {
+        out.push_str(&format!("rename from {from}\nrename to {}\n", diff.path));
+    }
     if diff.binary {
         out.push_str(&format!("Binary file {} changed\n", diff.path));
         return out;
     }
+    if diff.hunks.is_empty() && from != diff.path {
+        return out;
+    }
     let old = if diff.old.is_some() {
-        format!("a/{}", diff.path)
+        format!("a/{from}")
     } else {
         "/dev/null".into()
     };
@@ -790,6 +802,7 @@ mod tests {
         });
         let diff = FileDiff {
             path: "src/lib.rs".into(),
+            orig_path: None,
             old: side.clone(),
             new: side,
             binary: false,
@@ -824,6 +837,7 @@ mod tests {
     #[test]
     fn the_prompt_lists_files_commits_and_the_capped_diff() {
         let files = vec![ChangedFile {
+            orig_path: None,
             path: "README.md".into(),
             change: FileChange::Modified,
             additions: 2,

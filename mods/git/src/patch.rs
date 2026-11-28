@@ -1,18 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Staging and unstaging chosen lines: a patch with only those lines,
-//! applied to the index with `git apply --cached`.
+//! Staging, unstaging and discarding chosen lines: a patch with only those
+//! lines, applied to the index with `git apply --cached` (or to the work
+//! tree, for a discard).
 //!
 //! **Staging** diffs the index against the work tree and keeps the chosen
 //! lines: an unchosen removed line becomes context (it stays in the index),
 //! an unchosen added line is left out. **Unstaging** diffs `HEAD` against
 //! the index and applies the chosen lines in reverse: an unchosen added
 //! line becomes context (it stays), an unchosen removed line is left out.
-//! Hunk headers are recounted, and hunks with nothing chosen are dropped.
+//! **Discarding** builds the patch as unstaging does, from the unstaged
+//! diff, and applies it in reverse to the work tree (`git apply --reverse`,
+//! which reads and writes the files through the same filters as `git
+//! add` and checkout). Hunk headers are recounted, and hunks with nothing
+//! chosen are dropped.
 
 use std::collections::BTreeSet;
 
 use crate::diff::{self, DEFAULT_CONTEXT, LineKind, RawHunk, RawLine, Side};
+use crate::status::Change;
 use crate::{ErrorKind, GitError, Repo, Result, check_path};
 
 /// Lines of a diff, by their line numbers in it: removed lines by their old
@@ -49,6 +55,18 @@ impl LineSelection {
 enum Direction {
     Stage,
     Unstage,
+    /// Throw the chosen lines of the unstaged diff away: built as an
+    /// unstage (the new side keeps the unchosen changes) and applied in
+    /// reverse to the work tree.
+    Discard,
+}
+
+impl Direction {
+    /// The patch keeps the new side's unchosen changes (applied in
+    /// reverse), not the old side's.
+    fn reverse(self) -> bool {
+        matches!(self, Direction::Unstage | Direction::Discard)
+    }
 }
 
 impl Repo {
@@ -60,8 +78,18 @@ impl Repo {
     }
 
     /// Unstage the chosen lines of `path`'s staged diff (`HEAD` → index).
+    /// For a staged rename the diff is from the `HEAD` path
+    /// ([`StatusEntry::orig_path`](crate::StatusEntry::orig_path)), and the
+    /// rename stays staged.
     pub fn unstage_lines(&self, path: &str, selection: &LineSelection) -> Result<()> {
         self.apply_lines(path, selection, Direction::Unstage)
+    }
+
+    /// Discard the chosen lines of `path`'s unstaged diff (index → work
+    /// tree): the work tree gets the index's version of those lines back,
+    /// and keeps its other changes. The lost lines are gone for good.
+    pub fn discard_lines(&self, path: &str, selection: &LineSelection) -> Result<()> {
+        self.apply_lines(path, selection, Direction::Discard)
     }
 
     fn apply_lines(&self, path: &str, sel: &LineSelection, dir: Direction) -> Result<()> {
@@ -70,37 +98,69 @@ impl Repo {
             return Err(GitError::new(ErrorKind::Invalid, "no lines chosen"));
         }
         let unborn = self.gix().head_id().is_err();
+        let mut reader = self.reader();
+        let mut orig_path = path.to_owned();
         let (old, new) = match dir {
-            Direction::Stage => (
-                self.read_side(&Side::Index, path)?,
-                self.read_side(&Side::Worktree, path)?,
+            Direction::Stage | Direction::Discard => (
+                reader.read(&Side::Index, path)?,
+                reader.read(&Side::Worktree, path)?,
             ),
-            Direction::Unstage => (
-                if unborn {
+            Direction::Unstage => {
+                let mut old = if unborn {
                     None
                 } else {
-                    self.read_side(&Side::Rev("HEAD".into()), path)?
-                },
-                self.read_side(&Side::Index, path)?,
-            ),
+                    reader.read(&Side::Rev("HEAD".into()), path)?
+                };
+                if old.is_none() && !unborn {
+                    // A staged rename: its diff is from where it was.
+                    let from = self.status()?.entries.into_iter().find_map(|e| {
+                        (e.path == path && e.staged == Some(Change::Renamed))
+                            .then_some(e.orig_path)
+                            .flatten()
+                    });
+                    if let Some(from) = from {
+                        old = reader.read(&Side::Rev("HEAD".into()), &from)?;
+                        orig_path = from;
+                    }
+                }
+                (old, reader.read(&Side::Index, path)?)
+            }
         };
+        if reader.either_binary(&orig_path, old.as_ref(), path, new.as_ref())? {
+            return Err(GitError::new(
+                ErrorKind::Unsupported,
+                match dir {
+                    Direction::Discard => format!("{path} is binary: discard the whole file"),
+                    _ => format!("{path} is binary: stage or unstage the whole file"),
+                },
+            ));
+        }
+        match (dir, &old, &new) {
+            (Direction::Unstage, _, None) => {
+                return Err(GitError::new(
+                    ErrorKind::Unsupported,
+                    format!("{path} is deleted in the index: unstage the whole file"),
+                ));
+            }
+            (Direction::Discard, None, _) => {
+                return Err(GitError::new(
+                    ErrorKind::Unsupported,
+                    format!("{path} is not in the index: discard the whole file"),
+                ));
+            }
+            (Direction::Discard, _, None) => {
+                return Err(GitError::new(
+                    ErrorKind::Unsupported,
+                    format!("{path} is deleted: discard the whole file to bring it back"),
+                ));
+            }
+            _ => {}
+        }
         let empty: &[u8] = &[];
         let (a, b) = (
             old.as_ref().map_or(empty, |b| b.data.as_slice()),
             new.as_ref().map_or(empty, |b| b.data.as_slice()),
         );
-        if diff::is_binary(a) || diff::is_binary(b) {
-            return Err(GitError::new(
-                ErrorKind::Unsupported,
-                format!("{path} is binary: stage or unstage the whole file"),
-            ));
-        }
-        if new.is_none() && dir == Direction::Unstage {
-            return Err(GitError::new(
-                ErrorKind::Unsupported,
-                format!("{path} is deleted in the index: unstage the whole file"),
-            ));
-        }
         let hunks = diff::compute(a, b, DEFAULT_CONTEXT);
         check_selection(&hunks, sel)?;
         let removed: BTreeSet<u32> = sel.removed.iter().copied().collect();
@@ -113,8 +173,12 @@ impl Repo {
             },
         );
         let patch = build(header, &hunks, &removed, &added, dir);
-        let mut args = vec!["apply", "--cached", "--whitespace=nowarn"];
-        if dir == Direction::Unstage {
+        let mut args = vec!["apply", "--whitespace=nowarn"];
+        if dir != Direction::Discard {
+            // The index; a discard patches the work tree.
+            args.push("--cached");
+        }
+        if dir.reverse() {
             args.push("--reverse");
         }
         args.push("-");
@@ -204,19 +268,19 @@ fn build(
                 LineKind::Removed => {
                     let on = l.old_line.is_some_and(|n| removed.contains(&n));
                     chosen |= on;
-                    match (on, dir) {
+                    match (on, dir.reverse()) {
                         (true, _) => Some(b'-'),
-                        (false, Direction::Stage) => Some(b' '),
-                        (false, Direction::Unstage) => None,
+                        (false, false) => Some(b' '),
+                        (false, true) => None,
                     }
                 }
                 LineKind::Added => {
                     let on = l.new_line.is_some_and(|n| added.contains(&n));
                     chosen |= on;
-                    match (on, dir) {
+                    match (on, dir.reverse()) {
                         (true, _) => Some(b'+'),
-                        (false, Direction::Stage) => None,
-                        (false, Direction::Unstage) => Some(b' '),
+                        (false, false) => None,
+                        (false, true) => Some(b' '),
                     }
                 }
             };
@@ -237,7 +301,7 @@ fn build(
                 let first_new = first_old + delta;
                 (i64::from(h.old_start), first_new + i64::from(new_lines > 0))
             }
-            Direction::Unstage => {
+            Direction::Unstage | Direction::Discard => {
                 let first_new = i64::from(h.new_start) - i64::from(h.new_lines > 0);
                 let first_old = first_new - delta;
                 (first_old + i64::from(old_lines > 0), i64::from(h.new_start))

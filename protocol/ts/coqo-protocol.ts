@@ -496,11 +496,13 @@ export type ChangedFile = {
   additions: number;
   /** Either side is binary. */
   binary: boolean;
-  /** `added`, `modified`, `deleted` or `typeChanged`. */
+  /** `added`, `modified`, `deleted`, `typeChanged` or `renamed`. */
   change: FileChange;
   /** Removed lines (0 for binary files). */
   deletions: number;
-  /** Repository-relative. */
+  /** Where a `renamed` file was on the old side. */
+  origPath?: string | null;
+  /** Repository-relative (the new side's path). */
   path: string;
 };
 
@@ -989,7 +991,9 @@ export type DiffParams = {
   context?: number | null;
   /** The new side. */
   head: DiffSide;
-  /** The file, repository-relative. */
+  /** Its path on the old side, for a rename ([`ChangedFile::orig_path`], [`StatusEntry::orig_path`]). Default: `path`. */
+  origPath?: string | null;
+  /** The file, repository-relative: its path on the new side. */
   path: string;
   /** The root. */
   root: RootId;
@@ -1018,8 +1022,26 @@ export type DirEntry = {
   symlink: boolean;
 };
 
+/** Params of [`Discard`]. */
+export type DiscardParams = {
+  /** Only these lines of the file's unstaged diff (`index` → `worktree`, 3 lines of context). Lines that are not in the current diff fail with [`STALE_SELECTION`](super::codes::STALE_SELECTION). */
+  lines?: LineSelection | null;
+  /** Repository-relative paths with unstaged changes. With `lines`, exactly one. */
+  paths: Array<string>;
+  /** The root. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
 /** Result of [`Discard`]. */
 export type DiscardResult = {
+  /** The untracked files, moved to the OS trash. */
+  trashed?: Array<TrashedFile>;
+};
+
+/** Result of [`Discard`]. */
+export type DiscardResult2 = {
   /** How many pending comments were deleted. */
   discarded: number;
 };
@@ -1136,7 +1158,7 @@ export type EventsParams = {
 };
 
 /** How a path changed on one side. */
-export type FileChange = "added" | "modified" | "deleted" | "typeChanged" | "untracked";
+export type FileChange = "added" | "modified" | "deleted" | "typeChanged" | "untracked" | "renamed";
 
 /** Result of [`Diff`]. */
 export type FileDiff = {
@@ -1152,7 +1174,9 @@ export type FileDiff = {
   new?: FileSide | null;
   /** The old side's file; absent for an added file. */
   old?: FileSide | null;
-  /** The file, repository-relative. */
+  /** The old side's path, when it differs (a rename). */
+  origPath?: string | null;
+  /** The file, repository-relative (the new side's path). */
   path: string;
 };
 
@@ -2851,6 +2875,8 @@ export type StashPushResult = {
 export type StatusEntry = {
   /** Set for an unmerged path (then `staged` and `unstaged` are absent). */
   conflict?: Conflict | null;
+  /** Where a `renamed` path came from: its path in `HEAD` (staged) or in the index (unstaged). The old path has no entry of its own. */
+  origPath?: string | null;
   /** Repository-relative. An untracked folder git does not look into (a nested repository) ends in `/`. */
   path: string;
   /** `HEAD` → index. */
@@ -3326,6 +3352,18 @@ export type ToolsParams = {
 export type ToolsResult = {
   /** The tools, by name. */
   tools: Array<ToolInfo>;
+};
+
+/** An untracked file [`Discard`] moved to the trash. */
+export type TrashedFile = {
+  /** Why it can't be restored, for the user. */
+  noRestore?: string | null;
+  /** Repository-relative, as given. */
+  path: string;
+  /** What `fs/restore` takes to bring it back (undo), while this daemon runs; absent when it can't be, and `noRestore` says why. */
+  restore?: string | null;
+  /** Root-relative: what `fs/restore` takes as `path`. */
+  rootPath: string;
 };
 
 /** A changed hunk the agent marked as needing no explanation. */
@@ -3864,6 +3902,8 @@ export interface Requests {
   "git/stage": { params: StageParams; result: null };
   /** Unstage whole files, or chosen lines of one file. (client→server) */
   "git/unstage": { params: StageParams; result: null };
+  /** Throw away unstaged changes: files or lines back to the index version, untracked files to the trash. (client→server) */
+  "git/discard": { params: DiscardParams; result: DiscardResult };
   /** Commit what is staged, or amend. (client→server) */
   "git/commit": { params: CommitParams; result: CommitResult };
   /** Local and remote branches. (client→server) */
@@ -3927,7 +3967,7 @@ export interface Requests {
   /** The user's pending review: the comments not sent yet. (client→server) */
   "review/pending": { params: ReviewParams; result: PendingReview };
   /** Delete the pending review's comments. (client→server) */
-  "review/discard": { params: ReviewParams; result: DiscardResult };
+  "review/discard": { params: ReviewParams; result: DiscardResult2 };
   /** Send the pending review to an agent session in one prompt, then clear pending. (client→server) */
   "review/send": { params: SendReviewParams; result: SentReview };
   /** An agent session replies in a review thread of its workspace, optionally resolving it. (client→server) */

@@ -232,7 +232,7 @@ pub struct FileTree {
     /// The last operation's error, above the tree.
     op_error: Option<String>,
     /// The window's file operations, to undo and redo.
-    history: History,
+    history: Entity<History>,
     /// An undo or redo is in flight.
     undoing: bool,
     /// What the last undo or redo did ("Undid rename of …"), shown briefly.
@@ -385,7 +385,7 @@ impl FileTree {
             editing: None,
             pending_delete: None,
             op_error: None,
-            history: History::default(),
+            history: History::for_window(window, cx),
             undoing: false,
             toast: None,
             decorations,
@@ -523,7 +523,7 @@ impl FileTree {
             self.editing = None;
             self.pending_delete = None;
             self.op_error = None;
-            self.history.clear();
+            self.history.update(cx, |h, _| h.clear());
             self.toast = None;
             self.followed = None;
         }
@@ -973,7 +973,7 @@ impl FileTree {
         self.menu = None;
         // An undo of a creation the user didn't confirm stays undoable.
         if let Some(op) = self.pending_delete.take().and_then(|p| p.undo) {
-            self.history.put_back(op, true);
+            self.history.update(cx, |h, _| h.put_back(op, true));
         }
         self.op_error = None;
         cx.notify();
@@ -1167,10 +1167,12 @@ impl FileTree {
             Ok(entry) => entry,
             Err(e) => return self.op_failed(&e, base_name(asked), cx),
         };
-        self.history.record(FileOp::Create {
-            root,
-            path: entry.path.clone(),
-            kind,
+        self.history.update(cx, |h, _| {
+            h.record(FileOp::Create {
+                root,
+                path: entry.path.clone(),
+                kind,
+            })
         });
         let dir = match &self.editing {
             Some(Editing {
@@ -1250,10 +1252,12 @@ impl FileTree {
             self.editing = None;
         }
         if from != entry.path {
-            self.history.record(FileOp::Move {
-                root,
-                from: from.to_owned(),
-                to: entry.path.clone(),
+            self.history.update(cx, |h, _| {
+                h.record(FileOp::Move {
+                    root,
+                    from: from.to_owned(),
+                    to: entry.path.clone(),
+                })
             });
         }
         self.apply_move(workspace, root, from, entry.path, window, cx);
@@ -1396,16 +1400,19 @@ impl FileTree {
                 match undo {
                     // Undoing a creation, confirmed: it can be made again.
                     Some(op) => self.undone(op, cx),
-                    None => self.history.record(FileOp::Delete {
-                        root: target.root,
-                        path: target.path.clone(),
-                        kind: target.kind,
-                        restore: result.restore.ok_or_else(|| {
-                            result
-                                .no_restore
-                                .unwrap_or_else(|| format!("“{name}” can't be restored."))
-                        }),
-                    }),
+                    None => {
+                        let op = FileOp::Delete {
+                            root: target.root,
+                            path: target.path.clone(),
+                            kind: target.kind,
+                            restore: result.restore.ok_or_else(|| {
+                                result
+                                    .no_restore
+                                    .unwrap_or_else(|| format!("“{name}” can't be restored."))
+                            }),
+                        };
+                        self.history.update(cx, |h, _| h.record(op));
+                    }
                 }
                 self.apply_delete(workspace, target, window, cx);
             }

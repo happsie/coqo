@@ -16,6 +16,9 @@
 //! - **Staging:** when the source can stage, each hunk has a gutter button,
 //!   and a line selection (drag the line numbers) can be staged or unstaged
 //!   from the file header.
+//! - **Discard:** when the source can discard (the unstaged diff, #226), the
+//!   selection's lines, or a hunk, can be thrown away too, after a
+//!   confirmation that says it can't be undone.
 //! - **Hooks for later views:** [`DiffOverlay`]s add gutter markers, slots
 //!   under lines (comment threads, #94), tints and an "add" affordance;
 //!   [`LineRef`] / [`LineRange`] address lines; [`DiffView::scroll_to`]
@@ -30,7 +33,7 @@ pub mod viewed;
 
 use std::{collections::HashMap, rc::Rc};
 
-use coqo_protocol::methods::git::{FileChange, FileDiff};
+use coqo_protocol::methods::git::{FileChange, FileDiff, LineSelection};
 use coqo_ui::{
     ActiveTokens as _,
     diff::{
@@ -72,6 +75,13 @@ coqo_ui::gpui::actions!(
 );
 
 const KEY_CONTEXT: &str = "DiffReview";
+
+/// Changed lines of a file the user asked to discard, before the yes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingDiscard {
+    pub path: String,
+    pub lines: LineSelection,
+}
 
 /// Bind the review keys. Plain letters: the diff is read-only, and
 /// [`keys::binding`] keeps them out of a text field inside it (a comment).
@@ -259,6 +269,8 @@ pub struct DiffView {
     selection: Option<LineRange>,
     /// A failed stage, shown until dismissed.
     error: Option<String>,
+    /// Changed lines of the shown file waiting for a yes to be discarded.
+    pending_discard: Option<PendingDiscard>,
     staging: bool,
     /// The hunk to reveal after the next reload (the one after a staged hunk).
     reveal_hunk: Option<usize>,
@@ -334,6 +346,7 @@ impl DiffView {
             selection: None,
             error: None,
             staging: false,
+            pending_discard: None,
             reveal_hunk: None,
             focus: cx.focus_handle(),
             _loading: None,
@@ -423,7 +436,7 @@ impl DiffView {
             let Ok(calls) = this.update(cx, |this, cx| {
                 files
                     .iter()
-                    .map(|f| this.source.file(&f.path, cx))
+                    .map(|f| this.source.file(f, cx))
                     .collect::<Vec<_>>()
             }) else {
                 return;
@@ -532,6 +545,7 @@ impl DiffView {
         }
         self.selected = Some(path.to_owned());
         self.reveal_hunk = None;
+        self.pending_discard = None;
         self.install(cx);
         cx.emit(DiffViewEvent::FileSelected(path.to_owned()));
         cx.notify();
@@ -723,6 +737,170 @@ impl DiffView {
     /// Whether a stage is in flight.
     pub fn is_staging(&self) -> bool {
         self.staging
+    }
+
+    /// The discard waiting for a yes, if any.
+    pub fn pending_discard(&self) -> Option<&PendingDiscard> {
+        self.pending_discard.as_ref()
+    }
+
+    /// Ask before discarding the selection's changed lines.
+    pub fn request_discard_selection(&mut self, cx: &mut Context<Self>) {
+        let (Some(path), Some(range)) = (self.selected.clone(), self.selection.clone()) else {
+            return;
+        };
+        let Some(diff) = self.file_diff(&path) else {
+            return;
+        };
+        let lines = patch::selection(diff, &range);
+        self.ask_discard(path, lines, cx);
+    }
+
+    /// Ask before discarding hunk `ix` of the shown file.
+    pub fn request_discard_hunk(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(path) = self.selected.clone() else {
+            return;
+        };
+        let Some(Loaded::Diff { hunks, .. }) = self.loaded.get(&path) else {
+            return;
+        };
+        let Some(hunk) = hunks.get(ix) else {
+            return;
+        };
+        let lines = hunk.lines.clone();
+        self.ask_discard(path, lines, cx);
+    }
+
+    fn ask_discard(&mut self, path: String, lines: LineSelection, cx: &mut Context<Self>) {
+        if !self.source.can_discard() {
+            return;
+        }
+        if lines.removed.is_empty() && lines.added.is_empty() {
+            self.error = Some("The selection has no changed lines".into());
+        } else {
+            self.pending_discard = Some(PendingDiscard { path, lines });
+        }
+        cx.notify();
+    }
+
+    pub fn cancel_discard(&mut self, cx: &mut Context<Self>) {
+        if self.pending_discard.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// The user said yes: discard the lines.
+    pub fn confirm_discard(&mut self, cx: &mut Context<Self>) {
+        if self.staging {
+            return;
+        }
+        let Some(PendingDiscard { path, lines }) = self.pending_discard.take() else {
+            return;
+        };
+        self.staging = true;
+        self.error = None;
+        self.selection = None;
+        let call = self.source.discard(&path, lines, cx);
+        self._staging = Some(cx.spawn(async move |this, cx| {
+            let result = call.await;
+            this.update(cx, |this, cx| {
+                this.staging = false;
+                if let Err(err) = result {
+                    this.error = Some(err);
+                }
+                this.refresh(cx);
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn render_discard(&self, pending: &PendingDiscard, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let n = pending.lines.removed.len() + pending.lines.added.len();
+        let name = pending.path.rsplit('/').next().unwrap_or(&pending.path);
+        let lines = if n == 1 { "line" } else { "lines" };
+        let added = pending.lines.added.len();
+        let removed = pending.lines.removed.len();
+        let what = match (added, removed) {
+            (_, 0) => format!(
+                "{added} added {} go",
+                if added == 1 { "line" } else { "lines" }
+            ),
+            (0, _) => format!(
+                "{removed} removed {} come back",
+                if removed == 1 { "line" } else { "lines" }
+            ),
+            _ => format!("{added} added lines go and {removed} removed lines come back"),
+        };
+        let button = |id: &'static str, label: String, fill: Option<coqo_ui::Rgb>, cx: &App| {
+            let el = div()
+                .px(px(12.))
+                .py(px(5.))
+                .rounded(m.radius_control)
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD);
+            let el = match fill {
+                Some(fill) => el
+                    .bg(fill.alpha(0.18))
+                    .border_1()
+                    .border_color(fill.alpha(0.45))
+                    .text_color(fill.hsla()),
+                None => raised(el, cx).text_color(p.text.hsla()),
+            };
+            el.id(id).test_support().cursor_pointer().child(label)
+        };
+        div()
+            .id("diff-discard-confirm")
+            .test_support()
+            .occlude()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .mx_3()
+            .mb_2()
+            .px_3()
+            .py_2()
+            .rounded(px(10.))
+            .bg(p.surface.hsla())
+            .border_1()
+            .border_color(p.border_strong.hsla())
+            .text_size(m.text_sm)
+            .child(icon(Icon::Undo, px(14.), p.rose.hsla()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.text.hsla())
+                            .child(format!("Discard {n} changed {lines} in “{name}”?")),
+                    )
+                    .child(
+                        div()
+                            .text_size(m.text_xs)
+                            .text_color(p.text_muted.hsla())
+                            .child(format!(
+                                "{what}: the file goes back to its staged version there. This can't be undone."
+                            )),
+                    ),
+            )
+            .child(
+                button("diff-discard-cancel", "Cancel".into(), None, cx)
+                    .on_click(cx.listener(|this, _, _, cx| this.cancel_discard(cx))),
+            )
+            .child(
+                button("diff-discard-ok", format!("Discard {n} {lines}"), Some(p.rose), cx)
+                    .when(self.staging, |b| b.opacity(0.6))
+                    .on_click(cx.listener(|this, _, _, cx| this.confirm_discard(cx))),
+            )
+            .into_any_element()
     }
 
     fn render_header(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1103,7 +1281,10 @@ impl DiffView {
                         .whitespace_nowrap()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(p.text.hsla())
-                        .child(f.path.clone()),
+                        .child(match &f.orig_path {
+                            Some(orig) => format!("{orig} → {}", f.path),
+                            None => f.path.clone(),
+                        }),
                 )
                 .child(
                     div()
@@ -1123,6 +1304,31 @@ impl DiffView {
                         ),
                 )
                 .child(div().flex_1())
+                .children(
+                    stage_lines
+                        .clone()
+                        .filter(|_| self.source.can_discard())
+                        .map(|lines| {
+                            let n = lines.removed.len() + lines.added.len();
+                            raised(div(), cx)
+                                .id("diff-discard-lines")
+                                .test_support()
+                                .flex_none()
+                                .px_3()
+                                .py(px(5.))
+                                .rounded(px(9.))
+                                .text_size(px(12.))
+                                .text_color(p.rose.hsla())
+                                .cursor_pointer()
+                                .child(format!(
+                                    "Discard {n} {}…",
+                                    if n == 1 { "line" } else { "lines" }
+                                ))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.request_discard_selection(cx);
+                                }))
+                        }),
+                )
                 .children(staging.zip(stage_lines).map(|(staging, lines)| {
                     let n = lines.removed.len() + lines.added.len();
                     let verb = match staging {
@@ -1190,8 +1396,14 @@ impl DiffView {
                 Staging::Unstage => "unstage",
             };
             hints.push(
-                format!("Drag line numbers to select lines, or use a hunk's button, to {verb}")
-                    .into(),
+                if self.source.can_discard() {
+                    format!(
+                        "Drag line numbers to select lines to {verb} or discard, or use a hunk's button to {verb}"
+                    )
+                } else {
+                    format!("Drag line numbers to select lines, or use a hunk's button, to {verb}")
+                }
+                .into(),
             );
         }
         hints.extend(self.overlays.iter().filter_map(|o| o.hint(cx)));
@@ -1220,6 +1432,12 @@ impl DiffView {
             .bg(p.panel.hsla())
             .overflow_hidden()
             .children(header)
+            .children(
+                self.pending_discard
+                    .as_ref()
+                    .filter(|d| self.selected.as_ref() == Some(&d.path))
+                    .map(|d| self.render_discard(d, cx)),
+            )
             .children(error)
             .child(
                 div()

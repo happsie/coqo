@@ -7,6 +7,15 @@
 //! hunks are grouped with context the way `git diff` groups them, with the
 //! same `@@` section headings (git's default function-name rule), so the
 //! output matches `git diff` line for line.
+//!
+//! Files are read as `git diff` reads them ([`Reader`]): a work-tree file is
+//! cleaned the way `git add` would store it (`.gitattributes` `text`/`eol`,
+//! `core.autocrlf`, `ident`, `filter` drivers, `working-tree-encoding`),
+//! and a file is binary when its `diff` attribute is unset (`-diff`, or the
+//! `binary` macro), when its diff driver says `binary = true`, or else when
+//! it has a NUL in its first 8000 bytes (a set `diff` attribute makes it
+//! text). Text conversion (`textconv`) is not run. Deleted and added files
+//! that are similar enough pair up as renames ([`crate::rename`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,7 +23,7 @@ use gix::bstr::{BStr, ByteSlice as _};
 use gix::diff::blob::{Algorithm, Diff, InternedInput};
 
 use crate::status::Change;
-use crate::{ErrorKind, GitError, Repo, Result, check_path};
+use crate::{ErrorKind, GitError, Repo, Result, check_path, rename};
 
 /// Lines of context around changes, as `git diff`.
 pub const DEFAULT_CONTEXT: u32 = 3;
@@ -94,8 +103,10 @@ pub struct Hunk {
 /// One file's diff.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileDiff {
-    /// Repository-relative.
+    /// Repository-relative: the new side's path.
     pub path: String,
+    /// The old side's path, when it differs (a rename).
+    pub orig_path: Option<String>,
     /// The old side's file; `None` if it has none (an added file).
     pub old: Option<FileSide>,
     /// The new side's file; `None` if it has none (a deleted file).
@@ -159,11 +170,14 @@ pub(crate) fn hunk_header(h: &Hunk) -> String {
 /// A file that differs between two sides.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangedFile {
-    /// Repository-relative.
+    /// Repository-relative: the new side's path.
     pub path: String,
     /// [`Change::Added`], [`Modified`](Change::Modified),
-    /// [`Deleted`](Change::Deleted) or [`TypeChanged`](Change::TypeChanged).
+    /// [`Deleted`](Change::Deleted), [`TypeChanged`](Change::TypeChanged)
+    /// or [`Renamed`](Change::Renamed).
     pub change: Change,
+    /// The old side's path of a rename.
+    pub orig_path: Option<String>,
     /// Added lines (0 for a binary file).
     pub additions: u32,
     /// Removed lines (0 for a binary file).
@@ -201,8 +215,206 @@ pub(crate) struct RawLine {
     pub newline: bool,
 }
 
+/// git's content check: a NUL in the first 8000 bytes.
 pub(crate) fn is_binary(data: &[u8]) -> bool {
     data[..data.len().min(BINARY_SNIFF)].contains(&0)
+}
+
+/// What `.gitattributes` says about diffing a path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiffAttr {
+    /// Decide from the contents.
+    Auto,
+    /// `diff` is set: always text.
+    Text,
+    /// `-diff`, `binary`, or a driver with `binary = true`.
+    Binary,
+}
+
+/// Reads files from the sides of a comparison as `git diff` does: work-tree
+/// files through the clean filters, the index without intent-to-add
+/// entries, and binary-ness from `.gitattributes`. One per operation: it
+/// keeps the index, the filter pipeline and the attribute stack it loads.
+pub(crate) struct Reader<'r> {
+    repo: &'r Repo,
+    index: Option<gix::worktree::Index>,
+    filter: Option<(
+        gix::filter::Pipeline<'r>,
+        gix::worktree::IndexPersistedOrInMemory,
+    )>,
+    attrs: Option<(gix::AttributeStack<'r>, gix::attrs::search::Outcome)>,
+}
+
+impl<'r> Reader<'r> {
+    pub(crate) fn new(repo: &'r Repo) -> Self {
+        Self {
+            repo,
+            index: None,
+            filter: None,
+            attrs: None,
+        }
+    }
+
+    fn index(&mut self) -> Result<&gix::worktree::Index> {
+        if self.index.is_none() {
+            self.index = Some(self.repo.index()?);
+        }
+        Ok(self.index.as_ref().expect("loaded above"))
+    }
+
+    /// A file's bytes and mode on `side`; `None` if the side has no such
+    /// file (an intent-to-add entry is not in the index yet).
+    pub(crate) fn read(&mut self, side: &Side, path: &str) -> Result<Option<Blob>> {
+        let repo = self.repo.gix();
+        let blob = |oid: gix::ObjectId, mode: u32| -> Result<Option<Blob>> {
+            if mode & 0o170000 == 0o160000 {
+                // A submodule: its "contents" are the commit id, as git
+                // shows it.
+                return Ok(Some(Blob {
+                    data: format!("Subproject commit {oid}\n").into_bytes(),
+                    mode,
+                    oid: Some(oid),
+                }));
+            }
+            let data = repo.find_blob(oid).map_err(GitError::other)?.take_data();
+            Ok(Some(Blob {
+                data,
+                mode,
+                oid: Some(oid),
+            }))
+        };
+        match side {
+            Side::Worktree => {
+                let Some(mut file) = read_worktree(&self.repo.workdir().join(path))? else {
+                    return Ok(None);
+                };
+                if file.mode != 0o120000 {
+                    file.data = self.clean(path, file.data)?;
+                }
+                Ok(Some(file))
+            }
+            Side::Index => {
+                let found = self.index()?.entry_by_path(BStr::new(path)).and_then(|e| {
+                    (e.stage_raw() == 0 && !is_intent_to_add(e)).then(|| (e.id, e.mode.bits()))
+                });
+                match found {
+                    Some((id, mode)) => blob(id, mode),
+                    None => Ok(None),
+                }
+            }
+            Side::Rev(rev) => {
+                let tree = self.repo.tree(rev)?;
+                match tree.lookup_entry_by_path(path).map_err(GitError::other)? {
+                    Some(e) if !e.mode().is_tree() => {
+                        blob(e.object_id(), u32::from(e.mode().value()))
+                    }
+                    _ => Ok(None),
+                }
+            }
+        }
+    }
+
+    /// `data` (the work-tree file at `path`) as `git add` would store it.
+    fn clean(&mut self, path: &str, data: Vec<u8>) -> Result<Vec<u8>> {
+        use gix::filter::plumbing::pipeline::convert::ToGitOutcome;
+        use std::io::Read as _;
+        if self.filter.is_none() {
+            self.filter = Some(
+                self.repo
+                    .gix()
+                    .filter_pipeline(None)
+                    .map_err(GitError::other)?,
+            );
+        }
+        let (pipeline, index) = self.filter.as_mut().expect("made above");
+        let outcome = pipeline
+            .convert_to_git(data.as_slice(), std::path::Path::new(path), index)
+            .map_err(|e| GitError::other(format!("{path}: {e}")))?;
+        let cleaned = match outcome {
+            ToGitOutcome::Unchanged(_) => None,
+            ToGitOutcome::Buffer(buf) => Some(buf.to_vec()),
+            ToGitOutcome::Process(mut read) => {
+                let mut buf = Vec::new();
+                read.read_to_end(&mut buf)
+                    .map_err(|e| GitError::other(format!("{path}: {e}")))?;
+                Some(buf)
+            }
+        };
+        Ok(cleaned.unwrap_or(data))
+    }
+
+    /// What the `diff` attribute (and the driver it names) says of `path`.
+    fn diff_attr(&mut self, path: &str) -> Result<DiffAttr> {
+        if self.attrs.is_none() {
+            let index = self.repo.index()?;
+            let stack = self
+                .repo
+                .gix()
+                .attributes_only(
+                    &index,
+                    gix::worktree::stack::state::attributes::Source::WorktreeThenIdMapping,
+                )
+                .map_err(GitError::other)?;
+            let outcome = stack.selected_attribute_matches(["diff"]);
+            self.attrs = Some((stack, outcome));
+        }
+        let (stack, outcome) = self.attrs.as_mut().expect("made above");
+        outcome.reset();
+        stack
+            .at_path(std::path::Path::new(path), None)
+            .map_err(GitError::other)?
+            .matching_attributes(outcome);
+        let state = outcome
+            .iter_selected()
+            .next()
+            .map(|m| m.assignment.state.to_owned());
+        Ok(match state {
+            Some(gix::attrs::State::Set) => DiffAttr::Text,
+            Some(gix::attrs::State::Unset) => DiffAttr::Binary,
+            Some(gix::attrs::State::Value(driver)) => {
+                let key = format!("diff.{}.binary", driver.as_ref().as_bstr());
+                match self.repo.gix().config_snapshot().boolean(key.as_str()) {
+                    Some(true) => DiffAttr::Binary,
+                    Some(false) => DiffAttr::Text,
+                    None => DiffAttr::Auto,
+                }
+            }
+            Some(gix::attrs::State::Unspecified) | None => DiffAttr::Auto,
+        })
+    }
+
+    /// Whether `data`, the contents of `path`, diffs as binary.
+    pub(crate) fn is_binary(&mut self, path: &str, data: &[u8]) -> Result<bool> {
+        Ok(match self.diff_attr(path)? {
+            DiffAttr::Text => false,
+            DiffAttr::Binary => true,
+            DiffAttr::Auto => is_binary(data),
+        })
+    }
+
+    /// Whether the diff of `old` (at `old_path`) and `new` (at `path`) is
+    /// binary: either side is.
+    pub(crate) fn either_binary(
+        &mut self,
+        old_path: &str,
+        old: Option<&Blob>,
+        path: &str,
+        new: Option<&Blob>,
+    ) -> Result<bool> {
+        if let Some(b) = old
+            && self.is_binary(old_path, &b.data)?
+        {
+            return Ok(true);
+        }
+        match new {
+            Some(b) => self.is_binary(path, &b.data),
+            None => Ok(false),
+        }
+    }
+}
+
+fn is_intent_to_add(e: &gix::index::Entry) -> bool {
+    e.flags.contains(gix::index::entry::Flags::INTENT_TO_ADD)
 }
 
 /// Lines with their line breaks.
@@ -354,7 +566,7 @@ fn public_hunk(h: RawHunk) -> Hunk {
 type Listing = BTreeMap<String, (Option<gix::ObjectId>, u32)>;
 
 impl Repo {
-    fn tree(&self, rev: &str) -> Result<gix::Tree<'_>> {
+    pub(crate) fn tree(&self, rev: &str) -> Result<gix::Tree<'_>> {
         let repo = self.gix();
         let id = repo.rev_parse_single(rev).map_err(|e| {
             GitError::new(
@@ -367,77 +579,66 @@ impl Repo {
             .map_err(|e| GitError::new(ErrorKind::NotFound, format!("{rev:?} has no tree: {e}")))
     }
 
-    fn index(&self) -> Result<gix::worktree::Index> {
+    pub(crate) fn index(&self) -> Result<gix::worktree::Index> {
         self.gix().index_or_empty().map_err(GitError::other)
     }
 
-    /// A file's bytes and mode on `side`; `None` if the side has no such
-    /// file.
-    pub(crate) fn read_side(&self, side: &Side, path: &str) -> Result<Option<Blob>> {
-        let repo = self.gix();
-        let blob = |oid: gix::ObjectId, mode: u32| -> Result<Option<Blob>> {
-            if mode & 0o170000 == 0o160000 {
-                // A submodule: its "contents" are the commit id, as git
-                // shows it.
-                return Ok(Some(Blob {
-                    data: format!("Subproject commit {oid}\n").into_bytes(),
-                    mode,
-                    oid: Some(oid),
-                }));
-            }
-            let data = repo.find_blob(oid).map_err(GitError::other)?.take_data();
-            Ok(Some(Blob {
-                data,
-                mode,
-                oid: Some(oid),
-            }))
-        };
-        match side {
-            Side::Worktree => read_worktree(&self.workdir().join(path)),
-            Side::Index => {
-                let index = self.index()?;
-                match index.entry_by_path(BStr::new(path)) {
-                    Some(e) if e.stage_raw() == 0 => blob(e.id, e.mode.bits()),
-                    _ => Ok(None),
-                }
-            }
-            Side::Rev(rev) => {
-                let tree = self.tree(rev)?;
-                match tree.lookup_entry_by_path(path).map_err(GitError::other)? {
-                    Some(e) if !e.mode().is_tree() => {
-                        blob(e.object_id(), u32::from(e.mode().value()))
-                    }
-                    _ => Ok(None),
-                }
-            }
-        }
+    /// A reader of the sides, for one operation.
+    pub(crate) fn reader(&self) -> Reader<'_> {
+        Reader::new(self)
     }
 
-    /// A file's contents on `side` (repository-relative `path`); `None` if
-    /// the side has no such file. For anchoring review comments to the
-    /// lines a diff side shows.
+    /// A file's contents on `side` (repository-relative `path`), as its diff
+    /// shows them (a work-tree file cleaned as `git add` would store it);
+    /// `None` if the side has no such file. For anchoring review comments to
+    /// the lines a diff side shows.
     pub fn read_file(&self, side: &Side, path: &str) -> Result<Option<Vec<u8>>> {
         check_path(path)?;
-        Ok(self.read_side(side, path)?.map(|b| b.data))
+        Ok(self.reader().read(side, path)?.map(|b| b.data))
     }
 
     /// The diff of one file from `base` to `head`, with `context` lines
     /// around changes (`git diff -U<context>`).
     pub fn diff(&self, path: &str, base: &Side, head: &Side, context: u32) -> Result<FileDiff> {
-        check_path(path)?;
-        let old = self.read_side(base, path)?;
-        let new = self.read_side(head, path)?;
-        Ok(file_diff(path, old, new, context))
+        self.diff_paths(path, path, base, head, context)
     }
 
-    /// Files that differ from `base` to `head` (`git diff --numstat`),
-    /// sorted by path. Untracked files are not on the work-tree side, as in
-    /// `git diff`.
+    /// The diff of a file that is at `orig_path` on `base` and at `path` on
+    /// `head` (a rename, as [`ChangedFile::orig_path`] or
+    /// [`StatusEntry::orig_path`](crate::StatusEntry::orig_path) give it),
+    /// with `context` lines around changes.
+    pub fn diff_paths(
+        &self,
+        orig_path: &str,
+        path: &str,
+        base: &Side,
+        head: &Side,
+        context: u32,
+    ) -> Result<FileDiff> {
+        check_path(orig_path)?;
+        check_path(path)?;
+        let mut reader = self.reader();
+        let old = reader.read(base, orig_path)?;
+        let new = reader.read(head, path)?;
+        let binary = reader.either_binary(orig_path, old.as_ref(), path, new.as_ref())?;
+        let mut d = file_diff(path, old, new, context, binary);
+        if orig_path != path {
+            d.orig_path = Some(orig_path.to_owned());
+        }
+        Ok(d)
+    }
+
+    /// Files that differ from `base` to `head` (`git diff -M --numstat`),
+    /// sorted by path, with renames paired. Untracked files are not on the
+    /// work-tree side, as in `git diff`.
     pub fn changed_files(&self, base: &Side, head: &Side) -> Result<Vec<ChangedFile>> {
         let old = self.listing(base)?;
         let new = self.listing(head)?;
         let paths: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
+        let mut reader = self.reader();
         let mut out = Vec::new();
+        let mut deleted: Vec<(String, Blob)> = Vec::new();
+        let mut added: Vec<(String, Blob)> = Vec::new();
         for path in paths {
             let (o, n) = (old.get(path), new.get(path));
             if let (Some(o), Some(n)) = (o, n)
@@ -447,39 +648,70 @@ impl Repo {
                 continue;
             }
             let a = if o.is_some() {
-                self.read_side(base, path)?
+                reader.read(base, path)?
             } else {
                 None
             };
             let b = if n.is_some() {
-                self.read_side(head, path)?
+                reader.read(head, path)?
             } else {
                 None
             };
-            let change = match (&a, &b) {
-                (None, None) => continue,
-                (None, Some(_)) => Change::Added,
-                (Some(_), None) => Change::Deleted,
+            match (a, b) {
+                (None, None) => {}
+                (None, Some(b)) => added.push((path.clone(), b)),
+                (Some(a), None) => deleted.push((path.clone(), a)),
                 (Some(a), Some(b)) => {
                     if a.mode == b.mode && a.data == b.data {
                         continue;
                     }
-                    if (a.mode & 0o170000) != (b.mode & 0o170000) {
+                    let change = if (a.mode & 0o170000) != (b.mode & 0o170000) {
                         Change::TypeChanged
                     } else {
                         Change::Modified
-                    }
+                    };
+                    out.push(changed(&mut reader, path, path, change, Some(a), Some(b))?);
                 }
-            };
-            let d = file_diff(path, a, b, 0);
-            out.push(ChangedFile {
-                path: path.clone(),
-                change,
-                additions: d.additions,
-                deletions: d.deletions,
-                binary: d.binary,
-            });
+            }
         }
+        let pairs = renames(&mut reader, &deleted, &added)?;
+        let mut deleted: Vec<Option<(String, Blob)>> = deleted.into_iter().map(Some).collect();
+        let mut added: Vec<Option<(String, Blob)>> = added.into_iter().map(Some).collect();
+        for p in pairs {
+            if let (Some((from, a)), Some((to, b))) =
+                (deleted[p.source].take(), added[p.dest].take())
+            {
+                out.push(changed(
+                    &mut reader,
+                    &from,
+                    &to,
+                    Change::Renamed,
+                    Some(a),
+                    Some(b),
+                )?);
+            }
+        }
+        for (path, a) in deleted.into_iter().flatten() {
+            out.push(changed(
+                &mut reader,
+                &path,
+                &path,
+                Change::Deleted,
+                Some(a),
+                None,
+            )?);
+        }
+        for (path, b) in added.into_iter().flatten() {
+            out.push(changed(
+                &mut reader,
+                &path,
+                &path,
+                Change::Added,
+                None,
+                Some(b),
+            )?);
+        }
+        out.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(out)
     }
 
@@ -508,7 +740,7 @@ impl Repo {
                 Ok(index
                     .entries()
                     .iter()
-                    .filter(|e| e.stage_raw() == 0)
+                    .filter(|e| e.stage_raw() == 0 && !is_intent_to_add(e))
                     .map(|e| {
                         (
                             e.path(&index).to_str_lossy().into_owned(),
@@ -528,6 +760,12 @@ impl Repo {
                         Some(Change::Deleted) => {
                             listing.remove(&e.path);
                         }
+                        Some(Change::Renamed) => {
+                            if let Some(orig) = &e.orig_path {
+                                listing.remove(orig);
+                            }
+                            listing.insert(e.path, (None, 0));
+                        }
                         Some(Change::Modified | Change::TypeChanged | Change::Added) => {
                             listing.insert(e.path, (None, 0));
                         }
@@ -538,6 +776,60 @@ impl Repo {
             }
         }
     }
+}
+
+/// A changed file, its lines counted.
+fn changed(
+    reader: &mut Reader<'_>,
+    orig_path: &str,
+    path: &str,
+    change: Change,
+    a: Option<Blob>,
+    b: Option<Blob>,
+) -> Result<ChangedFile> {
+    let binary = reader.either_binary(orig_path, a.as_ref(), path, b.as_ref())?;
+    let d = file_diff(path, a, b, 0, binary);
+    Ok(ChangedFile {
+        path: path.to_owned(),
+        change,
+        orig_path: (orig_path != path).then(|| orig_path.to_owned()),
+        additions: d.additions,
+        deletions: d.deletions,
+        binary: d.binary,
+    })
+}
+
+/// The renames among `deleted` and `added` files.
+pub(crate) fn renames(
+    reader: &mut Reader<'_>,
+    deleted: &[(String, Blob)],
+    added: &[(String, Blob)],
+) -> Result<Vec<rename::Pair>> {
+    if deleted.is_empty() || added.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut sources = Vec::with_capacity(deleted.len());
+    for (path, blob) in deleted {
+        sources.push(candidate(reader, path, blob)?);
+    }
+    let mut dests = Vec::with_capacity(added.len());
+    for (path, blob) in added {
+        dests.push(candidate(reader, path, blob)?);
+    }
+    Ok(rename::find(&sources, &dests))
+}
+
+fn candidate<'a>(
+    reader: &mut Reader<'_>,
+    path: &'a str,
+    blob: &'a Blob,
+) -> Result<rename::Candidate<'a>> {
+    Ok(rename::Candidate {
+        path,
+        data: &blob.data,
+        mode: blob.mode,
+        text: !reader.is_binary(path, &blob.data)?,
+    })
 }
 
 /// The work-tree file at `path`: a symlink's target, or a file's bytes.
@@ -585,11 +877,14 @@ fn executable(_: &std::fs::Metadata) -> bool {
     false
 }
 
+/// The diff of `old` to `new` (at `path`); `binary` as the [`Reader`]
+/// decided.
 pub(crate) fn file_diff(
     path: &str,
     old: Option<Blob>,
     new: Option<Blob>,
     context: u32,
+    binary: bool,
 ) -> FileDiff {
     let side = |b: &Option<Blob>| {
         b.as_ref().map(|b| FileSide {
@@ -601,7 +896,6 @@ pub(crate) fn file_diff(
     let empty: &[u8] = &[];
     let a = old.as_ref().map_or(empty, |b| b.data.as_slice());
     let b = new.as_ref().map_or(empty, |b| b.data.as_slice());
-    let binary = is_binary(a) || is_binary(b);
     let hunks: Vec<Hunk> = if binary {
         Vec::new()
     } else {
@@ -619,6 +913,7 @@ pub(crate) fn file_diff(
     };
     FileDiff {
         path: path.to_owned(),
+        orig_path: None,
         old: o,
         new: n,
         binary,

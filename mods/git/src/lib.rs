@@ -11,7 +11,9 @@
 //!   [`Repo::branches`] and [`Repo::stashes`].
 //! - **Writes** run the user's `git` (hooks, config and credentials apply as
 //!   in a terminal): [`Repo::stage`], [`Repo::unstage`] (whole files, or
-//!   chosen lines through `git apply --cached`), [`Repo::commit`],
+//!   chosen lines through `git apply --cached`), [`Repo::discard`] and
+//!   [`Repo::discard_lines`] (back to the index version; untracked files
+//!   are refused, the daemon moves them to the trash), [`Repo::commit`],
 //!   [`Repo::create_branch`], [`Repo::switch_branch`] and the stash
 //!   operations.
 //!
@@ -23,9 +25,12 @@
 //! **Fidelity:** results match the `git` CLI on the same repository (the
 //! tests compare against `git status --porcelain=v2`, `git diff`, `git log`
 //! and `git blame --porcelain`), with these choices: status lists untracked
-//! files one by one (`-uall`) and does not pair renames (`--no-renames`);
-//! diffs compare raw contents (no `.gitattributes` text conversion or
-//! textconv); blame covers committed history only.
+//! files one by one (`-uall`); renames are paired with git's default
+//! settings whatever `status.renames` / `diff.renames` say (50% similar, no
+//! copies: `git status --renames`, `git diff -M`); work-tree files are read
+//! through `.gitattributes` and the clean filters, and `binary` / `-diff`
+//! make a file binary, but `textconv` is not run; blame covers committed
+//! history only.
 
 mod blame;
 mod cli;
@@ -33,6 +38,7 @@ mod diff;
 mod log;
 mod patch;
 mod refs;
+mod rename;
 mod status;
 pub mod testing;
 
@@ -235,7 +241,7 @@ impl Repo {
 
 /// Check a repository-relative path: `/`-separated, relative, no `.` or
 /// `..` components, no `.git`.
-pub(crate) fn check_path(path: &str) -> Result<()> {
+pub fn check_path(path: &str) -> Result<()> {
     let bad = path.is_empty()
         || path.starts_with('/')
         || path.contains('\\')

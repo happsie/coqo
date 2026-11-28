@@ -273,11 +273,12 @@ pub(crate) fn scope_hunks(
         "" => String::new(),
         p => format!("{}/", p.trim_end_matches('/')),
     };
-    let mut paths: Vec<String> = repo
+    // Each changed path, with where a rename came from (#226).
+    let mut paths: Vec<(String, Option<String>)> = repo
         .changed_files(base, head)
         .map_err(HunksError::Git)?
         .into_iter()
-        .map(|f| f.path)
+        .map(|f| (f.path, f.orig_path))
         .collect();
     if untracked {
         let status = repo.status().map_err(HunksError::Git)?;
@@ -286,26 +287,60 @@ pub(crate) fn scope_hunks(
                 .entries
                 .into_iter()
                 .filter(|e| e.unstaged == Some(mg::Change::Untracked) && !e.path.ends_with('/'))
-                .map(|e| e.path),
+                .map(|e| (e.path, None)),
         );
         paths.sort();
-        paths.dedup();
+        paths.dedup_by(|a, b| a.0 == b.0);
     }
     let committed = format!("{COMMITTED_DIR}/");
-    let paths: Vec<(String, String)> = paths
+    let rel_of = |p: &str| {
+        let rel = p.strip_prefix(&prefix)?.to_owned();
+        (!rel.starts_with(&committed)).then_some(rel)
+    };
+    // (path, root-relative path, (old path, its root-relative path)).
+    type Scoped = (String, String, Option<(String, Option<String>)>);
+    let paths: Vec<Scoped> = paths
         .into_iter()
-        .filter_map(|p| {
-            let rel = p.strip_prefix(&prefix)?.to_owned();
-            (!rel.starts_with(&committed)).then_some((p, rel))
+        .filter_map(|(p, orig)| {
+            let rel = rel_of(&p)?;
+            let orig = orig.map(|o| {
+                let rel = rel_of(&o);
+                (o, rel)
+            });
+            Some((p, rel, orig))
         })
         .collect();
     if paths.len() > MAX_FILES {
         return Err(HunksError::TooMany(paths.len()));
     }
     let mut files = Vec::new();
-    for (path, rel) in paths {
-        let d = repo.diff(&path, base, head, 0).map_err(HunksError::Git)?;
-        files.extend(file_hunks(rel, d));
+    for (path, rel, orig) in paths {
+        let Some((orig, orig_rel)) = orig else {
+            let d = repo.diff(&path, base, head, 0).map_err(HunksError::Git)?;
+            files.extend(file_hunks(rel, d));
+            continue;
+        };
+        let d = repo
+            .diff_paths(&orig, &path, base, head, 0)
+            .map_err(HunksError::Git)?;
+        if d.hunks.is_empty() && !d.binary {
+            // A move with the same lines: a delete and an add, which
+            // `pair_renames` makes one move covering the whole file.
+            if let Some(orig_rel) = orig_rel {
+                let gone = repo.diff(&orig, base, head, 0).map_err(HunksError::Git)?;
+                files.extend(file_hunks(orig_rel, gone));
+            }
+            let d = repo.diff(&path, base, head, 0).map_err(HunksError::Git)?;
+            files.extend(file_hunks(rel, d));
+            continue;
+        }
+        // Changed as it moved: its hunks, against the old path's lines.
+        files.extend(file_hunks(rel, d).map(|mut f| {
+            for h in &mut f.hunks {
+                h.renamed_from.clone_from(&orig_rel);
+            }
+            f
+        }));
     }
     pair_renames(&mut files);
     Ok(files.into_iter().flat_map(|f| f.hunks).collect())
