@@ -10,7 +10,7 @@
 //! agent for the message ([`super::draft`]).
 
 use coqo_protocol::methods::{
-    git::{FileChange, StatusEntry},
+    git::{Branch, FileChange, StatusEntry},
     workspace::RootId,
 };
 use coqo_ui::{
@@ -319,11 +319,17 @@ impl GitPane {
         }));
         let picker = self.picker_open.then(|| {
             let root = repo.root;
+            // Where HEAD is comes from the status, as on the button: the
+            // list can be a switch behind, and clicking the branch HEAD
+            // just left would then do nothing.
             let locals: Vec<_> = repo
                 .branches
                 .iter()
                 .filter(|b| !b.remote)
-                .cloned()
+                .map(|b| Branch {
+                    current: repo.is_current(b),
+                    ..b.clone()
+                })
                 .collect();
             div()
                 .id("git-branch-picker")

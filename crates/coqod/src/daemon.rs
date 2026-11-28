@@ -189,6 +189,23 @@ fn remove_socket(path: &Path) {
     }
 }
 
+/// Empties the agent handles when serving ends, however it ends (an
+/// in-process daemon's serving task can be aborted mid-await).
+///
+/// [`routes::router`] sets them to the buffers and the terminals, which
+/// reach back to the provider mods holding the handles (the terminals
+/// through the session manager): an `Arc` cycle. Left in place, it keeps
+/// every service alive, and with them the workspaces' file watchers, each
+/// holding an inotify instance (at most 128 per user by default).
+struct UnlinkAgentHandles(coqo_acp_host::FsHandle, coqo_acp_host::TerminalHandle);
+
+impl Drop for UnlinkAgentHandles {
+    fn drop(&mut self) {
+        self.0.clear();
+        self.1.clear();
+    }
+}
+
 /// Serve until idle exit, `daemon/shutdown`, SIGTERM or SIGINT. Takes the
 /// lock and the bound listener from [`acquire`] and [`bind`].
 pub async fn serve(
@@ -221,6 +238,7 @@ pub async fn serve_with(
     let shutdown = CancellationToken::new();
     let agent_fs = coqo_acp_host::FsHandle::new();
     let agent_terminals = coqo_acp_host::TerminalHandle::new();
+    let _unlink = UnlinkAgentHandles(agent_fs.clone(), agent_terminals.clone());
     let mods = Mods::load(mods::builtins(&data, &agent_fs, &agent_terminals));
     mods.start().await;
     let ctx = DaemonContext {

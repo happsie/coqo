@@ -112,6 +112,13 @@ impl TerminalHandle {
         *self.0.write().unwrap_or_else(PoisonError::into_inner) = Some(terminals);
     }
 
+    /// Empties the slot: agents are not offered terminals again. What was
+    /// set usually reaches back to the provider holding this handle, an
+    /// `Arc` cycle that only this breaks.
+    pub fn clear(&self) {
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
     pub(crate) fn get(&self) -> Option<Arc<dyn AgentTerminals>> {
         self.0
             .read()
@@ -139,6 +146,25 @@ pub(crate) fn truncate(text: String, limit: Option<u64>) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clearing_the_handle_lets_go_of_what_was_set() {
+        struct Refuse;
+        impl AgentTerminals for Refuse {
+            fn create(&self, _: TerminalRequest) -> Result<Arc<dyn AgentTerminal>, String> {
+                Err("no terminals".into())
+            }
+        }
+        let terminals = Arc::new(Refuse);
+        let handle = TerminalHandle::new();
+        handle.set(Arc::clone(&terminals) as Arc<dyn AgentTerminals>);
+        let clone = handle.clone();
+        assert!(clone.get().is_some());
+        assert_eq!(Arc::strong_count(&terminals), 2);
+        clone.clear();
+        assert!(handle.get().is_none());
+        assert_eq!(Arc::strong_count(&terminals), 1);
+    }
 
     #[test]
     fn truncates_from_the_start_at_a_char_boundary() {

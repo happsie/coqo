@@ -12,7 +12,7 @@ use std::{
 use coqo_mod_git::testing::Fixture as Repo;
 use coqo_protocol::methods::{
     git::{
-        DiffLine, FileChange, FileDiff, FileSide, Head, Hunk, LineKind, RepoInfo, Stash,
+        Branch, DiffLine, FileChange, FileDiff, FileSide, Head, Hunk, LineKind, RepoInfo, Stash,
         StatusEntry, StatusResult,
     },
     workspace::{self as wsm, RootId, WorkspaceId, WorkspaceInfo, WorkspaceRoot},
@@ -390,11 +390,42 @@ fn the_git_tab_counts_changes_and_the_status_bar_shows_the_branch() {
     ui.wait_for("a clean tree again", |ui| ui.badge().is_none());
     repo.git(&["switch", "-q", "topic"]);
     ui.wait_for("the switch", |ui| ui.branch_text() == "topic");
-    // And one from the Git pane does too.
+    // And one from the Git pane does too, even while the branch list (it
+    // loads apart from the status) still says `main` is current.
     ui.click("sidebar-git");
     ui.click("git-branch");
     ui.click(("git-branch-item", 0usize));
     ui.wait_for("the switch back", |ui| ui.branch_text() == "main");
+}
+
+#[test]
+fn the_picker_takes_the_current_branch_from_the_status() {
+    let branch = |name: &str, current| Branch {
+        name: name.into(),
+        remote: false,
+        current,
+        oid: "0".repeat(40),
+        upstream: None,
+        summary: String::new(),
+        time: 0,
+    };
+    // The branch list from before a switch to `issue-91-git-mod`, which
+    // the status already shows.
+    let mut root = RootGit::new(RootId(0));
+    root.branches = vec![branch("issue-91-git-mod", false), branch("main", true)];
+    root.status = Some(sample_status());
+    assert!(root.is_current(&root.branches[0]));
+    assert!(!root.is_current(&root.branches[1]));
+    // A remote branch of the same name is not where HEAD is.
+    let mut remote = branch("issue-91-git-mod", false);
+    remote.remote = true;
+    assert!(!root.is_current(&remote));
+    // Detached: no branch is current.
+    root.status.as_mut().unwrap().head.branch = None;
+    assert!(!root.is_current(&root.branches[1]));
+    // Until the status is in, the list decides.
+    root.status = None;
+    assert!(root.is_current(&root.branches[1]));
 }
 
 #[test]
