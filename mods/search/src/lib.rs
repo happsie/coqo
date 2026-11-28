@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use coqo_mod_api::{BoxFuture, Manifest, Mod, ModContext, ModError, Service, ServiceVersion};
 
-pub use matcher::{Match, Matcher, MatchAt, Replacement};
+pub use matcher::{Match, MatchAt, Matcher, Replacement};
 pub use walk::{FileMatches, Overlay, Root, Summary};
 
 /// The mod's `coqo.mod.toml`.

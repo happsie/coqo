@@ -180,7 +180,7 @@ Rules:
 | `workbench` | Layout/docking, tab groups, command palette, keybindings, settings UI, themes |
 | `editor` | Code editor: multi-cursor, splits, folding, sticky scroll, minimap (optional), vim mode (optional) |
 | `files` | File tree, fuzzy finder, file operations |
-| `search` | Project search/replace, symbol search |
+| `search` | Project search/replace ([ADR 0025](adr/0025-search-mod.md)), symbol search |
 | `terminal` | Integrated terminal tabs (daemon-owned PTYs; in `coqod` and `coqo` until the mod API can host it, see [ADR 0009](adr/0009-daemon-terminals.md)) |
 | `lsp` | Generic LSP client (diagnostics, completion, hover, nav, rename, code actions, inlay hints, semantic tokens, formatting) + ⚡ bolt lifecycle (`coqo.intellisense@1`) |
 | `syntax` | tree-sitter highlighting, folding, outline, symbol tags, which are always on (§7.1.1) |

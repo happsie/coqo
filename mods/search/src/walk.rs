@@ -65,14 +65,24 @@ pub struct Summary {
 pub(crate) fn overrides(root: &Path, query: &Query) -> Result<Override> {
     let mut b = OverrideBuilder::new(root);
     let bad = |g: &str, e: ignore::Error| SearchError::invalid(format!("glob {g:?}: {e}"));
-    for g in query.include.iter().map(|g| g.trim()).filter(|g| !g.is_empty()) {
+    for g in query
+        .include
+        .iter()
+        .map(|g| g.trim())
+        .filter(|g| !g.is_empty())
+    {
         b.add(g).map_err(|e| bad(g, e))?;
         if !g.contains(['*', '?', '[', '{']) {
             let under = format!("{}/**", g.trim_end_matches('/'));
             b.add(&under).map_err(|e| bad(g, e))?;
         }
     }
-    for g in query.exclude.iter().map(|g| g.trim()).filter(|g| !g.is_empty()) {
+    for g in query
+        .exclude
+        .iter()
+        .map(|g| g.trim())
+        .filter(|g| !g.is_empty())
+    {
         let g = g.trim_start_matches('!');
         b.add(&format!("!{g}")).map_err(|e| bad(g, e))?;
     }
@@ -159,11 +169,9 @@ impl Matcher {
                         true
                     });
                     let read = match overlay.get(path) {
-                        Some(text) => in_memory.search_slice(
-                            self.regex(),
-                            text.as_bytes(),
-                            &mut sink_lines,
-                        ),
+                        Some(text) => {
+                            in_memory.search_slice(self.regex(), text.as_bytes(), &mut sink_lines)
+                        }
                         None => on_disk.search_path(self.regex(), path, &mut sink_lines),
                     };
                     let binary = sink_lines.binary;

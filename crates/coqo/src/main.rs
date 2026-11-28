@@ -19,6 +19,7 @@ mod git;
 mod layout;
 mod questions;
 mod resume;
+mod search;
 mod shell;
 mod terminal;
 mod threads;

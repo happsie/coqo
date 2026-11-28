@@ -30,12 +30,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use coqo_mod_api::Service as _;
-use coqo_mod_search::{self as ms, Matcher, MatchAt, Root, Search, SearchError};
+use coqo_mod_search::{self as ms, MatchAt, Matcher, Root, Search, SearchError};
 use coqo_protocol::methods::buffer::TextEdit;
 use coqo_protocol::methods::codes;
 use coqo_protocol::methods::search::{
-    self as sm, FileMatches, FileReplaced, ReplaceOutcome, ReplaceParams, ReplaceResult,
-    RunParams, SearchEvent, SearchMatch, SearchQuery, SearchSummary,
+    self as sm, FileMatches, FileReplaced, ReplaceOutcome, ReplaceParams, ReplaceResult, RunParams,
+    SearchEvent, SearchMatch, SearchQuery, SearchSummary,
 };
 use coqo_protocol::methods::workspace::RootId;
 use coqo_protocol::{Access, ErrorObject, EventFeed, Router, Sequenced};
@@ -115,7 +115,11 @@ enum Found {
 impl SearchService {
     /// A service over `workspaces` and `buffers`, resolving `coqo.search@1`
     /// from `mods`.
-    pub fn new(workspaces: Arc<WorkspaceService>, buffers: Arc<BufferService>, mods: Mods) -> Arc<Self> {
+    pub fn new(
+        workspaces: Arc<WorkspaceService>,
+        buffers: Arc<BufferService>,
+        mods: Mods,
+    ) -> Arc<Self> {
         Arc::new(Self {
             workspaces,
             buffers,
@@ -140,7 +144,10 @@ impl SearchService {
     }
 
     /// `search/run`: start the search; its events are the feed.
-    pub async fn run(self: &Arc<Self>, p: RunParams) -> Result<EventFeed<SearchEvent>, ErrorObject> {
+    pub async fn run(
+        self: &Arc<Self>,
+        p: RunParams,
+    ) -> Result<EventFeed<SearchEvent>, ErrorObject> {
         let started = Instant::now();
         let matcher = self.compile(&p.query)?;
         let mut roots = self.workspaces.roots(p.workspace.clone()).await?;
@@ -211,7 +218,11 @@ impl SearchService {
                         batch.push(to_file(f));
                         if deadline.is_none() || batch.len() >= BATCH_FILES {
                             let files = std::mem::take(&mut batch);
-                            if event_tx.send(Ok(SearchEvent::Files { files })).await.is_err() {
+                            if event_tx
+                                .send(Ok(SearchEvent::Files { files }))
+                                .await
+                                .is_err()
+                            {
                                 return;
                             }
                             deadline = Some(tokio::time::Instant::now() + BATCH_WINDOW);
@@ -220,7 +231,11 @@ impl SearchService {
                     Some(Found::Done(summary)) => {
                         if !batch.is_empty() {
                             let files = std::mem::take(&mut batch);
-                            if event_tx.send(Ok(SearchEvent::Files { files })).await.is_err() {
+                            if event_tx
+                                .send(Ok(SearchEvent::Files { files }))
+                                .await
+                                .is_err()
+                            {
                                 return;
                             }
                         }

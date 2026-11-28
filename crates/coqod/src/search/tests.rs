@@ -67,10 +67,7 @@ impl Harness {
         let buffers = BufferService::new(Arc::clone(&workspaces), dirs, BufferConfig::default());
         let mut builtins = BuiltinMods::new();
         if with_search {
-            builtins = builtins.with(
-                coqo_mod_search::MANIFEST,
-                coqo_mod_search::SearchMod::new(),
-            );
+            builtins = builtins.with(coqo_mod_search::MANIFEST, coqo_mod_search::SearchMod::new());
         }
         let mods = Mods::load(builtins);
         mods.start().await;
@@ -257,7 +254,10 @@ async fn regex_case_word_and_globs() {
     q.include = vec!["*.rs".into()];
     q.exclude = vec!["gen".into()];
     let (files, _) = h.search(q).await.unwrap();
-    assert_eq!(files, vec![("a.rs".to_owned(), vec![(0, 4, 7), (0, 8, 12), (0, 13, 19)])]);
+    assert_eq!(
+        files,
+        vec![("a.rs".to_owned(), vec![(0, 4, 7), (0, 8, 12), (0, 13, 19)])]
+    );
 
     let mut q = h.query("foo");
     q.whole_word = true;
@@ -315,7 +315,11 @@ async fn replace_across_open_and_unopened_files() {
         )
         .await;
     assert_eq!(result.replaced, 1 + 3 + 1);
-    let outcomes: Vec<_> = result.files.iter().map(|f| (f.path.as_str(), f.outcome, f.replaced)).collect();
+    let outcomes: Vec<_> = result
+        .files
+        .iter()
+        .map(|f| (f.path.as_str(), f.outcome, f.replaced))
+        .collect();
     assert_eq!(
         outcomes,
         vec![
@@ -329,13 +333,24 @@ async fn replace_across_open_and_unopened_files() {
     assert!(result.files[4].error.is_some());
 
     // The open buffer changed, unsaved and revertible; the disk did not.
-    assert_eq!(h.buffers.text(open.buffer).unwrap(), "let new = old_value;\n");
-    assert_eq!(fs::read_to_string(h.path("open.rs")).unwrap(), "let old = old_value;\n");
+    assert_eq!(
+        h.buffers.text(open.buffer).unwrap(),
+        "let new = old_value;\n"
+    );
+    assert_eq!(
+        fs::read_to_string(h.path("open.rs")).unwrap(),
+        "let old = old_value;\n"
+    );
     assert_eq!(result.files[0].buffer, Some(open.buffer));
     let rev = result.files[0].rev.unwrap();
     let mut changes = h
         .client
-        .subscribe::<bufm::Changes>(bufm::ChangesParams { buffer: open.buffer }, Some(rev - 1))
+        .subscribe::<bufm::Changes>(
+            bufm::ChangesParams {
+                buffer: open.buffer,
+            },
+            Some(rev - 1),
+        )
         .await
         .unwrap();
     let change = changes.next().await.unwrap().unwrap().event;
@@ -348,7 +363,10 @@ async fn replace_across_open_and_unopened_files() {
         })
         .await
         .unwrap();
-    assert_eq!(h.buffers.text(open.buffer).unwrap(), "let old = old_value;\n");
+    assert_eq!(
+        h.buffers.text(open.buffer).unwrap(),
+        "let old = old_value;\n"
+    );
 
     // The closed file was written, its BOM and CRLFs kept.
     assert_eq!(
@@ -385,7 +403,10 @@ async fn replace_one_match_with_capture_groups() {
     ]);
     let result = h.replace(q, "g($1$1)", vec![file], Vec::new()).await;
     assert_eq!(result.replaced, 1);
-    assert_eq!(fs::read_to_string(h.path("a.txt")).unwrap(), "f(1) g(22)\nf(3)\n");
+    assert_eq!(
+        fs::read_to_string(h.path("a.txt")).unwrap(),
+        "f(1) g(22)\nf(3)\n"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -393,7 +414,10 @@ async fn dropping_the_subscription_cancels_the_walk() {
     let files: Vec<(String, String)> = (0..3000)
         .map(|i| (format!("d{}/f{i}.txt", i % 30), "needle\n".to_owned()))
         .collect();
-    let refs: Vec<(&str, &str)> = files.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
     let h = Harness::new(&refs).await;
     let mut sub = h
         .client

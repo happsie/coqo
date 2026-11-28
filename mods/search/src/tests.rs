@@ -21,7 +21,11 @@ fn write(root: &Path, rel: &str, text: &str) {
 }
 
 /// Search `root` and return `(rel, [(line, start, end)])`, sorted.
-fn run(m: &Matcher, root: &Path, overlay: &Overlay) -> (Vec<(String, Vec<(u32, u32, u32)>)>, Summary) {
+fn run(
+    m: &Matcher,
+    root: &Path,
+    overlay: &Overlay,
+) -> (Vec<(String, Vec<(u32, u32, u32)>)>, Summary) {
     let out = Mutex::new(Vec::new());
     let root = Root::new(root.canonicalize().unwrap());
     let summary = m
@@ -134,7 +138,10 @@ fn replaces_literally_or_with_capture_groups() {
     assert_eq!(r.len(), 2);
     assert_eq!(apply(text, &r), "let a = g(1);\nlet b = g(22);\n");
     // `$` is literal in a literal replace.
-    assert_eq!(apply(text, &m.replace(text, "$1(", None)), "let a = $1(1);\nlet b = $1(22);\n");
+    assert_eq!(
+        apply(text, &m.replace(text, "$1(", None)),
+        "let a = $1(1);\nlet b = $1(22);\n"
+    );
 
     let mut q = query(r"f\((\d+)\)");
     q.regex = true;
@@ -166,12 +173,18 @@ fn whole_word_replaces_only_the_word() {
     q.whole_word = true;
     let text = "id(ids, id)\n";
     let m = Search.compile(&q).unwrap();
-    assert_eq!(apply(text, &m.replace(text, "key", None)), "key(ids, key)\n");
+    assert_eq!(
+        apply(text, &m.replace(text, "key", None)),
+        "key(ids, key)\n"
+    );
     let mut q = query(r"(i)d");
     q.regex = true;
     q.whole_word = true;
     let m = Search.compile(&q).unwrap();
-    assert_eq!(apply(text, &m.replace(text, "${1}x", None)), "ix(ids, ix)\n");
+    assert_eq!(
+        apply(text, &m.replace(text, "${1}x", None)),
+        "ix(ids, ix)\n"
+    );
 }
 
 fn apply(text: &str, r: &[Replacement]) -> String {
@@ -246,7 +259,10 @@ fn the_overlay_is_searched_instead_of_the_disk() {
     write(&root, "open.rs", "old text\n");
     write(&root, "closed.rs", "needle on disk\n");
     let mut overlay = Overlay::new();
-    overlay.insert(root.join("open.rs"), "unsaved\nneedle in the buffer\n".into());
+    overlay.insert(
+        root.join("open.rs"),
+        "unsaved\nneedle in the buffer\n".into(),
+    );
     let m = Search.compile(&query("needle")).unwrap();
     let (found, _) = run(&m, &root, &overlay);
     assert_eq!(
@@ -279,14 +295,26 @@ fn stops_at_the_limit_or_when_cancelled() {
     assert_eq!(*count.lock().unwrap(), 5);
 
     let summary = m
-        .search(&roots, &Overlay::new(), 1000, &AtomicBool::new(true), &|_| true)
+        .search(
+            &roots,
+            &Overlay::new(),
+            1000,
+            &AtomicBool::new(true),
+            &|_| true,
+        )
         .unwrap();
     assert!(summary.cancelled);
     assert_eq!(summary.files, 0);
 
     // The sink stopping it counts as cancelled.
     let summary = m
-        .search(&roots, &Overlay::new(), 1000, &AtomicBool::new(false), &|_| false)
+        .search(
+            &roots,
+            &Overlay::new(),
+            1000,
+            &AtomicBool::new(false),
+            &|_| false,
+        )
         .unwrap();
     assert!(summary.cancelled);
     assert!(summary.files >= 1);

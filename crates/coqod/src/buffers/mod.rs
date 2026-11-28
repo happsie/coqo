@@ -1325,7 +1325,10 @@ impl BufferService {
             let bytes = disk::read(&real, limit).map_err(|e| match e {
                 disk::ReadError::TooLarge { size } => ErrorObject::new(
                     codes::FILE_TOO_LARGE,
-                    format!("{} is {size} bytes, more than the limit of {limit}", real.display()),
+                    format!(
+                        "{} is {size} bytes, more than the limit of {limit}",
+                        real.display()
+                    ),
                 ),
                 disk::ReadError::Io(e) => io_error(&real, &e),
             })?;
