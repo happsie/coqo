@@ -35,6 +35,9 @@ use crate::{
     workspace,
 };
 
+/// `(path, [(line, start, end)])` per file.
+type Found = Vec<(String, Vec<(u32, u32, u32)>)>;
+
 struct Ui {
     cx: TestAppContext,
     window: AnyWindowHandle,
@@ -145,7 +148,7 @@ impl Ui {
         });
     }
 
-    fn results(&mut self) -> Vec<(String, Vec<(u32, u32, u32)>)> {
+    fn results(&mut self) -> Found {
         let pane = self.pane();
         self.cx.read(|cx| {
             pane.read(cx)
@@ -239,7 +242,7 @@ fn search_open_a_match_and_replace_all() {
             main.read(cx)
                 .text_and_editor()
                 .map(|(_, e)| e.read(cx).selections(cx))
-                == Some(vec![16..21])
+                == Some(vec![std::ops::Range { start: 16, end: 21 }])
         })
     });
 

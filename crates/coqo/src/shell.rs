@@ -39,7 +39,7 @@ use coqo_ui::{
         deferred, div, hsla, point, px,
     },
     slots::{PaneBuilder, SidebarPanes, Slot, Slots},
-    widgets::{Icon, TestSupportExt as _, icon, kbd, panel, raised, status_dot, tab},
+    widgets::{Icon, TestSupportExt as _, icon, kbd, panel, raised, status_dot, tab_frame},
 };
 
 use crate::{
@@ -1237,17 +1237,26 @@ impl Shell {
             let id = pane.id.clone();
             let selected = active.as_ref() == Some(&id);
             let badge = pane.badge.as_ref().and_then(|badge| badge(window, cx));
+            // When the sidebar is too narrow for every tab, the titles shrink
+            // with an ellipsis; the badges never do.
+            let title = div()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(pane.title.clone());
             strip = strip.child(
-                tab(
+                tab_frame(
                     ElementId::Name(format!("sidebar-{id}").into()),
-                    pane.title.clone(),
                     selected,
                     cx,
                 )
+                .flex_shrink_1()
+                .min_w_0()
                 // The badge brings its own spacing, so one with nothing to
                 // show takes no room.
                 .gap_0()
-                .children(badge)
+                .child(title)
+                .child(div().flex_none().children(badge))
                 .test_support()
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| this.select_pane(id.clone(), cx))),

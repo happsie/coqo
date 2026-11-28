@@ -5,7 +5,7 @@ This page covers the Search sidebar pane: project search and replace (PLAN §6 `
 - **Code:** `crates/coqo/src/search/`. It moves into the search mod once the mod API carries UI contributions (#147).
 - **Data:** the daemon's `search/run` topic and `search/replace` method, served by the `coqo.search` mod ([ADR 0025](../adr/0025-search-mod.md)).
 - **Screenshots:** offscreen renders from `search_screenshots`.
-- **Board:** board 1 has no search pane. Search is another sidebar tab, between Files and Questions, built from the same parts as the Files and Git panes.
+- **Board:** board 1 has no search pane. Search is another sidebar tab, between Files and Questions, built from the same parts as the Files and Git panes. With four tabs, a narrow sidebar shrinks the tab titles with an ellipsis; a tab's badge (Git's change count) never shrinks.
 
 ![The Search pane with results](screenshots/search-dark.png)
 

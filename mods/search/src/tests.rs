@@ -20,12 +20,11 @@ fn write(root: &Path, rel: &str, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
-/// Search `root` and return `(rel, [(line, start, end)])`, sorted.
-fn run(
-    m: &Matcher,
-    root: &Path,
-    overlay: &Overlay,
-) -> (Vec<(String, Vec<(u32, u32, u32)>)>, Summary) {
+/// `(rel, [(line, start, end)])` per file.
+type Found = Vec<(String, Vec<(u32, u32, u32)>)>;
+
+/// Search `root` and return the files found, sorted.
+fn run(m: &Matcher, root: &Path, overlay: &Overlay) -> (Found, Summary) {
     let out = Mutex::new(Vec::new());
     let root = Root::new(root.canonicalize().unwrap());
     let summary = m

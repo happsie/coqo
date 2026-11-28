@@ -303,11 +303,11 @@ impl SearchPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(text) = text.filter(|t| !t.contains('\n') && t.len() <= 200) {
-            if text != self.query.read(cx).text(cx) {
-                self.query.update(cx, |q, cx| q.set_text(text, window, cx));
-                self.run(cx);
-            }
+        if let Some(text) = text.filter(|t| !t.contains('\n') && t.len() <= 200)
+            && text != self.query.read(cx).text(cx)
+        {
+            self.query.update(cx, |q, cx| q.set_text(text, window, cx));
+            self.run(cx);
         }
         let handle = self.query.read(cx).focus_handle(cx);
         window.focus(&handle, cx);

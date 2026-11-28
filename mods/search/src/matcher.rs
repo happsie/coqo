@@ -331,9 +331,9 @@ impl<F: FnMut(Match, Option<String>) -> bool> Sink for LineSink<'_, F> {
     type Error = io::Error;
 
     fn matched(&mut self, _: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, io::Error> {
-        let mut line_no = mat.line_number().unwrap_or(1).saturating_sub(1);
+        let first = mat.line_number().unwrap_or(1).saturating_sub(1);
         let mut offset = usize::try_from(mat.absolute_byte_offset()).unwrap_or(usize::MAX);
-        for line in mat.lines() {
+        for (line_no, line) in (first..).zip(mat.lines()) {
             if !self
                 .matcher
                 .each_in_line(line, line_no, offset, self.replacement, &mut self.f)
@@ -341,7 +341,6 @@ impl<F: FnMut(Match, Option<String>) -> bool> Sink for LineSink<'_, F> {
                 self.stopped = true;
                 return Ok(false);
             }
-            line_no += 1;
             offset = offset.saturating_add(line.len());
         }
         Ok(true)
