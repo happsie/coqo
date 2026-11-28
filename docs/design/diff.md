@@ -45,12 +45,18 @@ The tab is padded 10 px, with 10 px between its parts, as the board's window is.
 
 ## Comment threads
 
-Threads and the pending review come from #94 and [ADR 0022](../adr/0022-review-threads.md). The code is in `crates/coqo/src/threads/` (`WorkspaceThreads`, `ThreadsOverlay`), and the overlay is attached to every `git-diff` tab. Screenshots are offscreen renders from `threads_screenshots`:
+Threads and the pending review come from #94, sending it to the agent from #95, and both are in [ADR 0022](../adr/0022-review-threads.md). The code is in `crates/coqo/src/threads/` (`WorkspaceThreads`, `ThreadsOverlay`), and the overlay is attached to every `git-diff` tab. Screenshots are offscreen renders from `threads_screenshots`:
 `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored threads_screenshots`.
 
 ![Threads in the review surface](screenshots/threads-dark.png)
 
 ![The same in the light appearance](screenshots/threads-light.png)
+
+![The send popover (#95)](screenshots/threads-send-dark.png)
+
+![Claude addressing the review: its reply in the thread, which stays open until the turn ends](screenshots/threads-addressing-light.png)
+
+(`threads-send-light.png` and `threads-addressing-dark.png` are the other appearances.)
 
 - **Starting one:**
   - The `+` beside the hovered line, or at the end of a selection (drag the line numbers), opens a composer under that line.
@@ -75,7 +81,9 @@ Threads and the pending review come from #94 and [ADR 0022](../adr/0022-review-t
   - A `MessageCircle` marker on the thread's first line: `sand` while it has pending comments, `sage` once it is resolved, `blue` otherwise. Clicking it focuses the reply field, or opens a resolved thread.
   - Pending threads' lines are tinted `sand` at 10%.
 - **The pending review:**
-  - **Header, after the layout toggle:** "N pending" in `sand` semibold, a flat **Discard**, and the primary **Send N comments to Claude ↑**. Until #95 the send button is shown at 50% opacity, with the tooltip "Sending to the agent comes in #95".
+  - **Header, after the layout toggle:** "N pending" in `sand` semibold, a flat **Discard**, and the primary **Send N comments to Claude ↑** (the default chat's agent; #95).
+  - **Send popover** (#95), under the button, as the ask popover (#229): a `MessageCircle` in `sage` and "Send N comments to the agent"; a "To" row of pills, one per chat ("Claude · <chat title>", the default first and selected in `blue`) and **New chat**; a muted note ("\"<chat>\" made this change. Each comment goes with its lines, the code and the thread so far; the replies land in these threads."); an error line in `rose` (a chat in a turn: "\"<chat>\" is in the middle of a turn. Wait for it to finish or pick another chat; your N comments stay pending."); raised **Cancel** and primary **Send** ("Sending…" while it goes). A click outside closes it.
+  - **While the agent addresses the review:** a `lavender` pill at 14% in the header, a dot and "Claude is addressing N comments". Replies land in the cards live, with the agent's `lavender` avatar and name. A thread the agent resolves stays open until the turn ends, then folds; the folded row names the agent: `Resolved · "first" · Claude: last`.
   - **File rows:** "N pending" in `sand` before the stats.
   - **Note under the file list:** a `surface` card at 50% that explains the pending review (the board's text).
   - **Footer hint:** "Press + beside a line, or after selecting lines, to comment", joined to the staging hint.
@@ -101,7 +109,6 @@ The body's own keys also work: arrows and page keys scroll, `Ctrl C` / `Cmd C` c
 
 These parts of board 4 come with the issues that give them meaning:
 
-- Sending the pending review to the agent, and the agent's replies (#95). The **Send N comments to Claude** button is there, disabled.
 - Thread markers in the file editor's gutter (#258).
 - The **Walkthrough overlay** button. The walkthrough player (#100, [walkthrough.md](walkthrough.md)) shows its change in a `DiffView` of its own instead, with its steps as an overlay.
-- Provenance ("made by Claude in …") in the header.
+- Provenance ("made by Claude in …") in the header, and defaulting the send target to the session that made the change after its chat is closed (#286).

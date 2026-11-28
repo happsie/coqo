@@ -20,6 +20,7 @@
 //! | `annotate` | a note pinned to code, non-blocking | `questions/create` |
 //! | `set_acceptance_criteria` | the task's acceptance criteria and whether each holds | `sessions/setCriteria` |
 //! | `publish_walkthrough` | a code walkthrough of the finished change, checked in full | `walkthroughs/create` |
+//! | `reply_to_review` | answer a thread of the user's code review, optionally resolving it | `review/reply` |
 //!
 //! [`daemon`] adds the tools mods contribute in the daemon (`mcp/*`).
 //!
@@ -38,18 +39,20 @@ mod criteria;
 pub mod daemon;
 mod editor;
 pub mod questions;
+mod review;
 mod status;
 mod walkthrough;
 
 pub use criteria::SetAcceptanceCriteriaTool;
 pub use editor::{EditorContextTool, EditorRevealTool};
 pub use questions::{AnnotateTool, AskQuestionTool, AwaitAnswerTool};
+pub use review::ReplyToReviewTool;
 pub use status::SetStatusTool;
 pub use walkthrough::PublishWalkthroughTool;
 
 /// Register the core tools.
 pub fn core(registry: &ToolRegistry) {
-    let tools: [Arc<dyn Tool>; 8] = [
+    let tools: [Arc<dyn Tool>; 9] = [
         Arc::new(EditorContextTool),
         Arc::new(EditorRevealTool),
         Arc::new(SetStatusTool),
@@ -58,6 +61,7 @@ pub fn core(registry: &ToolRegistry) {
         Arc::new(AnnotateTool),
         Arc::new(SetAcceptanceCriteriaTool),
         Arc::new(PublishWalkthroughTool),
+        Arc::new(ReplyToReviewTool),
     ];
     for error in registry.update(&[], tools.into()) {
         tracing::warn!(error = %error, "cannot register a core tool");

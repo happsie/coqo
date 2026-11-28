@@ -34,7 +34,8 @@ pub(crate) const INSTRUCTIONS: &str = "Coqo is the desktop editor the user works
      ask_question for any other question about specific code; annotate to pin a non-blocking \
      note to lines; set_acceptance_criteria again as you verify each criterion; \
      publish_walkthrough when you finish a change, before \
-     saying it is done. Paths are absolute or relative to a workspace root; \
+     saying it is done; reply_to_review once per thread when the user sends you a code review \
+     from Coqo. Paths are absolute or relative to a workspace root; \
      lines and columns are 1-based. Other tools here come from Coqo mods and say when to use \
      them.";
 

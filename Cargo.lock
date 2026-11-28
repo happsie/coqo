@@ -1170,6 +1170,7 @@ dependencies = [
  "coqo-agents",
  "coqo-buffers",
  "coqo-client",
+ "coqo-kernel",
  "coqo-mcp",
  "coqo-mod-api",
  "coqo-mod-git",

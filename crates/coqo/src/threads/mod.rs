@@ -11,7 +11,14 @@
 //! - [`overlay::ThreadsOverlay`]: the threads in the diff view (gutter
 //!   markers, inline cards with replies and resolve, the composer behind
 //!   the `+`, "Pending" marks, the header's pending count and "Send N
-//!   comments", which #95 wires to the agent).
+//!   comments to <agent>", #95).
+//! - **Sending** ([`send_review`], #95): `review/send` delivers a diff's
+//!   pending review to an agent session in one prompt. The store remembers
+//!   each [`SentReview`] until its session's turn ends (from the chat
+//!   list), so the diff header says "Claude is addressing N comments" and
+//!   threads the agent resolves stay open until then. The agent's replies
+//!   come on the feed like any change.
+//! - [`OpenReviewDiff`]: the chat's "Review sent" card opens the diff.
 //!
 //! Every call goes to the daemon (`threads/*`, `review/*`); the store takes
 //! in the thread each returns, and the feed brings the rest.
@@ -24,21 +31,119 @@ mod tests;
 use std::collections::HashMap;
 
 use coqo_protocol::methods::{
+    agents::{self as agm, AgentState, SessionId, SessionInfo},
     threads::{
-        self as tm, ChangesParams, CommentId, CommentParams, CreateParams, EditCommentParams,
-        ListParams, ReplyParams, ReviewParams, Thread, ThreadEvent, ThreadId, ThreadList,
-        ThreadParams,
+        self as tm, Author, ChangesParams, CommentId, CommentParams, CreateParams,
+        EditCommentParams, ListParams, ReplyParams, ReviewParams, SendReviewParams, Thread,
+        ThreadEvent, ThreadId, ThreadList, ThreadParams,
     },
-    workspace::WorkspaceId,
+    workspace::{RootId, WorkspaceId},
 };
-use coqo_ui::gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, Global, Subscription, Task,
+use coqo_ui::{
+    dock::{AnyTab, Dock},
+    gpui::{
+        Action, App, AppContext as _, Context, Entity, EventEmitter, Global, Subscription, Task,
+        Window,
+    },
 };
 
+use coqo_ui::gpui; // The action derives spell their paths `gpui::…`.
+
 use crate::{
+    chat::list::ChatList,
     daemon::{Daemon, DaemonError},
+    git::diff::{self as diff_tab, DiffTab},
     resume::{Resumable, Update},
 };
+
+/// Open the diff a review was sent from (the chat's "Review sent" card).
+#[derive(Clone, Debug, PartialEq, Eq, Action)]
+#[action(namespace = threads, no_json)]
+pub struct OpenReviewDiff {
+    pub workspace: String,
+    /// The diff source's identity (`git:0:index..worktree`).
+    pub diff: String,
+}
+
+/// The root and side of a git diff source's identity:
+/// `git:<root>:index..worktree` (unstaged) or `git:<root>:HEAD..index`
+/// (staged).
+pub fn git_diff_of(identity: &str) -> Option<(RootId, bool)> {
+    let rest = identity.strip_prefix("git:")?;
+    let (root, side) = rest.split_once(':')?;
+    let root = RootId(root.parse().ok()?);
+    match side {
+        "index..worktree" => Some((root, false)),
+        "HEAD..index" => Some((root, true)),
+        _ => None,
+    }
+}
+
+/// Handle [`OpenReviewDiff`] in the window's dock: show (or open) the diff
+/// tab of that root and side.
+pub fn open_review_diff(
+    dock: &Entity<Dock>,
+    action: &OpenReviewDiff,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some((root, staged)) = git_diff_of(&action.diff) else {
+        return;
+    };
+    let workspace = WorkspaceId(action.workspace.clone());
+    let key = diff_tab::key(&workspace, root, staged);
+    if let Some(open) = dock.read(cx).find_tab(diff_tab::KIND, &key, cx) {
+        dock.update(cx, |dock, cx| dock.activate_tab(open, window, cx));
+        return;
+    }
+    let tab: Entity<DiffTab> = cx.new(|cx| DiffTab::new(workspace, root, staged, None, window, cx));
+    dock.update(cx, |dock, cx| dock.open_tab(AnyTab::new(tab), window, cx));
+}
+
+/// A review sent to an agent session, followed until its turn ends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SentReview {
+    /// The session it went to.
+    pub session: SessionId,
+    /// The diff it was sent from.
+    pub diff: Option<String>,
+    /// How many comments.
+    pub count: u32,
+    /// Their threads.
+    pub threads: Vec<ThreadId>,
+    /// When it was sent, Unix milliseconds.
+    pub at: i64,
+}
+
+/// Now, Unix milliseconds.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// Whether a session is in a turn, as the chat list has it.
+pub fn in_turn(info: &SessionInfo) -> bool {
+    !info.closed
+        && matches!(
+            info.state,
+            AgentState::Working | AgentState::NeedsInput | AgentState::NeedsPermission
+        )
+}
+
+/// Whether the turn a review sent at `at` started is still running, as far
+/// as `info` (the chat list's) tells: it is in a turn, or has not changed
+/// state since the review was sent (the turn's start is on its way).
+/// Without a chat list (offscreen), it counts as running.
+fn still_running(at: i64, info: Option<&SessionInfo>, listed: bool) -> bool {
+    if !listed {
+        return true;
+    }
+    let Some(info) = info else {
+        return false;
+    };
+    in_turn(info) || (!info.closed && info.state_since.unwrap_or(info.updated_at) < at)
+}
 
 /// What changed in a [`WorkspaceThreads`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,8 +157,15 @@ pub struct WorkspaceThreads {
     workspace: WorkspaceId,
     threads: HashMap<ThreadId, Thread>,
     loaded: bool,
+    /// Reviews whose turn is still running.
+    sent: Vec<SentReview>,
+    /// Provider names by id, for agents' replies.
+    providers: HashMap<String, String>,
     _feed: Entity<Resumable<ThreadList, ThreadEvent>>,
     _relist: Option<Task<()>>,
+    _providers: Option<Task<()>>,
+    /// Follows the chat list while a review is out.
+    _chats: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -110,13 +222,88 @@ impl WorkspaceThreads {
             Update::Snapshot(list) => this.replace(list.threads.clone(), cx),
             Update::Event(event) => this.apply(event.event.clone(), cx),
         })];
-        Self {
+        let mut this = Self {
             workspace,
             threads: HashMap::new(),
             loaded: false,
+            sent: Vec::new(),
+            providers: HashMap::new(),
             _feed: feed,
             _relist: None,
+            _providers: None,
+            _chats: None,
             _subscriptions: subscriptions,
+        };
+        this.load_providers(cx);
+        this
+    }
+
+    fn load_providers(&mut self, cx: &mut Context<Self>) {
+        let Some(daemon) = Daemon::global(cx) else {
+            return;
+        };
+        let providers = daemon.read(cx).request::<agm::Providers>(());
+        self._providers = Some(cx.spawn(async move |this, cx| {
+            if let Ok(list) = providers.await {
+                this.update(cx, |this, cx| {
+                    this.providers = list.into_iter().map(|p| (p.id, p.name)).collect();
+                    cx.notify();
+                })
+                .ok();
+            }
+        }));
+    }
+
+    /// The name an agent session's replies show: its provider's ("Claude").
+    pub fn agent_name(&self, session: &SessionId, cx: &App) -> String {
+        let provider =
+            ChatList::global(cx).and_then(|l| l.read(cx).info(session).map(|i| i.provider.clone()));
+        provider_name(provider.as_deref(), &self.providers)
+    }
+
+    /// The name of `provider` ("Claude"), for the send button.
+    pub fn provider_label(&self, provider: Option<&str>) -> String {
+        provider_name(provider, &self.providers)
+    }
+
+    /// The review sent from `diff` whose turn still runs.
+    pub fn sent_for(&self, diff: Option<&str>) -> Option<&SentReview> {
+        self.sent.iter().rev().find(|s| s.diff.as_deref() == diff)
+    }
+
+    /// Whether thread `id` is in a review whose turn still runs: the agent
+    /// may still answer it, so it stays open even when resolved.
+    pub fn addressing(&self, id: ThreadId) -> bool {
+        self.sent.iter().any(|s| s.threads.contains(&id))
+    }
+
+    /// Follow `review` until its turn ends.
+    pub fn track(&mut self, review: SentReview, cx: &mut Context<Self>) {
+        self.sent.retain(|s| s.diff != review.diff);
+        self.sent.push(review);
+        if self._chats.is_none()
+            && let Some(list) = ChatList::global(cx)
+        {
+            self._chats = Some(cx.observe(&list, |this, _, cx| this.check_sent(cx)));
+        }
+        cx.emit(ThreadsEvent::Changed);
+        cx.notify();
+    }
+
+    /// Forget reviews whose turn ended.
+    fn check_sent(&mut self, cx: &mut Context<Self>) {
+        let list = ChatList::global(cx);
+        let before = self.sent.len();
+        self.sent.retain(|s| {
+            let info = list.as_ref().and_then(|l| l.read(cx).info(&s.session));
+            still_running(s.at, info, list.is_some())
+        });
+        if self.sent.is_empty() {
+            self._chats = None;
+        }
+        if self.sent.len() != before {
+            cx.emit(ThreadsEvent::Changed);
+            cx.notify();
         }
     }
 
@@ -135,8 +322,12 @@ impl WorkspaceThreads {
                 workspace,
                 threads: threads.into_iter().map(|t| (t.id, t)).collect(),
                 loaded: true,
+                sent: Vec::new(),
+                providers: [("claude-acp".to_owned(), "Claude".to_owned())].into(),
                 _feed: feed,
                 _relist: None,
+                _providers: None,
+                _chats: None,
                 _subscriptions: Vec::new(),
             }
         })
@@ -242,6 +433,38 @@ impl WorkspaceThreads {
                     .ok();
             }
         }));
+    }
+}
+
+/// A provider's display name: from `names` (the daemon's), else its id
+/// capitalized, else "Agent".
+fn provider_name(provider: Option<&str>, names: &HashMap<String, String>) -> String {
+    let Some(provider) = provider else {
+        return "Agent".into();
+    };
+    if let Some(name) = names.get(provider) {
+        return name.clone();
+    }
+    let base = provider.strip_suffix("-acp").unwrap_or(provider);
+    let mut c = base.chars();
+    match c.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+        None => "Agent".into(),
+    }
+}
+
+/// Who wrote a comment, as shown: the avatar's letter and the name.
+pub fn author_label(store: &WorkspaceThreads, author: &Author, cx: &App) -> (String, String) {
+    match author {
+        Author::User => ("Y".into(), "You".into()),
+        Author::Agent { session } => {
+            let name = store.agent_name(session, cx);
+            (name.chars().next().unwrap_or('A').to_string(), name)
+        }
+        Author::Github { login } => (
+            login.chars().next().unwrap_or('?').to_uppercase().collect(),
+            login.clone(),
+        ),
     }
 }
 
@@ -352,6 +575,45 @@ pub fn delete_comments(
             })
             .ok();
         Ok(())
+    })
+}
+
+/// Send the pending review of `diff` to `session`, and follow its turn.
+pub fn send_review(
+    store: &Entity<WorkspaceThreads>,
+    diff: Option<String>,
+    session: SessionId,
+    cx: &mut App,
+) -> Task<Result<tm::SentReview, DaemonError>> {
+    let Some(daemon) = Daemon::global(cx) else {
+        return Task::ready(Err(DaemonError::NotConnected));
+    };
+    let workspace = store.read(cx).workspace().clone();
+    let at = now_ms();
+    let call = daemon.read(cx).request::<tm::SendReview>(SendReviewParams {
+        workspace,
+        diff: diff.clone(),
+        session,
+    });
+    let store = store.downgrade();
+    cx.spawn(async move |cx| {
+        let sent = call.await?;
+        store
+            .update(cx, |store, cx| {
+                store.track(
+                    SentReview {
+                        session: sent.session.clone(),
+                        diff,
+                        count: sent.count,
+                        threads: sent.threads.clone(),
+                        at,
+                    },
+                    cx,
+                );
+                store.relist(cx);
+            })
+            .ok();
+        Ok(sent)
     })
 }
 

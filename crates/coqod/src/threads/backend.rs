@@ -6,9 +6,9 @@
 //! the pending review and restarts work the same for all. A backend mirrors
 //! what the user does to a thread somewhere else, after the store has it:
 //!
-//! - [`LocalBackend`] (`local`, this issue): nowhere else. A local thread
-//!   is a review of an agent's change; sending the pending review to the
-//!   agent, and the agent's replies, are #95.
+//! - [`LocalBackend`] (`local`): nowhere else. A local thread is a review
+//!   of an agent's change; `review/send` delivers the pending review to the
+//!   agent and the agent replies with `reply_to_review` (#95).
 //! - The GitHub backend (`github`, the PR inbox, M8) will mirror threads to
 //!   a pull request's review. Mapping, for that issue:
 //!   - A thread is a review thread (`pullRequestReviewThread`): `anchor.path`
@@ -47,6 +47,9 @@ pub enum Mirror<'a> {
     Deleted(Option<&'a Thread>, CommentId),
     /// A thread was resolved or reopened.
     Status(&'a Thread),
+    /// These pending comments of the user's were sent to an agent session
+    /// (`review/send`, #95): they are not pending any more.
+    Sent(&'a Thread, &'a [CommentId]),
 }
 
 /// Where threads of one [`Backend`] are mirrored. See the module docs.

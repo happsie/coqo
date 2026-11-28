@@ -33,7 +33,9 @@ use coqo_protocol::methods::editor::{
     self as edm, EditorTab, Position, PublishContextParams, Range, RevealsParams, Selection,
     WindowContext,
 };
+use coqo_protocol::methods::git::DiffSide;
 use coqo_protocol::methods::questions::{self as qm, AnswerParams, Question, QuestionStatus};
+use coqo_protocol::methods::threads::{self as tm, Author, ThreadLines, ThreadSide};
 use coqo_protocol::methods::walkthroughs::{self as wtm, ListParams, WalkthroughParams};
 use coqo_protocol::methods::workspace::{self as wsm, WorkspaceInfo};
 use coqo_protocol::{Client, ClientConfig};
@@ -435,12 +437,42 @@ async fn run(
             Some(0),
         )
         .await?;
-    client
-        .request::<agm::Prompt>(agm::PromptParams {
-            session: session.clone(),
-            content: vec![ContentBlock::text(scenario.prompt)],
-        })
-        .await?;
+    // The unstaged diff, as the git pane's review names it.
+    let diff = format!("git:{}:index..worktree", ws.roots[0].id.0);
+    if scenario.review.is_empty() {
+        client
+            .request::<agm::Prompt>(agm::PromptParams {
+                session: session.clone(),
+                content: vec![ContentBlock::text(scenario.prompt)],
+            })
+            .await?;
+    } else {
+        for c in scenario.review {
+            client
+                .request::<tm::Create>(tm::CreateParams {
+                    workspace: ws.id.clone(),
+                    root: ws.roots[0].id,
+                    path: c.path.into(),
+                    side: ThreadSide::New,
+                    version: DiffSide::Worktree,
+                    lines: Some(ThreadLines {
+                        start: c.lines.0,
+                        end: c.lines.1,
+                    }),
+                    diff: Some(diff.clone()),
+                    body: c.body.into(),
+                    pending: true,
+                })
+                .await?;
+        }
+        client
+            .request::<tm::SendReview>(tm::SendReviewParams {
+                workspace: ws.id.clone(),
+                diff: Some(diff.clone()),
+                session: session.clone(),
+            })
+            .await?;
+    }
     let mut outcome = Outcome::default();
     let mut asked = std::collections::HashSet::new();
     let turn = async {
@@ -507,6 +539,32 @@ async fn run(
         })
         .await?;
     outcome.tool_use = snapshot.info.tool_use;
+    if !scenario.review.is_empty() {
+        let list = client
+            .request::<tm::List>(tm::ListParams {
+                workspace: ws.id.clone(),
+                root: None,
+                path: None,
+                diff: Some(diff.clone()),
+            })
+            .await?;
+        for t in &list.threads {
+            let replies: Vec<&str> = t
+                .comments
+                .iter()
+                .filter(|c| matches!(c.author, Author::Agent { .. }))
+                .map(|c| c.body.as_str())
+                .collect();
+            eprintln!(
+                "  thread {} ({}): {:?}, agent replies {replies:?}",
+                t.id, t.anchor.path, t.status
+            );
+            outcome.threads.push((
+                u32::try_from(replies.len()).unwrap_or(u32::MAX),
+                t.status == tm::ThreadStatus::Resolved,
+            ));
+        }
+    }
     if scenario.change.is_some() {
         outcome.hunks = parse_hunks(&git(&dir, &["diff", "-U0", "HEAD"])?);
         let list = client

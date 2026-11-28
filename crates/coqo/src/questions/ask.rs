@@ -265,58 +265,13 @@ impl AskPopover {
         }));
     }
 
-    /// Start a chat in the workspace (with Claude if it is available, else
-    /// the first available provider) and list it.
+    /// Start a chat in the workspace and list it ([`start_chat`]).
     fn new_chat(
         &self,
-        daemon: &Entity<Daemon>,
+        _daemon: &Entity<Daemon>,
         cx: &mut Context<Self>,
     ) -> Task<Result<SessionId, String>> {
-        let cwd = Workspaces::global(cx).and_then(|w| {
-            let w = w.read(cx);
-            let ws = w.current().filter(|ws| ws.id == self.workspace)?;
-            ws.roots.first().map(|r| r.path.clone())
-        });
-        let Some(cwd) = cwd else {
-            return Task::ready(Err("Open the workspace to start a chat".into()));
-        };
-        let workspace = self.workspace.clone();
-        let providers = daemon.read(cx).request::<Providers>(());
-        let daemon = daemon.downgrade();
-        cx.spawn(async move |_, cx| {
-            let providers = providers
-                .await
-                .map_err(|e| format!("Couldn't start a chat: {e}"))?;
-            let provider = providers
-                .iter()
-                .filter(|p| p.available)
-                .find(|p| p.id == PREFERRED_PROVIDER)
-                .or_else(|| providers.iter().find(|p| p.available))
-                .ok_or_else(|| "No agent is available to ask".to_owned())?
-                .id
-                .clone();
-            let create = daemon
-                .update(cx, |daemon, _| {
-                    daemon.request::<Create>(CreateSessionParams {
-                        provider,
-                        cwd,
-                        workspace: Some(workspace.0),
-                        title: None,
-                        mode: None,
-                    })
-                })
-                .map_err(|e| e.to_string())?;
-            let info = create
-                .await
-                .map_err(|e: DaemonError| format!("Couldn't start a chat: {e}"))?;
-            let id = info.id.clone();
-            cx.update(|cx| {
-                if let Some(list) = ChatList::global(cx) {
-                    list.update(cx, |l, cx| l.upsert(info, cx));
-                }
-            });
-            Ok(id)
-        })
+        start_chat(&self.workspace, cx)
     }
 
     fn render_targets(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -377,6 +332,60 @@ impl AskPopover {
         )
         .into_any_element()
     }
+}
+
+/// Start a chat in `workspace` (with Claude if it is available, else the
+/// first available provider) and list it. Also the review's "New chat"
+/// (#95).
+pub fn start_chat(workspace: &WorkspaceId, cx: &mut App) -> Task<Result<SessionId, String>> {
+    let Some(daemon) = Daemon::global(cx).filter(|d| d.read(cx).is_connected()) else {
+        return Task::ready(Err("coqod isn't connected.".into()));
+    };
+    let cwd = Workspaces::global(cx).and_then(|w| {
+        let w = w.read(cx);
+        let ws = w.current().filter(|ws| ws.id == *workspace)?;
+        ws.roots.first().map(|r| r.path.clone())
+    });
+    let Some(cwd) = cwd else {
+        return Task::ready(Err("Open the workspace to start a chat".into()));
+    };
+    let workspace = workspace.clone();
+    let providers = daemon.read(cx).request::<Providers>(());
+    let daemon = daemon.downgrade();
+    cx.spawn(async move |cx| {
+        let providers = providers
+            .await
+            .map_err(|e| format!("Couldn't start a chat: {e}"))?;
+        let provider = providers
+            .iter()
+            .filter(|p| p.available)
+            .find(|p| p.id == PREFERRED_PROVIDER)
+            .or_else(|| providers.iter().find(|p| p.available))
+            .ok_or_else(|| "No agent is available".to_owned())?
+            .id
+            .clone();
+        let create = daemon
+            .update(cx, |daemon, _| {
+                daemon.request::<Create>(CreateSessionParams {
+                    provider,
+                    cwd,
+                    workspace: Some(workspace.0),
+                    title: None,
+                    mode: None,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let info = create
+            .await
+            .map_err(|e: DaemonError| format!("Couldn't start a chat: {e}"))?;
+        let id = info.id.clone();
+        cx.update(|cx| {
+            if let Some(list) = ChatList::global(cx) {
+                list.update(cx, |l, cx| l.upsert(info, cx));
+            }
+        });
+        Ok(id)
+    })
 }
 
 /// "src/cart.rs:6–7" (1-based).

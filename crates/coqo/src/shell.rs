@@ -918,6 +918,11 @@ impl Render for Shell {
                     crate::walkthrough::open_action(&this.dock, action, window, cx)
                 },
             ))
+            .on_action(cx.listener(
+                |this, action: &crate::threads::OpenReviewDiff, window, cx| {
+                    crate::threads::open_review_diff(&this.dock, action, window, cx)
+                },
+            ))
             .on_action(cx.listener(|this, action: &OpenQuestionChat, window, cx| {
                 let id = coqo_protocol::methods::questions::QuestionId(action.id);
                 navigate::open_chat(&this.dock, &this.workspaces, id, window, cx)
@@ -995,6 +1000,44 @@ pub fn shown_chats(
     workspace: &WorkspaceId,
     cx: &App,
 ) -> Vec<coqo_protocol::methods::agents::SessionId> {
+    shown_chat_tabs(workspace, cx)
+        .into_iter()
+        .map(|chat| chat.read(cx).session().clone())
+        .collect()
+}
+
+/// The chats of [`shown_chats`] whose agent changed (or proposed to change)
+/// one of `files` (absolute paths, or root-relative ones matched as a path
+/// suffix): who made a diff's change, to send its review to (#95).
+pub fn chats_that_changed(
+    workspace: &WorkspaceId,
+    files: &[String],
+    cx: &App,
+) -> Vec<coqo_protocol::methods::agents::SessionId> {
+    let touches = |changed: &str| {
+        files.iter().any(|f| {
+            changed == f
+                || (!f.starts_with('/')
+                    && changed
+                        .strip_suffix(f.as_str())
+                        .is_some_and(|rest| rest.ends_with('/')))
+        })
+    };
+    shown_chat_tabs(workspace, cx)
+        .into_iter()
+        .filter(|chat| {
+            chat.read(cx)
+                .transcript()
+                .changed_files()
+                .iter()
+                .any(|(path, ..)| touches(path))
+        })
+        .map(|chat| chat.read(cx).session().clone())
+        .collect()
+}
+
+/// The chat tabs of [`shown_chats`], in that order.
+fn shown_chat_tabs(workspace: &WorkspaceId, cx: &App) -> Vec<Entity<chat::tab::ChatTab>> {
     let Some(shell) =
         Workspaces::window_showing(workspace, cx).and_then(|h| Shell::of_window(h, cx))
     else {
@@ -1012,7 +1055,6 @@ pub fn shown_chats(
     }
     tabs.into_iter()
         .filter_map(|id| dock.tab(id)?.downcast::<chat::tab::ChatTab>())
-        .map(|chat| chat.read(cx).session().clone())
         .collect()
 }
 

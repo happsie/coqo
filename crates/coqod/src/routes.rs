@@ -72,6 +72,7 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
             &ctx.data.global_db(),
             Arc::clone(&workspaces),
             Arc::clone(&git_service),
+            Some(sessions.clone()),
         )?,
     );
     let router = walkthroughs::register(

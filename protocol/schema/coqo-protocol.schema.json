@@ -67,6 +67,38 @@
       ],
       "type": "object"
     },
+    "AgentReplyParams": {
+      "description": "Params of [`AgentReply`].",
+      "properties": {
+        "body": {
+          "description": "The reply, in markdown.",
+          "type": "string"
+        },
+        "resolve": {
+          "description": "Also resolve the thread (its request is done).",
+          "type": "boolean"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The agent session replying."
+        },
+        "thread": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace: the thread's."
+        }
+      },
+      "required": [
+        "workspace",
+        "session",
+        "thread",
+        "body"
+      ],
+      "type": "object"
+    },
     "AgentState": {
       "description": "What an agent session is doing.",
       "oneOf": [
@@ -6147,6 +6179,66 @@
       ],
       "type": "object"
     },
+    "SendReviewParams": {
+      "description": "Params of [`SendReview`].",
+      "properties": {
+        "diff": {
+          "description": "Only comments on threads started in this diff.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The agent session to send them to: one of the workspace's, not in a\nturn."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "session"
+      ],
+      "type": "object"
+    },
+    "SentReview": {
+      "description": "Result of [`SendReview`].",
+      "properties": {
+        "count": {
+          "description": "How many comments were sent (no longer pending).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The session it went to."
+        },
+        "threads": {
+          "description": "Their threads, oldest first.",
+          "items": {
+            "$ref": "#/$defs/ThreadId"
+          },
+          "type": "array"
+        },
+        "turn": {
+          "description": "The turn it started.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session",
+        "turn",
+        "count",
+        "threads"
+      ],
+      "type": "object"
+    },
     "SessionConfigOption": {
       "description": "A setting the agent offers for the session (ACP session config\noptions): the model, the reasoning effort, a fast-mode toggle, the mode,\nan agent persona, …. The agent decides which there are and their order;\nthey can change at any time (a new model may offer other efforts), and\nevery [`SessionUpdate::ConfigOptions`] replaces the whole list.",
       "oneOf": [
@@ -11012,6 +11104,28 @@
       },
       "result": {
         "$ref": "#/$defs/PendingReview"
+      }
+    },
+    "review/reply": {
+      "description": "An agent session replies in a review thread of its workspace, optionally resolving it.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/AgentReplyParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Thread"
+      }
+    },
+    "review/send": {
+      "description": "Send the pending review to an agent session in one prompt, then clear pending.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SendReviewParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SentReview"
       }
     },
     "sessions/cancel": {

@@ -16,7 +16,7 @@ use coqo_agents::model::{
     self as agm, AgentState, ChangesParams, CreateSessionParams, ListSessionsParams, PromptParams,
     SessionId, SessionInfo, SessionParams, StopReason,
 };
-use coqo_agents::testing::{ScriptedProvider, Step};
+use coqo_agents::testing::{Call, ScriptedProvider, Step};
 use coqo_kernel::ProviderKind;
 use coqo_mcp::{BridgeError, BridgeOptions, Exit, ToolRegistry};
 use coqo_mod_api::Manifest;
@@ -276,6 +276,7 @@ async fn core_tools_end_to_end() {
             "editor_reveal",
             PROBE_TOOL,
             "publish_walkthrough",
+            "reply_to_review",
             "set_acceptance_criteria",
             "set_status",
         ]
@@ -529,6 +530,264 @@ async fn next_change(
     })
     .await
     .expect("a change in time")
+}
+
+/// The review round trip (#95): the user's pending comments go to the
+/// session in one prompt that names every thread, a second send while that
+/// turn runs is refused and keeps its comment pending, and the agent's
+/// `reply_to_review` calls land in the threads (one resolved) for the UI's
+/// `threads/changes`.
+#[tokio::test]
+async fn a_review_goes_to_the_agent_and_its_replies_land_in_the_threads() {
+    use coqo_protocol::methods::git::DiffSide;
+    use coqo_protocol::methods::threads::{
+        self as tm, Author, ReviewParams, SendReviewParams, ThreadLines, ThreadSide, ThreadStatus,
+    };
+
+    let go = Arc::new(Notify::new());
+    let provider = ScriptedProvider::new()
+        .turn([Step::Wait(Arc::clone(&go)), Step::Stop(StopReason::EndTurn)])
+        .turn([Step::Stop(StopReason::EndTurn)]);
+    let h = Harness::start_with(provider.clone());
+    h.ctx.mods.start().await;
+    let ui = h.ui().await;
+    let (a_dir, a) = project(&ui).await;
+    let session = ui
+        .request::<agm::Create>(CreateSessionParams {
+            provider: "fake".into(),
+            cwd: a_dir.path().to_str().unwrap().to_owned(),
+            workspace: Some(a.id.0.clone()),
+            title: Some("Circle area".into()),
+            mode: None,
+        })
+        .await
+        .unwrap()
+        .id;
+    let diff = Some("git:0:index..worktree".to_owned());
+    let start = |lines: ThreadLines, body: &str, pending: bool| tm::CreateParams {
+        workspace: a.id.clone(),
+        root: a.roots[0].id,
+        path: "src/main.rs".into(),
+        side: ThreadSide::New,
+        version: DiffSide::Worktree,
+        lines: Some(lines),
+        diff: diff.clone(),
+        body: body.into(),
+        pending,
+    };
+    // Thread 1: an earlier, sent comment and a pending reply. Thread 2: one
+    // pending comment.
+    let first = ui
+        .request::<tm::Create>(start(
+            ThreadLines { start: 5, end: 5 },
+            "Is 3.14 precise enough?",
+            false,
+        ))
+        .await
+        .unwrap();
+    ui.request::<tm::Reply>(tm::ReplyParams {
+        thread: first.id,
+        body: "Use std::f64::consts::PI.".into(),
+        pending: true,
+    })
+    .await
+    .unwrap();
+    let second = ui
+        .request::<tm::Create>(start(
+            ThreadLines { start: 1, end: 1 },
+            "Derive Debug.",
+            true,
+        ))
+        .await
+        .unwrap();
+    let seq = ui
+        .request::<tm::List>(tm::ListParams {
+            workspace: a.id.clone(),
+            root: None,
+            path: None,
+            diff: None,
+        })
+        .await
+        .unwrap()
+        .seq;
+    let mut changes = ui
+        .subscribe::<tm::Changes>(
+            tm::ChangesParams {
+                workspace: Some(a.id.clone()),
+            },
+            Some(seq),
+        )
+        .await
+        .unwrap();
+    let send = || SendReviewParams {
+        workspace: a.id.clone(),
+        diff: diff.clone(),
+        session: session.clone(),
+    };
+    let pending = || ReviewParams {
+        workspace: a.id.clone(),
+        diff: diff.clone(),
+    };
+
+    let sent = ui.request::<tm::SendReview>(send()).await.unwrap();
+    assert_eq!(sent.count, 2);
+    assert_eq!(sent.threads, [first.id, second.id]);
+    assert_eq!(sent.turn, 1);
+    assert_eq!(
+        ui.request::<tm::Pending>(pending()).await.unwrap().count,
+        0,
+        "sent comments are not pending"
+    );
+    // The prompt has every comment, its code and its thread's id.
+    let prompt = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            if let Some(content) = provider.calls().into_iter().find_map(|c| match c {
+                Call::Prompt(content) => Some(content),
+                _ => None,
+            }) {
+                return content;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let agm::ContentBlock::Text { text: message } = &prompt[0] else {
+        panic!("{prompt:?}")
+    };
+    let file = a_dir.path().canonicalize().unwrap().join("src/main.rs");
+    for want in [
+        "Please address my code review: 2 comments in 2 threads on the unstaged changes."
+            .to_owned(),
+        "`reply_to_review`".to_owned(),
+        format!("## Thread {}: {}:5", first.id, file.display()),
+        "3.14 * self.r * self.r".to_owned(),
+        "Earlier in this thread:\n\n**Me:**\n> Is 3.14 precise enough?".to_owned(),
+        "My comment:\n\n> Use std::f64::consts::PI.".to_owned(),
+        format!("## Thread {}: {}:1", second.id, file.display()),
+        "> Derive Debug.".to_owned(),
+    ] {
+        assert!(message.contains(&want), "{want:?} in {message}");
+    }
+    assert!(
+        matches!(&prompt[1], agm::ContentBlock::ResourceLink { uri, .. }
+            if tm::ReviewLink::parse(uri).is_some_and(|l| l.comments == 2)),
+        "{prompt:?}"
+    );
+
+    // Mid-turn: refused, and the new comment stays pending.
+    ui.request::<tm::Reply>(tm::ReplyParams {
+        thread: second.id,
+        body: "And Clone.".into(),
+        pending: true,
+    })
+    .await
+    .unwrap();
+    let busy = ui.request::<tm::SendReview>(send()).await;
+    match busy {
+        Err(coqo_protocol::ProtocolError::Rpc(e)) => {
+            assert_eq!(e.code, coqo_protocol::methods::codes::SESSION_BUSY);
+            assert!(
+                e.message
+                    .contains("\"Circle area\" is in the middle of a turn"),
+                "{e:?}"
+            );
+            assert!(e.message.contains("your 1 comment stays pending"), "{e:?}");
+        }
+        other => panic!("a busy session takes no review: {other:?}"),
+    }
+    assert_eq!(ui.request::<tm::Pending>(pending()).await.unwrap().count, 1);
+
+    // The agent replies in each thread through its bridge.
+    let token = h
+        .ctx
+        .auth
+        .mint_session(a.id.0.clone(), session.0.clone())
+        .unwrap();
+    let mut agent = Agent::start_as(h.connect(token).await, &a, &session.0).await;
+    let r = agent
+        .ok(
+            "reply_to_review",
+            json!({ "thread_id": first.id.0, "body": "Now uses `PI`.", "resolve": true }),
+        )
+        .await;
+    assert!(text(&r).contains("resolved"), "{r}");
+    assert_eq!(r["structuredContent"]["status"], "resolved");
+    let r = agent
+        .ok(
+            "reply_to_review",
+            json!({ "thread_id": second.id.0, "body": "Added `Debug`." }),
+        )
+        .await;
+    assert!(text(&r).contains("stays open"), "{r}");
+    let e = agent
+        .error("reply_to_review", json!({ "thread_id": 99, "body": "?" }))
+        .await;
+    assert!(e.contains("no thread 99"), "{e}");
+    // The UI sees each reply as it lands.
+    let mut replied = std::collections::HashMap::new();
+    tokio::time::timeout(TIMEOUT, async {
+        while replied.len() < 2 {
+            let event = changes.next().await.expect("open").expect("ok").event;
+            if let tm::ThreadEvent::Changed { thread } = event
+                && thread.comments.last().is_some_and(
+                    |c| matches!(&c.author, Author::Agent { session: s } if *s == session),
+                )
+            {
+                replied.insert(thread.id, *thread);
+            }
+        }
+    })
+    .await
+    .expect("both replies on threads/changes");
+    let one = &replied[&first.id];
+    assert_eq!(one.status, ThreadStatus::Resolved);
+    assert_eq!(one.comments.last().unwrap().body, "Now uses `PI`.");
+    assert!(one.comments.iter().all(|c| !c.pending), "{one:?}");
+    let two = &replied[&second.id];
+    assert_eq!(two.status, ThreadStatus::Open);
+    let bodies: Vec<_> = two
+        .comments
+        .iter()
+        .map(|c| (c.body.as_str(), c.pending))
+        .collect();
+    assert_eq!(
+        bodies,
+        [
+            ("Derive Debug.", false),
+            ("And Clone.", true),
+            ("Added `Debug`.", false)
+        ]
+    );
+
+    // Once the turn ended, the refused comment goes; then nothing is left.
+    go.notify_one();
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let s = ui
+                .request::<agm::Get>(SessionParams {
+                    session: session.clone(),
+                })
+                .await
+                .unwrap();
+            if !s.running {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let again = ui.request::<tm::SendReview>(send()).await.unwrap();
+    assert_eq!((again.count, again.turn), (1, 2));
+    assert_eq!(again.threads, [second.id]);
+    let nothing = ui.request::<tm::SendReview>(send()).await;
+    assert!(
+        matches!(&nothing, Err(coqo_protocol::ProtocolError::Rpc(e))
+            if e.message.contains("no pending comments")),
+        "{nothing:?}"
+    );
+    drop(a_dir);
 }
 
 #[tokio::test]

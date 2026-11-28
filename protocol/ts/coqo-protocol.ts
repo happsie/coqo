@@ -92,6 +92,20 @@ export type AddRootParams = {
   path: string;
 };
 
+/** Params of [`AgentReply`]. */
+export type AgentReplyParams = {
+  /** The reply, in markdown. */
+  body: string;
+  /** Also resolve the thread (its request is done). */
+  resolve?: boolean;
+  /** The agent session replying. */
+  session: SessionId;
+  /** The thread. */
+  thread: ThreadId;
+  /** The workspace: the thread's. */
+  workspace: WorkspaceId;
+};
+
 /** What an agent session is doing. */
 export type AgentState = "idle" | "working" | "needs_input" | "needs_permission" | "blocked" | "error" | "done";
 
@@ -2112,6 +2126,28 @@ export type Selection = {
   truncated?: boolean;
 };
 
+/** Params of [`SendReview`]. */
+export type SendReviewParams = {
+  /** Only comments on threads started in this diff. */
+  diff?: string | null;
+  /** The agent session to send them to: one of the workspace's, not in a turn. */
+  session: SessionId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Result of [`SendReview`]. */
+export type SentReview = {
+  /** How many comments were sent (no longer pending). */
+  count: number;
+  /** The session it went to. */
+  session: SessionId;
+  /** Their threads, oldest first. */
+  threads: Array<ThreadId>;
+  /** The turn it started. */
+  turn: number;
+};
+
 /** A setting the agent offers for the session (ACP session config options): the model, the reasoning effort, a fast-mode toggle, the mode, an agent persona, …. The agent decides which there are and their order; they can change at any time (a new model may offer other efforts), and every [`SessionUpdate::ConfigOptions`] replaces the whole list. */
 export type SessionConfigOption = {
   /** What the option is about, for placement and icons only: ACP's [`config_category`] names (`mode`, `model`, `model_config`, `thought_level`, `speed`) or any other string. Never needed to use the option. */
@@ -3524,6 +3560,10 @@ export interface Requests {
   "review/pending": { params: ReviewParams; result: PendingReview };
   /** Delete the pending review's comments. (client→server) */
   "review/discard": { params: ReviewParams; result: DiscardResult };
+  /** Send the pending review to an agent session in one prompt, then clear pending. (client→server) */
+  "review/send": { params: SendReviewParams; result: SentReview };
+  /** An agent session replies in a review thread of its workspace, optionally resolving it. (client→server) */
+  "review/reply": { params: AgentReplyParams; result: Thread };
 }
 
 /** Notifications: method name → params. */

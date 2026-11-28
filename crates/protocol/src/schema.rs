@@ -550,6 +550,16 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "The user's pending review: the comments not sent yet.",
         ),
         request::<threads::Discard>(g, "client→server", "Delete the pending review's comments."),
+        request::<threads::SendReview>(
+            g,
+            "client→server",
+            "Send the pending review to an agent session in one prompt, then clear pending.",
+        ),
+        request::<threads::AgentReply>(
+            g,
+            "client→server",
+            "An agent session replies in a review thread of its workspace, optionally resolving it.",
+        ),
         topic::<threads::Changes>(
             g,
             "Threads whose state changed, as their latest state, and deleted ones (resumable).",

@@ -290,6 +290,7 @@ Hard rules, documented in `agent-claude` and in CONTRIBUTING: no claude.ai OAuth
 | `set_acceptance_criteria` | Registers the task's acceptance criteria (`AC1`, …) and, as the agent verifies them, each one's status (`pending \| met \| failed \| unknown`) and evidence; shown in the chat's session panel, where the user can mark them too ([ADR 0017](adr/0017-acceptance-criteria.md)) |
 | `propose_skeleton` | Proposes the change's skeleton before it is written and blocks until the user approves it or sends it back (§7.11); not offered when `skeleton.mode` is `never` |
 | `publish_walkthrough` | Publishes a walkthrough (§7.6) |
+| `reply_to_review` | Replies in a review thread the user sent (§7.7), optionally resolving it ([ADR 0022](adr/0022-review-threads.md)) |
 | `request_review` | Asks the user to review the diff |
 | `trace_launch` / `trace_plan` / `scenario_begin` / `scenario_end` / `trace_query` | Live trace (§7.10) |
 | `maven_run` / `maven_test` | Build and test |
@@ -325,7 +326,7 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 ### 7.7 Git and native diff
 - **Git mod:** status, hunk/line staging, commit (with an agent-drafted message), branches, worktrees, stash, blame, log/graph.
 - **Diff view** (shared with PR review): side-by-side and unified, word-level highlights, collapsed unchanged regions, a file tree with a "viewed" checkbox per file, keyboard navigation, and walkthrough overlay mode. Any diff source can feed it, and other views add gutter markers, line slots and tints to it ([ADR 0021](adr/0021-diff-view.md)).
-- **Comment threads → agent:** select lines and comment. Comments build up as a *pending review*, and "Send to agent" sends the batch as one structured message (comments plus anchors plus diff context) to the session that made the change. Agent replies land in the threads, and threads can be resolved. The thread model is shared with GitHub (§7.8); only the backend differs. Threads are pinned to a file version by anchor and re-resolved as the files change ([ADR 0022](adr/0022-review-threads.md)).
+- **Comment threads → agent:** select lines and comment. Comments build up as a *pending review*, and "Send to agent" sends the batch as one structured message (comments plus anchors plus diff context) to the session that made the change (by default; the user can pick another chat or a new one, and a chat mid-turn is refused). Agent replies land in the threads through the `reply_to_review` tool, and threads can be resolved. The thread model is shared with GitHub (§7.8); only the backend differs. Threads are pinned to a file version by anchor and re-resolved as the files change ([ADR 0022](adr/0022-review-threads.md)).
 
 ### 7.8 PR Inbox (GitHub)
 - **Auth:** reuse `gh auth token` when the GitHub CLI is installed and logged in. Otherwise use the GitHub OAuth device flow with the Coqo OAuth app. The token is kept in the keychain. GitHub Enterprise hosts are supported.

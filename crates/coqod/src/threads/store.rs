@@ -281,6 +281,21 @@ impl Store {
         Ok(())
     }
 
+    /// Take comments out of the pending review: they were sent.
+    pub fn send_comments(&self, comments: &[CommentId]) -> Result<()> {
+        let conn = self.db.connection();
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut sent =
+                tx.prepare_cached("UPDATE review_comments SET pending = 0 WHERE id = ?1")?;
+            for c in comments {
+                sent.execute([i64_of(c.0)])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Write `record`'s status, timestamps, deletion and anchor as change
     /// `seq`.
     pub fn bump(&self, record: &Record, seq: u64) -> Result<()> {
