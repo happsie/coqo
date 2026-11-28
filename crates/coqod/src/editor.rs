@@ -186,6 +186,25 @@ impl EditorService {
     }
 }
 
+/// The editor context follows a rename (issue #288): the windows' tabs of
+/// moved files get the new path at once, before the UI publishes again.
+impl crate::path_moves::FollowsMoves for EditorService {
+    fn path_moved(
+        self: Arc<Self>,
+        mv: crate::path_moves::PathMove,
+    ) -> futures_util::future::BoxFuture<'static, ()> {
+        let mut all = self.windows.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(windows) = all.get_mut(&mv.workspace) {
+            for w in windows.values_mut() {
+                for tab in &mut w.state.context.tabs {
+                    mv.rekey(tab.root, &mut tab.path);
+                }
+            }
+        }
+        Box::pin(std::future::ready(()))
+    }
+}
+
 /// Register `editor/*` on `router`.
 pub fn register(router: Router, svc: Arc<EditorService>) -> Router {
     let publish = Arc::clone(&svc);

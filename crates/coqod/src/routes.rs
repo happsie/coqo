@@ -25,12 +25,13 @@ use crate::daemon::DaemonContext;
 use crate::editor::{self, EditorService};
 use crate::git::{self, GitService};
 use crate::mcp_tools::{self, McpToolService};
+use crate::path_moves::{FollowsMoves, PathMoves};
 use crate::questions::{self, QuestionService};
 use crate::syntax::{self, SyntaxService};
 use crate::threads::{self, ThreadService};
 use crate::walkthroughs::{self, WalkthroughService};
 use crate::workspace::{self, WorkspaceService};
-use crate::{agents, alerts, commands, file_ops, methods, terminal};
+use crate::{agents, alerts, commands, file_ops, methods, path_moves, terminal};
 
 /// Build the daemon's router. Called once at startup, inside the runtime;
 /// an error stops the daemon before it accepts clients.
@@ -46,7 +47,11 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     let workspaces =
         Arc::new(WorkspaceService::open(ctx.data.clone())?.with_trash(ctx.trash.clone()));
     let router = workspace::register(router, Arc::clone(&workspaces));
-    let router = editor::register(router, EditorService::new(Arc::clone(&workspaces)));
+    // Everything keyed by a path follows a rename (issue #288).
+    let moves = PathMoves::new();
+    let editor_service = EditorService::new(Arc::clone(&workspaces));
+    moves.follow(Arc::clone(&editor_service) as Arc<dyn FollowsMoves>);
+    let router = editor::register(router, editor_service);
     let sessions = agents::open(ctx)?;
     let router = agents::register(router, sessions.clone());
     let git_service = GitService::new(Arc::clone(&workspaces), ctx.mods.clone());
@@ -65,28 +70,28 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
         Arc::clone(&buffers),
         Some(sessions.clone()),
     )?;
+    moves.follow(Arc::clone(&questions) as Arc<dyn FollowsMoves>);
     let router = questions::register(router, Arc::clone(&questions));
     let router = alerts::register(router, alerts::open(ctx, sessions.clone(), questions)?);
-    let router = threads::register(
-        router,
-        ThreadService::open(
-            &ctx.data.global_db(),
-            Arc::clone(&workspaces),
-            Arc::clone(&git_service),
-            Some(sessions.clone()),
-        )?,
-    );
-    let router = walkthroughs::register(
-        router,
-        WalkthroughService::open(
-            &ctx.data.global_db(),
-            Arc::clone(&workspaces),
-            Arc::clone(&buffers),
-            Some(sessions.clone()),
-            Some(git_service),
-        )?,
-    );
-    let router = file_ops::register(router, workspaces, Arc::clone(&buffers));
+    let thread_service = ThreadService::open(
+        &ctx.data.global_db(),
+        Arc::clone(&workspaces),
+        Arc::clone(&git_service),
+        Some(sessions.clone()),
+    )?;
+    moves.follow(Arc::clone(&thread_service) as Arc<dyn FollowsMoves>);
+    let router = threads::register(router, thread_service);
+    let walkthrough_service = WalkthroughService::open(
+        &ctx.data.global_db(),
+        Arc::clone(&workspaces),
+        Arc::clone(&buffers),
+        Some(sessions.clone()),
+        Some(git_service),
+    )?;
+    moves.follow(Arc::clone(&walkthrough_service) as Arc<dyn FollowsMoves>);
+    let router = walkthroughs::register(router, walkthrough_service);
+    path_moves::follow_outside_renames(&workspaces, Arc::clone(&moves));
+    let router = file_ops::register(router, workspaces, Arc::clone(&buffers), moves);
     let router = syntax::register(router, SyntaxService::new(Arc::clone(&buffers)));
     let router = buffers::register(router, buffers);
     // One set of terminals: the `terminal/*` routes and ACP agents' commands

@@ -55,7 +55,12 @@ impl Harness {
         let buffers = BufferService::new(Arc::clone(&workspaces), dirs, BufferConfig::default());
         let router = workspace::register(Router::new(), Arc::clone(&workspaces));
         let router = buffers::register(router, Arc::clone(&buffers));
-        let router = register(router, workspaces, Arc::clone(&buffers));
+        let router = register(
+            router,
+            workspaces,
+            Arc::clone(&buffers),
+            crate::path_moves::PathMoves::new(),
+        );
         let server = Server::new(router, ServerConfig::new("coqod", "test"));
         let (client_io, server_io) = tokio::io::duplex(1 << 20);
         tokio::spawn(async move { server.serve(server_io).await });

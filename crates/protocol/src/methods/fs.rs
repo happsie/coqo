@@ -276,8 +276,10 @@ impl Method for Create {
 }
 
 /// `fs/rename`: rename or move an entry within one root. Open buffers of
-/// the files it moves follow it (same buffer id, unsaved edits kept).
-/// Daemon token only.
+/// the files it moves follow it (same buffer id, unsaved edits kept), and
+/// so does everything anchored to them (questions, review threads,
+/// walkthroughs, the editor context), published on each one's changes
+/// topic before the call returns. Daemon token only.
 #[derive(Debug)]
 pub enum Rename {}
 impl Method for Rename {

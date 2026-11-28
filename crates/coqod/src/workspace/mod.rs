@@ -60,9 +60,12 @@ pub(crate) use self::ops::Renamed;
 pub use self::ops::Trash;
 pub use self::watch::WatchConfig;
 use self::watch::WorkspaceWatcher;
+use crate::path_moves::PathMove;
 
 /// Longest accepted state key.
 const MAX_STATE_KEY: usize = 128;
+/// Renames seen by the watchers, buffered for a slow follower.
+const RENAMES_SEEN: usize = 256;
 /// Largest accepted state value, serialized.
 const MAX_STATE_VALUE: usize = 1024 * 1024;
 
@@ -88,6 +91,8 @@ pub struct WorkspaceService {
     ignores: Arc<IgnoreCache>,
     watch_config: WatchConfig,
     trash: Trash,
+    /// Renames the watchers saw, for [`crate::path_moves`].
+    renames: tokio::sync::broadcast::Sender<PathMove>,
 }
 
 fn now_ms() -> i64 {
@@ -153,6 +158,7 @@ impl WorkspaceService {
             ignores: Arc::default(),
             watch_config,
             trash: Trash::default(),
+            renames: tokio::sync::broadcast::channel(RENAMES_SEEN).0,
         })
     }
 
@@ -161,6 +167,13 @@ impl WorkspaceService {
     pub fn with_trash(mut self, trash: Trash) -> Self {
         self.trash = trash;
         self
+    }
+
+    /// The renames the file watchers see from now on (in the order seen),
+    /// Coqo's own `fs/rename`s included. Only workspaces someone follows
+    /// `fs/changes` of are watched.
+    pub fn renames_seen(&self) -> tokio::sync::broadcast::Receiver<PathMove> {
+        self.renames.subscribe()
     }
 
     fn db(&self) -> MutexGuard<'_, GlobalDb> {
@@ -586,15 +599,19 @@ impl WorkspaceService {
     }
 
     /// The real path of the entry `rel` names (its parent resolved, the
-    /// entry itself not followed), as `fs/rename` and `fs/delete` see it.
+    /// entry itself not followed), as `fs/rename` and `fs/delete` see it,
+    /// and `rel` normalised.
     pub(crate) async fn entry_path(
         self: &Arc<Self>,
         workspace: WorkspaceId,
         root: RootId,
         rel: String,
-    ) -> Result<PathBuf, ErrorObject> {
+    ) -> Result<(PathBuf, String), ErrorObject> {
         self.with_root(workspace, root, move |_, roots| {
-            ops::entry(roots, &rel).map(|e| e.path)
+            ops::entry(roots, &rel).map(|e| {
+                let rel = e.rel();
+                (e.path, rel)
+            })
         })
         .await
     }
@@ -720,13 +737,14 @@ impl WorkspaceService {
                     .collect();
                 let ignores = Arc::clone(&self.ignores);
                 let config = self.watch_config.clone();
+                let renames = (id.clone(), self.renames.clone());
                 // Setting up recursive watches walks the tree: keep it off the
                 // async workers. The runtime handle lets the watcher spawn its
                 // debounce task from the blocking thread.
                 let rt = tokio::runtime::Handle::current();
                 let started = tokio::task::spawn_blocking(move || {
                     let _guard = rt.enter();
-                    WorkspaceWatcher::start(roots, ignores, &config)
+                    WorkspaceWatcher::start(roots, ignores, &config, renames)
                 })
                 .await
                 .map_err(error::join)?

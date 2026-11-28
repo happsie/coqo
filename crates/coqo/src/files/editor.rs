@@ -509,6 +509,9 @@ impl FileEditor {
             session
                 .editor
                 .update(cx, |editor, cx| editor.set_language(language, cx));
+            // The daemon moved the file's questions too (#288), maybe
+            // before the tab heard of the move.
+            self.sync_markers(cx);
         } else {
             // A message (missing, binary, …) is about the old path.
             self.open(window, cx);

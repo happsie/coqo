@@ -37,6 +37,8 @@
 //!   file-system access with live change events.
 //! - [`file_ops`]: the file tree's create, rename and delete (`fs/create`,
 //!   `fs/rename`, `fs/delete`); open buffers follow a rename.
+//! - [`path_moves`]: everything else keyed by a path (questions, review
+//!   threads, walkthroughs, the editor context) follows a rename too.
 //!
 //! Clients reach the daemon through `coqo-client`, never this crate.
 
@@ -55,6 +57,7 @@ pub mod lifecycle;
 pub mod mcp_tools;
 pub mod methods;
 pub mod mods;
+pub mod path_moves;
 pub mod questions;
 pub mod routes;
 pub mod syntax;
