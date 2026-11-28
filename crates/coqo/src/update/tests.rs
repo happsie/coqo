@@ -22,7 +22,7 @@ use coqo_updater::Install;
 use coqo_updater::records::{Pending, UpdateDir};
 
 use super::view::{Tone, item_label};
-use super::{AfterFailure, Busy, ConnectFailure, Updates, decide};
+use super::{AfterFailure, Busy, ConnectFailure, Updates, decide, relaunch};
 use crate::shell::{DEFAULT_WORKSPACE, Shell};
 use crate::workspace;
 
@@ -190,6 +190,39 @@ fn a_new_daemon_that_exits_during_start_up_rolls_back_and_relaunches_once() {
         AfterFailure::Nothing
     );
     assert_eq!(relaunched.borrow().len(), 1);
+}
+
+/// Linux: after the swap the UI starts the bin folder's new `coqo`,
+/// detached (its own process group, no inherited stdio), and does not wait
+/// for it. A development build is never relaunched.
+#[test]
+fn relaunching_a_linux_install_starts_the_new_coqo_detached() {
+    use std::time::{Duration, Instant};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let home = fs::canonicalize(tmp.path()).unwrap();
+    let (install, _) = swapped(&home);
+    let marker = home.join("launched");
+    let m = marker.display();
+    write_exe(
+        &install.ui_binary().unwrap(),
+        &format!(
+            "#!/bin/sh\necho \"$$ $(ps -o pgid= -p $$ | tr -d ' ')\" > '{m}.tmp' && mv '{m}.tmp' '{m}'\n"
+        ),
+    );
+    relaunch(&install).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "the new coqo never ran");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let text = fs::read_to_string(&marker).unwrap();
+    let (pid, pgid) = text.trim().split_once(' ').unwrap();
+    assert_eq!(pid, pgid, "its own process group: {text}");
+    let dev = Install::Dev {
+        exe: home.join("code/coqo/target/release/coqo"),
+    };
+    assert!(relaunch(&dev).is_err());
 }
 
 /// A new UI that cannot talk to the old daemon (another protocol) waits

@@ -821,7 +821,10 @@ fn a_development_build_is_detected_and_never_installs() {
     let home = fs::canonicalize(tmp.path()).unwrap();
     let checkout = home.join("code/coqo/target/debug/coqod");
     write_exe(&checkout, "dev");
+    let release = home.join("code/coqo/target/release/coqo");
+    write_exe(&release, "dev");
     for os in [Os::Macos, Os::Linux] {
+        assert!(Install::detect_at(os, &release, &home).is_dev(), "{os:?}");
         let install = Install::detect_at(os, &checkout, &home);
         assert!(install.is_dev(), "{os:?}: {install:?}");
         assert!(install.staged().is_none() && install.ui_binary().is_none());
@@ -861,6 +864,50 @@ fn a_development_build_is_detected_and_never_installs() {
     write_exe(&linux, "x");
     assert!(Install::detect_at(Os::Macos, &linux, &home).is_dev());
     assert!(!Install::detect_at(Os::Linux, &linux, &home).is_dev());
+}
+
+/// Linux: `~/.local/bin/coqo` is a symlink into the install (as
+/// `scripts/install.sh` makes it); started through it, Coqo is the install,
+/// and after a swap the same symlink starts the new version. A symlink to a
+/// checkout's `target/release` is still a development build.
+#[test]
+fn a_linux_symlink_in_local_bin_resolves_to_the_install() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let home = fs::canonicalize(tmp.path()).unwrap();
+    let install = installed(&home, LINUX, "0.1.0");
+    let bin = home.join(".local/share/coqo/bin");
+    assert_eq!(install, Install::BinDir { bin: bin.clone() });
+    let local_bin = home.join(".local/bin");
+    fs::create_dir_all(&local_bin).unwrap();
+    for name in ["coqo", "coqod"] {
+        symlink(bin.join(name), local_bin.join(name)).unwrap();
+    }
+    for name in ["coqo", "coqod"] {
+        assert_eq!(
+            Install::detect_at(Os::Linux, &local_bin.join(name), &home),
+            install,
+            "{name}"
+        );
+    }
+    // The swap renames the folder, so the symlinks now reach the new one.
+    let staged = install.staged().unwrap();
+    fs::create_dir_all(&staged).unwrap();
+    write_exe(&staged.join("coqo"), "coqo 0.2.0");
+    write_exe(&staged.join("coqod"), "coqod 0.2.0");
+    install::swap(&install).unwrap();
+    assert_eq!(
+        fs::read_to_string(local_bin.join("coqo")).unwrap(),
+        "coqo 0.2.0"
+    );
+    assert!(install.previous().unwrap().join("coqod").is_file());
+    // A symlink to a checkout's build is not an install.
+    let release = home.join("code/coqo/target/release/coqo");
+    write_exe(&release, "dev");
+    let dev = home.join(".local/bin/coqo-dev");
+    symlink(&release, &dev).unwrap();
+    assert!(Install::detect_at(Os::Linux, &dev, &home).is_dev());
 }
 
 /// This repository's key file is the placeholder until the maintainer
