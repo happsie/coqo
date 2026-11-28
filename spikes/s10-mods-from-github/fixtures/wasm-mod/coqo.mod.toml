@@ -1,0 +1,14 @@
+id = "acme.tailwind"
+version = "0.3.0"
+engine = "^0.0"
+tier = "wasm"
+entry = "tailwind.wasm"
+activation = ["workspace_contains:**/tailwind.config.*"]
+
+[permissions]
+fs.read = ["$workspace"]
+network = ["registry.npmjs.org"]
+
+[[contributes.views.sidebar]]
+id = "tailwind.classes"
+title = "Tailwind"

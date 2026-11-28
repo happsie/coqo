@@ -1,0 +1,35 @@
+# A content mod: no code. A theme, a keybinding, a settings section, a
+# static sidebar view, and an agent plugin (skills and commands) for Coqo's
+# Claude sessions.
+id = "acme.team-kit"
+name = "Acme team kit"
+version = "1.2.0"
+description = "Acme's theme, review skill and keys."
+license = "Apache-2.0"
+engine = "^0.0"
+tier = "content"
+
+[[contributes.keybindings]]
+command = "palette.open"
+key = "ctrl+shift+a"
+
+[[contributes.settings]]
+key = "acme.ticket-prefix"
+title = "Ticket prefix"
+description = "Prefix of Acme ticket ids."
+type = "string"
+default = "ACME"
+
+[[contributes.views.sidebar]]
+id = "acme.handbook"
+title = "Handbook"
+icon = "book"
+
+[[contributes.themes]]
+id = "acme.night"
+name = "Acme Night"
+appearance = "dark"
+path = "themes/night.toml"
+
+[[contributes.agent_plugins]]
+path = "agent"

@@ -1,0 +1,16 @@
+name = "acme-mods"
+description = "Acme's Coqo mods."
+
+[[mods]]
+id = "acme.night"
+description = "A dark theme."
+source = "mods/night"
+
+[[mods]]
+id = "acme.mismatch"
+source = "mods/broken"
+
+[[mods]]
+id = "acme.lint"
+description = "Lint checks, in its own repository."
+source = { github = "acme/lint-mod", ref = "v1.0.0", sha = "0fbfda5a91f4adc311daca25acc99132f40f0b6e" }

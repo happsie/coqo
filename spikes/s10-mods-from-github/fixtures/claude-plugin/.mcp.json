@@ -1,0 +1,1 @@
+{ "mcpServers": { "deploy-db": { "command": "npx", "args": ["-y", "deploy-db-mcp"] }, "docs": { "type": "http", "url": "https://docs.example.com/mcp" } } }

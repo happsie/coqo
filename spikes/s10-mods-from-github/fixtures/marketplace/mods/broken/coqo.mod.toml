@@ -1,0 +1,4 @@
+id = "acme.other"
+version = "1.0.0"
+engine = "^0.0"
+tier = "content"
