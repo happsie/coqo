@@ -657,6 +657,7 @@ impl ChatTab {
             Entry::Notice { kind, text } => self.render_notice(ix, kind, text, cx),
             Entry::Question(question) => self.render_question(ix, &question, cx),
             Entry::Walkthrough(w) => self.render_walkthrough_card(ix, &w, cx),
+            Entry::WalkthroughUpdated(w) => self.render_walkthrough_updated(ix, &w, cx),
         };
         let top = if ix == 0 { px(18.) } else { px(0.) };
         column(body).pt(top).pb(px(14.)).into_any_element()

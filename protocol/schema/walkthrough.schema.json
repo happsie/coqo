@@ -358,6 +358,13 @@
         "null"
       ]
     },
+    "replaces": {
+      "description": "The id of this session's walkthrough this one replaces (publishing\nit again after a fix). Default: the session's latest walkthrough with\nthe same title and scope is replaced, if there is one; otherwise this\nis a new walkthrough.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "require_coverage": {
       "description": "Refuse to publish while a changed hunk of the scope is neither in a\nstep's anchors nor in `trivial_hunks` (each is listed). Default:\npublish, and list the uncovered hunks in the result and to the\nreader.",
       "type": "boolean"

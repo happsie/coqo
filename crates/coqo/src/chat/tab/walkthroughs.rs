@@ -5,7 +5,9 @@
 //! When the agent publishes a walkthrough (`publish_walkthrough`), the
 //! transcript gets a `walkthrough` update: the chat shows a card
 //! "Walkthrough published: <title> · n steps", and the session panel's
-//! "Walkthroughs" card lists every one the session published. Clicking
+//! "Walkthroughs" card lists every one the session published. Published
+//! again (#253, the same id), the card shows the new one and the chat adds a
+//! line "Walkthrough updated: <title> · n steps" rather than a second card. Clicking
 //! either opens the walkthrough player ([`crate::walkthrough`]) at the first
 //! unread step, with its popover (what, why, risks) at the code.
 //!
@@ -53,6 +55,15 @@ pub(crate) fn steps_label(n: u32) -> String {
 pub(crate) fn published_label(w: &WalkthroughSummary) -> String {
     format!(
         "Walkthrough published: {} · {}",
+        w.title,
+        steps_label(w.steps)
+    )
+}
+
+/// The line of a walkthrough published again.
+pub(crate) fn updated_label(w: &WalkthroughSummary) -> String {
+    format!(
+        "Walkthrough updated: {} · {}",
         w.title,
         steps_label(w.steps)
     )
@@ -414,6 +425,70 @@ impl ChatTab {
                     .pt(px(2.))
                     .child(icon(Icon::ChevronRight, px(13.), p.text_subtle.hsla())),
             )
+            .on_click(opener(w, self.focus.clone()))
+            .into_any_element()
+    }
+
+    /// The transcript's line for a walkthrough published again: what it is
+    /// now, opening it; the walkthrough's card above has the details.
+    pub(super) fn render_walkthrough_updated(
+        &self,
+        ix: usize,
+        w: &WalkthroughSummary,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let coverage = w.coverage.as_ref().map(|c| {
+            let flagged = incomplete(c);
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_size(m.text_label)
+                .text_color(if flagged {
+                    p.rose.hsla()
+                } else {
+                    p.text_muted.hsla()
+                })
+                .when(flagged, |d| {
+                    d.child(icon(Icon::CircleAlert, px(11.), p.rose.hsla()))
+                })
+                .when(c.is_complete() && c.total > 0, |d| {
+                    d.child(icon(Icon::Check, px(11.), p.sage.hsla()))
+                })
+                .child(SharedString::from(coverage_label(c)))
+        });
+        div()
+            .id(("chat-walkthrough-updated", ix))
+            .test_support()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .px(px(12.))
+            .py(px(6.))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(p.surface.hsla())
+            .cursor_pointer()
+            .text_size(m.text_sm)
+            .child(icon(Icon::RotateCw, px(13.), p.blue.hsla()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_x(px(10.))
+                    .child(
+                        div()
+                            .text_color(p.text.hsla())
+                            .child(SharedString::from(updated_label(w))),
+                    )
+                    .children(coverage),
+            )
+            .child(icon(Icon::ChevronRight, px(13.), p.text_subtle.hsla()))
             .on_click(opener(w, self.focus.clone()))
             .into_any_element()
     }

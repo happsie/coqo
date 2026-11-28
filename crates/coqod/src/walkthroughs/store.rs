@@ -76,6 +76,24 @@ impl Store {
         Ok(())
     }
 
+    /// Replace a walkthrough published again: its document, step states
+    /// and time. Returns whether it exists.
+    pub fn replace(&self, w: &Walkthrough) -> Result<bool> {
+        let mut doc = w.clone();
+        doc.step_states.clear();
+        let n = self.db.connection().execute(
+            "UPDATE walkthroughs SET document = ?2, step_states = ?3, created_at = ?4, updated_at = ?4
+             WHERE id = ?1",
+            params![
+                w.id.0,
+                serde_json::to_string(&doc)?,
+                serde_json::to_string(&w.step_states)?,
+                w.created_at,
+            ],
+        )?;
+        Ok(n > 0)
+    }
+
     pub fn get(&self, id: &WalkthroughId) -> Result<Option<Walkthrough>> {
         self.db
             .connection()

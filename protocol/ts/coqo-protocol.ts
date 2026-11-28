@@ -3104,12 +3104,14 @@ export type Walkthrough = {
   acceptanceCriteria?: Array<WalkthroughCriterion>;
   /** How much of the scope's diff the steps cover. Computed when published, and again by `get` for a worktree scope (the work tree changes); absent from walkthroughs published before it existed. */
   coverage?: WalkthroughCoverage | null;
-  /** Published, Unix milliseconds. */
+  /** Published (last published again), Unix milliseconds. */
   createdAt: number;
   /** Who published it. */
   createdBy: WalkthroughAuthor;
   /** Id. */
   id: WalkthroughId;
+  /** How many times it was published again, replacing itself in place: 0 the first time. */
+  revision?: number;
   /** What it covers. */
   scope: WalkthroughScope;
   /** The reader's progress by step id; a step not listed is unread. Never written to committed files. */
@@ -3176,6 +3178,8 @@ export type WalkthroughCriterion = {
 export type WalkthroughDraft = {
   /** The acceptance criteria the change addresses, by id. Default: every criterion of this session (`set_acceptance_criteria`). A criterion that is not the session's needs `text`. */
   acceptance_criteria?: Array<CriterionDraft> | null;
+  /** The id of this session's walkthrough this one replaces (publishing it again after a fix). Default: the session's latest walkthrough with the same title and scope is replaced, if there is one; otherwise this is a new walkthrough. */
+  replaces?: string | null;
   /** Refuse to publish while a changed hunk of the scope is neither in a step's anchors nor in `trivial_hunks` (each is listed). Default: publish, and list the uncovered hunks in the result and to the reader. */
   require_coverage?: boolean;
   /** What the walkthrough covers. */
@@ -3259,12 +3263,14 @@ export type WalkthroughStorage = {
 export type WalkthroughSummary = {
   /** How much of the diff the steps cover, with at most [`SUMMARY_UNCOVERED`] of the uncovered hunks listed. */
   coverage?: WalkthroughCoverage | null;
-  /** Published, Unix milliseconds. */
+  /** Published (last published again), Unix milliseconds. */
   createdAt: number;
   /** Id. */
   id: WalkthroughId;
   /** How many are marked with a question. */
   questions?: number;
+  /** How many times it was published again: 0 the first time. */
+  revision?: number;
   /** Worktree, commits or a pull request. */
   scope: ScopeKind;
   /** The publishing session. */

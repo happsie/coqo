@@ -552,6 +552,110 @@ fn the_session_panel_row_opens_the_player_at_the_first_unread_step() {
 }
 
 #[test]
+fn publishing_again_refreshes_the_open_player_and_updates_the_card() {
+    let provider = ScriptedProvider::new();
+    let (_tmp, project, daemon) = agent_fixture(&provider);
+    let mut ui = open_ui(&project, &daemon.paths, Appearance::Dark);
+    let (session, id) = published(&mut ui, &daemon, &project);
+    let mark = SetStepStateParams {
+        id: id.clone(),
+        step: "entry".into(),
+        state: StepState::Understood,
+    };
+    daemon.with_client(async move |client| {
+        client.request::<wtm::SetStepState>(mark).await.unwrap();
+    });
+    ui.wait_for("the row", |ui| ui.exists(("chat-walkthrough-row", 0usize)));
+    ui.click(("chat-walkthrough-row", 0usize));
+    ui.wait_for("the player", |ui| ui.player(&id).is_some());
+    let player = ui.player(&id).unwrap();
+    ui.wait_for("step 2", |ui| {
+        ui.cx.read(|cx| player.read(cx).current()) == 1
+    });
+
+    // The agent publishes it again (#253) with a step more and the tests
+    // step renamed.
+    let mut again = draft();
+    again["steps"][2]["title"] = json!("The cap and the threshold are tested");
+    again["steps"].as_array_mut().unwrap().push(json!({
+        "id": "underflow",
+        "title": "No underflow",
+        "kind": "edge_case",
+        "anchors": [{ "path": "src/discount.rs", "start_line": 3, "end_line": 3 }],
+        "what": "The discount is at most the subtotal.",
+        "why": "The cap keeps it below.",
+    }));
+    let params = CreateParams {
+        workspace: ui.place().unwrap().0,
+        session: session.0.clone(),
+        walkthrough: again,
+    };
+    let w = daemon
+        .with_client(async move |client| client.request::<wtm::Create>(params).await.unwrap());
+    assert_eq!((&w.id, w.revision), (&id, 1));
+
+    // The open player follows: four steps, still at step 2, the progress
+    // on the unchanged step kept.
+    ui.wait_for("the player refreshed", |ui| {
+        ui.cx.read(|cx| {
+            player
+                .read(cx)
+                .walkthrough()
+                .is_some_and(|w| w.steps.len() == 4)
+        })
+    });
+    assert_eq!(ui.cx.read(|cx| player.read(cx).current()), 1);
+    assert_eq!(ui.progress(&player), 1);
+    assert!(ui.exists(("walkthrough-step", 3usize)));
+    let renamed = ui.cx.read(|cx| {
+        player.read(cx).walkthrough().unwrap().steps[2]
+            .title
+            .clone()
+    });
+    assert_eq!(renamed, "The cap and the threshold are tested");
+
+    // The chat keeps one card, now with four steps, and says it was
+    // updated; the session panel lists one walkthrough.
+    let chat = ui.chat().unwrap();
+    ui.wait_for("the updated line", |ui| {
+        ui.cx.read(|cx| {
+            chat.read(cx)
+                .transcript()
+                .entries
+                .iter()
+                .any(|e| matches!(e, Entry::WalkthroughUpdated(w) if w.id == id))
+        })
+    });
+    let (cards, line, walkthroughs) = ui.cx.read(|cx| {
+        let t = chat.read(cx).transcript();
+        let cards: Vec<_> = t
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Walkthrough(w) => Some(w.steps),
+                _ => None,
+            })
+            .collect();
+        let line = t
+            .entries
+            .iter()
+            .position(|e| matches!(e, Entry::WalkthroughUpdated(_)))
+            .unwrap();
+        (cards, line, t.walkthroughs.len())
+    });
+    assert_eq!((cards, walkthroughs), (vec![4], 1));
+    // Back to the chat.
+    let dock = ui.dock();
+    ui.frame(|window, cx| crate::chat::open_session(dock.downgrade(), session, window, cx));
+    ui.wait_for("the line drawn", |ui| {
+        ui.exists(("chat-walkthrough-updated", line))
+    });
+    assert!(!ui.exists(("chat-walkthrough-row", 1usize)));
+    drop(ui);
+    drop(daemon);
+}
+
+#[test]
 fn typing_a_question_never_fires_the_player_keys() {
     let provider = ScriptedProvider::new();
     let (_tmp, project, daemon) = agent_fixture(&provider);

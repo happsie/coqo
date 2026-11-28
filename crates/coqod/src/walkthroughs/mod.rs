@@ -205,7 +205,46 @@ pub(crate) fn summary(w: &Walkthrough) -> WalkthroughSummary {
         storage: w.storage.mode,
         coverage: w.coverage.as_ref().map(|c| c.truncated(SUMMARY_UNCOVERED)),
         created_at: w.created_at,
+        revision: w.revision,
     }
+}
+
+/// Whether a draft's resolved `scope` is `old`'s: the same kind, root and
+/// revisions as named.
+fn same_scope(old: &WalkthroughScope, scope: &WalkthroughScope) -> bool {
+    old.kind == scope.kind
+        && old.root == scope.root
+        && old.base == scope.base
+        && old.head == scope.head
+}
+
+/// Titles that name the same walkthrough: equal but for case and the
+/// spaces around them.
+fn same_title(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
+}
+
+/// The reader's step states that carry over to `steps` from `old`, the
+/// walkthrough they replace: a step keeps its state when its id and title
+/// are the same and it anchors the same code (the same files and anchored
+/// text, wherever the lines moved). Any other step starts unread.
+fn carried_states(old: &Walkthrough, steps: &[Step]) -> BTreeMap<String, StepState> {
+    let same_code = |a: &Step, b: &Step| {
+        a.anchors.len() == b.anchors.len()
+            && a.anchors.iter().zip(&b.anchors).all(|(x, y)| {
+                x.anchor.root == y.anchor.root
+                    && x.anchor.path == y.anchor.path
+                    && x.anchor.text_hash == y.anchor.text_hash
+            })
+    };
+    steps
+        .iter()
+        .filter_map(|s| {
+            let state = *old.step_states.get(&s.id)?;
+            let was = old.steps.iter().find(|o| o.id == s.id)?;
+            (was.title == s.title && same_code(was, s)).then(|| (s.id.clone(), state))
+        })
+        .collect()
 }
 
 /// The lines of a draft's anchors, for coverage: as the agent gave them,
@@ -709,6 +748,57 @@ impl WalkthroughService {
         scope
     }
 
+    /// The walkthrough `draft` replaces: the one its `replaces` names (one
+    /// of this session's), else the session's latest one with the same
+    /// title and `scope`, if any.
+    fn replaced(
+        &self,
+        p: &CreateParams,
+        draft: &WalkthroughDraft,
+        scope: &WalkthroughScope,
+        pr: &mut Problems,
+    ) -> Result<Option<Walkthrough>, ErrorObject> {
+        let store = lock(&self.store);
+        if let Some(id) = draft.replaces.as_deref() {
+            if id.is_empty() {
+                return Ok(None);
+            }
+            let found = store
+                .get(&WalkthroughId(id.to_owned()))
+                .map_err(|e| storage_error(&e))?;
+            return Ok(match found {
+                Some(w) if w.workspace == p.workspace && w.created_by.session.0 == p.session => {
+                    Some(w)
+                }
+                Some(_) => {
+                    pr.add(
+                        "replaces",
+                        format!(
+                            "`{id}` was published by another session; only this session's walkthroughs can be replaced (leave out replaces to publish a new one)"
+                        ),
+                    );
+                    None
+                }
+                None => {
+                    pr.add(
+                        "replaces",
+                        format!(
+                            "there is no walkthrough `{id}`; use the id publish_walkthrough returned, or leave out replaces to publish a new one"
+                        ),
+                    );
+                    None
+                }
+            });
+        }
+        let session = SessionId(p.session.clone());
+        let list = store
+            .list(&p.workspace, Some(&session))
+            .map_err(|e| storage_error(&e))?;
+        Ok(list
+            .into_iter()
+            .find(|w| same_title(&w.title, &draft.title) && same_scope(&w.scope, scope)))
+    }
+
     /// The workspace's storage mode (workspace state).
     async fn storage_mode(&self, workspace: &WorkspaceId) -> StorageMode {
         let state = self
@@ -763,6 +853,7 @@ impl WalkthroughService {
             None => first.id,
         };
         let scope = self.scope(&ws, &draft, root, &mut pr).await;
+        let previous = self.replaced(&p, &draft, &scope, &mut pr)?;
         let trivial_hunks = self.trivial_hunks(&ws, &draft, root, &mut pr).await;
         let anchors = self.anchor_steps(&ws, &draft, root, &mut pr).await;
         // Only worth the diff if it may be published, or to say what
@@ -801,7 +892,15 @@ impl WalkthroughService {
                 depends_on: s.depends_on,
             })
             .collect();
-        let id = new_id(&draft.title);
+        // Published again: the same walkthrough, in place.
+        let (id, revision, step_states) = match &previous {
+            Some(old) => (
+                old.id.clone(),
+                old.revision + 1,
+                carried_states(old, &steps),
+            ),
+            None => (new_id(&draft.title), 0, BTreeMap::new()),
+        };
         let mut walkthrough = Walkthrough {
             id: id.clone(),
             workspace: p.workspace.clone(),
@@ -817,16 +916,33 @@ impl WalkthroughService {
                 agent,
             },
             created_at: Timestamp::now().0,
+            revision,
             storage: WalkthroughStorage::default(),
-            step_states: BTreeMap::new(),
+            step_states,
         };
         if self.storage_mode(&p.workspace).await == StorageMode::Committed {
             walkthrough.storage = self.commit_file(&ws, &walkthrough).await;
         }
-        lock(&self.store)
-            .insert(&walkthrough)
-            .map_err(|e| storage_error(&e))?;
-        self.publish(ChangeKind::Published, &walkthrough);
+        let replaced = {
+            let store = lock(&self.store);
+            let replaced =
+                previous.is_some() && store.replace(&walkthrough).map_err(|e| storage_error(&e))?;
+            if !replaced {
+                // New, or the one it replaces was deleted meanwhile.
+                walkthrough.revision = 0;
+                walkthrough.step_states.clear();
+                store.insert(&walkthrough).map_err(|e| storage_error(&e))?;
+            }
+            replaced
+        };
+        self.publish(
+            if replaced {
+                ChangeKind::Updated
+            } else {
+                ChangeKind::Published
+            },
+            &walkthrough,
+        );
         if let Some(sessions) = &self.sessions
             && let Err(e) =
                 sessions.record_walkthrough(&walkthrough.created_by.session, summary(&walkthrough))
@@ -836,6 +952,7 @@ impl WalkthroughService {
         tracing::debug!(
             walkthrough = %id,
             steps = walkthrough.steps.len(),
+            revision = walkthrough.revision,
             storage = ?walkthrough.storage.mode,
             uncovered = walkthrough.coverage.as_ref().map(WalkthroughCoverage::uncovered_count),
             "walkthrough published"

@@ -25,6 +25,16 @@
 //! walkthrough may leave hunks uncovered (they are flagged to the reader);
 //! a draft with `require_coverage` is refused instead.
 //!
+//! # Publishing again
+//!
+//! An agent that fixes its walkthrough (coverage incomplete, a step to add)
+//! publishes it again, and the new one **replaces** the earlier one in
+//! place: same id, `revision` one higher, a [`ChangeKind::Updated`] change,
+//! and the reader's step states kept for the steps whose id, title and
+//! anchored code are unchanged. A draft replaces the walkthrough its
+//! `replaces` names (the same session's), else the session's latest one
+//! with the same title and scope; any other draft is a new walkthrough.
+//!
 //! # Storage
 //!
 //! Every walkthrough is kept in the daemon (`coqo.db`), private to the
@@ -274,6 +284,12 @@ pub struct WalkthroughDraft {
     /// reader.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub require_coverage: bool,
+    /// The id of this session's walkthrough this one replaces (publishing
+    /// it again after a fix). Default: the session's latest walkthrough with
+    /// the same title and scope is replaced, if there is one; otherwise this
+    /// is a new walkthrough.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<String>,
 }
 
 /// What a walkthrough covers.
@@ -553,8 +569,12 @@ pub struct Walkthrough {
     pub coverage: Option<WalkthroughCoverage>,
     /// Who published it.
     pub created_by: WalkthroughAuthor,
-    /// Published, Unix milliseconds.
+    /// Published (last published again), Unix milliseconds.
     pub created_at: i64,
+    /// How many times it was published again, replacing itself in place:
+    /// 0 the first time.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub revision: u32,
     /// Where it is kept.
     #[serde(default)]
     pub storage: WalkthroughStorage,
@@ -608,8 +628,15 @@ pub struct WalkthroughSummary {
     /// [`SUMMARY_UNCOVERED`] of the uncovered hunks listed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<WalkthroughCoverage>,
-    /// Published, Unix milliseconds.
+    /// Published (last published again), Unix milliseconds.
     pub created_at: i64,
+    /// How many times it was published again: 0 the first time.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub revision: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 // ---- coverage ---------------------------------------------------------------------
@@ -867,7 +894,8 @@ pub struct ChangesParams {
 pub enum ChangeKind {
     /// An agent published it.
     Published,
-    /// A step's state changed.
+    /// It changed: a step's state, its coverage, or all of it (the agent
+    /// published it again).
     Updated,
     /// It was deleted.
     Deleted,
@@ -1049,6 +1077,7 @@ mod tests {
                 agent: "claude-code".into(),
             },
             created_at: 5,
+            revision: 0,
             storage: WalkthroughStorage {
                 mode: StorageMode::Committed,
                 path: Some(".coqo/walkthroughs/volume-discount-3f2a9c1b.json".into()),

@@ -18,7 +18,7 @@ use coqo_protocol::methods::agents::{
     Usage, config_category, follow_mode,
 };
 use coqo_protocol::methods::questions::{Question, QuestionId};
-use coqo_protocol::methods::walkthroughs::WalkthroughSummary;
+use coqo_protocol::methods::walkthroughs::{WalkthroughId, WalkthroughSummary};
 
 use super::diff::DiffPreview;
 
@@ -148,8 +148,12 @@ pub enum Entry {
     /// A question or note the agent pinned to code, in its latest state
     /// (asked, then answered or dismissed).
     Question(Box<Question>),
-    /// The agent published a code walkthrough: a card that opens it.
+    /// The agent published a code walkthrough: a card that opens it, kept
+    /// up to date when the agent publishes it again.
     Walkthrough(Box<WalkthroughSummary>),
+    /// The agent published a walkthrough again, replacing it in place: a
+    /// line "Walkthrough updated" instead of a second card.
+    WalkthroughUpdated(Box<WalkthroughSummary>),
 }
 
 /// What [`Transcript::apply`] changed.
@@ -188,6 +192,8 @@ pub struct Transcript {
     tools: HashMap<ToolCallId, usize>,
     permissions: HashMap<PermissionRequestId, usize>,
     questions: HashMap<QuestionId, usize>,
+    /// The card of each walkthrough, by id.
+    walkthrough_cards: HashMap<WalkthroughId, usize>,
     pub plan: Vec<PlanEntry>,
     pub modes: Option<SessionModes>,
     /// The session's config options (model, effort, …), in the agent's
@@ -441,7 +447,20 @@ impl Transcript {
                 changes.meta = true;
                 self.walkthroughs.retain(|o| o.id != w.id);
                 self.walkthroughs.push((*w).clone());
-                self.push(Entry::Walkthrough(w), changes);
+                match self.walkthrough_cards.get(&w.id) {
+                    // Published again (#253): the card shows the latest and
+                    // the chat says so, without a second card.
+                    Some(&ix) => {
+                        self.entries[ix] = Entry::Walkthrough(w.clone());
+                        changes.update(ix);
+                        self.push(Entry::WalkthroughUpdated(w), changes);
+                    }
+                    None => {
+                        self.walkthrough_cards
+                            .insert(w.id.clone(), self.entries.len());
+                        self.push(Entry::Walkthrough(w), changes);
+                    }
+                }
             }
             SessionUpdate::Closed => {
                 self.closed = true;
@@ -810,5 +829,48 @@ mod tests {
         let c = t.apply_all([(2, SessionUpdate::Question(Box::new(answered.clone())))]);
         assert_eq!((c.appended_from, c.updated), (None, vec![0]));
         assert_eq!(t.entries, vec![Entry::Question(Box::new(answered))]);
+    }
+
+    #[test]
+    fn a_walkthrough_published_again_updates_its_card() {
+        use coqo_protocol::methods::{
+            agents::SessionId,
+            walkthroughs::{ScopeKind, StorageMode},
+            workspace::WorkspaceId,
+        };
+        let first = WalkthroughSummary {
+            id: WalkthroughId("discount-0a1b2c3d".into()),
+            workspace: WorkspaceId("w".into()),
+            session: SessionId("s".into()),
+            title: "Volume discount".into(),
+            scope: ScopeKind::Worktree,
+            steps: 2,
+            understood: 0,
+            questions: 0,
+            start: None,
+            storage: StorageMode::Local,
+            coverage: None,
+            created_at: 1,
+            revision: 0,
+        };
+        let again = WalkthroughSummary {
+            steps: 3,
+            revision: 1,
+            created_at: 2,
+            ..first.clone()
+        };
+        let mut t = Transcript::default();
+        t.apply_all([(1, SessionUpdate::Walkthrough(Box::new(first)))]);
+        let c = t.apply_all([(2, SessionUpdate::Walkthrough(Box::new(again.clone())))]);
+        // One card, showing the latest, and a line saying it was updated.
+        assert_eq!((c.appended_from, c.updated), (Some(1), vec![0]));
+        assert_eq!(
+            t.entries,
+            vec![
+                Entry::Walkthrough(Box::new(again.clone())),
+                Entry::WalkthroughUpdated(Box::new(again.clone())),
+            ]
+        );
+        assert_eq!(t.walkthroughs, vec![again]);
     }
 }
