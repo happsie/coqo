@@ -278,6 +278,21 @@ fn contributes(out: &mut Problems, c: &Contributes) {
         check_setting(out, &path.index(i), setting);
     }
 
+    let path = base.key("settings_sections");
+    unique_ids(
+        out,
+        "settings section",
+        &[(path.clone(), keys(&c.settings_sections))],
+    );
+    for (i, section) in c.settings_sections.iter().enumerate() {
+        non_empty(out, &path.index(i).key("title"), &section.title);
+        non_empty_opt(
+            out,
+            &path.index(i).key("description"),
+            section.description.as_deref(),
+        );
+    }
+
     let views = base.key("views");
     let v = &c.views;
     unique_ids(

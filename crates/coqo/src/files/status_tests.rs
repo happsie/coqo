@@ -372,7 +372,10 @@ fn auto_reveal_follows_the_active_tab() {
 
     // On (the palette command): the switch reveals the file.
     ui.frame(|window, cx| window.dispatch_action(Box::new(super::ToggleAutoReveal), cx));
-    assert!(ui.cx.read(|cx| crate::settings::get(cx).files.auto_reveal));
+    assert!(
+        ui.cx
+            .read(|cx| crate::settings::get(cx).bool(crate::settings::AUTO_REVEAL, None))
+    );
     activate(&mut ui, guide_id);
     ui.wait_for("guide.md revealed", |ui| {
         selected(ui).as_deref() == Some("docs/guide.md")

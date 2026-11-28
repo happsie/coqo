@@ -130,6 +130,7 @@ pub(crate) fn context_with(dir: &Path, agent: ScriptedProvider) -> DaemonContext
         updates: crate::updates::UpdatesConfig::Off(
             coqo_protocol::methods::update::OffReason::DevBuild,
         ),
+        config_dir: dir.join("config"),
     }
 }
 

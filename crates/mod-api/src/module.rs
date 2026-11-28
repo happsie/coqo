@@ -9,11 +9,14 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
-use crate::contrib::{Command, Keyed, McpTool};
+use crate::contrib::{Command, Keyed, McpTool, Setting, SettingsSection};
 use crate::erased::{AnyArc, BoxFuture};
 use crate::error::ModError;
 use crate::id::{ContributionId, ContributionPointId, ProviderId, ServiceId, ServiceRef};
-use crate::points::{CommandHandlers, Commands, ContributionPoint, McpToolHandlers, McpTools};
+use crate::points::{
+    CommandHandlers, Commands, ContributionPoint, McpToolHandlers, McpTools, Settings,
+    SettingsSections,
+};
 use crate::service::Service;
 
 /// A mod's code.
@@ -303,6 +306,43 @@ impl ModContext {
         Ok(())
     }
 
+    /// Registers a settings page `section` with its `fields` (points
+    /// `settings_sections` and `settings`). Each field's key must start with
+    /// the section's id and a dot (`files.auto_reveal` in `files`), and its
+    /// default must be valid for its type. The settings service validates
+    /// the user's `settings.toml` against them and the settings page shows
+    /// them, a switch, a choice or a text field by type.
+    ///
+    /// Registering the section again replaces it; registering a field
+    /// again replaces that field.
+    pub fn register_settings(
+        &self,
+        section: SettingsSection,
+        fields: impl IntoIterator<Item = Setting>,
+    ) -> Result<(), ModError> {
+        let fields: Vec<Setting> = fields.into_iter().collect();
+        for field in &fields {
+            if !section.holds(field.key.as_str()) {
+                return Err(ModError::Failed(format!(
+                    "setting `{}` is not in section `{}`: its key must start with `{}.`",
+                    field.key, section.id, section.id
+                )));
+            }
+            if let Some(default) = &field.default
+                && let Err(e) = field.check_value(default)
+            {
+                return Err(ModError::Failed(format!(
+                    "setting `{}`: default `{default}`: {e}",
+                    field.key
+                )));
+            }
+        }
+        self.contribute::<SettingsSections>(section)?;
+        fields
+            .into_iter()
+            .try_for_each(|field| self.contribute::<Settings>(field))
+    }
+
     /// Registers `command` together with the `handler` that runs it.
     pub fn register_command(
         &self,
@@ -318,5 +358,87 @@ impl ModContext {
             return Err(e);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::contrib::{Setting, SettingScope, SettingType, SettingsSection};
+    use crate::points;
+    use crate::testing::TestHost;
+
+    fn id(s: &str) -> crate::ContributionId {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn register_settings_adds_the_section_and_its_fields() {
+        let host = TestHost::new();
+        let cx = host.context("coqo.files".parse().unwrap());
+        cx.register_settings(
+            SettingsSection::new(id("files"), "Files").with_order(20),
+            [
+                Setting::boolean(id("files.auto_reveal"), "Reveal", false),
+                Setting::enumeration(id("files.sort"), "Sort", ["name", "kind"], "name"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(host.contributions::<points::SettingsSections>().len(), 1);
+        assert_eq!(host.contributions::<points::Settings>().len(), 2);
+
+        // A field outside the section, or a bad default, is refused.
+        let outside = cx.register_settings(
+            SettingsSection::new(id("files"), "Files"),
+            [Setting::boolean(id("filesystem.x"), "X", false)],
+        );
+        assert!(outside.unwrap_err().to_string().contains("`files.`"));
+        let bad = cx.register_settings(
+            SettingsSection::new(id("files"), "Files"),
+            [Setting::enumeration(
+                id("files.sort"),
+                "Sort",
+                ["name"],
+                "size",
+            )],
+        );
+        assert!(bad.unwrap_err().to_string().contains("not one of"));
+    }
+
+    #[test]
+    fn values_are_checked_against_the_type() {
+        let theme = Setting::enumeration(
+            id("appearance.theme"),
+            "Theme",
+            ["system", "dark", "light"],
+            "system",
+        )
+        .user_only();
+        assert_eq!(theme.scope, SettingScope::User);
+        assert_eq!(theme.check_value(&json!("dark")), Ok(()));
+        assert_eq!(
+            theme.check_value(&json!("blue")).unwrap_err(),
+            "`blue` is not one of system, dark, light"
+        );
+        assert_eq!(
+            theme.check_value(&json!(1)).unwrap_err(),
+            "expected one of system, dark, light"
+        );
+        let n = Setting::integer(id("a.n"), "N", 1).with_bounds(Some(1.0), Some(8.0));
+        assert_eq!(n.check_value(&json!(4)), Ok(()));
+        assert!(n.check_value(&json!(4.5)).is_err());
+        assert!(n.check_value(&json!(9)).unwrap_err().contains("maximum"));
+        let b = Setting::boolean(id("a.b"), "B", true);
+        assert_eq!(
+            b.check_value(&json!("yes")).unwrap_err(),
+            "expected true or false"
+        );
+        assert_eq!(b.default_value(), json!(true));
+        let mut list = Setting::string(id("a.s"), "S", "");
+        list.ty = SettingType::StringList;
+        list.default = None;
+        assert_eq!(list.default_value(), json!([]));
+        assert!(list.check_value(&json!(["a", 1])).is_err());
     }
 }

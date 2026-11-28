@@ -29,6 +29,7 @@ use crate::path_moves::{FollowsMoves, PathMoves};
 use crate::provenance::{self, Provenance};
 use crate::questions::{self, QuestionService};
 use crate::search::{self, SearchService};
+use crate::settings::{self, SettingsService};
 use crate::syntax::{self, SyntaxService};
 use crate::threads::{self, ThreadService};
 use crate::walkthroughs::{self, WalkthroughService};
@@ -50,6 +51,16 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     let workspaces =
         Arc::new(WorkspaceService::open(ctx.data.clone())?.with_trash(ctx.trash.clone()));
     let router = workspace::register(router, Arc::clone(&workspaces));
+    let router = settings::register(
+        router,
+        SettingsService::open(
+            &ctx.config_dir,
+            Some(ctx.mods.clone()),
+            Some(Arc::clone(&workspaces)),
+            settings::POLL,
+            ctx.shutdown.clone(),
+        ),
+    );
     // Everything keyed by a path follows a rename (issue #288).
     let moves = PathMoves::new();
     let editor_service = EditorService::new(Arc::clone(&workspaces));

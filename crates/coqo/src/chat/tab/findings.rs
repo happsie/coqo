@@ -94,7 +94,7 @@ impl ChatTab {
 
     /// Pin the findings of every message that is complete by now.
     pub(super) fn scan_findings(&mut self, cx: &mut Context<Self>) {
-        if !settings::get(cx).questions.findings_in_gutter {
+        if !settings::get(cx).bool(settings::FINDINGS_IN_GUTTER, None) {
             return;
         }
         let Some(from) = self.findings.from else {

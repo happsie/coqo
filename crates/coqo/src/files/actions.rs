@@ -102,7 +102,7 @@ pub fn init(cx: &mut App) {
         ],
     );
     cx.on_action(|_: &ToggleAutoReveal, cx| {
-        crate::settings::update(cx, |s| s.files.auto_reveal = !s.files.auto_reveal);
+        crate::settings::toggle(cx, crate::settings::AUTO_REVEAL);
     });
 }
 

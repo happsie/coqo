@@ -24,8 +24,8 @@ use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
 use crate::methods::{
-    self, agents, alerts, buffer, commands, editor, fs, git, mcp, questions, search, syntax,
-    terminal, threads, update, walkthroughs, workspace,
+    self, agents, alerts, buffer, commands, editor, fs, git, mcp, questions, search, settings,
+    syntax, terminal, threads, update, walkthroughs, workspace,
 };
 use crate::subscription::ResumeGap;
 
@@ -655,6 +655,20 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "Replace a search's matches in chosen files: open buffers are edited, other files written.",
         ),
+        request::<settings::Get>(
+            g,
+            "client→server",
+            "The settings schema (sections and fields), the user's file and workspaces' files.",
+        ),
+        request::<settings::Set>(
+            g,
+            "client→server",
+            "Write one setting to the user's or a workspace's settings.toml, keeping comments.",
+        ),
+        topic::<settings::Changes>(
+            g,
+            "The settings changed (a file, a write, the schema); get them again (live only).",
+        ),
     ]
 }
 
@@ -721,6 +735,12 @@ fn error_codes() -> Value {
         ("COMMAND_FAILED", methods::codes::COMMAND_FAILED),
         ("INVALID_QUERY", methods::codes::INVALID_QUERY),
         ("SEARCH_UNAVAILABLE", methods::codes::SEARCH_UNAVAILABLE),
+        ("UNKNOWN_SETTING", methods::codes::UNKNOWN_SETTING),
+        ("INVALID_SETTING", methods::codes::INVALID_SETTING),
+        (
+            "SETTINGS_FILE_INVALID",
+            methods::codes::SETTINGS_FILE_INVALID,
+        ),
     ];
     Value::Object(
         all.iter()

@@ -45,7 +45,7 @@ pub use permissions::{FsPermissions, Permissions};
 
 use crate::contrib::{
     AgentProviderInfo, AlertSource, Command, ContextProvider, DebugAdapter, Keybinding, Language,
-    LspServer, McpTool, MenuItem, Setting, SlashCommand, Theme, Views,
+    LspServer, McpTool, MenuItem, Setting, SettingsSection, SlashCommand, Theme, Views,
 };
 use crate::error::ModError;
 use crate::id::{ContributionId, ProviderId, ServiceRef};
@@ -310,6 +310,9 @@ pub struct Contributes {
     /// `[[contributes.settings]]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub settings: Vec<Setting>,
+    /// `[[contributes.settings_sections]]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settings_sections: Vec<SettingsSection>,
     /// `[[contributes.views.<location>]]`.
     #[serde(default, skip_serializing_if = "Views::is_empty")]
     pub views: Views,
@@ -374,6 +377,7 @@ impl Contributes {
             cx.contribute_as::<points::Menus>(id, item.clone())?;
         }
         all::<points::Settings>(cx, &self.settings)?;
+        all::<points::SettingsSections>(cx, &self.settings_sections)?;
         all::<points::SidebarViews>(cx, &self.views.sidebar)?;
         all::<points::PanelViews>(cx, &self.views.panel)?;
         all::<points::TabViews>(cx, &self.views.tab)?;

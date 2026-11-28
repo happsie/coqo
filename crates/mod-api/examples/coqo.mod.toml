@@ -73,6 +73,14 @@ group = "maven"
 order = 1
 when = "resource.filename == 'pom.xml'"
 
+# The settings page shows `maven.*` under this section (optional: without
+# one, the settings get a section titled after their key, "Maven").
+[[contributes.settings_sections]]
+id = "maven"
+title = "Maven"
+description = "How Coqo runs Maven."
+order = 500
+
 [[contributes.settings]]
 key = "maven.executable"
 title = "Maven executable"

@@ -38,6 +38,7 @@ macro_rules! keyed {
 keyed!(
     Command => id,
     Setting => key,
+    SettingsSection => id,
     View => id,
     StatusItem => id,
     Language => id,
@@ -192,7 +193,43 @@ pub enum SettingType {
     StringList,
 }
 
+/// Who may set a [`Setting`]: the user only, or each workspace too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingScope {
+    /// The user's `settings.toml`, and a workspace's `.coqo/settings.toml`
+    /// over it.
+    #[default]
+    Workspace,
+    /// The user's `settings.toml` only, for what is not per workspace (the
+    /// theme, say). A workspace file's value is reported and ignored.
+    User,
+}
+
+impl SettingScope {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// A user setting with its schema (point `settings`).
+///
+/// Its key is its path in `settings.toml`: `files.auto_reveal` is
+/// `auto_reveal` in `[files]`. The settings page shows it in the
+/// [`SettingsSection`] whose id is the longest prefix of the key (`files`),
+/// or in a section of its own named after the key's first part.
+///
+/// Build one in code with [`Setting::boolean`], [`Setting::enumeration`],
+/// [`Setting::string`], [`Setting::integer`] or [`Setting::number`]:
+///
+/// ```
+/// use coqo_mod_api::contrib::Setting;
+/// let s = Setting::boolean("files.auto_reveal".parse()?, "Reveal the active file", false)
+///     .with_description("Switching to a file tab shows its file in the tree.");
+/// assert_eq!(s.check_value(&true.into()), Ok(()));
+/// assert!(s.check_value(&"yes".into()).is_err());
+/// # Ok::<(), coqo_mod_api::IdError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Setting {
@@ -218,6 +255,219 @@ pub struct Setting {
     /// Upper bound, for `integer` and `number`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maximum: Option<f64>,
+    /// Who may set it (default: the user and each workspace).
+    #[serde(default, skip_serializing_if = "SettingScope::is_default")]
+    pub scope: SettingScope,
+}
+
+impl Setting {
+    fn of(key: ContributionId, title: impl Into<String>, ty: SettingType, default: Value) -> Self {
+        Self {
+            key,
+            title: Some(title.into()),
+            description: String::new(),
+            ty,
+            default: Some(default),
+            values: Vec::new(),
+            minimum: None,
+            maximum: None,
+            scope: SettingScope::default(),
+        }
+    }
+
+    /// A `true` / `false` setting (a switch).
+    pub fn boolean(key: ContributionId, title: impl Into<String>, default: bool) -> Self {
+        Self::of(key, title, SettingType::Boolean, Value::Bool(default))
+    }
+
+    /// One of `values` (a choice). `default` should be one of them.
+    pub fn enumeration<V: Into<String>>(
+        key: ContributionId,
+        title: impl Into<String>,
+        values: impl IntoIterator<Item = V>,
+        default: impl Into<String>,
+    ) -> Self {
+        let mut s = Self::of(key, title, SettingType::Enum, Value::String(default.into()));
+        s.values = values.into_iter().map(Into::into).collect();
+        s
+    }
+
+    /// Free text.
+    pub fn string(
+        key: ContributionId,
+        title: impl Into<String>,
+        default: impl Into<String>,
+    ) -> Self {
+        Self::of(
+            key,
+            title,
+            SettingType::String,
+            Value::String(default.into()),
+        )
+    }
+
+    /// A whole number.
+    pub fn integer(key: ContributionId, title: impl Into<String>, default: i64) -> Self {
+        Self::of(key, title, SettingType::Integer, Value::from(default))
+    }
+
+    /// Any number.
+    pub fn number(key: ContributionId, title: impl Into<String>, default: f64) -> Self {
+        Self::of(key, title, SettingType::Number, Value::from(default))
+    }
+
+    /// Sets what the setting does.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// Bounds an `integer` or `number` setting.
+    pub fn with_bounds(mut self, minimum: Option<f64>, maximum: Option<f64>) -> Self {
+        self.minimum = minimum;
+        self.maximum = maximum;
+        self
+    }
+
+    /// Makes it a user-only setting ([`SettingScope::User`]).
+    pub fn user_only(mut self) -> Self {
+        self.scope = SettingScope::User;
+        self
+    }
+
+    /// The title, or the key when it has none.
+    pub fn title_or_key(&self) -> &str {
+        self.title.as_deref().unwrap_or(self.key.as_str())
+    }
+
+    /// The value in effect when nobody set it: `default`, else `false`, `""`,
+    /// `0`, the first of `values` or `[]` by type.
+    pub fn default_value(&self) -> Value {
+        if let Some(default) = &self.default {
+            return default.clone();
+        }
+        match self.ty {
+            SettingType::Boolean => Value::Bool(false),
+            SettingType::String => Value::String(String::new()),
+            SettingType::Integer | SettingType::Number => Value::from(0),
+            SettingType::Enum => self
+                .values
+                .first()
+                .map_or(Value::Null, |v| Value::String(v.clone())),
+            SettingType::StringList => Value::Array(Vec::new()),
+        }
+    }
+
+    /// Whether `value` is valid for this setting. The error says what was
+    /// expected, for the user: "expected true or false", "`blue` is not one
+    /// of system, dark, light".
+    pub fn check_value(&self, value: &Value) -> Result<(), String> {
+        let ok = match self.ty {
+            SettingType::Boolean => value.is_boolean(),
+            SettingType::String | SettingType::Enum => value.is_string(),
+            SettingType::Integer => value.is_i64() || value.is_u64(),
+            SettingType::Number => value.is_number(),
+            SettingType::StringList => value
+                .as_array()
+                .is_some_and(|a| a.iter().all(Value::is_string)),
+        };
+        if !ok {
+            return Err(match self.ty {
+                SettingType::Boolean => "expected true or false".to_owned(),
+                SettingType::String => "expected text in quotes".to_owned(),
+                SettingType::Enum => format!("expected one of {}", self.values.join(", ")),
+                SettingType::Integer => "expected a whole number".to_owned(),
+                SettingType::Number => "expected a number".to_owned(),
+                SettingType::StringList => {
+                    "expected a list of strings, like [\"a\", \"b\"]".to_owned()
+                }
+            });
+        }
+        if self.ty == SettingType::Enum
+            && let Some(v) = value.as_str()
+            && !self.values.iter().any(|allowed| allowed == v)
+        {
+            return Err(format!("`{v}` is not one of {}", self.values.join(", ")));
+        }
+        if let Some(n) = value.as_f64() {
+            if let Some(min) = self.minimum
+                && n < min
+            {
+                return Err(format!("{n} is below the minimum, {min}"));
+            }
+            if let Some(max) = self.maximum
+                && n > max
+            {
+                return Err(format!("{n} is above the maximum, {max}"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A section of the settings page (point `settings_sections`): a title and
+/// a description over the [`Setting`]s whose keys start with its id.
+///
+/// A feature registers its section with its fields in one call,
+/// [`ModContext::register_settings`](crate::ModContext::register_settings):
+///
+/// ```
+/// # use coqo_mod_api::{ModContext, ModError, contrib::{Setting, SettingsSection}};
+/// # fn demo(cx: &ModContext) -> Result<(), ModError> {
+/// cx.register_settings(
+///     SettingsSection::new("files".parse()?, "Files").with_order(20),
+///     [Setting::boolean("files.auto_reveal".parse()?, "Reveal the active file", false)],
+/// )
+/// # }
+/// ```
+///
+/// In a manifest it is `[[contributes.settings_sections]]`, with the fields
+/// as `[[contributes.settings]]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsSection {
+    /// Section id: the key prefix of its settings, such as `files` for
+    /// `files.auto_reveal`.
+    pub id: ContributionId,
+    /// Title in the settings page's section list.
+    pub title: String,
+    /// A line under the title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Position in the section list, lowest first; sections without one
+    /// come after, by title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<i32>,
+}
+
+impl SettingsSection {
+    /// A section with an id and a title.
+    pub fn new(id: ContributionId, title: impl Into<String>) -> Self {
+        Self {
+            id,
+            title: title.into(),
+            description: None,
+            order: None,
+        }
+    }
+
+    /// Sets the line under the title.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// Sets the position in the section list.
+    pub fn with_order(mut self, order: i32) -> Self {
+        self.order = Some(order);
+        self
+    }
+
+    /// Whether `key` belongs to this section: it is `<id>.<rest>`.
+    pub fn holds(&self, key: &str) -> bool {
+        key.strip_prefix(self.id.as_str())
+            .is_some_and(|rest| rest.starts_with('.'))
+    }
 }
 
 /// Where a view lives in the workbench.

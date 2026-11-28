@@ -86,8 +86,8 @@ coqo_ui::gpui::actions!(
         RevealInFileManager,
         /// Show the active file tab's file in the tree.
         RevealInTree,
-        /// Turn revealing the active file tab's file in the tree on or off,
-        /// for the running app (`files.auto_reveal` in `settings.toml`).
+        /// Turn revealing the active file tab's file in the tree on or off
+        /// (`files.auto_reveal` in the user's `settings.toml`, saved).
         ToggleAutoReveal,
     ]
 );
