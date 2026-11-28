@@ -231,3 +231,69 @@ fn file_commands_act_on_the_active_file() {
     });
     assert!(fixture.project.join("src/deep/moved.rs").exists());
 }
+
+/// Duplicate, Copy and Paste from the palette (#290): on the tree's
+/// selection, and on a file tab's file.
+#[test]
+fn copy_commands_act_on_the_selection_and_the_active_file() {
+    let fixture = Fixture::new();
+    write(&fixture.project, "src/deep/nested.rs", "// nested\n");
+    let mut ui = open_ui(&fixture);
+    let (tree, root) = (ui.tree(), ui.root());
+    ui.wait_for("the rows", |ui| {
+        ui.cx
+            .read(|cx| tree.read(cx).rows().iter().any(|r| r.path == "README.md"))
+    });
+    ui.frame(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            assert!(tree.reveal_entry(root, "README.md", cx));
+            window.focus(&tree.focus_handle(cx), cx);
+        })
+    });
+    ui.settle();
+
+    // Duplicate on the tree's selection: the copy is named in place.
+    ui.run_command("duplicate", "Duplicate");
+    ui.wait_for("the copy's name field", |ui| {
+        ui.cx.read(|cx| {
+            matches!(
+                tree.read(cx).name_field().map(|(k, _)| k.clone()),
+                Some(EditKind::Rename { path, .. }) if path == "README copy.md"
+            )
+        })
+    });
+    assert!(fixture.project.join("README copy.md").exists());
+    ui.press("escape");
+
+    // From a file tab: Copy, then Paste into the file's folder.
+    ui.press(FIND_FILE_KEY);
+    ui.type_text("nested.rs");
+    ui.wait_for("nested.rs", |ui| {
+        ui.items().first().is_some_and(|i| i.title == "nested.rs")
+    });
+    ui.press("enter");
+    ui.wait_for("the file tab", |ui| {
+        ui.active_path().as_deref() == Some("src/deep/nested.rs")
+    });
+    ui.focus_file_tab();
+    ui.run_command("copy file", "Copy file or folder");
+    assert_eq!(
+        ui.cx
+            .read(|cx| tree.read(cx).copied().map(|t| t.path.clone())),
+        Some("src/deep/nested.rs".to_owned())
+    );
+    ui.focus_file_tab();
+    ui.run_command("paste", "Paste file or folder");
+    ui.wait_for("the pasted copy", |_| {
+        fixture.project.join("src/deep/nested copy.rs").exists()
+    });
+    // And Duplicate from the tab starts naming the next copy.
+    ui.focus_file_tab();
+    ui.run_command("duplicate", "Duplicate");
+    ui.wait_for("the duplicate", |_| {
+        fixture.project.join("src/deep/nested copy 2.rs").exists()
+    });
+    ui.wait_for("its name field", |ui| {
+        ui.cx.read(|cx| tree.read(cx).name_field().is_some())
+    });
+}

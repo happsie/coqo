@@ -65,6 +65,11 @@ pub fn register(
         }
     });
     let ws = Arc::clone(&workspaces);
+    let router = router.method_with::<fsm::CopyEntry, _, _>(Access::daemon(), move |_ctx, p| {
+        let ws = Arc::clone(&ws);
+        async move { ws.copy_entry(p).await }
+    });
+    let ws = Arc::clone(&workspaces);
     let router = router.method_with::<fsm::Delete, _, _>(Access::daemon(), move |_ctx, p| {
         let ws = Arc::clone(&ws);
         async move { ws.delete_entry(p).await }

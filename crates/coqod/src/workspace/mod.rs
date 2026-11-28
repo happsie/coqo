@@ -803,6 +803,17 @@ impl WorkspaceService {
         .await
     }
 
+    /// `fs/copy`.
+    pub async fn copy_entry(
+        self: &Arc<Self>,
+        p: fsm::CopyParams,
+    ) -> Result<fsm::EntryResult, ErrorObject> {
+        self.with_root(p.workspace, p.root, move |_, roots| {
+            ops::copy(roots, &p.from, &p.dir).map(|path| fsm::EntryResult { path })
+        })
+        .await
+    }
+
     /// `fs/delete`.
     pub async fn delete_entry(
         self: &Arc<Self>,

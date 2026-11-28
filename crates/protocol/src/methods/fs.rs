@@ -15,8 +15,8 @@
 //! ignored too). `.git` itself is always reported as ignored. Ignored entries
 //! are still listed; the UI decides how to show them.
 //!
-//! **File operations** ([`Create`], [`Rename`], [`Delete`], [`Restore`])
-//! create, rename or move, delete and restore entries for the file tree.
+//! **File operations** ([`Create`], [`Rename`], [`CopyEntry`], [`Delete`], [`Restore`])
+//! create, rename or move, copy, delete and restore entries for the file tree.
 //! They take the daemon token
 //! only: agents have file tools of their own. Writing a file's contents
 //! belongs to buffers, not to this module.
@@ -211,6 +211,22 @@ pub struct RenameParams {
     pub to: String,
 }
 
+/// Params of [`CopyEntry`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct CopyParams {
+    /// The workspace.
+    pub workspace: WorkspaceId,
+    /// The root both paths are relative to.
+    pub root: RootId,
+    /// The file or folder to copy (a folder with everything in it). A
+    /// symlink is copied as a link, not through to its target.
+    pub from: String,
+    /// The existing folder to put the copy in (`""` is the root). Giving the
+    /// source's own folder duplicates it.
+    pub dir: String,
+}
+
 /// Params of [`Delete`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -229,7 +245,7 @@ pub struct DeleteParams {
     pub permanent: bool,
 }
 
-/// Result of [`Create`] and [`Rename`]: the entry's path, normalised
+/// Result of [`Create`], [`Rename`] and [`CopyEntry`]: the entry's path, normalised
 /// (`./a//b` is `a/b`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -367,6 +383,20 @@ pub enum Rename {}
 impl Method for Rename {
     const NAME: &'static str = "fs/rename";
     type Params = RenameParams;
+    type Result = EntryResult;
+}
+
+/// `fs/copy`: copy a file or a folder within one root, into `dir`. The copy
+/// keeps the source's name, or, when something is there already (the source
+/// itself, for a duplicate), gets ` copy` before the extension, then
+/// ` copy 2`, ` copy 3` and so on (`a.rs` gives `a copy.rs`). The result is
+/// the copy's path. Open buffers are not involved: a copy is of what is on
+/// disk. Daemon token only.
+#[derive(Debug)]
+pub enum CopyEntry {}
+impl Method for CopyEntry {
+    const NAME: &'static str = "fs/copy";
+    type Params = CopyParams;
     type Result = EntryResult;
 }
 

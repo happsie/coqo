@@ -187,6 +187,90 @@ pub(crate) fn rename(roots: &Roots<'_>, from: &str, to: &str) -> Result<Renamed,
     Ok(renamed)
 }
 
+/// The first name for a copy of `name` that `taken` doesn't refuse: `name`
+/// itself, then `stem copy.ext`, `stem copy 2.ext`, … (the extension is what
+/// follows the last dot, unless the name starts with it: `.env copy`).
+fn copy_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
+    if !taken(name) {
+        return name.to_owned();
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(dot) if dot > 0 => name.split_at(dot),
+        _ => (name, ""),
+    };
+    (1u32..)
+        .map(|n| match n {
+            1 => format!("{stem} copy{ext}"),
+            n => format!("{stem} copy {n}{ext}"),
+        })
+        .find(|candidate| !taken(candidate))
+        .unwrap_or_else(|| name.to_owned())
+}
+
+/// Copy `from` to `to` (which does not exist): a folder with everything in
+/// it. A symlink is copied as a link, never through to its target, so a
+/// link cannot carry a copy's reads outside the workspace.
+fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+    let meta = fs::symlink_metadata(from)?;
+    if meta.file_type().is_symlink() {
+        std::os::unix::fs::symlink(fs::read_link(from)?, to)
+    } else if meta.is_dir() {
+        fs::create_dir(to)?;
+        for child in fs::read_dir(from)? {
+            let child = child?;
+            copy_tree(&child.path(), &to.join(child.file_name()))?;
+        }
+        fs::set_permissions(to, meta.permissions())
+    } else if meta.is_file() {
+        fs::copy(from, to).map(drop)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a file, a folder or a link",
+        ))
+    }
+}
+
+/// `fs/copy`. Returns the copy's normalised path.
+pub(crate) fn copy(roots: &Roots<'_>, from: &str, dir: &str) -> Result<String, ErrorObject> {
+    let source = entry(roots, from)?;
+    let meta = existing(&source)?;
+    let (dir_comps, target_dir) = paths::resolve(roots.root, roots.all, dir)?;
+    if !target_dir.meta.is_dir() {
+        return Err(error::not_a_directory(dir));
+    }
+    if meta.is_dir() && target_dir.real.starts_with(&source.path) {
+        return Err(ErrorObject::invalid_params(format!(
+            "cannot copy {:?} into itself",
+            source.rel()
+        )));
+    }
+    let name = source.comps.last().map_or("entry", String::as_str);
+    let name = copy_name(name, |candidate| {
+        fs::symlink_metadata(target_dir.real.join(candidate)).is_ok()
+    });
+    let to = target_dir.real.join(&name);
+    if let Err(e) = copy_tree(&source.path, &to) {
+        // Don't leave half a copy behind.
+        let _ = match fs::symlink_metadata(&to) {
+            Ok(m) if m.is_dir() => fs::remove_dir_all(&to),
+            Ok(_) => fs::remove_file(&to),
+            Err(_) => Ok(()),
+        };
+        return Err(match e.kind() {
+            io::ErrorKind::AlreadyExists => error::exists(&name),
+            io::ErrorKind::InvalidInput => ErrorObject::invalid_params(format!(
+                "{:?} is not a file, a folder or a link, so it cannot be copied",
+                source.rel()
+            )),
+            _ => error::io(source.rel(), &e),
+        });
+    }
+    let mut comps = dir_comps;
+    comps.push(name);
+    Ok(comps.join("/"))
+}
+
 /// What [`delete`] did.
 #[derive(Debug)]
 pub(crate) struct Deleted {

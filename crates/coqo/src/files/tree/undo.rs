@@ -7,6 +7,9 @@
 //! - **Create:** an entry still empty (an empty file without unsaved edits
 //!   in a tab, an empty folder) is deleted for good; one that changed is
 //!   deleted to the trash after the user confirms, in the delete card.
+//! - **Copy or duplicate:** the copy goes to the trash (after the user
+//!   confirms, in the delete card, if a tab holds unsaved edits in it); redo
+//!   copies the original again.
 //! - **Delete:** restored with the token `fs/delete` gave (`fs/restore`):
 //!   from the OS trash, or from Coqo's copy where the trash can't give it
 //!   back. Without a token (deleted for good, too large for a copy) it
@@ -19,7 +22,7 @@
 
 use std::time::Duration;
 
-use coqo_protocol::methods::fs::RestoreParams;
+use coqo_protocol::methods::fs::{CopyParams, RestoreParams};
 
 use super::*;
 use crate::files::{RedoFileOp, UndoFileOp};
@@ -33,6 +36,8 @@ enum Outcome {
     Moved { from: String, to: String },
     /// Made again.
     Created { path: String },
+    /// Copied again.
+    Copied { path: String },
     /// Deleted; how it can be brought back.
     Deleted { restore: Result<String, String> },
     /// Brought back at `path`.
@@ -146,6 +151,53 @@ impl FileTree {
                 });
                 cx.background_spawn(async move {
                     rename.await.map(|r| Outcome::Moved { from, to: r.path })
+                })
+            }
+            (
+                FileOp::Copy {
+                    root, from, path, ..
+                },
+                false,
+            ) => {
+                let copy = daemon.request::<fs::CopyEntry>(CopyParams {
+                    workspace: ws,
+                    root: *root,
+                    from: from.clone(),
+                    dir: parent(path).to_owned(),
+                });
+                cx.background_spawn(
+                    async move { copy.await.map(|r| Outcome::Copied { path: r.path }) },
+                )
+            }
+            (
+                FileOp::Copy {
+                    root, path, kind, ..
+                },
+                true,
+            ) => {
+                let target = Target {
+                    root: *root,
+                    path: path.clone(),
+                    kind: *kind,
+                };
+                let dirty = self.dirty_tabs(&target, cx);
+                let delete = daemon.request::<fs::Delete>(DeleteParams {
+                    workspace: ws,
+                    root: *root,
+                    path: path.clone(),
+                    permanent: false,
+                });
+                cx.background_spawn(async move {
+                    if !dirty.is_empty() {
+                        return Ok(Outcome::Ask { dirty });
+                    }
+                    match delete.await {
+                        Ok(r) => Ok(Outcome::Deleted {
+                            restore: r.restore.ok_or_else(|| r.no_restore.unwrap_or_default()),
+                        }),
+                        Err(e) if e.code() == Some(codes::NOT_FOUND) => Ok(Outcome::Gone),
+                        Err(e) => Err(e),
+                    }
                 })
             }
             (FileOp::Create { root, path, kind }, false) => {
@@ -265,7 +317,9 @@ impl FileTree {
             Err(e) => {
                 let name = match &op {
                     FileOp::Move { to, from, .. } => base_name(if undo { to } else { from }),
-                    FileOp::Create { path, .. } | FileOp::Delete { path, .. } => base_name(path),
+                    FileOp::Create { path, .. }
+                    | FileOp::Copy { path, .. }
+                    | FileOp::Delete { path, .. } => base_name(path),
                 }
                 .to_owned();
                 let verb = if undo { "undo" } else { "redo" };
@@ -291,6 +345,26 @@ impl FileTree {
                 self.rebuild(cx);
                 op
             }
+            (Outcome::Copied { path: copied }, op) => {
+                let dir = (root, parent(&copied).to_owned());
+                self.expanded.insert(dir.clone());
+                self.relist(dir, cx);
+                self.pending_select = Some((root, copied.clone()));
+                window.focus(&self.focus, cx);
+                self.rebuild(cx);
+                match op {
+                    // The name may be another one this time.
+                    FileOp::Copy {
+                        root, from, kind, ..
+                    } => FileOp::Copy {
+                        root,
+                        from,
+                        path: copied,
+                        kind,
+                    },
+                    op => op,
+                }
+            }
             (Outcome::Restored { path }, op) => {
                 let dir = (root, parent(&path).to_owned());
                 self.expanded.insert(dir.clone());
@@ -310,9 +384,9 @@ impl FileTree {
             }
             (Outcome::Deleted { restore }, op) => {
                 let (path, kind) = match &op {
-                    FileOp::Create { path, kind, .. } | FileOp::Delete { path, kind, .. } => {
-                        (path.clone(), *kind)
-                    }
+                    FileOp::Create { path, kind, .. }
+                    | FileOp::Copy { path, kind, .. }
+                    | FileOp::Delete { path, kind, .. } => (path.clone(), *kind),
                     FileOp::Move { to, .. } => (to.clone(), EntryKind::File),
                 };
                 let target = Target { root, path, kind };
@@ -331,7 +405,8 @@ impl FileTree {
                 }
             }
             (Outcome::Ask { dirty }, op) => {
-                let FileOp::Create { root, path, kind } = op.clone() else {
+                let Some((root, path, kind)) = op.made().map(|(r, p, k)| (r, p.to_owned(), k))
+                else {
                     return;
                 };
                 self.selected = Some((root, path.clone()));

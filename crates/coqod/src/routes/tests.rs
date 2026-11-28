@@ -163,6 +163,7 @@ async fn every_route_declares_who_may_call_it() {
     for name in [
         "fs/create",
         "fs/rename",
+        "fs/copy",
         "fs/delete",
         "fs/find",
         "search/run",

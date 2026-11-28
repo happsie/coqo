@@ -128,6 +128,17 @@ impl Harness {
         .map(|r| r.path)
     }
 
+    async fn copy(&self, from: &str, dir: &str) -> Result<String, i64> {
+        self.call::<fsm::CopyEntry>(fsm::CopyParams {
+            workspace: self.workspace.clone(),
+            root: self.root,
+            from: from.to_owned(),
+            dir: dir.to_owned(),
+        })
+        .await
+        .map(|r| r.path)
+    }
+
     async fn delete(&self, path: &str, permanent: bool) -> Result<bool, i64> {
         self.delete_for_undo(path, permanent)
             .await
@@ -248,6 +259,81 @@ async fn creates_files_and_folders() {
         Err(coqo_protocol::codes::INVALID_PARAMS)
     );
     assert!(!h.path("odd").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn copies_files_and_folders() {
+    let h = Harness::new(&[
+        ("a.txt", "a\n"),
+        ("Makefile", "all:\n"),
+        (".env", "K=1\n"),
+        ("src/lib.rs", "pub fn f() {}\n"),
+        ("src/deep/x.rs", "x\n"),
+        ("docs/guide.md", "# guide\n"),
+    ])
+    .await;
+
+    // A duplicate (into the source's own folder) is named " copy", then
+    // " copy 2", before the extension.
+    assert_eq!(h.copy("a.txt", "").await, Ok("a copy.txt".into()));
+    assert_eq!(h.copy("a.txt", "").await, Ok("a copy 2.txt".into()));
+    assert_eq!(h.copy("Makefile", "").await, Ok("Makefile copy".into()));
+    assert_eq!(h.copy(".env", "").await, Ok(".env copy".into()));
+    assert_eq!(
+        h.copy("src/lib.rs", "src").await,
+        Ok("src/lib copy.rs".into())
+    );
+    assert_eq!(fs::read_to_string(h.path("a copy 2.txt")).unwrap(), "a\n");
+    assert_eq!(fs::read_to_string(h.path("a.txt")).unwrap(), "a\n");
+
+    // Into another folder it keeps its name; a clash there gets the suffix.
+    assert_eq!(h.copy("a.txt", "docs").await, Ok("docs/a.txt".into()));
+    assert_eq!(h.copy("a.txt", "docs").await, Ok("docs/a copy.txt".into()));
+
+    // A folder is copied with everything in it.
+    assert_eq!(h.copy("src", "").await, Ok("src copy".into()));
+    assert_eq!(
+        fs::read_to_string(h.path("src copy/deep/x.rs")).unwrap(),
+        "x\n"
+    );
+    assert!(h.path("src/deep/x.rs").is_file());
+    assert_eq!(h.copy("src", "docs").await, Ok("docs/src".into()));
+    assert!(h.path("docs/src/lib.rs").is_file());
+
+    // Not into itself, not into a file, and not what is missing.
+    assert_eq!(
+        h.copy("src", "src/deep").await,
+        Err(coqo_protocol::codes::INVALID_PARAMS)
+    );
+    assert_eq!(
+        h.copy("a.txt", "Makefile").await,
+        Err(codes::NOT_A_DIRECTORY)
+    );
+    assert_eq!(h.copy("nope.txt", "").await, Err(codes::NOT_FOUND));
+    assert_eq!(h.copy("a.txt", "missing").await, Err(codes::NOT_FOUND));
+    assert_eq!(
+        h.copy("", "docs").await,
+        Err(coqo_protocol::codes::INVALID_PARAMS)
+    );
+    assert!(!h.path("src/deep/deep").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_copy_cannot_escape_the_workspace() {
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("secret.txt"), "secret\n").unwrap();
+    let h = Harness::new(&[("a.txt", "a\n")]).await;
+    std::os::unix::fs::symlink(outside.path(), h.path("out")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret.txt"), h.path("link.txt")).unwrap();
+
+    // Not into a folder outside, through `..` or a link.
+    assert!(h.copy("a.txt", "..").await.is_err());
+    assert!(h.copy("a.txt", "out").await.is_err());
+    assert!(!outside.path().join("a.txt").exists());
+    // A link is copied as a link, not through to what it points at.
+    assert_eq!(h.copy("link.txt", "").await, Ok("link copy.txt".into()));
+    let copied = h.path("link copy.txt");
+    assert!(fs::symlink_metadata(&copied).unwrap().is_symlink());
 }
 
 #[tokio::test(flavor = "multi_thread")]

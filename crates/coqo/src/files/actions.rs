@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The file commands in the command palette (issue #287): New file, New
-//! folder, Rename, Delete, Copy path, Copy relative path, Reveal in the file
+//! folder, Rename, Delete, Duplicate, Copy and Paste (#290), Copy path, Copy relative path, Reveal in the file
 //! manager, Reveal active file in tree, and Toggle auto-reveal (the tree
 //! then follows the active file tab, `files.auto_reveal`).
 //!
@@ -24,8 +24,8 @@ use coqo_ui::gpui::{
 };
 
 use super::{
-    CopyPath, CopyRelativePath, DeleteEntry, NewFile, NewFolder, RenameEntry, RevealInFileManager,
-    RevealInTree, ToggleAutoReveal,
+    CopyEntry, CopyPath, CopyRelativePath, DeleteEntry, DuplicateEntry, NewFile, NewFolder,
+    PasteEntry, RenameEntry, RevealInFileManager, RevealInTree, ToggleAutoReveal,
     editor::FileEditor,
     tree::{FileTree, REVEAL_LABEL, Target},
 };
@@ -69,6 +69,12 @@ pub fn init(cx: &mut App) {
             Command::new("files.rename_active", "Rename…", CATEGORY, RenameEntry).context(EDITOR),
             delete,
             Command::new("files.delete_active", "Delete…", CATEGORY, DeleteEntry).context(EDITOR),
+            Command::new("files.duplicate", "Duplicate", CATEGORY, DuplicateEntry)
+                .context(TREE_OR_EDITOR),
+            Command::new("files.copy", "Copy file or folder", CATEGORY, CopyEntry)
+                .context(TREE_OR_EDITOR),
+            Command::new("files.paste", "Paste file or folder", CATEGORY, PasteEntry)
+                .context(TREE_OR_EDITOR),
             Command::new("files.copy_path", "Copy path", CATEGORY, CopyPath)
                 .context(TREE_OR_EDITOR),
             Command::new(
@@ -107,6 +113,9 @@ enum Op {
     NewFolder,
     Rename,
     Delete,
+    Duplicate,
+    Copy,
+    Paste,
     CopyPath { relative: bool },
     Reveal,
     RevealInTree,
@@ -119,6 +128,9 @@ pub fn on_active_file(el: Stateful<Div>, cx: &mut Context<Shell>) -> Stateful<Di
         .on_action(cx.listener(|s, _: &NewFolder, w, cx| run(s, Op::NewFolder, w, cx)))
         .on_action(cx.listener(|s, _: &RenameEntry, w, cx| run(s, Op::Rename, w, cx)))
         .on_action(cx.listener(|s, _: &DeleteEntry, w, cx| run(s, Op::Delete, w, cx)))
+        .on_action(cx.listener(|s, _: &DuplicateEntry, w, cx| run(s, Op::Duplicate, w, cx)))
+        .on_action(cx.listener(|s, _: &CopyEntry, w, cx| run(s, Op::Copy, w, cx)))
+        .on_action(cx.listener(|s, _: &PasteEntry, w, cx| run(s, Op::Paste, w, cx)))
         .on_action(
             cx.listener(|s, _: &CopyPath, w, cx| run(s, Op::CopyPath { relative: false }, w, cx)),
         )
@@ -189,7 +201,14 @@ fn run(shell: &mut Shell, op: Op, window: &mut Window, cx: &mut Context<Shell>) 
                 cx.reveal_path(&abs);
             }
         }
-        Op::NewFile | Op::NewFolder | Op::Rename | Op::Delete | Op::RevealInTree => {
+        Op::NewFile
+        | Op::NewFolder
+        | Op::Rename
+        | Op::Delete
+        | Op::Duplicate
+        | Op::Copy
+        | Op::Paste
+        | Op::RevealInTree => {
             // The tree shows the window's workspace: a tab of another one
             // (left from before a switch) has no rows there.
             if absolute(&workspace, root, &path, window, cx).is_none() {
@@ -211,6 +230,22 @@ fn run(shell: &mut Shell, op: Op, window: &mut Window, cx: &mut Context<Shell>) 
                         tree.start_create((root, folder.to_owned()), kind, window, cx);
                     }
                     Op::Rename => tree.start_rename(root, &path, window, cx),
+                    Op::Duplicate | Op::Copy => {
+                        let target = Target {
+                            root,
+                            path,
+                            kind: EntryKind::File,
+                        };
+                        if op == Op::Copy {
+                            tree.copy_entry(target, cx);
+                        } else {
+                            tree.duplicate(target, window, cx);
+                        }
+                    }
+                    Op::Paste => {
+                        let folder = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+                        tree.paste((root, folder.to_owned()), window, cx);
+                    }
                     Op::Delete => {
                         let target = Target {
                             root,

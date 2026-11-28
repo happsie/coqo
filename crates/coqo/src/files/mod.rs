@@ -65,6 +65,13 @@ coqo_ui::gpui::actions!(
         RenameEntry,
         /// Delete the selected entry, after a confirmation.
         DeleteEntry,
+        /// Copy the selected entry next to itself, then rename the copy.
+        DuplicateEntry,
+        /// Remember the selected file or folder, to paste it elsewhere.
+        CopyEntry,
+        /// Paste the copied file or folder into the selected folder (or the
+        /// selected file's).
+        PasteEntry,
         /// Close the context menu, the delete confirmation or an error.
         Dismiss,
         /// Undo the tree's last file operation.
