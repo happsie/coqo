@@ -2,14 +2,17 @@
 
 //! The per-workspace file watcher behind `fs/changes`.
 //!
-//! `notify` watches every root recursively (inotify on Linux, FSEvents on
-//! macOS). Its callback only records changed paths in a bounded set and wakes
-//! the debounce task, so a burst of events (a branch switch, a build) costs a
-//! hash insert each. Every debounce window the task turns the set into one
+//! `notify` watches the roots: on Linux with one inotify watch per folder
+//! the ignore rules keep, so nothing inside an ignored folder is watched
+//! ([`dirs`], issue #308); on macOS and Windows with one recursive stream
+//! per root. Its callback only records changed paths in a bounded set and
+//! wakes the debounce task, so a burst of events (a branch switch, a build)
+//! costs a hash insert each. Every debounce window the task turns the set into one
 //! [`FsChanges`] per root: paths made root-relative, deduplicated and sorted,
 //! with noise inside `.git` and inside ignored directories dropped. Past
 //! [`WatchConfig::max_paths`] the set stops growing and the batch becomes a
-//! `rescan`.
+//! `rescan`. Before batching, the task brings the per-folder watches up to
+//! date with what changed.
 //!
 //! Batches go to an in-memory [`SeqLog`], so subscribers get the usual
 //! sequence numbers, and a slow subscriber gets `RESUME_GAP` instead of
@@ -25,17 +28,21 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+mod dirs;
 
 use coqo_protocol::methods::fs::FsChanges;
 use coqo_protocol::methods::workspace::{RootId, WorkspaceId};
 use coqo_protocol::{ErrorObject, EventFeed, SeqLog};
 use futures_util::StreamExt;
 use notify::event::{ModifyKind, RenameMode};
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{EventKind, RecommendedWatcher};
 use tokio::sync::{Notify, broadcast, watch};
 
+use self::dirs::Watches;
 use super::ignores::IgnoreCache;
 use crate::path_moves::PathMove;
 
@@ -74,6 +81,9 @@ struct Pending {
     renames: Vec<(PathBuf, PathBuf)>,
     /// The `From` half of a rename, waiting for its `To`.
     rename_from: Option<PathBuf>,
+    /// Paths removed or moved away: a watched folder among them lost its
+    /// watches.
+    gone: HashSet<PathBuf>,
 }
 
 impl Pending {
@@ -118,6 +128,8 @@ struct Shared {
     pending: Mutex<Pending>,
     wake: Notify,
     max_paths: usize,
+    /// Events recorded (access events left out), for tests.
+    events: AtomicU64,
 }
 
 impl Shared {
@@ -128,10 +140,25 @@ impl Shared {
                 if matches!(ev.kind, EventKind::Access(_)) {
                     return;
                 }
+                self.events.fetch_add(1, Ordering::Relaxed);
                 if ev.need_rescan() {
                     p.overflow = true;
                 }
                 p.rename_event(&ev);
+                let gone = match ev.kind {
+                    EventKind::Remove(_) => ev.paths.len(),
+                    EventKind::Modify(ModifyKind::Name(
+                        RenameMode::From | RenameMode::Both | RenameMode::Any,
+                    )) => 1,
+                    _ => 0,
+                };
+                for path in ev.paths.iter().take(gone) {
+                    if p.gone.len() >= self.max_paths {
+                        p.overflow = true;
+                        break;
+                    }
+                    p.gone.insert(path.clone());
+                }
                 for path in ev.paths {
                     if p.paths.len() >= self.max_paths {
                         p.overflow = true;
@@ -161,6 +188,7 @@ impl Shared {
 }
 
 type RootList = Arc<Mutex<Vec<(RootId, PathBuf)>>>;
+type OsWatches = Arc<Mutex<Watches<RecommendedWatcher>>>;
 
 /// Watches one open workspace. Dropping it stops the watcher and ends every
 /// `fs/changes` subscription to it.
@@ -168,7 +196,10 @@ type RootList = Arc<Mutex<Vec<(RootId, PathBuf)>>>;
 pub(crate) struct WorkspaceWatcher {
     log: Arc<SeqLog<FsChanges>>,
     roots: RootList,
-    watcher: Mutex<RecommendedWatcher>,
+    ignores: Arc<IgnoreCache>,
+    watches: OsWatches,
+    #[cfg(test)]
+    shared: Arc<Shared>,
     closed: watch::Sender<bool>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -192,18 +223,22 @@ impl WorkspaceWatcher {
             pending: Mutex::default(),
             wake: Notify::new(),
             max_paths: config.max_paths,
+            events: AtomicU64::new(0),
         });
         let cb = Arc::clone(&shared);
-        let mut watcher = notify::recommended_watcher(move |res| cb.record(res))?;
+        let watcher = notify::recommended_watcher(move |res| cb.record(res))?;
+        let mut watches = Watches::new(watcher, dirs::PER_DIRECTORY);
         for (_, path) in &roots {
-            watcher.watch(path, RecursiveMode::Recursive)?;
+            watches.add_root(&roots, path, &ignores)?;
         }
+        let watches = Arc::new(Mutex::new(watches));
         let roots: RootList = Arc::new(Mutex::new(roots));
         let log = Arc::new(SeqLog::new(config.retained_batches));
         let task = tokio::spawn(debounce(
-            shared,
+            Arc::clone(&shared),
             Arc::clone(&roots),
-            ignores,
+            Arc::clone(&watches),
+            Arc::clone(&ignores),
             Arc::clone(&log),
             config.debounce,
             renames,
@@ -211,31 +246,46 @@ impl WorkspaceWatcher {
         Ok(Self {
             log,
             roots,
-            watcher: Mutex::new(watcher),
+            ignores,
+            watches,
+            #[cfg(test)]
+            shared,
             closed: watch::channel(false).0,
             task,
         })
     }
 
     /// Replace the watched roots (after `workspace/addRoot` / `removeRoot`).
+    /// Walks the new roots' folders: call it on a blocking thread.
     pub fn set_roots(&self, new: Vec<(RootId, PathBuf)>) {
         let mut roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
-        let mut watcher = self.watcher.lock().unwrap_or_else(|e| e.into_inner());
+        let mut watches = self.watches.lock().unwrap_or_else(|e| e.into_inner());
         for (id, path) in roots.iter() {
-            if !new.iter().any(|(n, _)| n == id)
-                && let Err(e) = watcher.unwatch(path)
-            {
-                tracing::debug!(path = %path.display(), error = %e, "unwatch failed");
+            if !new.iter().any(|(n, _)| n == id) {
+                watches.remove_root(&new, path, &self.ignores);
             }
         }
         for (id, path) in &new {
             if !roots.iter().any(|(r, _)| r == id)
-                && let Err(e) = watcher.watch(path, RecursiveMode::Recursive)
+                && let Err(e) = watches.add_root(&new, path, &self.ignores)
             {
                 tracing::warn!(path = %path.display(), error = %e, "cannot watch new root");
             }
         }
         *roots = new;
+    }
+
+    /// The folders with a watch of their own (on Linux).
+    #[cfg(test)]
+    pub fn watched(&self) -> Vec<PathBuf> {
+        let watches = self.watches.lock().unwrap_or_else(|e| e.into_inner());
+        watches.watched()
+    }
+
+    /// The events the OS reported so far (access events left out).
+    #[cfg(test)]
+    pub fn events_seen(&self) -> u64 {
+        self.shared.events.load(Ordering::Relaxed)
     }
 
     /// Subscribe to the change batches; the feed ends when the watcher is
@@ -256,6 +306,7 @@ impl WorkspaceWatcher {
 async fn debounce(
     shared: Arc<Shared>,
     roots: RootList,
+    watches: OsWatches,
     ignores: Arc<IgnoreCache>,
     log: Arc<SeqLog<FsChanges>>,
     window: Duration,
@@ -264,13 +315,24 @@ async fn debounce(
     loop {
         shared.wake.notified().await;
         tokio::time::sleep(window).await;
-        let pending = shared.take();
+        let mut pending = shared.take();
         if pending.paths.is_empty() && !pending.overflow && pending.renames.is_empty() {
             continue;
         }
-        let roots = roots.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let ignores = Arc::clone(&ignores);
+        let (roots, ignores, watches) = (
+            Arc::clone(&roots),
+            Arc::clone(&ignores),
+            Arc::clone(&watches),
+        );
+        let max_paths = shared.max_paths;
         let batched = tokio::task::spawn_blocking(move || {
+            // In `set_roots`' order, so the roots can't change meanwhile.
+            let roots = {
+                let roots = roots.lock().unwrap_or_else(|e| e.into_inner());
+                let mut watches = watches.lock().unwrap_or_else(|e| e.into_inner());
+                watches.update(&mut pending, &roots, &ignores, max_paths);
+                roots.clone()
+            };
             let moved = moves(&pending.renames, &roots);
             (batch(&pending, &roots, &ignores), moved)
         })
@@ -440,6 +502,7 @@ mod tests {
             pending: Mutex::default(),
             wake: Notify::new(),
             max_paths: 3,
+            events: AtomicU64::new(0),
         };
         let mut ev = notify::Event::new(EventKind::Create(notify::event::CreateKind::File));
         for i in 0..5 {
@@ -466,6 +529,7 @@ mod tests {
             pending: Mutex::default(),
             wake: Notify::new(),
             max_paths: 100,
+            events: AtomicU64::new(0),
         };
         // inotify: both halves, then the pair.
         shared.record(rename(RenameMode::From, &["/r/a.rs"]));

@@ -935,7 +935,7 @@ impl WorkspaceService {
                 let ignores = Arc::clone(&self.ignores);
                 let config = self.watch_config.clone();
                 let renames = (id.clone(), self.renames.clone());
-                // Setting up recursive watches walks the tree: keep it off the
+                // Setting up the watches walks the tree: keep it off the
                 // async workers. The runtime handle lets the watcher spawn its
                 // debounce task from the blocking thread.
                 let rt = tokio::runtime::Handle::current();

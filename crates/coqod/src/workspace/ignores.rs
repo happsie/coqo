@@ -8,10 +8,11 @@
 //!
 //! A folder below a root that [stands apart](stands_apart) is ignored too,
 //! whatever the ignore files say: a nested git repository or worktree (it
-//! holds a `.git` file or folder) is its own project, and a cache folder
-//! marked with `CACHEDIR.TAG` (Cargo's `target/`, for one) is build output.
-//! The tree shows them dimmed; the watcher and the file index (`fs/find`)
-//! leave them out.
+//! holds a `.git` file or folder) is its own project, a cache folder marked
+//! with `CACHEDIR.TAG` (Cargo's `target/`, for one) is build output, and so
+//! is `node_modules`. The tree shows them dimmed; the watcher puts no OS
+//! watches inside them (ADR 0027), and the file index (`fs/find`) leaves
+//! them out.
 //!
 //! Matchers are cached per directory and revalidated against the
 //! `.gitignore` file's size and mtime on each use, so edits are picked up
@@ -65,11 +66,13 @@ impl IgnoreChain {
 }
 
 /// Whether the folder `dir` (below a root) is a world of its own: a nested
-/// git repository or worktree (a `.git` file or folder in it), or a cache
-/// folder tagged with `CACHEDIR.TAG` (<https://bford.info/cachedir/>).
-/// Costs two `stat`s; callers ask only about folders the ignore files keep.
+/// git repository or worktree (a `.git` file or folder in it), a cache
+/// folder tagged with `CACHEDIR.TAG` (<https://bford.info/cachedir/>), or a
+/// `node_modules` folder. Costs up to two `stat`s; callers ask only about
+/// folders the ignore files keep.
 pub(crate) fn stands_apart(dir: &Path) -> bool {
-    dir.join(".git").symlink_metadata().is_ok()
+    dir.file_name().is_some_and(|n| n == "node_modules")
+        || dir.join(".git").symlink_metadata().is_ok()
         || dir
             .join("CACHEDIR.TAG")
             .symlink_metadata()
@@ -275,6 +278,8 @@ mod tests {
             "Signature: 8a477f597d28d172789f06886806bc55\n",
         );
         write(root, "out/debug/x.o", "");
+        write(root, "web/node_modules/left-pad/index.js", "");
+        write(root, "docs/node_modules.md", "");
         let cache = IgnoreCache::default();
         let ig = |rel: &str, dir: bool| cache.is_ignored(root, &comps(rel), dir);
 
@@ -288,6 +293,19 @@ mod tests {
         assert!(ig("out", true), "a tagged cache");
         assert!(cache.parent_ignored(root, &comps("out/debug/x.o")));
         assert!(!ig("out", false), "only folders stand apart");
+        assert!(!ig("web", true));
+        assert!(
+            ig("web/node_modules", true),
+            "node_modules, without a .gitignore"
+        );
+        assert!(ig("web/node_modules/left-pad/index.js", false));
+        assert!(!ig("docs/node_modules.md", false));
+        // The chain a walk carries down agrees with one built from the root.
+        let web = cache.chain(root, &comps("web"));
+        assert!(web.is_ignored(&root.join("web/node_modules"), true));
+        let src = cache.descend(&cache.chain(root, &[] as &[&str]), &root.join("src"));
+        assert!(!src.dir_ignored);
+        assert!(!src.is_ignored(&root.join("src/lib.rs"), false));
     }
 
     #[test]
