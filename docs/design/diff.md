@@ -118,7 +118,22 @@ A thread is visible where the code is edited, not only in the diff.
 - **Where:** the daemon resolves a thread's anchor against the saved file. The marker follows edits in the tab while the daemon's lines stay what they were when it was placed; saving the file lists the threads again, and the new lines win.
 - **Click:** opens the thread's card in place, under its lines (the same card as in the diff: comments, the reply field, **Reply**, **Resolve** / **Reopen**, **Discard** of pending comments, **Edit** of the user's own; a resolved thread does not fold), with the keyboard in the reply field, plus **Open in diff** (the root's unstaged diff, at the thread) and **Close**. `Esc` closes it (outside the field). A reply is pending, as in the diff, and shows there at once: both follow the workspace's `WorkspaceThreads`.
 - **Stacking:** a review thread ranks below an agent's question and above a walkthrough step; a resolved one below everything (see [Markers on one line](walkthrough.md#markers-on-one-line)).
-- **Not yet:** starting a thread from a file tab (#311).
+
+### Starting a thread in a file tab (#311)
+
+![The diff's composer under the selected lines of a file tab](screenshots/file-comment-dark.png)
+
+Light: [composer](screenshots/file-comment-light.png). Offscreen renders from `file_comment_screenshots`: `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored file_comment_screenshots`.
+
+- **Entry points:**
+  - **Add review comment** (command palette, Review category), `Ctrl Shift M` (`Cmd Shift M` on macOS) in a file tab. It comments on the selected lines, or the cursor's line without a selection; a selection ending at the start of a line leaves that line out (as asking about code).
+  - **Alt-click** (`Option`-click on macOS) on the gutter's blue ask button (#229, [questions.md](questions.md#asking-about-code-229)). A plain click still asks an agent: the one button keeps its one-click meaning, and the gutter gap stays one glyph wide. A menu on the button was considered and left out: it would cost asking a second click.
+- **The composer:** the diff's own (the `surface` card, "You · lines 3–5", "Leave a comment", raised **Add to review**, flat **Cancel**), drawn over the code under the lines as the thread card is, with the keyboard in its field. `Enter` adds; `Esc` cancels, and the keyboard goes back to the code. Typing in the field fires no shortcut (the tab's keys are behind a modifier, and view keys are kept out of text fields, #266).
+- **The thread:** `threads/create` on the **work tree** version of the file (`version: worktree`, `side: new`), the lines 1-based, `diff: git:<root>:index..worktree`, pending. So it is in the root's **unstaged diff**: its "N pending", the file row's count, and **Send N comments to <agent>** (#95) count it, and its card shows there.
+- **Afterwards:** the composer gives way to the new thread's card at its sand marker, with the keyboard on the card (`Esc` closes it; a click in the field replies).
+- **Unsaved edits:** the daemon pins a thread to the saved file, whose lines may differ from the tab's. While the tab has unsaved edits the composer opens anyway, with a `sand` note, "Save the file first: review comments are pinned to the saved file.", and **Add to review** waits. Saving (`Ctrl S` works from the field) lifts it. Coqo never saves for the user.
+- **Not in** a walkthrough player's own tab, which shows no review threads.
+- **Not yet:** threads on the index or a revision from a file tab.
 
 ## Not yet (later issues)
 

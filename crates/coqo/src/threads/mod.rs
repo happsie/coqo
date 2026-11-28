@@ -23,6 +23,9 @@
 //!   work-tree version and opens [`overlay::ThreadCard`] in place.
 //!   "Toggle resolved review threads in files" ([`ToggleResolvedThreads`])
 //!   shows the resolved ones too (per workspace, for the session).
+//!   "Add review comment" ([`AddReviewComment`], `Ctrl/Cmd+Shift+M`, #311)
+//!   starts a pending thread on a file tab's selected lines, in the root's
+//!   unstaged diff ([`unstaged_diff`]), with the diff's composer in place.
 //!
 //! Every call goes to the daemon (`threads/*`, `review/*`); the store takes
 //! in the thread each returns, and the feed brings the rest.
@@ -76,17 +79,44 @@ pub struct OpenReviewDiff {
 #[action(namespace = threads, no_json)]
 pub struct ToggleResolvedThreads;
 
+/// Start a review comment on a file tab's selected lines (#311).
+#[derive(Clone, Debug, PartialEq, Eq, Default, Action)]
+#[action(namespace = threads, no_json)]
+pub struct AddReviewComment;
+
+/// The key of [`AddReviewComment`], in a file tab.
+#[cfg(target_os = "macos")]
+pub const ADD_COMMENT_KEY: &str = "cmd-shift-m";
+#[cfg(not(target_os = "macos"))]
+pub const ADD_COMMENT_KEY: &str = "ctrl-shift-m";
+
+/// The identity of `root`'s unstaged diff (index → work tree): where a
+/// thread on the work tree's version of a file is listed.
+pub fn unstaged_diff(root: RootId) -> String {
+    format!("git:{}:index..worktree", root.0)
+}
+
 /// Register the threads' commands and keys.
 pub fn init(cx: &mut App) {
     overlay::init(cx);
     crate::commands::register(
         cx,
-        [crate::commands::Command::new(
-            "threads.toggle_resolved_in_files",
-            "Toggle resolved review threads in files",
-            "Review",
-            ToggleResolvedThreads,
-        )],
+        [
+            crate::commands::Command::new(
+                "threads.toggle_resolved_in_files",
+                "Toggle resolved review threads in files",
+                "Review",
+                ToggleResolvedThreads,
+            ),
+            crate::commands::Command::new(
+                "threads.add_review_comment",
+                "Add review comment",
+                "Review",
+                AddReviewComment,
+            )
+            .key(ADD_COMMENT_KEY)
+            .context(crate::questions::FILE_KEY_CONTEXT),
+        ],
     );
     cx.on_action(|_: &ToggleResolvedThreads, cx| {
         let Some(ws) = crate::workspace::Workspaces::global(cx)

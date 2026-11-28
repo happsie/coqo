@@ -926,6 +926,262 @@ fn a_review_thread_shows_in_its_file_tab_and_a_reply_there_is_in_the_diff() {
     assert!(ui.has(("thread", ix)), "the diff shows the thread");
 }
 
+/// #311: in a file tab with unsaved edits, select lines 3–5 and press
+/// "Add review comment"'s key: the diff's composer opens under them with
+/// the keyboard in it, and typing there fires no shortcut. "Add to review"
+/// waits for a save; once saved it starts a pending thread on those lines
+/// of the work tree, in the root's unstaged diff: a sand marker in the tab
+/// with its card open (`Esc` closes it), and the diff's pending count goes
+/// up. Alt-click on the ask button opens the composer too; `Esc` cancels.
+#[test]
+fn a_review_comment_started_in_a_file_tab_is_pending_in_the_diff() {
+    use coqo_ui::{
+        ActiveTokens as _,
+        editor::OverlayAnchor,
+        gpui::{ElementId, Modifiers},
+    };
+
+    use crate::files::editor::{
+        FileEditor,
+        threads::{THREAD_MARKER_BASE, UNSAVED_NOTE},
+    };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = Repo::init(&tmp.path().join("demo-repo"));
+    let lines: String = (1..=12).map(|i| format!("line {i}\n")).collect();
+    repo.write("src/lib.rs", &lines);
+    repo.commit_all("Twelve lines");
+    repo.write("src/lib.rs", &lines.replace("line 8\n", "eight\n"));
+    let mut ui = open_ui(repo.path().to_owned(), tmp);
+    let (diff, review) = open_review(&mut ui, "src/lib.rs");
+    let count = |ui: &mut Ui| ui.cx.read(|cx| review.read(cx).pending_count(cx));
+    assert_eq!(count(&mut ui), 0);
+    assert!(!ui.has("review-pending-count"));
+    let registered = ui.cx.update(|cx| {
+        crate::commands::registry::registry(cx)
+            .get("threads.add_review_comment")
+            .map(|c| c.title.to_string())
+    });
+    assert_eq!(registered.as_deref(), Some("Add review comment"));
+
+    // The file's tab, with an unsaved line at the end.
+    let (ws, root) = ui.cx.read(|cx| {
+        let current = workspace::Workspaces::global(cx)
+            .and_then(|w| w.read(cx).current().cloned())
+            .unwrap();
+        (current.id.clone(), current.roots[0].id)
+    });
+    let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
+    let tab: Entity<FileEditor> = ui
+        .frame(|window, cx| {
+            crate::questions::navigate::open_file(&dock, &ws, root, "src/lib.rs", window, cx)
+        })
+        .unwrap();
+    ui.wait_for("the file", |ui| {
+        ui.cx.read(|cx| tab.read(cx).editor().is_some())
+    });
+    let code = ui.cx.read(|cx| tab.read(cx).editor().cloned()).unwrap();
+    ui.frame(|window, cx| {
+        code.update(cx, |code, cx| {
+            code.focus(window, cx);
+            let end = code.text(cx).len();
+            code.set_selections(std::slice::from_ref(&(end..end)), cx);
+            code.type_text("// unsaved\n", window, cx);
+        })
+    });
+    ui.wait_for("the unsaved edit", |ui| {
+        ui.cx.read(|cx| tab.read(cx).is_dirty())
+    });
+
+    // Lines 3–5 (0-based 2..5) selected, then the command's key.
+    ui.frame(|_, cx| {
+        code.update(cx, |code, cx| {
+            let selection = code.line_start(2, cx)..code.line_start(5, cx);
+            code.set_selections(std::slice::from_ref(&selection), cx);
+        })
+    });
+    let (actions, _keys) = record_key_actions(&mut ui.cx);
+    ui.cx.simulate_keystrokes(ui.window, super::ADD_COMMENT_KEY);
+    ui.wait_for("the composer", |ui| {
+        ui.cx.read(|cx| {
+            tab.read(cx).thread_composer().is_some()
+                && code.read(cx).overlay_anchor() == Some(OverlayAnchor::Lines { start: 2, end: 5 })
+        })
+    });
+    assert!(
+        actions
+            .borrow()
+            .contains(&"threads::AddReviewComment".to_owned())
+    );
+    assert!(ui.has("thread-file-composer"));
+    let state = ui.cx.read(|cx| tab.read(cx).review().unwrap().clone());
+    let field = ui
+        .cx
+        .read(|cx| state.read(cx).composer_input().cloned())
+        .unwrap();
+    assert!(ui.frame(|window, cx| field.read(cx).focus_handle(cx).is_focused(window)));
+    assert_eq!(
+        ui.cx
+            .read(|cx| state.read(cx).composer_blocked().map(str::to_owned)),
+        Some(UNSAVED_NOTE.to_owned())
+    );
+    assert!(ui.has("thread-composer-blocked"));
+
+    // Typing there fires no shortcut and leaves the code alone.
+    actions.borrow_mut().clear();
+    let text = ui.cx.read(|cx| code.read(cx).text(cx));
+    ui.cx.simulate_keystrokes(ui.window, TYPED_KEYS);
+    ui.frame(|_, _| ());
+    assert_eq!(ui.cx.read(|cx| field.read(cx).text(cx)), TYPED_TEXT);
+    assert_eq!(ui.cx.read(|cx| code.read(cx).text(cx)), text);
+    let fired: Vec<String> = actions
+        .borrow()
+        .iter()
+        .filter(|a| {
+            [
+                "threads::",
+                "questions::",
+                "file_editor::",
+                "walkthrough::",
+                "diff_review::",
+            ]
+            .iter()
+            .any(|p| a.starts_with(p))
+        })
+        .cloned()
+        .collect();
+    assert!(fired.is_empty(), "fired while typing: {fired:?}");
+
+    // Unsaved: "Add to review" waits. Saving (from the field) lets it.
+    ui.click("thread-composer-add");
+    ui.cx.run_until_parked();
+    assert!(ui.cx.read(|cx| tab.read(cx).thread_composer().is_some()));
+    assert_eq!(count(&mut ui), 0);
+    let save = if cfg!(target_os = "macos") {
+        "cmd-s"
+    } else {
+        "ctrl-s"
+    };
+    ui.cx.simulate_keystrokes(ui.window, save);
+    ui.wait_for("the save", |ui| {
+        ui.cx
+            .read(|cx| !tab.read(cx).is_dirty() && state.read(cx).composer_blocked().is_none())
+    });
+    assert!(!ui.has("thread-composer-blocked"));
+    ui.click("thread-composer-add");
+    ui.wait_for("the thread", |ui| ui.threads(&review).len() == 1);
+    let t = ui.threads(&review).remove(0);
+    assert_eq!(t.comments.len(), 1);
+    assert_eq!(t.comments[0].body, TYPED_TEXT);
+    assert!(t.comments[0].pending);
+    assert_eq!(
+        (
+            t.anchor.root,
+            t.anchor.path.as_str(),
+            t.anchor.side,
+            t.anchor.version.clone(),
+            t.anchor.lines,
+        ),
+        (
+            root,
+            "src/lib.rs",
+            ThreadSide::New,
+            DiffSide::Worktree,
+            Some(ThreadLines { start: 3, end: 5 }),
+        )
+    );
+    assert_eq!(t.diff, Some(super::unstaged_diff(root)));
+
+    // A sand marker on its lines, its card open in place, the keyboard on
+    // the card; `Esc` closes it and the keyboard is back in the code.
+    let marker = THREAD_MARKER_BASE + t.id.0;
+    ui.wait_for("the marker and card", |ui| {
+        ui.cx.read(|cx| {
+            code.read(cx).marker_lines(cx).contains(&(marker, 2..5))
+                && tab.read(cx).thread_composer().is_none()
+                && tab.read(cx).thread_card().is_some()
+                && code.read(cx).overlay_anchor() == Some(OverlayAnchor::Marker(marker))
+        })
+    });
+    let sand = ui.cx.read(|cx| cx.tokens().palette.sand.hsla());
+    assert_eq!(ui.cx.read(|cx| tab.read(cx).thread_marks()[0].color), sand);
+    assert!(ui.has(("thread-pending", t.comments[0].id.0 as usize)));
+    let card = ui.cx.read(|cx| tab.read(cx).thread_card().unwrap().clone());
+    assert!(ui.frame(|window, cx| card.read(cx).card_focus().is_focused(window)));
+    ui.cx.simulate_keystrokes(ui.window, "escape");
+    ui.wait_for("the card closed", |ui| {
+        ui.cx.read(|cx| tab.read(cx).thread_card().is_none())
+    });
+    assert!(ui.frame(|window, cx| code.read(cx).focus_handle(cx).contains_focused(window, cx)));
+
+    // The diff counts it and shows it.
+    assert_eq!(count(&mut ui), 1);
+    ui.frame(|window, cx| {
+        window.dispatch_action(
+            Box::new(super::OpenReviewDiff {
+                workspace: ws.0.clone(),
+                diff: super::unstaged_diff(root),
+                path: Some("src/lib.rs".into()),
+            }),
+            cx,
+        )
+    });
+    ui.wait_for("the diff in front", |ui| {
+        ui.cx.read(|cx| {
+            dock.read(cx)
+                .active_tab()
+                .and_then(|t| dock.read(cx).tab(t)?.downcast::<DiffTab>())
+                == Some(diff.clone())
+        })
+    });
+    ui.wait_for("the thread in the diff", |ui| {
+        ui.has(("thread", t.id.0 as usize)) && ui.has("review-pending-count")
+    });
+    assert!(ui.has("review-send"));
+
+    // Alt-click on the ask button: the composer again, on its line (the
+    // cursor's, or the one under the mouse); `Esc` in the field cancels it
+    // and adds nothing.
+    let tab_again: Entity<FileEditor> = ui
+        .frame(|window, cx| {
+            crate::questions::navigate::open_file(&dock, &ws, root, "src/lib.rs", window, cx)
+        })
+        .unwrap();
+    assert_eq!(tab_again, tab);
+    ui.frame(|window, cx| {
+        code.update(cx, |code, cx| {
+            code.focus(window, cx);
+            let at = code.line_start(9, cx);
+            code.set_selections(std::slice::from_ref(&(at..at)), cx);
+        })
+    });
+    ui.wait_for("the ask button", |ui| ui.has("code-ask"));
+    let alt = Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    ui.frame(|window, cx| window.click_with_modifiers("code-ask", alt, cx));
+    ui.wait_for("the composer on one line", |ui| {
+        ui.cx.read(|cx| {
+            tab.read(cx).thread_composer().is_some()
+                && matches!(
+                    code.read(cx).overlay_anchor(),
+                    Some(OverlayAnchor::Lines { start, end }) if end == start + 1
+                )
+        })
+    });
+    assert!(ui.cx.read(|cx| tab.read(cx).ask_popover().is_none()));
+    ui.cx.simulate_keystrokes(ui.window, "escape");
+    ui.wait_for("the composer closed", |ui| {
+        ui.cx.read(|cx| {
+            tab.read(cx).thread_composer().is_none() && code.read(cx).overlay_anchor().is_none()
+        })
+    });
+    assert!(ui.frame(|window, cx| code.read(cx).focus_handle(cx).contains_focused(window, cx)));
+    assert_eq!(count(&mut ui), 1);
+    assert!(!ui.has(ElementId::from("thread-file-composer")));
+}
+
 fn sample_thread(
     id: u64,
     path: &str,
@@ -1163,6 +1419,12 @@ fn threads_screenshots() {
 #[test]
 #[ignore = "needs a GPU; run manually"]
 fn file_threads_screenshots() {
+    file_tab_screenshots(false);
+}
+
+/// `src/cart.rs` in its file tab with two review threads, and the pending
+/// one's card open, or (`composer`) the composer of a new one.
+fn file_tab_screenshots(composer: bool) {
     use std::sync::Arc;
 
     use coqo_ui::{
@@ -1313,23 +1575,66 @@ pub fn total(lines: &[Line], discount: f64) -> Cents {
                     .editor()
                     .is_some_and(|code| code.read(cx).markers().len() == 2)
         });
-        cx.update_window(handle, |_, window, cx| {
-            tab.update(cx, |tab, cx| tab.open_thread_card(pending, window, cx))
-        })
-        .unwrap();
-        let marker = THREAD_MARKER_BASE + pending.0;
-        settle(&mut cx, &|cx| {
-            tab.read(cx).editor().is_some_and(|code| {
-                code.read(cx).overlay_anchor() == Some(OverlayAnchor::Marker(marker))
+        let shot = if composer {
+            // `struct Line` (lines 4–7) selected, "Add review comment".
+            cx.update_window(handle, |_, window, cx| {
+                tab.update(cx, |tab, cx| {
+                    let code = tab.editor().unwrap().clone();
+                    code.update(cx, |code, cx| {
+                        let selection = code.line_start(3, cx)..code.line_start(7, cx);
+                        code.set_selections(std::slice::from_ref(&selection), cx);
+                    });
+                    tab.comment_on(3..7, window, cx);
+                    let field = tab
+                        .review()
+                        .and_then(|r| r.read(cx).composer_input().cloned())
+                        .unwrap();
+                    field.update(cx, |f, cx| {
+                        f.set_text(
+                            "Could `quantity` be a `NonZeroU32`? A zero line shouldn't be in the cart.",
+                            window,
+                            cx,
+                        )
+                    });
+                })
             })
-        });
+            .unwrap();
+            settle(&mut cx, &|cx| {
+                tab.read(cx).editor().is_some_and(|code| {
+                    code.read(cx).overlay_anchor()
+                        == Some(OverlayAnchor::Lines { start: 3, end: 7 })
+                })
+            });
+            "comment"
+        } else {
+            cx.update_window(handle, |_, window, cx| {
+                tab.update(cx, |tab, cx| tab.open_thread_card(pending, window, cx))
+            })
+            .unwrap();
+            let marker = THREAD_MARKER_BASE + pending.0;
+            settle(&mut cx, &|cx| {
+                tab.read(cx).editor().is_some_and(|code| {
+                    code.read(cx).overlay_anchor() == Some(OverlayAnchor::Marker(marker))
+                })
+            });
+            "threads"
+        };
         for _ in 0..20 {
             settle(&mut cx, &|_| true);
             std::thread::sleep(Duration::from_millis(20));
         }
         let image = cx.capture_screenshot(handle).expect("screenshot");
-        let path = dir.join(format!("coqo-file-threads-{name}.png"));
+        let path = dir.join(format!("coqo-file-{shot}-{name}.png"));
         image.save(&path).expect("save png");
         println!("wrote {}", path.display());
     }
+}
+
+/// Offscreen screenshots of a review comment started in a file tab (#311):
+/// `src/cart.rs` with lines 4–7 selected and the composer open under them,
+/// as `coqo-file-comment-{dark,light}.png` in `$COQO_SHOT_DIR`.
+#[test]
+#[ignore = "needs a GPU; run manually"]
+fn file_comment_screenshots() {
+    file_tab_screenshots(true);
 }
