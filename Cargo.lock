@@ -1165,7 +1165,7 @@ dependencies = [
 
 [[package]]
 name = "coqo"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "coqo-agents",
  "coqo-buffers",
@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "coqo-acp-host"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "coqo-agents",
@@ -1211,7 +1211,7 @@ dependencies = [
 
 [[package]]
 name = "coqo-agent-claude"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "coqo-acp-host",
  "coqo-agents",
@@ -1226,7 +1226,7 @@ dependencies = [
 
 [[package]]
 name = "coqo-agents"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "coqo-mod-api",
  "coqo-protocol",
@@ -1244,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "coqo-anchors"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "coqo-syntax",
  "proptest",
@@ -1255,7 +1255,7 @@ dependencies = [
 
 [[package]]
 name = "coqo-buffers"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "coqo-protocol",
  "proptest",
@@ -1265,7 +1265,7 @@ dependencies = [
 
 [[package]]
 name = "coqo-client"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "coqo-protocol",
  "dirs 6.0.0",
@@ -1278,11 +1278,11 @@ dependencies = [
 
 [[package]]
 name = "coqo-dap-client"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "coqo-evals"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "coqo-client",
@@ -1294,7 +1294,7 @@ dependencies = [
 
 [[package]]
 name = "coqo-kernel"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "coqo-mod-api",
  "coqo-mod-hello",
@@ -1309,11 +1309,11 @@ dependencies = [
 
 [[package]]
 name = "coqo-lsp-client"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "coqo-mcp"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "coqo-client",
  "coqo-protocol",
@@ -1341,7 +1341,7 @@ dependencies = [
 
 [[package]]
 name = "coqo-mod-git"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "coqo-mod-api",
  "gix",
@@ -1350,22 +1350,22 @@ dependencies = [
 
 [[package]]
 name = "coqo-mod-hello"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "coqo-mod-api",
 ]
 
 [[package]]
 name = "coqo-mod-host-proc"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "coqo-mod-host-wasm"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "coqo-mod-search"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "coqo-mod-api",
  "grep-matcher",
@@ -1377,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "coqo-protocol"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -1395,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "coqo-storage"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "dirs 6.0.0",
  "rusqlite",
@@ -1405,7 +1405,7 @@ dependencies = [
 
 [[package]]
 name = "coqo-syntax"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "coqo-mod-api",
  "tree-sitter",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "coqo-ui"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "coqo-syntax",
  "gpui-kit",
@@ -1435,8 +1435,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "coqo-updater"
+version = "0.1.0"
+
+[[package]]
 name = "coqod"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",

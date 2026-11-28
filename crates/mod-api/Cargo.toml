@@ -1,7 +1,9 @@
 [package]
 name = "coqo-mod-api"
 description = "Public Coqo mod API: the only Coqo crate that mods may depend on."
-version.workspace = true
+# The mod API has its own version (mods declare `engine = "^0.0"`); it is not
+# the app release version, so it stays put when the workspace version moves.
+version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

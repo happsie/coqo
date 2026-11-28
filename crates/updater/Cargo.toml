@@ -1,0 +1,12 @@
+[package]
+name = "coqo-updater"
+description = "The in-app updater (#349). For now this only holds the release public key, release.pub, shared with the release workflow (#348)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
