@@ -995,25 +995,33 @@ async fn watcher_follows_new_moved_and_newly_ignored_folders() {
     write(root, "src/a/b/later.rs", b"x");
     changes_until(&mut sub, "src/a/b/later.rs").await;
 
-    // A folder renamed outside Coqo: paired, and its files still watched.
+    // A folder renamed outside Coqo: paired (not on macOS, whose FSEvents
+    // reports the halves unpaired), and its files still watched.
+    let paired = !cfg!(target_os = "macos");
     fs::rename(root.join("src/a"), root.join("src/c")).unwrap();
-    let mv = tokio::time::timeout(TIMEOUT, renames.recv())
-        .await
-        .expect("rename in time")
-        .unwrap();
-    assert_eq!((mv.from.as_str(), mv.to.as_str()), ("src/a", "src/c"));
+    if paired {
+        let mv = tokio::time::timeout(TIMEOUT, renames.recv())
+            .await
+            .expect("rename in time")
+            .unwrap();
+        assert_eq!((mv.from.as_str(), mv.to.as_str()), ("src/a", "src/c"));
+    }
     write(root, "src/c/b/y.rs", b"y");
     changes_until(&mut sub, "src/c/b/y.rs").await;
     // A file renamed outside Coqo, in the moved folder.
     fs::rename(root.join("src/c/b/y.rs"), root.join("src/c/b/z.rs")).unwrap();
-    let mv = tokio::time::timeout(TIMEOUT, renames.recv())
-        .await
-        .expect("rename in time")
-        .unwrap();
-    assert_eq!(
-        (mv.from.as_str(), mv.to.as_str()),
-        ("src/c/b/y.rs", "src/c/b/z.rs")
-    );
+    if paired {
+        let mv = tokio::time::timeout(TIMEOUT, renames.recv())
+            .await
+            .expect("rename in time")
+            .unwrap();
+        assert_eq!(
+            (mv.from.as_str(), mv.to.as_str()),
+            ("src/c/b/y.rs", "src/c/b/z.rs")
+        );
+    } else {
+        changes_until(&mut sub, "src/c/b/z.rs").await;
+    }
 
     // Cargo makes its target folder, then tags it.
     write(root, "out/debug/a.o", b"");
