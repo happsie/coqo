@@ -1185,10 +1185,9 @@ fn an_asked_thread_tracks_its_lines_and_follows_the_streaming_reply() {
 
     let tab = ui.open_file("src/cart.rs");
     let code = ui.code(&tab).unwrap();
-    // The button's tooltip names Alt-click (Option on macOS).
+    // The button's tooltip names no key (#372).
     let tip = ui.cx.read(|cx| code.read(cx).ask_tip().cloned()).unwrap();
-    assert!(tip.starts_with("Ask an agent ("), "{tip}");
-    assert!(tip.ends_with("-click: add review comment)"), "{tip}");
+    assert_eq!(tip, "Ask an agent");
 
     // Ask about `let sum = …` and `sum.min(500)`, then type a line above
     // them before sending: the popover and its lines move with them.

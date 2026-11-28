@@ -929,7 +929,7 @@ impl FileEditor {
                     },
                 );
                 if self.questions.is_some() {
-                    let tip = self.ask_tip();
+                    let tip = Self::ASK_TIP;
                     editor.update(cx, |editor, cx| {
                         editor.set_ask_enabled(true, cx);
                         editor.set_ask_tip(Some(tip.into()), cx);
@@ -1871,14 +1871,9 @@ impl FileEditor {
         self.threads.is_some() && !self.walkthrough_host
     }
 
-    /// The ask button's tooltip: what a click and an Alt-click do (#248).
-    pub(super) fn ask_tip(&self) -> &'static str {
-        match (self.comments_here(), cfg!(target_os = "macos")) {
-            (true, true) => "Ask an agent (Option-click: add review comment)",
-            (true, false) => "Ask an agent (Alt-click: add review comment)",
-            (false, _) => "Ask an agent",
-        }
-    }
+    /// The ask button's tooltip. It names no key: the Alt-click's review
+    /// comment is not explained in the UI (#372).
+    pub(super) const ASK_TIP: &'static str = "Ask an agent";
 
     /// Ask about the selected lines ([`AskAboutCode`]).
     fn ask_about_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {

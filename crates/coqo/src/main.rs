@@ -36,6 +36,8 @@ mod attach_tests;
 #[cfg(test)]
 mod keys_tests;
 #[cfg(test)]
+mod no_key_hints_tests;
+#[cfg(test)]
 mod test_support;
 
 use std::{path::PathBuf, process::ExitCode, rc::Rc};

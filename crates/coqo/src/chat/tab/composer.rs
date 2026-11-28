@@ -1477,14 +1477,6 @@ impl ChatTab {
                 .when(self.files.truncated, |d| {
                     d.child(self.render_hint("Only the first 20,000 files are searched", cx))
                 })
-                .when(!matches.is_empty(), |d| {
-                    d.child(
-                        self.render_hint(
-                            "↑↓ to choose · Enter or Tab to mention · Esc to close",
-                            cx,
-                        ),
-                    )
-                })
             }
             Popover::Command {
                 matches, selected, ..
@@ -1539,14 +1531,6 @@ impl ChatTab {
                             .pb(px(10.))
                             .text_color(p.text_subtle.hsla())
                             .child("No command matches"),
-                    )
-                })
-                .when(!matches.is_empty(), |d| {
-                    d.child(
-                        self.render_hint(
-                            "↑↓ to choose · Enter or Tab to complete · Esc to close",
-                            cx,
-                        ),
                     )
                 })
             }

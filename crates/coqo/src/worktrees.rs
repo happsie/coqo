@@ -35,7 +35,7 @@ use coqo_ui::{
         Styled as _, Subscription, Task, Window, deferred, div, prelude::FluentBuilder as _, px,
     },
     input::{PromptInput, PromptInputEvent},
-    widgets::{Icon, TestSupportExt as _, icon, kbd, popover, primary, raised},
+    widgets::{Icon, TestSupportExt as _, icon, popover, primary, raised},
 };
 
 use crate::{
@@ -939,8 +939,6 @@ impl WorktreeSwitcher {
                     .gap(px(6.))
                     .text_size(m.text_xs)
                     .text_color(p.text_subtle.hsla())
-                    .child(kbd("Enter", cx))
-                    .child("to create")
                     .child(div().flex_1())
                     .child(
                         primary(div().px(px(12.)).py(px(4.)).rounded(px(8.)), cx)

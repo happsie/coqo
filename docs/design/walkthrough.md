@@ -60,7 +60,7 @@ A file opened on its own (Files, Open file, a link) shows the steps too, so the 
 - **Click:** opens the step popover in place (below), with the keyboard in it.
 - **Popover in a file tab:** the player's popover with these differences:
   - the header says "<walkthrough> · Step n of m" and shows the anchor without the ‹ › arrows;
-  - the buttons are **Open in player** (raised; the player at this step, see `OpenWalkthrough { step }`), a flat **Close**, the `u` key cap and the primary **Mark understood** / **✓ Understood**;
+  - the buttons are **Open in player** (raised; the player at this step, see `OpenWalkthrough { step }`), a flat **Close** and the primary **Mark understood** / **✓ Understood**;
   - there is no Previous / Next and no asking (the player's). **View as diff** and the **READ FIRST** links open the player at that step;
   - `Esc` closes it and `u` marks the step understood (key context `StepPopover`).
   Understood calls `walkthroughs/setStepState`: the player, the session panel and other windows follow through `walkthroughs/changes`.
@@ -92,7 +92,7 @@ A `popover` card (radius 18, 20 × 18 px padding, 14 px gaps), under the step's 
   - **WHAT IT DOES** and **WHY IT'S DONE THIS WAY** side by side (each at least 240 px, wrapping), markdown.
   - **RISKS:** a row per risk on `panel_raised`, radius 12, with its badge: `HIGH` `rose`, `MEDIUM` `sand`, `LOW` `sage`, as text in the colour on a 22% tint of it. The board uses dark tinted badges with pastel text; this keeps them legible in the light appearance.
   - **MEETS:** the criteria the step refers to, with status glyph, id in `blue` and text. **READ FIRST:** the steps it depends on, as links.
-- **Buttons:** **← Previous**, **Ask about this step** (raised, `sand` text and hairline, as the board's amber button), then on the right the `p` `n` key caps, **Mark understood** / **✓ Understood** and the primary **Next step →**. Previous and Next dim at the ends.
+- **Buttons:** **← Previous**, **Ask about this step** (raised, `sand` text and hairline, as the board's amber button), then on the right **Mark understood** / **✓ Understood** and the primary **Next step →**. Previous and Next dim at the ends.
 
 ### Asking about a step
 

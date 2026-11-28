@@ -180,14 +180,6 @@ pub trait PaletteProvider: 'static {
     ) {
         self.confirm(item, scope, window, cx);
     }
-    /// What Enter does, after its key cap in the footer.
-    fn confirm_hint(&self) -> SharedString {
-        "to run".into()
-    }
-    /// What `Ctrl/Cmd+Enter` does, if the mode has a second way.
-    fn secondary_hint(&self) -> Option<SharedString> {
-        None
-    }
     /// How a recently used row is labelled.
     fn recent_label(&self) -> SharedString {
         "recently used".into()
@@ -612,45 +604,6 @@ impl Render for Palette {
                 )))
         });
 
-        let (confirm_hint, secondary_hint) = self.provider.as_ref().map_or_else(
-            || ("to run".into(), None),
-            |p| (p.confirm_hint(), p.secondary_hint()),
-        );
-        let secondary_key = if cfg!(target_os = "macos") {
-            "⌘Enter"
-        } else {
-            "Ctrl Enter"
-        };
-        let in_commands = self
-            .provider
-            .as_ref()
-            .is_some_and(|p| p.prefix() == super::COMMANDS_PREFIX);
-        let hints = div()
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .px(px(14.))
-            .py(px(8.))
-            .border_t_1()
-            .border_color(p.border.hsla())
-            .text_size(m.text_xs)
-            .text_color(p.text_subtle.hsla())
-            // Room for the second Enter: the arrows go without saying.
-            .when(secondary_hint.is_none(), |hints| {
-                hints.child(kbd("↑↓", cx)).child("to move")
-            })
-            .child(kbd("Enter", cx))
-            .child(confirm_hint)
-            .when_some(secondary_hint, |hints, hint| {
-                hints.child(kbd(secondary_key, cx)).child(hint)
-            })
-            .child(kbd("Esc", cx))
-            .child("to close")
-            .child(div().flex_1())
-            .when(!in_commands, |hints| {
-                hints.child(kbd(">", cx)).child("commands")
-            });
-
         let card = popover(cx)
             .id("command-palette")
             .test_support()
@@ -669,8 +622,7 @@ impl Render for Palette {
             }))
             .child(field)
             .child(list)
-            .children(problems)
-            .child(hints);
+            .children(problems);
 
         // The workbench places it under the top bar's command search, as
         // wide as the search.

@@ -46,7 +46,7 @@ use coqo_ui::{
         StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
         px,
     },
-    widgets::{FluentBuilder as _, Icon, TestSupportExt as _, icon, kbd, raised, section_label},
+    widgets::{FluentBuilder as _, Icon, TestSupportExt as _, icon, raised, section_label},
 };
 
 pub use source::{DiffSource, SourceFile, Staging};
@@ -1145,14 +1145,6 @@ impl DiffView {
                     .into_any_element()
             })
             .collect();
-        let hint = |keys: &'static str, what: &'static str| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(kbd(keys, cx))
-                .child(what)
-        };
         let notes: Vec<AnyElement> = self
             .overlays
             .iter()
@@ -1198,21 +1190,6 @@ impl DiffView {
                     .children(rows),
             )
             .children(notes)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .p_3()
-                    .rounded(px(12.))
-                    .bg(p.surface.alpha(0.5))
-                    .text_size(m.text_xs)
-                    .text_color(p.text_muted.hsla())
-                    .child(hint("J K", "next / previous file"))
-                    .child(hint("j k", "next / previous hunk"))
-                    .child(hint("v", "mark viewed"))
-                    .child(hint("m", "side by side / unified")),
-            )
     }
 
     fn render_main(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

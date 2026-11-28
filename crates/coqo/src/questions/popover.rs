@@ -922,14 +922,6 @@ impl QuestionPopover {
                     .on_click(cx.listener(|this, _, _, cx| this.dismiss(cx))),
                 )
             })
-            .when(!thread, |d| {
-                d.child(
-                    div()
-                        .text_size(m.text_sm)
-                        .text_color(p.text_subtle.hsla())
-                        .child("F8 next question"),
-                )
-            })
             .child(div().flex_1())
             .child(
                 raised(div(), cx)

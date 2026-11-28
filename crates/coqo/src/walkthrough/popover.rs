@@ -41,7 +41,7 @@ use coqo_ui::{
     },
     input::{PromptInput, PromptInputEvent},
     text::markdown,
-    widgets::{Icon, TestSupportExt as _, icon, kbd, popover, primary, raised},
+    widgets::{Icon, TestSupportExt as _, icon, popover, primary, raised},
 };
 
 use super::{anchor_location, anchor_status, kind_label, severity_color, severity_label};
@@ -824,15 +824,6 @@ impl StepPopover {
             )
             .child(div().flex_1())
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .text_size(m.text_xs)
-                    .text_color(p.text_subtle.hsla())
-                    .child(kbd("u", cx)),
-            )
-            .child(
                 primary(div(), cx)
                     .id("step-understood")
                     .test_support()
@@ -890,16 +881,6 @@ impl StepPopover {
                     .on_click(cx.listener(|this, _, window, cx| this.ask(window, cx))),
             )
             .child(div().flex_1())
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .text_size(m.text_xs)
-                    .text_color(p.text_subtle.hsla())
-                    .child(kbd("p", cx))
-                    .child(kbd("n", cx)),
-            )
             .child(
                 button("step-understood", cx)
                     .when(understood, |d| d.text_color(p.sage.hsla()))

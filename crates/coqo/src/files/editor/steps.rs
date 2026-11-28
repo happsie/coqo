@@ -57,7 +57,7 @@ impl FileEditor {
         if self.questions.is_some()
             && let Some(editor) = self.editor().cloned()
         {
-            let tip = self.ask_tip();
+            let tip = Self::ASK_TIP;
             editor.update(cx, |editor, cx| editor.set_ask_tip(Some(tip.into()), cx));
         }
         self.file_steps.clear();

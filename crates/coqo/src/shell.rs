@@ -1552,7 +1552,7 @@ fn register_builtin_slots(cx: &mut App) {
 /// What an empty tab area shows.
 fn empty_state(_: &mut Window, cx: &mut App) -> AnyElement {
     let t = cx.tokens();
-    let (p, m) = (&t.palette, &t.metrics);
+    let p = &t.palette;
     div()
         .id("empty-state")
         .test_support()
@@ -1573,16 +1573,6 @@ fn empty_state(_: &mut Window, cx: &mut App) -> AnyElement {
             div().text_color(p.text_muted.hsla()).child(
                 "Open a folder to start a workspace, then chat with an agent or open a file.",
             ),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_size(m.text_sm)
-                .text_color(p.text_subtle.hsla())
-                .child("Command palette")
-                .children(commands::keys_label(commands::OPEN_COMMANDS, cx).map(|k| kbd(k, cx))),
         )
         .into_any_element()
 }

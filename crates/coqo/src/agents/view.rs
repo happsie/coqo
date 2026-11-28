@@ -26,7 +26,7 @@ use coqo_ui::{
         Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
         prelude::FluentBuilder as _, px,
     },
-    widgets::{Icon, TestSupportExt as _, icon, kbd, primary, raised},
+    widgets::{Icon, TestSupportExt as _, icon, primary, raised},
 };
 
 use super::{
@@ -41,7 +41,6 @@ use crate::{
     questions::{WorkspaceQuestions, questions_for},
     shell::Shell,
     walkthrough::marks::{WorkspaceWalkthroughs, walkthroughs_for},
-    welcome::shortcut,
     workspace::KnownWorkspaces,
 };
 
@@ -949,15 +948,7 @@ impl Render for AgentsTab {
                 .text_color(p.text_subtle.hsla())
                 .child(icon(Icon::LayoutGrid, px(28.), p.text_subtle.hsla()))
                 .child("No agent sessions yet.")
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_size(m.text_sm)
-                        .child("Start a chat")
-                        .child(kbd(shortcut("Ctrl Shift N"), cx)),
-                )
+                .child(div().text_size(m.text_sm).child("Start a chat"))
         });
         div()
             .id("agents-overview")

@@ -490,14 +490,6 @@ impl PaletteProvider for FilesProvider {
         }
     }
 
-    fn confirm_hint(&self) -> SharedString {
-        "to open".into()
-    }
-
-    fn secondary_hint(&self) -> Option<SharedString> {
-        Some("to the side".into())
-    }
-
     fn recent_label(&self) -> SharedString {
         "recently opened".into()
     }
