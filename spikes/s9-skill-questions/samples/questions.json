@@ -1,0 +1,344 @@
+[
+  {
+    "id": "gstack-review-1", "skill": "gstack /review (Step 5c ASK item)", "tool": "AskUserQuestion",
+    "prompt": "/review",
+    "question": {"header": "SQL", "text": "D1 — Fix the SQL built from the user id in listOrders?\nProject/branch/task: feat/orders, reviewing the order API diff.\nELI10: The order list pastes the user id straight into the SQL text (src/api/orders.ts:48-50), so a crafted id could read other people's orders.\nStakes if we pick wrong: a data leak.\nRecommendation: A because a parameterized query closes it for good.\nNet: one-line fix now vs a known hole.",
+      "options": [{"label": "Fix as recommended (recommended)", "description": "Use a parameterized query."}, {"label": "Skip", "description": "No code change; Skip recorded."}]},
+    "turn": [{"tool": "Bash", "command": "git diff main"}, {"tool": "Read", "path": "src/api/orders.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/api/orders.ts", "start": 48, "end": 50}]
+  },
+  {
+    "id": "gstack-review-2", "skill": "gstack /review (finding line in the question)", "tool": "AskUserQuestion",
+    "prompt": "/review",
+    "question": {"header": "Cancel", "text": "D2 — [CRITICAL] (confidence: 8/10) orders.ts:42 — cancelOrder deletes the order without checking that it exists. Add the check?",
+      "options": [{"label": "Fix as recommended (recommended)", "description": "Return 404 when the order is missing."}, {"label": "Skip", "description": "No code change."}]},
+    "turn": [{"tool": "Bash", "command": "git diff main"}, {"tool": "Read", "path": "src/api/orders.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/api/orders.ts", "start": 38, "end": 42}]
+  },
+  {
+    "id": "gstack-review-3", "skill": "gstack /review (batched ASK items)", "tool": "AskUserQuestion",
+    "prompt": "/review",
+    "question": {"header": "Findings", "text": "D3 — Two findings need your call.\n1. [CRITICAL] auth.ts:30 — the password is compared in plain text. Fix: compare a hash.\n2. [INFORMATIONAL] cart.ts:35 — a second coupon silently replaces the first. Fix: reject it.\nRecommendation: fix both.",
+      "options": [{"label": "Fix both (recommended)", "description": "Hash compare and reject a second coupon."}, {"label": "Fix 1 only", "description": "Leave the coupon behaviour."}, {"label": "Skip both", "description": "No code change."}]},
+    "turn": [{"tool": "Bash", "command": "git diff main"}, {"tool": "Read", "path": "src/api/auth.ts"}, {"tool": "Read", "path": "src/cart/cart.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/api/auth.ts", "start": 30, "end": 30}]
+  },
+  {
+    "id": "gstack-review-4", "skill": "gstack /review (ambiguous basename)", "tool": "AskUserQuestion",
+    "prompt": "/review",
+    "question": {"header": "Exports", "text": "D4 — index.ts:2 re-exports cancelOrder, which the public API docs don't list. Keep it exported?",
+      "options": [{"label": "Keep (recommended)", "description": "It is used by the admin app."}, {"label": "Remove", "description": "Drop it from the public exports."}]},
+    "turn": [{"tool": "Read", "path": "src/index.ts"}, {"tool": "Read", "path": "src/api/orders.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/index.ts", "start": 2, "end": 2}]
+  },
+  {
+    "id": "gstack-review-5", "skill": "gstack /review (line past the end of the file)", "tool": "AskUserQuestion",
+    "prompt": "/review",
+    "question": {"header": "Cart size", "text": "D5 — cart.ts:120 — the MAX_ITEMS_PER_CART check runs after merging an existing SKU, so a full cart still grows. Move the check up?",
+      "options": [{"label": "Move it up (recommended)", "description": "Check before merging."}, {"label": "Skip", "description": "No code change."}]},
+    "turn": [{"tool": "Read", "path": "src/cart/cart.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/cart/cart.ts", "start": 18, "end": 25}]
+  },
+  {
+    "id": "gstack-ship-1", "skill": "gstack /ship (not about lines; numbers that look like refs)", "tool": "AskUserQuestion",
+    "prompt": "/ship",
+    "question": {"header": "Deploy", "text": "D1 — Deploy now or wait for the 10:30 window?\nThe staging check on localhost:3000 passed on Node 20.11 and the canary is at 1:4.",
+      "options": [{"label": "Deploy now (recommended)", "description": "Staging is green."}, {"label": "Wait for 10:30", "description": "Deploy in the window."}]},
+    "turn": [{"tool": "Bash", "command": "npm test"}],
+    "selection": null,
+    "truth": [{"none": true}]
+  },
+  {
+    "id": "gstack-review-greptile", "skill": "gstack /review (bot comment triage)", "tool": "AskUserQuestion",
+    "prompt": "/review",
+    "question": {"header": "Greptile", "text": "D6 — Greptile flagged src/cart/discounts.ts:25: a percent coupon over 100 can take off more than the subtotal. Evidence: percent is never capped. How should we answer it?",
+      "options": [{"label": "Reply: false positive", "description": "Coupons are validated at creation."}, {"label": "Propose a code change (recommended)", "description": "Cap the discount at the subtotal."}, {"label": "Ignore", "description": "Don't reply, don't fix."}]},
+    "turn": [{"tool": "Bash", "command": "gh api repos/acme/shop/pulls/12/comments"}, {"tool": "Read", "path": "src/cart/discounts.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/cart/discounts.ts", "start": 24, "end": 26}]
+  },
+  {
+    "id": "code-review-url", "skill": "code-review plugin (GitHub blob link)", "tool": "AskUserQuestion",
+    "prompt": "/code-review 12",
+    "question": {"header": "Post", "text": "One issue found: session age is checked against SESSION_TTL_MINUTES but createdAt may be seconds (https://github.com/acme/shop/blob/3f2c9a1d0e6b4c8f7a5d2e1b0c9f8e7d6a5b4c3d/src/api/auth.ts#L16-L18). Post it as an inline comment?",
+      "options": [{"label": "Post comment", "description": "Post the inline comment on the PR."}, {"label": "Terminal only", "description": "Keep it in this review."}]},
+    "turn": [{"tool": "Bash", "command": "gh pr diff 12"}, {"tool": "Read", "path": "src/api/auth.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/api/auth.ts", "start": 16, "end": 18}]
+  },
+  {
+    "id": "feature-dev-1", "skill": "feature-dev (Phase 3 clarifying)", "tool": "AskUserQuestion",
+    "prompt": "/feature-dev let customers stack coupons",
+    "question": {"header": "Coupons", "text": "When a customer applies a second coupon, should it replace the first one or should both stack?",
+      "options": [{"label": "Replace", "description": "Keep today's behaviour."}, {"label": "Stack", "description": "Apply both, largest first."}, {"label": "Reject second", "description": "Only one coupon per cart."}]},
+    "turn": [{"tool": "Grep", "pattern": "applyCoupon"}, {"tool": "Read", "path": "src/cart/cart.ts"}, {"tool": "Read", "path": "src/cart/discounts.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/cart/cart.ts", "start": 33, "end": 36}]
+  },
+  {
+    "id": "feature-dev-2", "skill": "feature-dev (Phase 3 clarifying)", "tool": "AskUserQuestion",
+    "prompt": "/feature-dev make the volume discount configurable",
+    "question": {"header": "Tiers", "text": "Should the volume discount tiers (10 and 100 items) stay hard-coded, or move to config?",
+      "options": [{"label": "Config", "description": "Add VOLUME_TIERS to config.ts."}, {"label": "Hard-coded", "description": "Keep them in the function."}]},
+    "turn": [{"tool": "Read", "path": "src/cart/discounts.ts"}, {"tool": "Read", "path": "src/config.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/cart/discounts.ts", "start": 9, "end": 17}]
+  },
+  {
+    "id": "feature-dev-3", "skill": "feature-dev (Phase 3 clarifying)", "tool": "AskUserQuestion",
+    "prompt": "/feature-dev handle database outages when ordering",
+    "question": {"header": "Retries", "text": "How should createOrder behave when the insert keeps failing?",
+      "options": [{"label": "Retry, then fail", "description": "Keep the 3 retries, then return 503."}, {"label": "Fail at once", "description": "No retries."}, {"label": "Queue it", "description": "Accept the order and insert it later."}]},
+    "turn": [{"tool": "Read", "path": "src/api/orders.ts"}, {"tool": "Read", "path": "src/config.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/api/orders.ts", "start": 12, "end": 33}, {"path": "src/config.ts", "start": 5, "end": 6}]
+  },
+  {
+    "id": "feature-dev-4", "skill": "feature-dev (Phase 3 clarifying)", "tool": "AskUserQuestion",
+    "prompt": "/feature-dev add a support console",
+    "question": {"header": "Cancel", "text": "Who may cancel an order: only the buyer, or support staff too?",
+      "options": [{"label": "Buyer only", "description": "As today."}, {"label": "Buyer and support", "description": "Add a support role check."}]},
+    "turn": [{"tool": "Read", "path": "src/api/orders.ts"}, {"tool": "Read", "path": "src/api/auth.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/api/orders.ts", "start": 36, "end": 44}]
+  },
+  {
+    "id": "feature-dev-5", "skill": "feature-dev (Phase 3 clarifying)", "tool": "AskUserQuestion",
+    "prompt": "/feature-dev remember me on login",
+    "question": {"header": "Expiry", "text": "Should a session's expiry slide forward on each use, or stay fixed from login?",
+      "options": [{"label": "Sliding", "description": "Refresh on each request."}, {"label": "Fixed", "description": "As today."}]},
+    "turn": [{"tool": "Read", "path": "src/api/auth.ts"}, {"tool": "Read", "path": "src/config.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/api/auth.ts", "start": 16, "end": 19}, {"path": "src/config.ts", "start": 8, "end": 8}]
+  },
+  {
+    "id": "feature-dev-6a", "skill": "feature-dev (Phase 3, multi-question form, question 1)", "tool": "AskUserQuestion",
+    "prompt": "/feature-dev free shipping",
+    "question": {"header": "Threshold", "text": "From what subtotal should orders ship for free?",
+      "options": [{"label": "50 EUR", "description": "Common in the market."}, {"label": "100 EUR", "description": "Fewer free shipments."}]},
+    "turn": [{"tool": "Read", "path": "src/config.ts"}, {"tool": "Read", "path": "src/cart/cart.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/config.ts", "start": 12, "end": 13}]
+  },
+  {
+    "id": "feature-dev-6b", "skill": "feature-dev (Phase 3, multi-question form, question 2)", "tool": "AskUserQuestion",
+    "prompt": "/feature-dev free shipping",
+    "question": {"header": "Cart limit", "text": "Should the 50-item cart limit stay as it is?",
+      "options": [{"label": "Keep 50", "description": "No change."}, {"label": "Raise to 200", "description": "For business buyers."}]},
+    "turn": [{"tool": "Read", "path": "src/config.ts"}, {"tool": "Read", "path": "src/cart/cart.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/config.ts", "start": 3, "end": 3}, {"path": "src/cart/cart.ts", "start": 23, "end": 25}]
+  },
+  {
+    "id": "feature-dev-7", "skill": "feature-dev (Phase 4 approach choice)", "tool": "AskUserQuestion",
+    "prompt": "/feature-dev loyalty discount",
+    "question": {"header": "Approach", "text": "Which approach should I take for the loyalty discount?",
+      "options": [{"label": "Minimal", "description": "Add a loyalty branch to the existing discount function."}, {"label": "Clean", "description": "A new LoyaltyRule module with its own tests."}, {"label": "Pragmatic", "description": "A rule list in config, applied in total()."}]},
+    "turn": [{"tool": "Agent", "description": "code-architect"}, {"tool": "Read", "path": "src/cart/discounts.ts"}, {"tool": "Read", "path": "src/cart/cart.ts"}, {"tool": "Read", "path": "src/config.ts"}],
+    "selection": null,
+    "truth": [{"none": true}, {"path": "src/cart/discounts.ts", "start": 8, "end": 31}]
+  },
+  {
+    "id": "feature-dev-8", "skill": "feature-dev (Phase 6 review findings)", "tool": "AskUserQuestion",
+    "prompt": "/feature-dev order history page",
+    "question": {"header": "Review", "text": "The reviewers found 3 issues; the worst is SQL built by string interpolation in listOrders (orders.ts:49). What do you want to do?",
+      "options": [{"label": "Fix now", "description": "Fix all three before finishing."}, {"label": "Fix later", "description": "Open follow-ups."}, {"label": "Proceed as-is", "description": "Ship it."}]},
+    "turn": [{"tool": "Agent", "description": "code-reviewer"}, {"tool": "Edit", "path": "src/api/orders.ts", "start": 46, "end": 52}],
+    "selection": null,
+    "truth": [{"path": "src/api/orders.ts", "start": 48, "end": 50}]
+  },
+  {
+    "id": "brainstorm-1", "skill": "superpowers brainstorming (open question)", "tool": "AskUserQuestion",
+    "prompt": "an order page for my shop",
+    "question": {"header": "Goal", "text": "What do you want someone to do when they land on the order page?",
+      "options": [{"label": "Check status", "description": "Track an existing order."}, {"label": "Reorder", "description": "Buy the same again."}]},
+    "turn": [{"tool": "Read", "path": "README.md"}, {"tool": "Read", "path": "src/api/orders.ts"}],
+    "selection": null,
+    "truth": [{"none": true}]
+  },
+  {
+    "id": "brainstorm-2", "skill": "superpowers brainstorming (lay out the approaches)", "tool": "AskUserQuestion",
+    "prompt": "gift cards",
+    "question": {"header": "Approach", "text": "Two ways to build gift cards fit what you described. Which way?",
+      "options": [{"label": "Coupon with an amount", "description": "Reuse Coupon.amount; no balance kept."}, {"label": "Balance ledger", "description": "A new table and service; balances carry over."}]},
+    "turn": [{"tool": "Read", "path": "src/cart/discounts.ts"}, {"tool": "Read", "path": "src/cart/cart.ts"}],
+    "selection": null,
+    "truth": [{"none": true}, {"path": "src/cart/discounts.ts", "start": 1, "end": 6}, {"path": "src/cart/discounts.ts", "start": 27, "end": 29}]
+  },
+  {
+    "id": "brainstorm-3", "skill": "superpowers brainstorming (Socratic follow-up)", "tool": "AskUserQuestion",
+    "prompt": "gift cards",
+    "question": {"header": "Balance", "text": "A gift card worth more than the order: should the rest stay on the card for next time?",
+      "options": [{"label": "Keep the rest", "description": "Needs a stored balance."}, {"label": "Lose the rest", "description": "Simple, but customers may complain."}]},
+    "turn": [{"tool": "Read", "path": "src/cart/discounts.ts"}],
+    "selection": null,
+    "truth": [{"none": true}, {"path": "src/cart/discounts.ts", "start": 27, "end": 29}]
+  },
+  {
+    "id": "brainstorm-4", "skill": "superpowers brainstorming (visual companion offer)", "tool": "AskUserQuestion",
+    "prompt": "redesign the cart page",
+    "question": {"header": "Mockups", "text": "This might be easier if I show you. Want me to open a browser tab with some mockups?",
+      "options": [{"label": "Yes", "description": "Open the visual companion."}, {"label": "No", "description": "Stay in text."}]},
+    "turn": [{"tool": "Read", "path": "src/cart/cart.ts"}],
+    "selection": null,
+    "truth": [{"none": true}]
+  },
+  {
+    "id": "executing-plans-1", "skill": "superpowers executing-plans (stop and ask: destructive)", "tool": "AskUserQuestion",
+    "prompt": "execute docs/plans/orders-table.md",
+    "question": {"header": "Migration", "text": "The migration drops legacy_orders after copying it. That can't be undone. Run it against the dev database now?",
+      "options": [{"label": "Run it", "description": "Apply 0003 to dev."}, {"label": "Not yet", "description": "Stop here."}]},
+    "turn": [{"tool": "Write", "path": "src/db/migrations/0003_orders.sql", "start": 1, "end": 13}, {"tool": "Bash", "command": "npm run db:status"}],
+    "selection": null,
+    "truth": [{"path": "src/db/migrations/0003_orders.sql", "start": 13, "end": 13}, {"path": "src/db/migrations/0003_orders.sql", "start": 1, "end": 13}]
+  },
+  {
+    "id": "executing-plans-2", "skill": "superpowers executing-plans (stop and ask: push)", "tool": "AskUserQuestion",
+    "prompt": "execute docs/plans/orders-table.md",
+    "question": {"header": "Push", "text": "Task 6 pushes to main, a shared branch. Push now?",
+      "options": [{"label": "Push", "description": "git push origin main."}, {"label": "Open a PR instead", "description": "Push a branch."}]},
+    "turn": [{"tool": "Edit", "path": "src/api/orders.ts", "start": 46, "end": 52}, {"tool": "Bash", "command": "git commit -am 'orders table'"}],
+    "selection": null,
+    "truth": [{"none": true}]
+  },
+  {
+    "id": "executing-plans-3", "skill": "superpowers executing-plans (stop and ask: broken plan)", "tool": "AskUserQuestion",
+    "prompt": "execute docs/plans/archive.md",
+    "question": {"header": "Plan", "text": "The plan says to call `db.orders.archive`, which doesn't exist. Use `db.orders.delete` as the code does now, or stop?",
+      "options": [{"label": "Use delete", "description": "Keep the current call."}, {"label": "Stop", "description": "Fix the plan first."}]},
+    "turn": [{"tool": "Read", "path": "src/api/orders.ts"}, {"tool": "Grep", "pattern": "archive"}],
+    "selection": null,
+    "truth": [{"path": "src/api/orders.ts", "start": 42, "end": 42}]
+  },
+  {
+    "id": "mid-task-1", "skill": "mid-task question after an edit", "tool": "AskUserQuestion",
+    "prompt": "let the cart merge duplicate lines",
+    "question": {"header": "Duplicates", "text": "When the same SKU is added twice, should the quantities add up (as now), or should the new line replace the old one?",
+      "options": [{"label": "Add up", "description": "Keep merging."}, {"label": "Replace", "description": "The newest line wins."}]},
+    "turn": [{"tool": "Read", "path": "src/cart/cart.ts"}, {"tool": "Edit", "path": "src/cart/cart.ts", "start": 18, "end": 22}],
+    "selection": null,
+    "truth": [{"path": "src/cart/cart.ts", "start": 18, "end": 22}]
+  },
+  {
+    "id": "mid-task-2", "skill": "mid-task question after a failing test", "tool": "AskUserQuestion",
+    "prompt": "fix the coupon test",
+    "question": {"header": "Rounding", "text": "The test expects 9 for a 10% coupon on 10 EUR. Keep rounding the total to cents, or round only for display?",
+      "options": [{"label": "Round the total", "description": "As now."}, {"label": "Round for display", "description": "Keep full precision inside."}]},
+    "turn": [{"tool": "Bash", "command": "npm test"}, {"tool": "Read", "path": "tests/cart.test.ts"}, {"tool": "Edit", "path": "src/cart/cart.ts", "start": 48, "end": 48}],
+    "selection": null,
+    "truth": [{"path": "src/cart/cart.ts", "start": 45, "end": 49}, {"path": "tests/cart.test.ts", "start": 9, "end": 14}]
+  },
+  {
+    "id": "mid-task-3", "skill": "mid-task question about a value", "tool": "AskUserQuestion",
+    "prompt": "tighten security",
+    "question": {"header": "TTL", "text": "Is a 24-hour session TTL right, or should it be shorter?",
+      "options": [{"label": "24 hours", "description": "Keep."}, {"label": "8 hours", "description": "A working day."}, {"label": "1 hour", "description": "Strict."}]},
+    "turn": [{"tool": "Read", "path": "src/config.ts"}, {"tool": "Read", "path": "src/api/auth.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/config.ts", "start": 8, "end": 8}, {"path": "src/api/auth.ts", "start": 16, "end": 19}]
+  },
+  {
+    "id": "selection-1", "skill": "question about the selection", "tool": "AskUserQuestion",
+    "prompt": "what should happen here if the coupon is below the minimum?",
+    "question": {"header": "Minimum", "text": "Below the minimum subtotal, should the coupon be rejected with an error, or just give no discount?",
+      "options": [{"label": "Reject", "description": "Throw an error the UI shows."}, {"label": "No discount", "description": "As now."}]},
+    "turn": [],
+    "selection": {"path": "src/cart/discounts.ts", "start": 21, "end": 23},
+    "truth": [{"path": "src/cart/discounts.ts", "start": 21, "end": 23}]
+  },
+  {
+    "id": "selection-2", "skill": "question about the selection", "tool": "AskUserQuestion",
+    "prompt": "refactor this to support several coupons",
+    "question": {"header": "Order", "text": "Should coupons apply in the order they were added, or best first?",
+      "options": [{"label": "As added", "description": "Predictable."}, {"label": "Best first", "description": "Cheapest for the customer."}]},
+    "turn": [{"tool": "Read", "path": "src/cart/cart.ts"}],
+    "selection": {"path": "src/cart/cart.ts", "start": 33, "end": 36},
+    "truth": [{"path": "src/cart/cart.ts", "start": 33, "end": 36}]
+  },
+  {
+    "id": "selection-3", "skill": "stale selection, unrelated question", "tool": "AskUserQuestion",
+    "prompt": "add a loyalty programme",
+    "question": {"header": "Points", "text": "Should loyalty points be earned on the total before or after coupons?",
+      "options": [{"label": "Before coupons", "description": "More points."}, {"label": "After coupons", "description": "Points match what was paid."}]},
+    "turn": [{"tool": "Read", "path": "src/cart/cart.ts"}],
+    "selection": {"path": "src/api/auth.ts", "start": 23, "end": 34},
+    "truth": [{"none": true}, {"path": "src/cart/cart.ts", "start": 45, "end": 49}]
+  },
+  {
+    "id": "selection-4", "skill": "stale selection, project question", "tool": "AskUserQuestion",
+    "prompt": "set up CI",
+    "question": {"header": "CI", "text": "Which CI provider do you use?",
+      "options": [{"label": "GitHub Actions", "description": ""}, {"label": "GitLab CI", "description": ""}]},
+    "turn": [],
+    "selection": {"path": "src/config.ts", "start": 1, "end": 1},
+    "truth": [{"none": true}]
+  },
+  {
+    "id": "selection-5", "skill": "question about the selection, no tool calls", "tool": "AskUserQuestion",
+    "prompt": "explain this",
+    "question": {"header": "Backoff", "text": "Do you also want me to wait between retries (a backoff)?",
+      "options": [{"label": "Yes", "description": "Exponential backoff."}, {"label": "No", "description": "Just explain."}]},
+    "turn": [],
+    "selection": {"path": "src/api/orders.ts", "start": 19, "end": 33},
+    "truth": [{"path": "src/api/orders.ts", "start": 19, "end": 33}]
+  },
+  {
+    "id": "plan-1", "skill": "plan approval (ExitPlanMode), several files", "tool": "ExitPlanMode",
+    "prompt": "plan a loyalty discount",
+    "question": {"header": "Plan", "text": "## Plan\n1. Add `LoyaltyRule` to src/cart/discounts.ts\n2. Apply it in Cart.total() (src/cart/cart.ts)\n3. Tests in tests/cart.test.ts",
+      "options": [{"label": "Approve", "description": ""}, {"label": "Keep planning", "description": ""}]},
+    "turn": [{"tool": "Read", "path": "src/cart/discounts.ts"}, {"tool": "Read", "path": "src/cart/cart.ts"}],
+    "selection": null,
+    "truth": [{"none": true}]
+  },
+  {
+    "id": "plan-2", "skill": "plan approval (ExitPlanMode), one location", "tool": "ExitPlanMode",
+    "prompt": "plan the SQL fix",
+    "question": {"header": "Plan", "text": "## Plan\nFix the injection at src/api/orders.ts:49 with a parameterized query, and add a test.",
+      "options": [{"label": "Approve", "description": ""}, {"label": "Keep planning", "description": ""}]},
+    "turn": [{"tool": "Read", "path": "src/api/orders.ts"}],
+    "selection": null,
+    "truth": [{"none": true}, {"path": "src/api/orders.ts", "start": 48, "end": 50}]
+  },
+  {
+    "id": "preview-1", "skill": "options with code previews (current code)", "tool": "AskUserQuestion",
+    "prompt": "make ordering more robust",
+    "question": {"header": "Retry policy", "text": "Which retry policy do you want?",
+      "options": [{"label": "Keep the loop", "description": "Retry 3 times at once.", "preview": "  while (true) {\n    try {\n      const order = await db.orders.insert({"}, {"label": "Backoff", "description": "Wait 100 ms, then 200, 400.", "preview": "  for (let i = 0; i < ORDER_RETRY_LIMIT; i++) {\n    await sleep(100 * 2 ** i);"}]},
+    "turn": [{"tool": "Read", "path": "src/api/orders.ts"}],
+    "selection": null,
+    "truth": [{"path": "src/api/orders.ts", "start": 18, "end": 33}]
+  },
+  {
+    "id": "preview-2", "skill": "options with code previews (new code only)", "tool": "AskUserQuestion",
+    "prompt": "add a loyalty discount",
+    "question": {"header": "Shape", "text": "Which shape for the loyalty function?",
+      "options": [{"label": "Function", "description": "", "preview": "export function loyaltyDiscount(total: number, years: number): number {\n  return total * Math.min(years, 5) / 100;\n}"}, {"label": "Rule object", "description": "", "preview": "export const loyalty: Rule = { kind: \"loyalty\", percentPerYear: 1 };"}]},
+    "turn": [{"tool": "Read", "path": "src/cart/discounts.ts"}],
+    "selection": null,
+    "truth": [{"none": true}, {"path": "src/cart/discounts.ts", "start": 8, "end": 31}]
+  },
+  {
+    "id": "mcp-elicitation-1", "skill": "an MCP server's elicitation (GitHub)", "tool": "elicitation",
+    "prompt": "open a PR for this",
+    "question": {"header": "", "text": "Create the pull request \"feat: loyalty\" on acme/shop from loyalty to main?",
+      "options": [{"label": "Create", "description": ""}, {"label": "Cancel", "description": ""}]},
+    "turn": [{"tool": "Bash", "command": "git push -u origin loyalty"}],
+    "selection": {"path": "src/cart/cart.ts", "start": 45, "end": 49},
+    "truth": [{"none": true}]
+  },
+  {
+    "id": "confirm-1", "skill": "Claude Code's own confirmation (confirm_ id)", "tool": "AskUserQuestion",
+    "prompt": "use the design file from the connector",
+    "question": {"header": "Download", "text": "Download cart-redesign.fig (2.1 MB) from the connector?",
+      "options": [{"label": "Download", "description": ""}, {"label": "Skip", "description": ""}]},
+    "turn": [],
+    "selection": null,
+    "truth": [{"none": true}]
+  }
+]

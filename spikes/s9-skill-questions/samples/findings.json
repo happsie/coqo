@@ -1,0 +1,9 @@
+{
+  "gstack-review.md": {"workspace": "workspace", "truth": [["src/cart/cart.ts", 48], ["src/api/orders.ts", 49], ["src/api/auth.ts", 30], ["src/cart/discounts.ts", 25]]},
+  "superpowers-code-reviewer.md": {"workspace": "workspace", "truth": [["src/cart/cart.ts", 38], ["src/cart/discounts.ts", 20], ["src/api/orders.ts", 48], ["src/api/orders.ts", 38], ["src/api/auth.ts", 16], ["src/cart/discounts.ts", 10]]},
+  "pr-review-toolkit.md": {"workspace": "workspace", "truth": [["src/api/orders.ts", 27], ["src/api/orders.ts", 42], ["src/cart/discounts.ts", 21], ["src/cart/cart.ts", 34], ["src/db/index.ts", 2]]},
+  "code-review-plugin.md": {"workspace": "workspace", "truth": [["src/api/auth.ts", 15], ["src/api/orders.ts", 47]]},
+  "feature-dev-review.md": {"workspace": "workspace", "truth": [["src/api/auth.ts", 30], ["src/api/auth.ts", 28], ["src/api/orders.ts", 19]]},
+  "real-coqo-brainstorming.md": {"workspace": "shop", "truth": [["shop/config.py", 8], ["shop/pricing.py", 15], ["shop/config.py", 7], ["shop/orders.py", 17], ["test_pricing.py", 10]]},
+  "real-coqo-requesting-code-review.md": {"workspace": "shop-taxed", "truth": [["shop/config.py", 13], ["shop/pricing.py", 36], ["shop/pricing.py", 22], ["test_pricing.py", 17], ["shop/pricing.py", 37], ["shop/orders.py", 17], ["shop/orders.py", 32], ["shop/pricing.py", 24], ["shop/pricing.py", 3], ["shop/orders.py", 35]]}
+}
