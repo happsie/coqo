@@ -752,9 +752,7 @@ impl BufferService {
             .buffers
             .values()
             .filter(|b| &b.workspace == workspace)
-            .filter(|b| {
-                c.rescan || b.watched_in(c.root, &c.paths)
-            })
+            .filter(|b| c.rescan || b.watched_in(c.root, &c.paths))
             .cloned()
             .collect();
         for b in hit {
@@ -1198,7 +1196,8 @@ impl BufferService {
         let mut reg = self.registry();
         if !b.unloaded.load(Ordering::Acquire) {
             reg.by_path.remove(&(b.workspace.clone(), old_real.clone()));
-            reg.by_path.insert((b.workspace.clone(), real.clone()), b.id);
+            reg.by_path
+                .insert((b.workspace.clone(), real.clone()), b.id);
         }
         drop(reg);
         tracing::debug!(buffer = %b.id, from = %old_real.display(), to = %real.display(), "an open file was moved");

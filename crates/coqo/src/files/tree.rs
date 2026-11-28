@@ -7,32 +7,46 @@
 //! and re-listed when `fs/changes` reports a path in them. The visible rows
 //! are a flat list rebuilt on every change and drawn with `uniform_list`, so
 //! only the rows on screen are laid out, however many entries are expanded.
+//!
+//! **File operations** (issue #161): a row's context menu creates, renames
+//! (in place, in the row), deletes (after a confirmation that names the
+//! entry), copies paths and reveals the entry in the OS file manager;
+//! dragging a row onto a folder moves it. The daemon does the work
+//! (`fs/create`, `fs/rename`, `fs/delete`); the tree selects the result,
+//! and [`FileEvents`] tells open file tabs to follow.
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     ops::Range,
+    path::PathBuf,
 };
 
 use coqo_protocol::methods::{
     codes,
-    fs::{self, DirEntry, EntryKind, FsChanges, PathParams},
+    fs::{
+        self, CreateParams, DeleteParams, DirEntry, EntryKind, FsChanges, PathParams, RenameParams,
+    },
     workspace::{RootId, WorkspaceId, WorkspaceInfo},
 };
 use coqo_ui::{
-    ActiveTokens as _,
+    ActiveTokens as _, Rgb,
     dock::{AnyTab, Dock},
     gpui::{
-        AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable,
-        FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-        ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-        UniformListScrollHandle, WeakEntity, Window, div, px, uniform_list,
+        AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, FocusHandle,
+        Focusable, FontWeight, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
+        ParentElement as _, Pixels, Point, Render, ScrollStrategy, SharedString,
+        StatefulInteractiveElement as _, Styled as _, Subscription, Task, UniformListScrollHandle,
+        WeakEntity, Window, anchored, deferred, div, px, uniform_list,
     },
-    widgets::{Icon, TestSupportExt as _, icon, kbd, raised, section_label},
+    input::{PromptInput, PromptInputEvent},
+    widgets::{Icon, TestSupportExt as _, icon, kbd, popover, raised, section_label},
 };
 
 use super::{
-    Collapse, Confirm, Expand, SelectNext, SelectPrev,
+    Collapse, Confirm, DeleteEntry, Dismiss, Expand, NewFile, NewFolder, RenameEntry, SelectNext,
+    SelectPrev,
     editor::{self, FileEditor},
+    ops::{FileEvent, FileEvents, is_at_or_under, moved_path},
 };
 use crate::{
     daemon::{Daemon, DaemonError, DaemonEvent},
@@ -44,6 +58,9 @@ use crate::{
 const ROW_HEIGHT: f32 = 26.;
 /// Indent per level.
 const INDENT: f32 = 13.;
+/// The path of the row a new entry's name is typed in: no real name has a
+/// NUL.
+const NEW_ENTRY: &str = "\0new";
 
 /// A directory in the tree: a root and a `/`-separated path (`""` is the root).
 type DirKey = (RootId, String);
@@ -60,6 +77,8 @@ pub struct Row {
     pub ignored: bool,
     pub expanded: bool,
     pub loading: bool,
+    /// The row shows a name field: a rename in place, or a new entry.
+    pub editing: bool,
 }
 
 impl Row {
@@ -69,6 +88,105 @@ impl Row {
 
     fn key(&self) -> DirKey {
         (self.root, self.path.clone())
+    }
+
+    fn target(&self) -> Target {
+        Target {
+            root: self.root,
+            path: self.path.clone(),
+            kind: self.kind,
+        }
+    }
+}
+
+/// An entry an operation applies to. `path` `""` is a root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    pub root: RootId,
+    pub path: String,
+    pub kind: EntryKind,
+}
+
+impl Target {
+    /// The folder new entries go in: this one, or a file's folder.
+    fn folder(&self) -> DirKey {
+        if self.kind == EntryKind::Dir {
+            (self.root, self.path.clone())
+        } else {
+            (self.root, parent(&self.path).to_owned())
+        }
+    }
+}
+
+/// An open context menu.
+struct Menu {
+    target: Target,
+    at: Point<Pixels>,
+}
+
+/// What a name field in a row is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditKind {
+    /// Renaming an entry in place.
+    Rename { root: RootId, path: String },
+    /// Naming a new entry in folder `dir`.
+    Create {
+        root: RootId,
+        dir: String,
+        kind: EntryKind,
+    },
+}
+
+/// A name being typed in a row.
+struct Editing {
+    kind: EditKind,
+    input: Entity<PromptInput>,
+    /// The request is in flight.
+    busy: bool,
+    _events: Subscription,
+}
+
+/// A delete waiting for the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingDelete {
+    pub target: Target,
+    /// Names of the open tabs with unsaved edits in what would be deleted.
+    pub dirty: Vec<String>,
+    /// The trash refused it: offer to delete it for good.
+    pub permanent: bool,
+    pub error: Option<String>,
+    busy: bool,
+}
+
+/// The drag payload of a tree row.
+#[derive(Debug, Clone)]
+pub struct DraggedEntry {
+    pub root: RootId,
+    pub path: String,
+    pub name: SharedString,
+    kind: EntryKind,
+}
+
+impl Render for DraggedEntry {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.tokens();
+        let (p, m) = (&t.palette, &t.metrics);
+        let lead = if self.kind == EntryKind::Dir {
+            icon(Icon::Folder, px(14.), p.text_muted.hsla()).into_any_element()
+        } else {
+            super::glyph::render(&self.name, cx)
+        };
+        popover(cx)
+            .flex_row()
+            .items_center()
+            .gap(px(6.))
+            .px(px(10.))
+            .py(px(5.))
+            .rounded(px(9.))
+            .text_size(m.text_sm)
+            .text_color(p.text.hsla())
+            .child(lead)
+            .child(self.name.clone())
     }
 }
 
@@ -90,6 +208,14 @@ pub struct FileTree {
     expanded: HashSet<DirKey>,
     rows: Vec<Row>,
     selected: Option<DirKey>,
+    /// Select this entry once its row shows up (a new or renamed entry).
+    pending_select: Option<DirKey>,
+    menu: Option<Menu>,
+    editing: Option<Editing>,
+    pending_delete: Option<PendingDelete>,
+    /// The last operation's error, above the tree.
+    op_error: Option<String>,
+    _op: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -121,6 +247,10 @@ fn parent(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(parent, _)| parent)
 }
 
+fn base_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
 /// Whether `path` is strictly inside directory `dir`.
 fn is_inside(path: &str, dir: &str) -> bool {
     if dir.is_empty() {
@@ -129,6 +259,29 @@ fn is_inside(path: &str, dir: &str) -> bool {
         path.len() > dir.len() && path.starts_with(dir) && path.as_bytes()[dir.len()] == b'/'
     }
 }
+
+/// What the user reads when an operation fails.
+fn op_message(error: &DaemonError, name: &str) -> String {
+    match error.code() {
+        Some(codes::ALREADY_EXISTS) => {
+            format!("A file or folder named “{name}” already exists here.")
+        }
+        Some(codes::PERMISSION_DENIED) => format!("Permission denied for “{name}”."),
+        Some(codes::NOT_FOUND) => format!("“{name}” is no longer there."),
+        _ => error.to_string(),
+    }
+}
+
+/// "Reveal in Finder" and the like.
+#[cfg(target_os = "macos")]
+const REVEAL_LABEL: &str = "Reveal in Finder";
+#[cfg(not(target_os = "macos"))]
+const REVEAL_LABEL: &str = "Reveal in File Manager";
+
+#[cfg(target_os = "macos")]
+const DELETE_KEY_LABEL: &str = "⌘⌫";
+#[cfg(not(target_os = "macos"))]
+const DELETE_KEY_LABEL: &str = "Del";
 
 impl FileTree {
     pub fn new(dock: WeakEntity<Dock>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -159,6 +312,22 @@ impl FileTree {
             }));
             subscriptions.push(cx.observe(&daemon, |_, _, cx| cx.notify()));
         }
+        if let Some(events) = FileEvents::global(cx) {
+            // Another window's tree moved something this one shows.
+            subscriptions.push(cx.subscribe(&events, |this, _, event: &FileEvent, cx| {
+                if let FileEvent::Moved {
+                    workspace,
+                    root,
+                    from,
+                    to,
+                } = event
+                    && this.workspace.as_ref().map(|w| &w.id) == Some(workspace)
+                {
+                    this.rekey(*root, from, to);
+                    this.rebuild(cx);
+                }
+            }));
+        }
         let current = workspaces
             .as_ref()
             .and_then(|w| w.read(cx).current().cloned());
@@ -175,6 +344,12 @@ impl FileTree {
             expanded: HashSet::new(),
             rows: Vec::new(),
             selected: None,
+            pending_select: None,
+            menu: None,
+            editing: None,
+            pending_delete: None,
+            op_error: None,
+            _op: None,
             _subscriptions: subscriptions,
         };
         this.set_workspace(current, cx);
@@ -191,6 +366,30 @@ impl FileTree {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn selected(&self) -> Option<(RootId, &str)> {
         self.selected.as_ref().map(|(r, p)| (*r, p.as_str()))
+    }
+
+    /// What the open context menu is for.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn menu_target(&self) -> Option<&Target> {
+        self.menu.as_ref().map(|m| &m.target)
+    }
+
+    /// The name field in a row, and what it is for.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn name_field(&self) -> Option<(&EditKind, &Entity<PromptInput>)> {
+        self.editing.as_ref().map(|e| (&e.kind, &e.input))
+    }
+
+    /// The delete waiting for confirmation.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn pending_delete(&self) -> Option<&PendingDelete> {
+        self.pending_delete.as_ref()
+    }
+
+    /// The last operation's error.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn op_error(&self) -> Option<&str> {
+        self.op_error.as_deref()
     }
 
     fn selected_index(&self) -> Option<usize> {
@@ -213,6 +412,11 @@ impl FileTree {
             self.expanded.clear();
             self.errors.clear();
             self.selected = None;
+            self.pending_select = None;
+            self.menu = None;
+            self.editing = None;
+            self.pending_delete = None;
+            self.op_error = None;
         }
         self.loading.clear();
         self.stale.clear();
@@ -256,6 +460,13 @@ impl FileTree {
                 .ok();
         })
         .detach();
+    }
+
+    /// List `key` again if the tree has it (or shows it expanded).
+    fn relist(&mut self, key: DirKey, cx: &mut Context<Self>) {
+        if self.dirs.contains_key(&key) || self.expanded.contains(&key) {
+            self.load(key, cx);
+        }
     }
 
     fn loaded(
@@ -317,6 +528,29 @@ impl FileTree {
         self.errors.retain(|k, _| !gone(k));
     }
 
+    /// `from` moved to `to` under `root`: carry what was expanded and loaded
+    /// there along, so a moved folder looks the same at its new place.
+    fn rekey(&mut self, root: RootId, from: &str, to: &str) {
+        let moved = |key: &DirKey| {
+            (key.0 == root)
+                .then(|| moved_path(&key.1, from, to))
+                .flatten()
+                .map(|path| (root, path))
+        };
+        self.dirs = std::mem::take(&mut self.dirs)
+            .into_iter()
+            .map(|(k, v)| (moved(&k).unwrap_or(k), v))
+            .collect();
+        self.expanded = std::mem::take(&mut self.expanded)
+            .into_iter()
+            .map(|k| moved(&k).unwrap_or(k))
+            .collect();
+        self.errors.retain(|k, _| moved(k).is_none());
+        if let Some(selected) = self.selected.as_ref().and_then(moved) {
+            self.selected = Some(selected);
+        }
+    }
+
     /// Re-list the loaded directories that `changes` touches.
     fn apply_changes(
         &mut self,
@@ -361,6 +595,7 @@ impl FileTree {
                         ignored: false,
                         expanded,
                         loading: self.loading.contains(&key) && !self.dirs.contains_key(&key),
+                        editing: false,
                     });
                     if expanded {
                         self.push_children(&mut rows, root.id, "", 1);
@@ -371,6 +606,15 @@ impl FileTree {
             }
         }
         self.rows = rows;
+        if let Some(pending) = &self.pending_select
+            && let Some(ix) = self
+                .rows
+                .iter()
+                .position(|r| r.root == pending.0 && r.path == pending.1)
+        {
+            self.selected = self.pending_select.take();
+            self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+        }
         if self.selected.is_some() && self.selected_index().is_none() {
             self.selected = None;
         }
@@ -378,8 +622,40 @@ impl FileTree {
     }
 
     fn push_children(&self, rows: &mut Vec<Row>, root: RootId, dir: &str, depth: usize) {
+        if let Some(Editing {
+            kind:
+                EditKind::Create {
+                    root: r,
+                    dir: d,
+                    kind,
+                },
+            ..
+        }) = &self.editing
+            && *r == root
+            && d == dir
+        {
+            // The new entry's name is typed at the top of its folder.
+            rows.push(Row {
+                root,
+                path: join(dir, NEW_ENTRY),
+                name: SharedString::default(),
+                kind: *kind,
+                depth,
+                ignored: false,
+                expanded: false,
+                loading: false,
+                editing: true,
+            });
+        }
         let Some(entries) = self.dirs.get(&(root, dir.to_owned())) else {
             return;
+        };
+        let renaming = match &self.editing {
+            Some(Editing {
+                kind: EditKind::Rename { root: r, path },
+                ..
+            }) if *r == root => Some(path.as_str()),
+            _ => None,
         };
         for entry in entries {
             let path = join(dir, &entry.name);
@@ -396,6 +672,7 @@ impl FileTree {
                 ignored: entry.ignored,
                 expanded,
                 loading,
+                editing: renaming == Some(key.1.as_str()),
             });
             if expanded {
                 self.push_children(rows, root, &key.1, depth + 1);
@@ -475,7 +752,9 @@ impl FileTree {
     }
 
     fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ix) = self.selected_index() {
+        if self.pending_delete.is_some() {
+            self.confirm_delete(window, cx);
+        } else if let Some(ix) = self.selected_index() {
             self.activate(ix, window, cx);
         }
     }
@@ -485,20 +764,23 @@ impl FileTree {
         let Some(row) = self.rows.get(ix).cloned() else {
             return;
         };
+        if row.editing {
+            return;
+        }
         self.selected = Some(row.key());
         if row.is_dir() {
             self.toggle(row.root, &row.path, cx);
         } else if row.kind == EntryKind::File {
-            self.open_file(&row, window, cx);
+            self.open_path(row.root, &row.path, window, cx);
         }
         cx.notify();
     }
 
-    fn open_file(&mut self, row: &Row, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_path(&mut self, root: RootId, path: &str, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(workspace), Some(dock)) = (self.workspace.as_ref(), self.dock.upgrade()) else {
             return;
         };
-        let (workspace, root, path) = (workspace.id.clone(), row.root, row.path.clone());
+        let (workspace, path) = (workspace.id.clone(), path.to_owned());
         // Show an open tab instead of opening the buffer a second time.
         let key = editor::key(&workspace, root, &path);
         if let Some(open) = dock.read(cx).find_tab(editor::KIND, &key, cx) {
@@ -519,14 +801,539 @@ impl FileTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.rows.get(ix).is_some_and(|r| r.editing) {
+            return;
+        }
         window.focus(&self.focus, cx);
         self.activate(ix, window, cx);
     }
+
+    // ---- file operations ----------------------------------------------------
+
+    /// The workspace and a connected daemon.
+    fn session(&self, cx: &App) -> Option<(WorkspaceId, Entity<Daemon>)> {
+        let workspace = self.workspace.as_ref()?.id.clone();
+        let daemon = Daemon::global(cx).filter(|d| d.read(cx).is_connected())?;
+        Some((workspace, daemon))
+    }
+
+    /// The absolute path of `path` under `root`.
+    fn absolute(&self, root: RootId, path: &str) -> Option<PathBuf> {
+        let root = self
+            .workspace
+            .as_ref()?
+            .roots
+            .iter()
+            .find(|r| r.id == root)?;
+        let mut abs = PathBuf::from(&root.path);
+        abs.extend(path.split('/').filter(|c| !c.is_empty()));
+        Some(abs)
+    }
+
+    /// The selected entry, or the (single) root when nothing is selected.
+    fn selected_target(&self) -> Option<Target> {
+        if let Some(ix) = self.selected_index() {
+            return Some(self.rows[ix].target());
+        }
+        let root = self.workspace.as_ref()?.roots.first()?;
+        Some(Target {
+            root: root.id,
+            path: String::new(),
+            kind: EntryKind::Dir,
+        })
+    }
+
+    /// Open the context menu for `target` at `at` (window coordinates).
+    pub(crate) fn open_menu(&mut self, target: Target, at: Point<Pixels>, cx: &mut Context<Self>) {
+        self.pending_delete = None;
+        self.op_error = None;
+        if !target.path.is_empty() || self.multi_root() {
+            self.selected = Some((target.root, target.path.clone()));
+        }
+        self.menu = Some(Menu { target, at });
+        cx.notify();
+    }
+
+    fn close_menu(&mut self, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
+        self.menu = None;
+        self.pending_delete = None;
+        self.op_error = None;
+        cx.notify();
+    }
+
+    fn new_file(&mut self, _: &NewFile, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(target) = self.selected_target() {
+            self.start_create(target.folder(), EntryKind::File, window, cx);
+        }
+    }
+
+    fn new_folder(&mut self, _: &NewFolder, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(target) = self.selected_target() {
+            self.start_create(target.folder(), EntryKind::Dir, window, cx);
+        }
+    }
+
+    fn rename_selected(&mut self, _: &RenameEntry, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            return;
+        }
+        if let Some(ix) = self.selected_index() {
+            let row = self.rows[ix].clone();
+            self.start_rename(row.root, &row.path, window, cx);
+        }
+    }
+
+    fn delete_selected(&mut self, _: &DeleteEntry, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            return;
+        }
+        if let Some(ix) = self.selected_index() {
+            let target = self.rows[ix].target();
+            self.request_delete(target, window, cx);
+        }
+    }
+
+    /// A name field for a row, focused, starting with `text`.
+    fn name_input(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Entity<PromptInput>, Subscription) {
+        let input = cx.new(|cx| {
+            let mut input = PromptInput::new("Name", 1, 1, window, cx);
+            input.set_text(text.to_owned(), window, cx);
+            input
+        });
+        let events = cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
+            PromptInputEvent::Submit => this.finish_edit(true, window, cx),
+            PromptInputEvent::Cancel => this.finish_edit(false, window, cx),
+            PromptInputEvent::Changed => {
+                if this.op_error.take().is_some() {
+                    cx.notify();
+                }
+            }
+            PromptInputEvent::Key(_) => {}
+        });
+        let focus = Focusable::focus_handle(input.read(cx), cx);
+        window.focus(&focus, cx);
+        (input, events)
+    }
+
+    /// Start naming a new file or folder in `dir`.
+    pub(crate) fn start_create(
+        &mut self,
+        dir: DirKey,
+        kind: EntryKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        self.pending_delete = None;
+        self.op_error = None;
+        if self.expanded.insert(dir.clone()) && !self.dirs.contains_key(&dir) {
+            self.load(dir.clone(), cx);
+        }
+        let (input, events) = self.name_input("", window, cx);
+        let (root, dir) = dir;
+        self.editing = Some(Editing {
+            kind: EditKind::Create { root, dir, kind },
+            input,
+            busy: false,
+            _events: events,
+        });
+        self.rebuild(cx);
+        if let Some(ix) = self.rows.iter().position(|r| r.editing) {
+            self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+        }
+    }
+
+    /// Start renaming `path` in its row.
+    pub(crate) fn start_rename(
+        &mut self,
+        root: RootId,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        self.pending_delete = None;
+        self.op_error = None;
+        if path.is_empty() {
+            return; // a root: renamed with the workspace, not here
+        }
+        let (input, events) = self.name_input(base_name(path), window, cx);
+        self.selected = Some((root, path.to_owned()));
+        self.editing = Some(Editing {
+            kind: EditKind::Rename {
+                root,
+                path: path.to_owned(),
+            },
+            input,
+            busy: false,
+            _events: events,
+        });
+        self.rebuild(cx);
+    }
+
+    /// End the name field: send the name if `accept`.
+    fn finish_edit(&mut self, accept: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editing) = self.editing.as_mut() else {
+            return;
+        };
+        if editing.busy {
+            return;
+        }
+        let name = editing.input.read(cx).text(cx).trim().to_owned();
+        let kind = editing.kind.clone();
+        let unchanged = match &kind {
+            EditKind::Rename { path, .. } => name == base_name(path),
+            EditKind::Create { .. } => false,
+        };
+        if !accept || name.is_empty() || unchanged {
+            self.editing = None;
+            self.op_error = None;
+            window.focus(&self.focus, cx);
+            self.rebuild(cx);
+            return;
+        }
+        editing.busy = true;
+        match kind {
+            EditKind::Rename { root, path } => {
+                let to = join(parent(&path), &name);
+                self.rename_entry(root, path, to, window, cx);
+            }
+            EditKind::Create { root, dir, kind } => {
+                self.create_entry(root, join(&dir, &name), kind, window, cx);
+            }
+        }
+    }
+
+    fn create_entry(
+        &mut self,
+        root: RootId,
+        path: String,
+        kind: EntryKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((workspace, daemon)) = self.session(cx) else {
+            self.op_failed(&DaemonError::NotConnected, &path, cx);
+            return;
+        };
+        let create = daemon.read(cx).request::<fs::Create>(CreateParams {
+            workspace,
+            root,
+            path: path.clone(),
+            kind,
+        });
+        self._op = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = create.await;
+            this.update_in(cx, |this, window, cx| {
+                this.created(root, &path, kind, result, window, cx)
+            })
+            .ok();
+        }));
+    }
+
+    fn created(
+        &mut self,
+        root: RootId,
+        asked: &str,
+        kind: EntryKind,
+        result: Result<fs::EntryResult, DaemonError>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(e) => return self.op_failed(&e, base_name(asked), cx),
+        };
+        let dir = match &self.editing {
+            Some(Editing {
+                kind: EditKind::Create { dir, .. },
+                ..
+            }) => dir.clone(),
+            _ => parent(&entry.path).to_owned(),
+        };
+        self.editing = None;
+        self.op_error = None;
+        // Folders made on the way are shown open.
+        let mut folder = parent(&entry.path);
+        while is_inside(folder, &dir) {
+            self.expanded.insert((root, folder.to_owned()));
+            self.relist((root, folder.to_owned()), cx);
+            folder = parent(folder);
+        }
+        self.relist((root, dir), cx);
+        self.pending_select = Some((root, entry.path.clone()));
+        window.focus(&self.focus, cx);
+        self.rebuild(cx);
+        if kind == EntryKind::File {
+            self.open_path(root, &entry.path, window, cx);
+        }
+    }
+
+    /// Rename or move `from` to `to` (both under `root`).
+    fn rename_entry(
+        &mut self,
+        root: RootId,
+        from: String,
+        to: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((workspace, daemon)) = self.session(cx) else {
+            self.op_failed(&DaemonError::NotConnected, &to, cx);
+            return;
+        };
+        let rename = daemon.read(cx).request::<fs::Rename>(RenameParams {
+            workspace: workspace.clone(),
+            root,
+            from: from.clone(),
+            to: to.clone(),
+        });
+        self._op = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = rename.await;
+            this.update_in(cx, |this, window, cx| {
+                this.renamed(workspace, root, &from, &to, result, window, cx)
+            })
+            .ok();
+        }));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn renamed(
+        &mut self,
+        workspace: WorkspaceId,
+        root: RootId,
+        from: &str,
+        asked: &str,
+        result: Result<fs::EntryResult, DaemonError>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(e) => return self.op_failed(&e, base_name(asked), cx),
+        };
+        if matches!(
+            self.editing,
+            Some(Editing {
+                kind: EditKind::Rename { .. },
+                ..
+            })
+        ) {
+            self.editing = None;
+        }
+        self.op_error = None;
+        self.rekey(root, from, &entry.path);
+        self.relist((root, parent(from).to_owned()), cx);
+        let to_dir = (root, parent(&entry.path).to_owned());
+        if !self.expanded.contains(&to_dir) {
+            // Moved into a closed folder: open it to show where it went.
+            self.expanded.insert(to_dir.clone());
+            self.load(to_dir.clone(), cx);
+        } else {
+            self.relist(to_dir, cx);
+        }
+        self.pending_select = Some((root, entry.path.clone()));
+        FileEvents::announce(
+            FileEvent::Moved {
+                workspace,
+                root,
+                from: from.to_owned(),
+                to: entry.path,
+            },
+            cx,
+        );
+        window.focus(&self.focus, cx);
+        self.rebuild(cx);
+    }
+
+    /// An operation failed: say why, and let a name field be edited again.
+    fn op_failed(&mut self, error: &DaemonError, name: &str, cx: &mut Context<Self>) {
+        if let Some(editing) = self.editing.as_mut() {
+            editing.busy = false;
+        }
+        self.op_error = Some(op_message(error, name));
+        cx.notify();
+    }
+
+    /// The names of this window's file tabs with unsaved edits in `target`.
+    fn dirty_tabs(&self, target: &Target, cx: &App) -> Vec<String> {
+        let (Some(workspace), Some(dock)) = (self.workspace.as_ref(), self.dock.upgrade()) else {
+            return Vec::new();
+        };
+        let dock = dock.read(cx);
+        dock.tree()
+            .tabs()
+            .into_iter()
+            .filter_map(|t| dock.tab(t.id)?.downcast::<FileEditor>())
+            .filter_map(|tab| {
+                let tab = tab.read(cx);
+                (tab.workspace() == &workspace.id
+                    && tab.root() == target.root
+                    && is_at_or_under(tab.path(), &target.path)
+                    && tab.is_dirty())
+                .then(|| base_name(tab.path()).to_owned())
+            })
+            .collect()
+    }
+
+    /// Ask before deleting `target`.
+    pub(crate) fn request_delete(
+        &mut self,
+        target: Target,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        self.op_error = None;
+        if target.path.is_empty() {
+            return; // a root: removed from the workspace, not deleted
+        }
+        let mut dirty = self.dirty_tabs(&target, cx);
+        dirty.dedup();
+        self.selected = Some((target.root, target.path.clone()));
+        self.pending_delete = Some(PendingDelete {
+            target,
+            dirty,
+            permanent: false,
+            error: None,
+            busy: false,
+        });
+        // Enter confirms, Escape cancels.
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    fn confirm_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((workspace, daemon)) = self.session(cx) else {
+            return;
+        };
+        let Some(pending) = self.pending_delete.as_mut() else {
+            return;
+        };
+        if pending.busy {
+            return;
+        }
+        pending.busy = true;
+        let target = pending.target.clone();
+        let delete = daemon.read(cx).request::<fs::Delete>(DeleteParams {
+            workspace: workspace.clone(),
+            root: target.root,
+            path: target.path.clone(),
+            permanent: pending.permanent,
+        });
+        self._op = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = delete.await;
+            this.update_in(cx, |this, window, cx| {
+                this.deleted(workspace, target, result, window, cx)
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn deleted(
+        &mut self,
+        workspace: WorkspaceId,
+        target: Target,
+        result: Result<fs::DeleteResult, DaemonError>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = base_name(&target.path).to_owned();
+        match result {
+            Ok(_) => {
+                self.pending_delete = None;
+                if target.kind == EntryKind::Dir {
+                    self.forget(&(target.root, target.path.clone()));
+                }
+                self.relist((target.root, parent(&target.path).to_owned()), cx);
+                FileEvents::announce(
+                    FileEvent::Deleted {
+                        workspace,
+                        root: target.root,
+                        path: target.path,
+                    },
+                    cx,
+                );
+                window.focus(&self.focus, cx);
+                self.rebuild(cx);
+            }
+            Err(e) => {
+                if let Some(pending) = self.pending_delete.as_mut() {
+                    pending.busy = false;
+                    if e.code() == Some(codes::TRASH_FAILED) {
+                        pending.permanent = true;
+                        pending.error = Some(format!(
+                            "“{name}” can't be moved to the trash. Delete it permanently instead?"
+                        ));
+                    } else {
+                        pending.error = Some(op_message(&e, &name));
+                    }
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// A row was dropped on folder `dir`: move it there.
+    fn drop_on(
+        &mut self,
+        root: RootId,
+        dir: String,
+        entry: &DraggedEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if entry.root != root {
+            self.op_error = Some("Moving between workspace folders isn't supported yet.".into());
+            cx.notify();
+            return;
+        }
+        if parent(&entry.path) == dir || is_at_or_under(&dir, &entry.path) {
+            return; // already there, or into itself
+        }
+        let to = join(&dir, base_name(&entry.path));
+        self.rename_entry(root, entry.path.clone(), to, window, cx);
+    }
+
+    fn copy_path(&mut self, target: &Target, relative: bool, cx: &mut Context<Self>) {
+        self.close_menu(cx);
+        let text = if relative {
+            Some(target.path.clone())
+        } else {
+            self.absolute(target.root, &target.path)
+                .map(|p| p.to_string_lossy().into_owned())
+        };
+        if let Some(text) = text {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    fn reveal(&mut self, target: &Target, cx: &mut Context<Self>) {
+        self.close_menu(cx);
+        if let Some(path) = self.absolute(target.root, &target.path) {
+            cx.reveal_path(&path);
+        }
+    }
+
+    // ---- rendering ------------------------------------------------------------
 
     fn render_rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let t = cx.tokens();
         let (p, m) = (t.palette.clone(), t.metrics.clone());
         let selected = self.selected_index();
+        let multi_root = self.multi_root();
         range
             .filter_map(|ix| {
                 let row = self.rows.get(ix)?;
@@ -539,10 +1346,15 @@ impl FileTree {
                     p.text_muted
                 };
                 let lead = if row.is_dir() {
-                    let chevron = if row.expanded {
-                        Icon::ChevronDown
+                    let glyph = if row.editing {
+                        icon(Icon::Folder, px(13.), p.text_subtle.hsla())
                     } else {
-                        Icon::ChevronRight
+                        let chevron = if row.expanded {
+                            Icon::ChevronDown
+                        } else {
+                            Icon::ChevronRight
+                        };
+                        icon(chevron, px(12.), p.text_subtle.hsla())
                     };
                     div()
                         .w(px(16.))
@@ -550,12 +1362,21 @@ impl FileTree {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(icon(chevron, px(12.), p.text_subtle.hsla()))
+                        .child(glyph)
+                        .into_any_element()
+                } else if row.editing && row.name.is_empty() {
+                    div()
+                        .w(px(16.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon(Icon::File, px(13.), p.text_subtle.hsla()))
                         .into_any_element()
                 } else {
                     super::glyph::render(&row.name, cx)
                 };
-                let el = div()
+                let base = div()
                     .id(("file-row", ix))
                     .test_support()
                     .w_full()
@@ -568,11 +1389,28 @@ impl FileTree {
                     .rounded(px(9.))
                     .text_size(m.text_sm)
                     .text_color(color.hsla())
+                    .child(lead);
+                if row.editing {
+                    let field = self.render_name_field(&p, cx)?;
+                    return Some(
+                        base.bg(p.surface_selected.hsla())
+                            .text_color(p.text.hsla())
+                            .child(field)
+                            .into_any_element(),
+                    );
+                }
+                let target = row.target();
+                let drop_dir = if row.is_dir() {
+                    row.path.clone()
+                } else {
+                    parent(&row.path).to_owned()
+                };
+                let root = row.root;
+                let mut el = base
                     .cursor_pointer()
                     .when(is_selected, |d| d.bg(p.surface_selected.hsla()))
                     .when(!is_selected, |d| d.hover(|s| s.bg(p.surface.hsla())))
                     .when(row.ignored, |d| d.opacity(0.75))
-                    .child(lead)
                     .child(
                         div()
                             .flex_1()
@@ -592,10 +1430,71 @@ impl FileTree {
                     })
                     .on_click(
                         cx.listener(move |this, e, window, cx| this.click_row(ix, e, window, cx)),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                            this.open_menu(target.clone(), e.position, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .drag_over::<DraggedEntry>({
+                        let bg = p.blue.alpha(0.16);
+                        move |s, _, _, _| s.bg(bg)
+                    })
+                    .on_drop(cx.listener(move |this, entry: &DraggedEntry, window, cx| {
+                        this.drop_on(root, drop_dir.clone(), entry, window, cx);
+                    }));
+                // A root's own row stays put.
+                if !(row.path.is_empty() && multi_root) {
+                    el = el.on_drag(
+                        DraggedEntry {
+                            root: row.root,
+                            path: row.path.clone(),
+                            name: row.name.clone(),
+                            kind: row.kind,
+                        },
+                        |entry, _, _, cx| cx.new(|_| entry.clone()),
                     );
+                }
                 Some(el.into_any_element())
             })
             .collect()
+    }
+
+    /// The row a name is typed in.
+    fn render_name_field(
+        &self,
+        p: &coqo_ui::Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let editing = self.editing.as_ref()?;
+        let border = if self.op_error.is_some() {
+            p.rose.hsla()
+        } else {
+            p.blue.alpha(0.6)
+        };
+        Some(
+            div()
+                .id("file-name-field")
+                .test_support()
+                .flex_1()
+                .min_w_0()
+                .h(px(ROW_HEIGHT - 4.))
+                .flex()
+                .items_center()
+                .px(px(6.))
+                .rounded(px(6.))
+                .bg(p.panel_raised.hsla())
+                .border_1()
+                .border_color(border)
+                .overflow_hidden()
+                .on_mouse_down_out(
+                    cx.listener(|this, _, window, cx| this.finish_edit(true, window, cx)),
+                )
+                .child(editing.input.clone())
+                .into_any_element(),
+        )
     }
 
     fn render_note(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -680,6 +1579,272 @@ impl FileTree {
                 .into_any_element(),
         )
     }
+
+    /// The delete confirmation, or the last operation's error, above the
+    /// rows.
+    fn render_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        if let Some(pending) = &self.pending_delete {
+            return Some(self.render_delete(pending, cx));
+        }
+        let error = self.op_error.clone()?;
+        Some(
+            div()
+                .id("file-op-error")
+                .test_support()
+                .flex()
+                .items_start()
+                .gap(px(8.))
+                .mx(px(2.))
+                .px(px(10.))
+                .py(px(7.))
+                .rounded(m.radius_field)
+                .bg(p.surface.hsla())
+                .text_size(m.text_xs)
+                .text_color(p.text.hsla())
+                .child(icon(Icon::CircleAlert, px(13.), p.rose.hsla()))
+                .child(div().flex_1().min_w_0().child(error))
+                .into_any_element(),
+        )
+    }
+
+    fn render_delete(&self, pending: &PendingDelete, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let name = base_name(&pending.target.path).to_owned();
+        let title = if pending.target.kind == EntryKind::Dir {
+            format!("Delete the folder “{name}”?")
+        } else {
+            format!("Delete “{name}”?")
+        };
+        let detail = match (&pending.error, pending.permanent, pending.target.kind) {
+            (Some(error), _, _) => error.clone(),
+            (None, _, EntryKind::Dir) => "It moves to the trash with everything in it.".to_owned(),
+            (None, _, _) => "It moves to the trash.".to_owned(),
+        };
+        let unsaved = (!pending.dirty.is_empty()).then(|| {
+            format!(
+                "Unsaved edits in {} stay in the open tab; save to write the file again.",
+                pending.dirty.join(", ")
+            )
+        });
+        let button = |id: &'static str, label: &'static str, fill: Option<Rgb>, cx: &App| {
+            let el = div()
+                .px(px(12.))
+                .py(px(5.))
+                .rounded(m.radius_control)
+                .text_size(m.text_sm)
+                .font_weight(FontWeight::SEMIBOLD);
+            let el = match fill {
+                Some(fill) => el
+                    .bg(fill.alpha(0.18))
+                    .border_1()
+                    .border_color(fill.alpha(0.45))
+                    .text_color(fill.hsla()),
+                None => raised(el, cx).text_color(p.text.hsla()),
+            };
+            el.id(id).test_support().cursor_pointer().child(label)
+        };
+        let confirm_label = if pending.permanent {
+            "Delete Permanently"
+        } else {
+            "Move to Trash"
+        };
+        div()
+            .id("file-delete-confirm")
+            .test_support()
+            .occlude()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .mx(px(2.))
+            .p(px(12.))
+            .rounded(m.radius_field)
+            .bg(p.surface.hsla())
+            .border_1()
+            .border_color(p.border_strong.hsla())
+            .text_size(m.text_sm)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(icon(Icon::Trash, px(14.), p.rose.hsla()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.text.hsla())
+                            .child(title),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(m.text_xs)
+                    .text_color(p.text_muted.hsla())
+                    .child(detail),
+            )
+            .children(unsaved.map(|text| {
+                div()
+                    .id("file-delete-unsaved")
+                    .test_support()
+                    .flex()
+                    .items_start()
+                    .gap(px(6.))
+                    .text_size(m.text_xs)
+                    .text_color(p.text_muted.hsla())
+                    .child(icon(Icon::CircleAlert, px(12.), p.sand.hsla()))
+                    .child(div().flex_1().min_w_0().child(text))
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(6.))
+                    .child(button("file-delete-cancel", "Cancel", None, cx).on_click(
+                        cx.listener(|this, _, window, cx| this.dismiss(&Dismiss, window, cx)),
+                    ))
+                    .child(
+                        button("file-delete-ok", confirm_label, Some(p.rose), cx)
+                            .when(pending.busy, |b| b.opacity(0.6))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.confirm_delete(window, cx)),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_menu(&self, menu: &Menu, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let target = menu.target.clone();
+        let is_root = target.path.is_empty();
+        let item =
+            |id: &'static str, glyph: Icon, label: &'static str, key: Option<&'static str>| {
+                div()
+                    .id(id)
+                    .test_support()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .mx(px(6.))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .text_color(p.text.hsla())
+                    .hover(|s| s.bg(p.surface_selected.hsla()))
+                    .child(icon(glyph, px(14.), p.text_muted.hsla()))
+                    .child(div().flex_1().child(label))
+                    .children(key.map(|key| {
+                        div()
+                            .text_size(m.text_xs)
+                            .text_color(p.text_subtle.hsla())
+                            .child(key)
+                    }))
+            };
+        let separator = || {
+            div()
+                .h(px(1.))
+                .mx(px(12.))
+                .my(px(4.))
+                .bg(p.border_strong.hsla())
+        };
+        let folder = target.folder();
+        let (new_file, new_folder) = (folder.clone(), folder);
+        let (rename, delete, copy, copy_rel, reveal) = (
+            target.clone(),
+            target.clone(),
+            target.clone(),
+            target.clone(),
+            target.clone(),
+        );
+        let mut card = popover(cx)
+            .id("file-menu")
+            .occlude()
+            .test_support()
+            .w(px(230.))
+            .py(px(6.))
+            .text_size(m.text_sm)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_menu(cx)))
+            .child(
+                item("file-menu-new-file", Icon::Plus, "New File…", None).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.start_create(new_file.clone(), EntryKind::File, window, cx)
+                    },
+                )),
+            )
+            .child(
+                item("file-menu-new-folder", Icon::Folder, "New Folder…", None).on_click(
+                    cx.listener(move |this, _, window, cx| {
+                        this.start_create(new_folder.clone(), EntryKind::Dir, window, cx)
+                    }),
+                ),
+            );
+        if !is_root {
+            card = card.child(separator()).child(
+                item("file-menu-rename", Icon::FilePen, "Rename…", Some("F2")).on_click(
+                    cx.listener(move |this, _, window, cx| {
+                        this.start_rename(rename.root, &rename.path, window, cx)
+                    }),
+                ),
+            );
+        }
+        card = card
+            .child(separator())
+            .child(
+                item("file-menu-copy-path", Icon::File, "Copy Path", None)
+                    .on_click(cx.listener(move |this, _, _, cx| this.copy_path(&copy, false, cx))),
+            )
+            .child(
+                item(
+                    "file-menu-copy-relative-path",
+                    Icon::File,
+                    "Copy Relative Path",
+                    None,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.copy_path(&copy_rel, true, cx))),
+            )
+            .child(
+                item("file-menu-reveal", Icon::FolderOpen, REVEAL_LABEL, None)
+                    .on_click(cx.listener(move |this, _, _, cx| this.reveal(&reveal, cx))),
+            );
+        if !is_root {
+            card = card.child(separator()).child(
+                div()
+                    .id("file-menu-delete")
+                    .test_support()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .mx(px(6.))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .text_color(p.rose.hsla())
+                    .hover(|s| s.bg(p.surface_selected.hsla()))
+                    .child(icon(Icon::Trash, px(14.), p.rose.hsla()))
+                    .child(div().flex_1().child("Delete…"))
+                    .child(
+                        div()
+                            .text_size(m.text_xs)
+                            .text_color(p.text_subtle.hsla())
+                            .child(DELETE_KEY_LABEL),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.request_delete(delete.clone(), window, cx)
+                    })),
+            );
+        }
+        deferred(anchored().position(menu.at).snap_to_window().child(card))
+            .with_priority(3)
+            .into_any_element()
+    }
 }
 
 use coqo_ui::widgets::FluentBuilder as _;
@@ -691,6 +1856,14 @@ impl Render for FileTree {
             .as_ref()
             .map_or_else(|| "Explorer".into(), |w| w.name.clone().into());
         let note = self.render_note(cx);
+        let banner = self.render_banner(cx);
+        let menu = self.menu.as_ref().map(|menu| self.render_menu(menu, cx));
+        // The space below the rows: right-click and drops reach the root.
+        let root = self
+            .workspace
+            .as_ref()
+            .filter(|w| w.roots.len() == 1)
+            .map(|w| w.roots[0].id);
         let list = (note.is_none()).then(|| {
             uniform_list(
                 "file-tree-list",
@@ -701,6 +1874,32 @@ impl Render for FileTree {
             .flex_1()
             .min_h_0()
         });
+        let mut body = div()
+            .id("file-tree-body")
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .children(list);
+        if let Some(root) = root {
+            let bg = cx.tokens().palette.blue.alpha(0.06);
+            body = body
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        let target = Target {
+                            root,
+                            path: String::new(),
+                            kind: EntryKind::Dir,
+                        };
+                        this.open_menu(target, e.position, cx);
+                    }),
+                )
+                .drag_over::<DraggedEntry>(move |s, _, _, _| s.bg(bg))
+                .on_drop(cx.listener(move |this, entry: &DraggedEntry, window, cx| {
+                    this.drop_on(root, String::new(), entry, window, cx);
+                }));
+        }
         div()
             .id("sidebar-files-pane")
             .test_support()
@@ -711,19 +1910,26 @@ impl Render for FileTree {
             .on_action(cx.listener(Self::expand))
             .on_action(cx.listener(Self::collapse))
             .on_action(cx.listener(Self::confirm))
+            .on_action(cx.listener(Self::new_file))
+            .on_action(cx.listener(Self::new_folder))
+            .on_action(cx.listener(Self::rename_selected))
+            .on_action(cx.listener(Self::delete_selected))
+            .on_action(cx.listener(Self::dismiss))
             .size_full()
             .flex()
             .flex_col()
             .gap_1()
             .child(section_label(label, cx))
+            .children(banner)
             .children(note)
-            .children(list)
+            .child(body)
+            .children(menu)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_inside, join, parent};
+    use super::{base_name, is_inside, join, parent};
 
     #[test]
     fn path_helpers() {
@@ -731,6 +1937,8 @@ mod tests {
         assert_eq!(join("src", "main.rs"), "src/main.rs");
         assert_eq!(parent("src/main.rs"), "src");
         assert_eq!(parent("README.md"), "");
+        assert_eq!(base_name("src/main.rs"), "main.rs");
+        assert_eq!(base_name("README.md"), "README.md");
         assert!(is_inside("src/main.rs", "src"));
         assert!(is_inside("src", ""));
         assert!(!is_inside("src", "src"));

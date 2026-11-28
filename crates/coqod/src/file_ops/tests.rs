@@ -179,7 +179,10 @@ fn write(root: &Path, rel: &str, contents: &str) {
 async fn creates_files_and_folders() {
     let h = Harness::new(&[("README.md", "# hi\n")]).await;
 
-    assert_eq!(h.create("notes.txt", EntryKind::File).await, Ok("notes.txt".into()));
+    assert_eq!(
+        h.create("notes.txt", EntryKind::File).await,
+        Ok("notes.txt".into())
+    );
     assert_eq!(fs::read_to_string(h.path("notes.txt")).unwrap(), "");
     assert_eq!(h.create("src", EntryKind::Dir).await, Ok("src".into()));
     assert!(h.path("src").is_dir());
@@ -245,11 +248,11 @@ async fn renames_and_moves() {
         h.rename("b.txt", "docs/guide.md").await,
         Err(codes::ALREADY_EXISTS)
     );
+    assert_eq!(h.rename("b.txt", "docs").await, Err(codes::ALREADY_EXISTS));
     assert_eq!(
-        h.rename("b.txt", "docs").await,
-        Err(codes::ALREADY_EXISTS)
+        fs::read_to_string(h.path("docs/guide.md")).unwrap(),
+        "# guide\n"
     );
-    assert_eq!(fs::read_to_string(h.path("docs/guide.md")).unwrap(), "# guide\n");
     assert_eq!(h.rename("nope.txt", "x.txt").await, Err(codes::NOT_FOUND));
     assert_eq!(
         h.rename("b.txt", "missing/b.txt").await,
@@ -284,7 +287,10 @@ async fn deletes_to_the_trash_or_for_good() {
     assert_eq!(fs::read_to_string(h.binned("a.txt")).unwrap(), "a\n");
     // A second entry of the same name gets a name of its own in the trash.
     assert_eq!(h.delete("keep/a.txt", false).await, Ok(true));
-    assert_eq!(fs::read_to_string(h.binned("a.txt.1")).unwrap(), "other a\n");
+    assert_eq!(
+        fs::read_to_string(h.binned("a.txt.1")).unwrap(),
+        "other a\n"
+    );
     assert_eq!(
         fs::read_to_string(h.binned("a.txt")).unwrap(),
         "a\n",
@@ -369,7 +375,11 @@ async fn paths_and_symlinks_cannot_escape_the_workspace() {
         h.rename("secret-link", "src/link").await,
         Ok("src/link".into())
     );
-    assert!(fs::symlink_metadata(h.path("src/link")).unwrap().is_symlink());
+    assert!(
+        fs::symlink_metadata(h.path("src/link"))
+            .unwrap()
+            .is_symlink()
+    );
     assert_eq!(h.delete("src/link", true).await, Ok(false));
     assert_eq!(h.delete("out", false).await, Ok(true));
     assert!(fs::symlink_metadata(h.path("out")).is_err());
@@ -390,7 +400,10 @@ async fn open_buffers_follow_a_rename() {
     let readme = h.open("README.md").await.unwrap();
 
     assert_eq!(h.rename("src", "app").await, Ok("app".into()));
-    assert_eq!(h.rename("app/main.rs", "app/start.rs").await, Ok("app/start.rs".into()));
+    assert_eq!(
+        h.rename("app/main.rs", "app/start.rs").await,
+        Ok("app/start.rs".into())
+    );
     assert_eq!(h.rename("README.md", "docs.md").await, Ok("docs.md".into()));
 
     let moved = h.open("app/start.rs").await.unwrap();
@@ -433,10 +446,7 @@ async fn a_deleted_files_buffer_keeps_its_edits() {
     assert_eq!(h.stat("notes.md").await.unwrap_err(), codes::NOT_FOUND);
     // Give the watcher time to report the deletion.
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(
-        h.buffers.text(notes.buffer).as_deref(),
-        Some("zero\none\n")
-    );
+    assert_eq!(h.buffers.text(notes.buffer).as_deref(), Some("zero\none\n"));
 
     h.call::<bufm::Save>(bufm::SaveParams {
         buffer: notes.buffer,
@@ -444,5 +454,8 @@ async fn a_deleted_files_buffer_keeps_its_edits() {
     })
     .await
     .unwrap();
-    assert_eq!(fs::read_to_string(h.path("notes.md")).unwrap(), "zero\none\n");
+    assert_eq!(
+        fs::read_to_string(h.path("notes.md")).unwrap(),
+        "zero\none\n"
+    );
 }

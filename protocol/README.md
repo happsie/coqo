@@ -221,19 +221,24 @@ A workspace is one or more folder roots with a stable id (`ws-…`), a name, `cr
 | `workspace/getState` | `{id}` → `{entries, seq}` |
 | `workspace/setState` | `{id, key, value}` → `null`. `value: null` removes the entry. |
 
-**Scopes.** A session token reaches only its own workspace: `workspace/get`, `workspace/getState`, `workspace/setState`, every `fs/*` method and topic, and `workspace/events` with `workspace` set to it. Everything else here (`open`, `list`, `close`, `remove`, `addRoot`, `removeRoot`, `rename`, and `workspace/events` without a filter) needs the daemon token. Out-of-scope calls fail with `-32007 FORBIDDEN`.
+**Scopes.** A session token reaches only its own workspace: `workspace/get`, `workspace/getState`, `workspace/setState`, `fs/list`, `fs/stat`, `fs/read` and `fs/changes`, and `workspace/events` with `workspace` set to it. Everything else here (`open`, `list`, `close`, `remove`, `addRoot`, `removeRoot`, `rename`, and `workspace/events` without a filter) needs the daemon token. Out-of-scope calls fail with `-32007 FORBIDDEN`.
 
 Topic **`workspace/events`** (`{workspace?}`) carries `opened`, `closed`, `changed` (name or roots), `removed` and `stateChanged` events, tagged by `type`. It is backed by the persistent event log, so `seq`s are stable across daemon restarts and skip values that belong to other features. Reattach: `workspace/list`, then subscribe with `since` set to its `seq`.
 
 ### Files (`fs/*`)
 
-Read-only access for the file tree. Paths are `{workspace, root, path}` with a `/`-separated `path` relative to the root (`""` is the root). Absolute paths, `..` and paths that resolve through a symlink to outside the workspace's roots fail with `PATH_OUTSIDE_WORKSPACE`. Entries carry an `ignored` flag from `.gitignore` files, `.git/info/exclude` and the global git excludes; `.git` is always ignored.
+Access for the file tree. Paths are `{workspace, root, path}` with a `/`-separated `path` relative to the root (`""` is the root). Absolute paths, `..` and paths that resolve through a symlink to outside the workspace's roots fail with `PATH_OUTSIDE_WORKSPACE`. Entries carry an `ignored` flag from `.gitignore` files, `.git/info/exclude` and the global git excludes; `.git` is always ignored.
 
 | Method | Params → result |
 |---|---|
 | `fs/list` | `PathParams` → `{entries: [{name, kind, symlink, size, mtime?, ignored}]}`, directories first. `kind` is `file`, `dir` or `other` (symlinks report their target's kind; broken or escaping ones are `other`). |
 | `fs/stat` | `PathParams` → `{kind, symlink, size, mtime?, ignored}` |
 | `fs/read` | `{workspace, root, path, maxBytes?}` → `{text?, binary, size, mtime?}`. Default limit 4 MiB, at most 8 MiB; larger files fail with `FILE_TOO_LARGE` and `data: {size, limit}`. |
+| `fs/create` | `{workspace, root, path, kind}` → `{path}` (normalised). `kind` is `file` (empty) or `dir`; missing folders on the way are created. Something already there fails with `ALREADY_EXISTS`. Daemon token only. |
+| `fs/rename` | `{workspace, root, from, to}` → `{path}`. Renames or moves an entry within one root; the folder `to` goes in must exist and `to` must be free (`ALREADY_EXISTS`). A folder cannot move into itself, and a root cannot be moved. Open buffers of the files it moves follow (same buffer id, unsaved edits kept). Daemon token only. |
+| `fs/delete` | `{workspace, root, path, permanent?}` → `{trashed}`. Moves the entry to the OS trash; if that is not possible it fails with `TRASH_FAILED` and leaves it alone, unless `permanent: true` (delete for good). Open buffers keep their text; saving writes the file again. A root cannot be deleted. Daemon token only. |
+
+The file operations act on the entry itself: its parent folder is resolved and confined like any path, but a symlink at the end is renamed or deleted as a link, never followed, and new entries never follow one. They need the daemon token, since agents edit files through their own tools and `buffer/*`.
 
 Topic **`fs/changes`** (`{workspace}`, which must be open) carries `{root, paths, rescan}` batches, debounced (about 100 ms), with paths sorted and deduplicated. Changes inside `.git` and inside ignored directories are left out, but an ignored entry appearing directly in a visible directory is reported. `rescan: true` means too much changed (or the watcher lost events): re-list what you show. The stream is live only; after a reconnect, re-list and subscribe again. Closing the workspace ends it.
 
@@ -339,7 +344,10 @@ The always-on syntax layer of an open buffer (PLAN §7.1.1, [ADR 0011](../docs/a
 | 1006 | `NOT_A_DIRECTORY` | A directory was expected. |
 | 1007 | `NOT_A_FILE` | A regular file was expected. |
 | 1008 | `WORKSPACE_CLOSED` | The operation needs an open workspace. |
-| 1009 | `IO_ERROR` | Permissions or another I/O error. |
+| 1009 | `IO_ERROR` | Another I/O error. |
+| 1010 | `ALREADY_EXISTS` | Something is already at the path (`fs/create`, `fs/rename`). |
+| 1011 | `PERMISSION_DENIED` | The operating system refused: no permission for the path. |
+| 1012 | `TRASH_FAILED` | The entry could not be moved to the OS trash and was left alone; delete it with `permanent`. |
 | 1101 | `UNKNOWN_SESSION` | No agent session has that id. |
 | 1102 | `UNKNOWN_PROVIDER` | No such agent provider, or it is not available. |
 | 1103 | `SESSION_BUSY` | The session is already running a turn. |

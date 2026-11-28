@@ -7,13 +7,18 @@
 //! (`SidebarPanes`, `register_tab_kind`), so it moves out unchanged.
 //!
 //! Keyboard in the tree: Up/Down select, Right expands (or enters), Left
-//! collapses (or goes to the parent), Enter opens. In a file tab: `Ctrl S`
+//! collapses (or goes to the parent), Enter opens, `F2` renames in place,
+//! `Delete` (`Cmd Backspace` on macOS) deletes after a confirmation, Escape
+//! dismisses a menu or a confirmation. Right-click a row for New File, New
+//! Folder, Rename, Delete, Copy Path, Copy Relative Path and Reveal; drag a
+//! row onto a folder to move it ([`ops`]). In a file tab: `Ctrl S`
 //! (`Cmd S`) saves, `Ctrl F` finds, `Ctrl Z` / `Ctrl Y` undo and redo this
 //! tab's own edits.
 
 pub mod context;
 pub mod editor;
 pub mod glyph;
+pub mod ops;
 pub mod tree;
 
 use coqo_ui::keys;
@@ -37,10 +42,26 @@ coqo_ui::gpui::actions!(
         Expand,
         /// Collapse the selected folder, or select its parent.
         Collapse,
-        /// Open the selected file, or toggle the selected folder.
+        /// Open the selected file, or toggle the selected folder (or delete,
+        /// while a delete waits for confirmation).
         Confirm,
+        /// Create a file next to the selection (or in the selected folder).
+        NewFile,
+        /// Create a folder next to the selection (or in the selected folder).
+        NewFolder,
+        /// Rename the selected entry in place.
+        RenameEntry,
+        /// Delete the selected entry, after a confirmation.
+        DeleteEntry,
+        /// Close the context menu, the delete confirmation or an error.
+        Dismiss,
     ]
 );
+
+#[cfg(target_os = "macos")]
+const DELETE_KEYS: &[&str] = &["delete", "cmd-backspace"];
+#[cfg(not(target_os = "macos"))]
+const DELETE_KEYS: &[&str] = &["delete"];
 
 /// Register the Files pane, the `file` tab kind and the tree's keys.
 pub fn init(cx: &mut App) {
@@ -51,7 +72,15 @@ pub fn init(cx: &mut App) {
         keys::binding("right", Expand, context),
         keys::binding("left", Collapse, context),
         keys::binding("enter", Confirm, context),
+        keys::binding("f2", RenameEntry, context),
+        keys::binding("escape", Dismiss, context),
     ]);
+    cx.bind_keys(
+        DELETE_KEYS
+            .iter()
+            .map(|&stroke| keys::binding(stroke, DeleteEntry, context)),
+    );
+    ops::FileEvents::init(cx);
     editor::init(cx);
     register_tab_kind(cx, editor::KIND, |state, window, cx| {
         editor::restore(state, window, cx)

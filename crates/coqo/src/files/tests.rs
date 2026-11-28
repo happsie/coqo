@@ -1206,6 +1206,222 @@ fn renders_only_the_visible_rows() {
     ui.frame(|window, _| assert!(window.try_find(("file-row", 40usize)).is_some()));
 }
 
+impl Ui {
+    fn shows(&mut self, id: &'static str) -> bool {
+        self.frame(|window, _| window.try_find(id).is_some())
+    }
+
+    fn click(&mut self, id: &'static str) {
+        self.frame(|window, cx| window.click(id, cx));
+    }
+
+    fn right_click_row(&mut self, name: &str) {
+        let ix = self.row_index(name);
+        self.frame(|window, cx| window.right_click(("file-row", ix), cx));
+    }
+
+    fn selected_path(&mut self) -> Option<String> {
+        let tree = self.tree();
+        self.cx
+            .read(|cx| tree.read(cx).selected().map(|(_, p)| p.to_owned()))
+    }
+
+    /// Type `name` in the tree's name field and press Enter.
+    fn enter_name(&mut self, name: &str) {
+        let tree = self.tree();
+        let input = self
+            .cx
+            .read(|cx| tree.read(cx).name_field().map(|(_, input)| input.clone()))
+            .expect("a name field");
+        let name = name.to_owned();
+        self.cx
+            .update_window(self.window, |_, window, cx| {
+                input.update(cx, |input, cx| input.set_text(name, window, cx));
+            })
+            .unwrap();
+        self.press("enter");
+    }
+
+    fn tab_at(&mut self, path: &str) -> Option<Entity<FileEditor>> {
+        let tabs = self.file_tabs();
+        tabs.into_iter()
+            .find(|t| self.cx.read(|cx| t.read(cx).path() == path))
+    }
+}
+
+/// The tree's file operations against a real daemon: create from the
+/// context menu, rename in place with F2 (the open tab follows, unsaved
+/// edits and all), a name clash, delete with a confirmation that names the
+/// file (to the test daemon's trash folder), a delete that keeps a tab's
+/// unsaved edits, and a move by drag and drop.
+#[test]
+fn creates_renames_moves_and_deletes_from_the_tree() {
+    let fixture = Fixture::new();
+    let mut ui = open_ui(&fixture, Some(fixture.project.clone()));
+    ui.wait_for_tree();
+    let tree = ui.tree();
+
+    // New File from the menu of `src`: the field opens inside it.
+    ui.right_click_row("src");
+    assert!(ui.shows("file-menu"));
+    assert_eq!(
+        ui.cx
+            .read(|cx| tree.read(cx).menu_target().map(|t| t.path.clone())),
+        Some("src".to_owned())
+    );
+    ui.click("file-menu-new-file");
+    assert!(!ui.shows("file-menu"));
+    ui.wait_for("the name field in src", |ui| {
+        ui.rows().iter().any(|r| r.editing && r.depth == 1)
+    });
+    assert!(ui.shows("file-name-field"));
+    ui.enter_name("notes.md");
+    ui.wait_for("notes.md in the tree, selected and open", |ui| {
+        ui.names().contains(&"  notes.md".to_owned())
+            && ui.selected_path().as_deref() == Some("src/notes.md")
+            && ui.tab_at("src/notes.md").is_some()
+    });
+    assert!(fixture.project.join("src/notes.md").is_file());
+    assert!(!ui.rows().iter().any(|r| r.editing));
+
+    // Rename in place with F2: the open tab follows, with its unsaved edit.
+    let main = ui.open_file("main.rs");
+    ui.type_at(&main, 0, "// edited\n");
+    ui.wait_for("the edit to reach the daemon", |ui| ui.synced(&main));
+    // Opening a file puts the keyboard in its tab; select it from the tree.
+    ui.click_row("src");
+    ui.press("right");
+    ui.press("right");
+    ui.press("down");
+    assert_eq!(ui.selected_path().as_deref(), Some("src/main.rs"));
+    ui.press("f2");
+    let field_text = ui.cx.read(|cx| {
+        tree.read(cx)
+            .name_field()
+            .map(|(_, input)| input.read(cx).text(cx))
+    });
+    assert_eq!(field_text.as_deref(), Some("main.rs"));
+    ui.enter_name("app.rs");
+    ui.wait_for("app.rs in the tree and the tab", |ui| {
+        let names = ui.names();
+        names.contains(&"  app.rs".to_owned())
+            && !names.contains(&"  main.rs".to_owned())
+            && ui.cx.read(|cx| main.read(cx).path() == "src/app.rs")
+    });
+    assert_eq!(ui.selected_path().as_deref(), Some("src/app.rs"));
+    assert!(fixture.project.join("src/app.rs").is_file());
+    assert!(!fixture.project.join("src/main.rs").exists());
+    assert!(ui.dirty(&main), "the unsaved edit is still there");
+    assert_eq!(
+        ui.text(&main).as_deref(),
+        Some(format!("// edited\n{MAIN_RS}").as_str())
+    );
+    let (title, key) = ui.cx.read(|cx| {
+        use coqo_ui::dock::TabItem as _;
+        let tab = main.read(cx);
+        (tab.title(cx), tab.key(cx))
+    });
+    assert_eq!(title, "app.rs");
+    assert!(key.unwrap().ends_with("/src/app.rs"));
+
+    // A clash keeps the field open with the reason; Escape gives up.
+    ui.press("f2");
+    ui.enter_name("lib.rs");
+    ui.wait_for("the clash", |ui| {
+        let tree = ui.tree();
+        ui.cx.read(|cx| tree.read(cx).op_error().is_some())
+    });
+    assert!(ui.shows("file-op-error"));
+    assert!(ui.rows().iter().any(|r| r.editing));
+    ui.press("escape");
+    assert!(!ui.rows().iter().any(|r| r.editing));
+    assert_eq!(
+        std::fs::read_to_string(fixture.project.join("src/lib.rs")).unwrap(),
+        "pub fn f() {}\n"
+    );
+
+    // Delete asks first, naming the file; Escape keeps it.
+    ui.right_click_row("README.md");
+    ui.click("file-menu-delete");
+    assert!(ui.shows("file-delete-confirm"));
+    let pending = ui.cx.read(|cx| tree.read(cx).pending_delete().cloned());
+    assert_eq!(pending.unwrap().target.path, "README.md");
+    ui.press("escape");
+    assert!(!ui.shows("file-delete-confirm"));
+    assert!(fixture.project.join("README.md").exists());
+    // The Delete key asks too; confirmed, it goes to the (test daemon's)
+    // trash.
+    ui.press("delete");
+    assert!(ui.shows("file-delete-confirm"));
+    ui.click("file-delete-ok");
+    ui.wait_for("README.md to go", |ui| {
+        !ui.names().contains(&"README.md".to_owned())
+    });
+    assert!(!fixture.project.join("README.md").exists());
+    assert!(fixture.daemon.trash().join("README.md").is_file());
+
+    // Deleting a file with unsaved edits says so, and the tab keeps them.
+    ui.right_click_row("app.rs");
+    ui.click("file-menu-delete");
+    let pending = ui.cx.read(|cx| tree.read(cx).pending_delete().cloned());
+    assert_eq!(pending.unwrap().dirty, ["app.rs"]);
+    assert!(ui.shows("file-delete-unsaved"));
+    ui.press("enter");
+    ui.wait_for("app.rs to go", |ui| {
+        !ui.names().contains(&"  app.rs".to_owned())
+    });
+    assert!(ui.dirty(&main));
+    assert_eq!(
+        ui.cx.read(|cx| main.read(cx).notice().cloned()),
+        Some(super::editor::Notice::Deleted)
+    );
+    // A clean tab of a deleted file says it's gone.
+    let notes = ui.tab_at("src/notes.md").unwrap();
+    ui.right_click_row("notes.md");
+    ui.click("file-menu-delete");
+    ui.press("enter");
+    ui.wait_for("notes.md's tab to say it's gone", |ui| {
+        ui.content(&notes) == Content::Missing
+    });
+
+    // Drag a row onto a folder to move it there.
+    let from = ui.row_index("logo.png");
+    let to = ui.row_index("src");
+    ui.frame(|window, cx| window.drag_to(("file-row", from), ("file-row", to), cx));
+    ui.wait_for("logo.png in src", |ui| {
+        ui.names().contains(&"  logo.png".to_owned())
+    });
+    assert!(fixture.project.join("src/logo.png").is_file());
+    assert!(!fixture.project.join("logo.png").exists());
+
+    // New Folder from the empty space below the rows, then Copy Path.
+    ui.right_click_row("lib.rs");
+    ui.click("file-menu-copy-relative-path");
+    assert_eq!(
+        ui.cx
+            .read_from_clipboard()
+            .and_then(|c| c.text())
+            .as_deref(),
+        Some("src/lib.rs")
+    );
+    ui.right_click_row("lib.rs");
+    ui.click("file-menu-copy-path");
+    let copied = ui.cx.read_from_clipboard().and_then(|c| c.text()).unwrap();
+    assert_eq!(
+        std::fs::canonicalize(&copied).unwrap(),
+        std::fs::canonicalize(fixture.project.join("src/lib.rs")).unwrap()
+    );
+    ui.right_click_row("src");
+    ui.click("file-menu-new-folder");
+    ui.enter_name("docs/guides");
+    ui.wait_for("the new folders, open", |ui| {
+        let names = ui.names();
+        names.contains(&"    docs".to_owned()) || names.contains(&"  docs".to_owned())
+    });
+    assert!(fixture.project.join("src/docs/guides").is_dir());
+    assert_eq!(ui.selected_path().as_deref(), Some("src/docs/guides"));
+}
+
 /// Renders the workbench with this repository open, `crates/coqo/src/files`
 /// expanded and a file tab open, offscreen to PNGs. Needs a GPU:
 /// `cargo test -p coqo -- --ignored files_screenshots`. Writes to
@@ -1370,6 +1586,66 @@ fn files_screenshots() {
         }
         let image = cx.capture_screenshot(handle).expect("screenshot");
         let path = dir.join(format!("coqo-editor-{name}.png"));
+        image.save(&path).expect("save png");
+        println!("wrote {}", path.display());
+
+        // The tree's context menu on glyph.rs, then a rename in place and a
+        // delete waiting for confirmation (#161). Nothing is sent: the
+        // folder is this repository.
+        let tree = cx.update(|cx| tree(cx)).unwrap();
+        let row_of = |cx: &mut HeadlessAppContext, name: &str| {
+            cx.update(|cx| {
+                tree.read(cx)
+                    .rows()
+                    .iter()
+                    .position(|r| r.name.as_ref() == name && r.depth == 4)
+                    .unwrap_or_else(|| panic!("no row {name}"))
+            })
+        };
+        let files = "crates/coqo/src/files";
+        let root = cx.update(|cx| tree.read(cx).rows()[0].root);
+        let glyph = row_of(&mut cx, "glyph.rs");
+        let at = cx
+            .update_window(handle, |_, window, _| {
+                let bounds = window.find(("file-row", glyph)).bounds();
+                coqo_ui::gpui::point(bounds.left() + px(64.), bounds.center().y)
+            })
+            .unwrap();
+        cx.update(|cx| {
+            tree.update(cx, |t, cx| {
+                let target = super::tree::Target {
+                    root,
+                    path: format!("{files}/glyph.rs"),
+                    kind: EntryKind::File,
+                };
+                t.open_menu(target, at, cx)
+            })
+        });
+        for _ in 0..5 {
+            settle(&mut cx, &|_| true);
+        }
+        let image = cx.capture_screenshot(handle).expect("screenshot");
+        let path = dir.join(format!("coqo-files-menu-{name}.png"));
+        image.save(&path).expect("save png");
+        println!("wrote {}", path.display());
+
+        cx.update_window(handle, |_, window, cx| {
+            tree.update(cx, |t, cx| {
+                t.start_rename(root, &format!("{files}/context.rs"), window, cx);
+                let target = super::tree::Target {
+                    root,
+                    path: format!("{files}/tests.rs"),
+                    kind: EntryKind::File,
+                };
+                t.request_delete(target, window, cx);
+            })
+        })
+        .unwrap();
+        for _ in 0..5 {
+            settle(&mut cx, &|_| true);
+        }
+        let image = cx.capture_screenshot(handle).expect("screenshot");
+        let path = dir.join(format!("coqo-files-ops-{name}.png"));
         image.save(&path).expect("save png");
         println!("wrote {}", path.display());
     }
