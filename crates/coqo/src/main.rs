@@ -11,6 +11,7 @@ mod activity;
 mod agents;
 mod alerts;
 mod chat;
+mod commands;
 mod daemon;
 mod diff;
 mod files;
@@ -128,6 +129,13 @@ fn run(folder: Option<PathBuf>) {
         agents::away::init(Rc::new(last_seen), cx);
         workspace::init(folder, cx);
         shell::init(cx);
+        commands::use_files(
+            commands::CommandFiles {
+                keybindings: Some(commands::keyfile::path()),
+                recent: Some(ui_dir().join("recent-commands.json")),
+            },
+            cx,
+        );
         if let Some(daemon) = daemon {
             let handle = daemon.read(cx).handle();
             terminal::init(Rc::new(terminal::DaemonBackend::new(handle)), cx);

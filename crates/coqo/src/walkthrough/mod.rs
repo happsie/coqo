@@ -46,7 +46,6 @@ use coqo_protocol::methods::{
     },
     workspace::WorkspaceId,
 };
-use coqo_ui::keys;
 use coqo_ui::{
     ActiveTokens as _, Rgb,
     dock::{AnyTab, Dock, register_tab_kind},
@@ -86,14 +85,37 @@ pub const KEY_CONTEXT: &str = "WalkthroughPlayer";
 
 /// Register the `walkthrough` tab kind and bind the player's keys.
 pub fn init(cx: &mut App) {
-    cx.bind_keys([
-        keys::binding("n", NextStep, Some(KEY_CONTEXT)),
-        keys::binding("right", NextStep, Some(KEY_CONTEXT)),
-        keys::binding("p", PreviousStep, Some(KEY_CONTEXT)),
-        keys::binding("left", PreviousStep, Some(KEY_CONTEXT)),
-        keys::binding("u", ToggleUnderstood, Some(KEY_CONTEXT)),
-        keys::binding("d", ToggleDiff, Some(KEY_CONTEXT)),
-    ]);
+    use crate::commands::Command;
+    let command = |id: &'static str, title: &'static str, action: Box<dyn Action>| {
+        Command::new_boxed(id, title, "Walkthrough", action).context(KEY_CONTEXT)
+    };
+    crate::commands::register(
+        cx,
+        [
+            command("walkthrough.next_step", "Next step", Box::new(NextStep))
+                .key("n")
+                .key("right"),
+            command(
+                "walkthrough.previous_step",
+                "Previous step",
+                Box::new(PreviousStep),
+            )
+            .key("p")
+            .key("left"),
+            command(
+                "walkthrough.toggle_understood",
+                "Mark step understood",
+                Box::new(ToggleUnderstood),
+            )
+            .key("u"),
+            command(
+                "walkthrough.toggle_diff",
+                "Show the step in the editor or the diff",
+                Box::new(ToggleDiff),
+            )
+            .key("d"),
+        ],
+    );
     register_tab_kind(cx, player::KIND, |state, window, cx| {
         player::restore(state, window, cx)
     });

@@ -37,7 +37,6 @@
 //!
 //! Binary, non-UTF-8 and very large files show a message instead.
 
-use coqo_ui::keys;
 use std::{
     collections::VecDeque,
     ops::Range,
@@ -117,7 +116,14 @@ const SAVE_KEY: &str = "ctrl-s";
 
 /// Bind the file tab's keys.
 pub fn init(cx: &mut App) {
-    cx.bind_keys([keys::binding(SAVE_KEY, Save, Some(KEY_CONTEXT))]);
+    crate::commands::register(
+        cx,
+        [
+            crate::commands::Command::new("file.save", "Save", "File", Save)
+                .key(SAVE_KEY)
+                .context(KEY_CONTEXT),
+        ],
+    );
 }
 
 /// What the tab shows.

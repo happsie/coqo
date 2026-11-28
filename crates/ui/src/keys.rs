@@ -18,10 +18,17 @@
 //! down to the focused element, so the field may sit at any depth under the
 //! view.
 //!
+//! Bindings made at runtime (the command registry's, with the user's
+//! keybindings) go through [`load`], which applies the same rule.
+//!
 //! [`unguarded_bindings`] lists the bindings that break the rule; a test runs
 //! it over every binding the app registers.
 
-use gpui_kit::{Action, App, Global, KeyBinding, KeyBindingContextPredicate, Keystroke};
+use std::rc::Rc;
+
+use gpui_kit::{
+    Action, App, Global, KeyBinding, KeyBindingContextPredicate, Keystroke, OperatingSystem,
+};
 
 /// The key context of every text field and code editor: gpui-component's
 /// input (the code editor adds `mode=editor` to the same context).
@@ -41,9 +48,10 @@ fn is_function_key(key: &str) -> bool {
 
 /// The context a binding of `keystrokes` in `context` should have: the same,
 /// with `&& !Input` added when the first keystroke is plain.
-pub fn guarded_context(keystrokes: &'static str, context: Option<&str>) -> Option<String> {
-    let first = keystrokes.split(' ').next().unwrap_or_default();
-    let plain = Keystroke::parse(first).is_ok_and(|k| is_plain(&k));
+pub fn guarded_context(keystrokes: &str, context: Option<&str>) -> Option<String> {
+    let first = keystrokes.split_whitespace().next().unwrap_or_default();
+    // `secondary-` is `cmd` or `ctrl`: not plain on any platform.
+    let plain = Keystroke::parse_with_os(first, OperatingSystem::Linux).is_ok_and(|k| is_plain(&k));
     match (plain, context) {
         (false, context) => context.map(str::to_owned),
         (true, None) => Some(format!("!{TEXT_FIELD_CONTEXT}")),
@@ -65,6 +73,39 @@ pub fn binding<A: Action>(
         action,
         guarded_context(keystrokes, context).as_deref(),
     )
+}
+
+/// Like [`binding`], for keys and contexts known only at runtime (a user's
+/// keybindings): `action` bound to `keystrokes` (`ctrl-k ctrl-s`, with
+/// `secondary-` for `cmd` on macOS and `ctrl` elsewhere) in `context`, with
+/// `&& !Input` added when the first keystroke is plain. Fails with a
+/// message for keys or a context that don't parse.
+pub fn load(
+    keystrokes: &str,
+    action: Box<dyn Action>,
+    context: Option<&str>,
+    cx: &App,
+) -> Result<KeyBinding, String> {
+    if keystrokes.split_whitespace().next().is_none() {
+        return Err("no keys".to_owned());
+    }
+    let predicate = guarded_context(keystrokes, context)
+        .map(|c| {
+            KeyBindingContextPredicate::parse(&c)
+                .map(Rc::new)
+                .map_err(|e| format!("bad context `{c}`: {e}"))
+        })
+        .transpose()?;
+    let binding = KeyBinding::load(keystrokes, action, predicate, false, None, cx)
+        .map_err(|e| format!("bad keys `{keystrokes}`: {e}"))?;
+    if binding
+        .keystrokes()
+        .iter()
+        .any(|k| k.inner().key.is_empty())
+    {
+        return Err(format!("bad keys `{keystrokes}`: a chord has no key"));
+    }
+    Ok(binding)
 }
 
 /// How many bindings the component library registered before Coqo's own:
@@ -285,6 +326,27 @@ mod tests {
     }
 
     gpui_kit::actions!(keys_test, [Probe]);
+
+    #[test]
+    fn runtime_bindings_get_the_same_guard() {
+        let cx = gpui_kit::TestAppContext::single();
+        cx.update(|cx| {
+            mark_library_bindings(cx);
+            let plain = load("g g", Box::new(Probe), Some("View"), cx).unwrap();
+            let modified = load("ctrl-k ctrl-s", Box::new(Probe), None, cx).unwrap();
+            assert_eq!(
+                plain.predicate().unwrap().to_string(),
+                predicate("(View) && !Input").to_string()
+            );
+            assert!(modified.predicate().is_none());
+            assert_eq!(modified.keystrokes().len(), 2);
+            cx.bind_keys([plain, modified]);
+            assert_eq!(unguarded_bindings(cx), Vec::<String>::new());
+            assert!(load("", Box::new(Probe), None, cx).is_err());
+            assert!(load("ctrl-", Box::new(Probe), None, cx).is_err());
+            assert!(load("x", Box::new(Probe), Some("((("), cx).is_err());
+        });
+    }
 
     #[test]
     fn bindings_made_with_the_helper_pass_the_guard() {

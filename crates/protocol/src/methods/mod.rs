@@ -31,10 +31,13 @@
 //!   after a change, and the reader's progress.
 //! - [`threads`]: `threads/*` and `review/*`, comment threads on diff lines
 //!   and the user's pending review.
+//! - [`commands`]: `commands/*`, the commands mods contribute, for the
+//!   command palette and keybindings.
 
 pub mod agents;
 pub mod alerts;
 pub mod buffer;
+pub mod commands;
 pub mod editor;
 pub mod fs;
 pub mod git;
@@ -152,4 +155,10 @@ pub mod codes {
     /// The comment is not the caller's to change: an agent's reply, or one
     /// from GitHub.
     pub const NOT_YOUR_COMMENT: i64 = 1803;
+
+    /// No mod handles a command with the given id (its mod was disabled,
+    /// say): list the commands again.
+    pub const UNKNOWN_COMMAND: i64 = 1901;
+    /// The command's handler failed; the message says why.
+    pub const COMMAND_FAILED: i64 = 1902;
 }

@@ -24,8 +24,8 @@ use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
 use crate::methods::{
-    self, agents, alerts, buffer, editor, fs, git, mcp, questions, syntax, terminal, threads,
-    walkthroughs, workspace,
+    self, agents, alerts, buffer, commands, editor, fs, git, mcp, questions, syntax, terminal,
+    threads, walkthroughs, workspace,
 };
 use crate::subscription::ResumeGap;
 
@@ -368,6 +368,12 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "Ask the UI to open a file and select a range.",
         ),
         topic::<editor::Reveals>(g, "Reveal requests for UIs to act on (live only)."),
+        request::<commands::List>(
+            g,
+            "client→server",
+            "The commands mods contribute, for the command palette and keybindings.",
+        ),
+        request::<commands::Run>(g, "client→server", "Run a mod-contributed command."),
         request::<mcp::Tools>(
             g,
             "client→server",
@@ -625,6 +631,8 @@ fn error_codes() -> Value {
         ("UNKNOWN_THREAD", methods::codes::UNKNOWN_THREAD),
         ("UNKNOWN_COMMENT", methods::codes::UNKNOWN_COMMENT),
         ("NOT_YOUR_COMMENT", methods::codes::NOT_YOUR_COMMENT),
+        ("UNKNOWN_COMMAND", methods::codes::UNKNOWN_COMMAND),
+        ("COMMAND_FAILED", methods::codes::COMMAND_FAILED),
     ];
     Value::Object(
         all.iter()

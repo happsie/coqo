@@ -45,14 +45,21 @@ gpui_kit::actions!(
     ]
 );
 
+/// The default keys of [`SplitRight`], [`SplitDown`], [`CloseTab`] and
+/// [`CloseGroup`], in that order, bound in the `Dock` context.
 #[cfg(target_os = "macos")]
-const KEYS: [&str; 4] = ["cmd-\\", "cmd-alt-\\", "cmd-w", "cmd-alt-w"];
+pub const KEYS: [&str; 4] = ["cmd-\\", "cmd-alt-\\", "cmd-w", "cmd-alt-w"];
+/// The default keys of [`SplitRight`], [`SplitDown`], [`CloseTab`] and
+/// [`CloseGroup`], in that order, bound in the `Dock` context.
 #[cfg(not(target_os = "macos"))]
-const KEYS: [&str; 4] = ["ctrl-\\", "ctrl-alt-\\", "ctrl-w", "ctrl-alt-w"];
+pub const KEYS: [&str; 4] = ["ctrl-\\", "ctrl-alt-\\", "ctrl-w", "ctrl-alt-w"];
+
+/// The dock's key context.
+pub const KEY_CONTEXT: &str = "Dock";
 
 pub(crate) fn init(cx: &mut App) {
     cx.default_global::<TabRegistry>();
-    let context = Some("Dock");
+    let context = Some(KEY_CONTEXT);
     cx.bind_keys([
         keys::binding(KEYS[0], SplitRight, context),
         keys::binding(KEYS[1], SplitDown, context),

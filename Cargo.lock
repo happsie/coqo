@@ -1182,10 +1182,12 @@ dependencies = [
  "futures",
  "futures-util",
  "ropey",
+ "serde_json",
  "similar",
  "tempfile",
  "tokio",
  "tokio-util",
+ "toml 1.2.3+spec-1.1.0",
 ]
 
 [[package]]

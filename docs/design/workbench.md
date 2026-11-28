@@ -6,7 +6,7 @@ How the workbench window (design board 1) is arranged and how code adds to it. T
 
 ## Regions
 
-- **Top bar:** the brand ring and the current workspace's name ("Coqo · No workspace open" without one), then the `TopBarStart` slot, the command search, and the `TopBarEnd` slot (the bolt and the `coqod` pill: a grey dot while connecting, a sage dot with a halo when connected, a rose dot with **Retry** when not connected).
+- **Top bar:** the brand ring and the current workspace's name ("Coqo · No workspace open" without one), then the `TopBarStart` slot, the command search (a click or `Ctrl K` opens the command palette under it, see [palette.md](palette.md)), and the `TopBarEnd` slot (the bolt and the `coqod` pill: a grey dot while connecting, a sage dot with a halo when connected, a rose dot with **Retry** when not connected).
 - **Workspace rail:** 52 px. One 42 px button per known workspace with its initials (the window's own lit in sage), then the dashed **+** that opens a folder. See [Workspace rail](#workspace-rail) below.
 - **Sidebar panel:** `panel_raised`, 250 px by default, 180 to 520 px by dragging the gap to its right. A tab strip switches between registered panes; the CHATS list of the workspace's agent sessions stays at the bottom ([chat.md](chat.md)).
 - **Main tab area (the dock):** tab groups in splits. Each group is its own floating `panel` with a tab strip and a split button; groups are 10 px (`gap`) apart.

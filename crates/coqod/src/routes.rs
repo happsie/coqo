@@ -30,13 +30,14 @@ use crate::syntax::{self, SyntaxService};
 use crate::threads::{self, ThreadService};
 use crate::walkthroughs::{self, WalkthroughService};
 use crate::workspace::{self, WorkspaceService};
-use crate::{agents, alerts, file_ops, methods, terminal};
+use crate::{agents, alerts, commands, file_ops, methods, terminal};
 
 /// Build the daemon's router. Called once at startup, inside the runtime;
 /// an error stops the daemon before it accepts clients.
 pub fn router(ctx: &DaemonContext) -> Result<Router> {
     let router = Router::new();
     let router = methods::register(router, ctx);
+    let router = commands::register(router, ctx.mods.clone());
     let router = mcp_tools::register(
         router,
         McpToolService::new(ctx.mods.clone(), ctx.shutdown.clone()),

@@ -15,7 +15,7 @@
 //! workspace's permission rules are in [`permission`]; the acceptance
 //! criteria card is in [`criteria`].
 
-mod composer;
+pub(crate) mod composer;
 mod criteria;
 mod permission;
 mod walkthroughs;
