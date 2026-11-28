@@ -9,9 +9,11 @@ on:
 permissions:
   contents: read
 
+# A PR's newer push cancels its older run. Every commit on main runs to the
+# end (grouped by its own sha), so each merge is tested as it landed.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
