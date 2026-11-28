@@ -39,6 +39,10 @@ pub(crate) fn not_a_file(path: &str) -> ErrorObject {
     ErrorObject::new(codes::NOT_A_FILE, format!("{path:?} is not a regular file"))
 }
 
+pub(crate) fn exists(path: &str) -> ErrorObject {
+    ErrorObject::new(codes::ALREADY_EXISTS, format!("{path:?} already exists"))
+}
+
 pub(crate) fn closed(id: &WorkspaceId) -> ErrorObject {
     ErrorObject::new(
         codes::WORKSPACE_CLOSED,
@@ -54,6 +58,13 @@ pub(crate) fn io(path: impl AsRef<Path>, e: &io::Error) -> ErrorObject {
         io::ErrorKind::NotADirectory => {
             ErrorObject::new(codes::NOT_A_DIRECTORY, format!("{path}: not a directory"))
         }
+        io::ErrorKind::AlreadyExists => {
+            ErrorObject::new(codes::ALREADY_EXISTS, format!("{path} already exists"))
+        }
+        io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => ErrorObject::new(
+            codes::PERMISSION_DENIED,
+            format!("{path}: permission denied"),
+        ),
         _ => ErrorObject::new(codes::IO_ERROR, format!("{path}: {e}")),
     }
 }

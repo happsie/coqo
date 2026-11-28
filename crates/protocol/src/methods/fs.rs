@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! `fs/*`: read-only file-system access inside a workspace, and live change
-//! events, for the file tree.
+//! `fs/*`: file-system access inside a workspace and live change events, for
+//! the file tree.
 //!
 //! **Paths** are relative to one of the workspace's roots: a [`RootId`] plus
 //! a `/`-separated path such as `src/main.rs` (`""` is the root itself).
@@ -15,7 +15,10 @@
 //! ignored too). `.git` itself is always reported as ignored. Ignored entries
 //! are still listed; the UI decides how to show them.
 //!
-//! Writing files belongs to buffers, not to this module.
+//! **File operations** ([`Create`], [`Rename`], [`Delete`]) create, rename or
+//! move, and delete entries for the file tree. They take the daemon token
+//! only: agents have file tools of their own. Writing a file's contents
+//! belongs to buffers, not to this module.
 
 use serde::{Deserialize, Serialize};
 
@@ -170,6 +173,72 @@ pub struct FsChanges {
     pub rescan: bool,
 }
 
+/// Params of [`Create`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct CreateParams {
+    /// The workspace.
+    pub workspace: WorkspaceId,
+    /// The root the path is relative to.
+    pub root: RootId,
+    /// `/`-separated path of the new entry, relative to the root. Missing
+    /// folders on the way are created.
+    pub path: String,
+    /// [`File`](EntryKind::File) (empty) or [`Dir`](EntryKind::Dir).
+    pub kind: EntryKind,
+}
+
+/// Params of [`Rename`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct RenameParams {
+    /// The workspace.
+    pub workspace: WorkspaceId,
+    /// The root both paths are relative to.
+    pub root: RootId,
+    /// The entry to rename or move. A symlink is moved itself, not its
+    /// target.
+    pub from: String,
+    /// Its new path. The folder it goes in must exist, and nothing may be
+    /// there yet ([`ALREADY_EXISTS`](super::codes::ALREADY_EXISTS)).
+    pub to: String,
+}
+
+/// Params of [`Delete`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct DeleteParams {
+    /// The workspace.
+    pub workspace: WorkspaceId,
+    /// The root the path is relative to.
+    pub root: RootId,
+    /// The entry to delete (a folder with everything in it). A symlink is
+    /// deleted itself, not its target.
+    pub path: String,
+    /// Delete it for good instead of moving it to the OS trash. Without it,
+    /// an entry that cannot go to the trash is left alone and the call fails
+    /// with [`TRASH_FAILED`](super::codes::TRASH_FAILED).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub permanent: bool,
+}
+
+/// Result of [`Create`] and [`Rename`]: the entry's path, normalised
+/// (`./a//b` is `a/b`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct EntryResult {
+    /// `/`-separated path relative to the root.
+    pub path: String,
+}
+
+/// Result of [`Delete`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct DeleteResult {
+    /// Whether it went to the OS trash (`false`: deleted for good).
+    pub trashed: bool,
+}
+
 /// `fs/list`: list a directory.
 #[derive(Debug)]
 pub enum ListDir {}
@@ -195,6 +264,37 @@ impl Method for ReadFile {
     const NAME: &'static str = "fs/read";
     type Params = ReadParams;
     type Result = ReadResult;
+}
+
+/// `fs/create`: create an empty file or a folder. Daemon token only.
+#[derive(Debug)]
+pub enum Create {}
+impl Method for Create {
+    const NAME: &'static str = "fs/create";
+    type Params = CreateParams;
+    type Result = EntryResult;
+}
+
+/// `fs/rename`: rename or move an entry within one root. Open buffers of
+/// the files it moves follow it (same buffer id, unsaved edits kept).
+/// Daemon token only.
+#[derive(Debug)]
+pub enum Rename {}
+impl Method for Rename {
+    const NAME: &'static str = "fs/rename";
+    type Params = RenameParams;
+    type Result = EntryResult;
+}
+
+/// `fs/delete`: move an entry to the OS trash, or delete it for good with
+/// `permanent`. Open buffers of the files it deletes keep their text.
+/// Daemon token only.
+#[derive(Debug)]
+pub enum Delete {}
+impl Method for Delete {
+    const NAME: &'static str = "fs/delete";
+    type Params = DeleteParams;
+    type Result = DeleteResult;
 }
 
 /// `fs/changes`: live, debounced change events for an open workspace. Not

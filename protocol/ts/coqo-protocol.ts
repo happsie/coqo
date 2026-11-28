@@ -6,6 +6,7 @@ export const PROTOCOL_VERSION = { major: 0, minor: 1 } as const;
 
 /** JSON-RPC 2.0 error codes used by the protocol. */
 export const ErrorCodes = {
+  ALREADY_EXISTS: 1010,
   AUTH_REQUIRED: 1107,
   FILE_TOO_LARGE: 1005,
   FORBIDDEN: -32007,
@@ -27,6 +28,7 @@ export const ErrorCodes = {
   NO_SUCH_TERMINAL: 1301,
   PARSE_ERROR: -32700,
   PATH_OUTSIDE_WORKSPACE: 1003,
+  PERMISSION_DENIED: 1011,
   PROVIDER_ERROR: 1108,
   REQUEST_CANCELLED: -32005,
   RESUME_GAP: -32003,
@@ -37,6 +39,7 @@ export const ErrorCodes = {
   SPAWN_FAILED: 1302,
   STALE_SELECTION: 1602,
   STORAGE_ERROR: 1109,
+  TRASH_FAILED: 1012,
   UNAUTHORIZED: -32006,
   UNKNOWN_BUFFER: 1201,
   UNKNOWN_COMMENT: 1802,
@@ -686,6 +689,18 @@ export type CreateBranchParams = {
 
 /** Params of [`Create`]. */
 export type CreateParams = {
+  /** [`File`](EntryKind::File) (empty) or [`Dir`](EntryKind::Dir). */
+  kind: EntryKind;
+  /** `/`-separated path of the new entry, relative to the root. Missing folders on the way are created. */
+  path: string;
+  /** The root the path is relative to. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Params of [`Create`]. */
+export type CreateParams2 = {
   /** The code it is about: 1 to [`MAX_ANCHORS`] locations, the files as they are now (open buffers with their unsaved edits). */
   anchors: Array<NewAnchor>;
   /** The question or note, in markdown. */
@@ -703,7 +718,7 @@ export type CreateParams = {
 };
 
 /** Params of [`Create`]. */
-export type CreateParams2 = {
+export type CreateParams3 = {
   /** The publishing agent session. */
   session: string;
   /** The [`WalkthroughDraft`], as the agent wrote it. Checked by the daemon, which reports every problem at once, so it is any JSON here. */
@@ -713,7 +728,7 @@ export type CreateParams2 = {
 };
 
 /** Params of [`Create`]. */
-export type CreateParams3 = {
+export type CreateParams4 = {
   /** The first comment, in markdown. */
   body: string;
   /** The diff source's identity, so the thread can be listed by diff. */
@@ -824,10 +839,28 @@ export type DeleteCommentResult = {
 
 /** Params of [`Delete`]. */
 export type DeleteParams = {
+  /** The entry to delete (a folder with everything in it). A symlink is deleted itself, not its target. */
+  path: string;
+  /** Delete it for good instead of moving it to the OS trash. Without it, an entry that cannot go to the trash is left alone and the call fails with [`TRASH_FAILED`](super::codes::TRASH_FAILED). */
+  permanent?: boolean;
+  /** The root the path is relative to. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Params of [`Delete`]. */
+export type DeleteParams2 = {
   /** Also delete its committed file, if it has one. Default: the file stays (it may be committed already; git is the user's). */
   deleteFile?: boolean;
   /** The walkthrough. */
   id: WalkthroughId;
+};
+
+/** Result of [`Delete`]. */
+export type DeleteResult = {
+  /** Whether it went to the OS trash (`false`: deleted for good). */
+  trashed: boolean;
 };
 
 /** Params of [`DiffFiles`]. */
@@ -983,6 +1016,12 @@ export type Encoding = "json" | "msgpack";
 
 /** What a path points at. */
 export type EntryKind = "file" | "dir" | "other";
+
+/** Result of [`Create`] and [`Rename`]: the entry's path, normalised (`./a//b` is `a/b`). */
+export type EntryResult = {
+  /** `/`-separated path relative to the root. */
+  path: string;
+};
 
 /** A JSON-RPC 2.0 error object (§5.1). */
 export type ErrorObject = {
@@ -1827,6 +1866,18 @@ export type RenameParams = {
   id: WorkspaceId;
   /** The new display name (not empty). */
   name: string;
+};
+
+/** Params of [`Rename`]. */
+export type RenameParams2 = {
+  /** The entry to rename or move. A symlink is moved itself, not its target. */
+  from: string;
+  /** The root both paths are relative to. */
+  root: RootId;
+  /** Its new path. The folder it goes in must exist, and nothing may be there yet ([`ALREADY_EXISTS`](super::codes::ALREADY_EXISTS)). */
+  to: string;
+  /** The workspace. */
+  workspace: WorkspaceId;
 };
 
 /** Identifies one replica of a buffer (one editor in one window), e.g. `r-3f2a9c1d0b7e4a65`. Assigned by [`Open`]; a replica keeps it across reconnects and reopens so the daemon can recognise its changes. */
@@ -3313,6 +3364,12 @@ export interface Requests {
   "fs/stat": { params: PathParams; result: FileStat };
   /** Read a file in a workspace root, up to a size limit. (client→server) */
   "fs/read": { params: ReadParams; result: ReadResult };
+  /** Create an empty file or a folder in a workspace root (daemon token only). (client→server) */
+  "fs/create": { params: CreateParams; result: EntryResult };
+  /** Rename or move an entry within a workspace root; open buffers follow it (daemon token only). (client→server) */
+  "fs/rename": { params: RenameParams2; result: EntryResult };
+  /** Move an entry to the OS trash, or delete it for good with permanent (daemon token only). (client→server) */
+  "fs/delete": { params: DeleteParams; result: DeleteResult };
   /** Every agent provider, with whether it is available. (client→server) */
   "agents/providers": { params: null; result: Array<ProviderInfo> };
   /** Run a provider's setup action (such as installing its adapter) at the user's request. (client→server) */
@@ -3392,7 +3449,7 @@ export interface Requests {
   /** A follow-up in a thread the user started. (client→server) */
   "questions/reply": { params: ReplyParams; result: Question };
   /** An agent asks a question or adds a note pinned to code. (client→server) */
-  "questions/create": { params: CreateParams; result: Question };
+  "questions/create": { params: CreateParams2; result: Question };
   /** A root's repository: branch and changed paths. (client→server) */
   "git/status": { params: RepoParams; result: StatusResult };
   /** One file's hunks between two sides (work tree, index, a revision). (client→server) */
@@ -3442,17 +3499,17 @@ export interface Requests {
   /** One walkthrough, anchors resolved against the files as they are now. (client→server) */
   "walkthroughs/get": { params: WalkthroughParams; result: Walkthrough };
   /** Forget a walkthrough (and optionally its committed file). (client→server) */
-  "walkthroughs/delete": { params: DeleteParams; result: boolean };
+  "walkthroughs/delete": { params: DeleteParams2; result: boolean };
   /** Mark a step unread, understood or with a question. (client→server) */
   "walkthroughs/setStepState": { params: SetStepStateParams; result: WalkthroughSummary };
   /** An agent publishes a walkthrough; every problem of a bad draft is reported at once. (client→server) */
-  "walkthroughs/create": { params: CreateParams2; result: Walkthrough };
+  "walkthroughs/create": { params: CreateParams3; result: Walkthrough };
   /** A workspace's comment threads, anchors resolved now, with the changes seq. (client→server) */
   "threads/list": { params: ListParams4; result: ThreadList };
   /** One thread, anchors resolved now. (client→server) */
   "threads/get": { params: ThreadParams; result: Thread };
   /** Start a thread on lines of a file version (or the whole file). (client→server) */
-  "threads/create": { params: CreateParams3; result: Thread };
+  "threads/create": { params: CreateParams4; result: Thread };
   /** Add the user's comment to a thread. (client→server) */
   "threads/reply": { params: ReplyParams2; result: Thread };
   /** Change one of the user's comments. (client→server) */

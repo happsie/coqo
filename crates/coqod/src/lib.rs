@@ -32,7 +32,9 @@
 //! - [`syntax`]: symbols, outline and folding of open buffers
 //!   (`syntax/*`, tree-sitter via `coqo-syntax`).
 //! - [`workspace`]: workspaces (folder roots), their persisted state, and
-//!   read-only file-system access with live change events.
+//!   file-system access with live change events.
+//! - [`file_ops`]: the file tree's create, rename and delete (`fs/create`,
+//!   `fs/rename`, `fs/delete`); open buffers follow a rename.
 //!
 //! Clients reach the daemon through `coqo-client`, never this crate.
 
@@ -44,6 +46,7 @@ pub mod cli;
 pub mod daemon;
 pub mod editor;
 pub mod editor_mcp;
+pub mod file_ops;
 pub mod git;
 pub mod lifecycle;
 pub mod mcp_tools;

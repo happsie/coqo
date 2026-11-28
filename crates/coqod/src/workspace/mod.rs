@@ -9,11 +9,13 @@
 //! Every change is appended to the event log in the same transaction and
 //! published on `workspace/events`.
 //!
-//! The service also gives the file tree read-only access inside a
-//! workspace's roots (`fs/list`, `fs/stat`, `fs/read`, confined to the roots,
-//! with git ignore rules) and debounced change events (`fs/changes`) from a
-//! watcher that starts with the first subscriber of an open workspace and
-//! stops when the workspace closes.
+//! The service also gives the file tree access inside a workspace's roots
+//! (`fs/list`, `fs/stat`, `fs/read`, confined to the roots, with git ignore
+//! rules), the tree's file operations (`fs/create`, `fs/rename`,
+//! `fs/delete`, registered with the buffers in [`crate::file_ops`]), and
+//! debounced change events (`fs/changes`) from a watcher that starts with
+//! the first subscriber of an open workspace and stops when the workspace
+//! closes.
 //!
 //! The method and event types are in [`coqo_protocol::methods`]; this module
 //! implements them. Wire it into the daemon's router with [`register`]:
@@ -32,6 +34,7 @@ mod error;
 mod events;
 mod fs;
 mod ignores;
+mod ops;
 mod paths;
 mod store;
 mod watch;
@@ -53,6 +56,8 @@ use coqo_protocol::{Access, ErrorObject, EventFeed, Router, Scope};
 use coqo_storage::{DataDirs, GlobalDb, StorageError};
 
 use self::ignores::IgnoreCache;
+pub(crate) use self::ops::Renamed;
+pub use self::ops::Trash;
 pub use self::watch::WatchConfig;
 use self::watch::WorkspaceWatcher;
 
@@ -82,6 +87,7 @@ pub struct WorkspaceService {
     watchers: Mutex<HashMap<WorkspaceId, Arc<WorkspaceWatcher>>>,
     ignores: Arc<IgnoreCache>,
     watch_config: WatchConfig,
+    trash: Trash,
 }
 
 fn now_ms() -> i64 {
@@ -146,7 +152,15 @@ impl WorkspaceService {
             watchers: Mutex::default(),
             ignores: Arc::default(),
             watch_config,
+            trash: Trash::default(),
         })
+    }
+
+    /// Where `fs/delete` puts deleted entries (the OS trash by default).
+    #[must_use]
+    pub fn with_trash(mut self, trash: Trash) -> Self {
+        self.trash = trash;
+        self
     }
 
     fn db(&self) -> MutexGuard<'_, GlobalDb> {
@@ -560,6 +574,75 @@ impl WorkspaceService {
         .await
     }
 
+    /// `fs/create`.
+    pub async fn create_entry(
+        self: &Arc<Self>,
+        p: fsm::CreateParams,
+    ) -> Result<fsm::EntryResult, ErrorObject> {
+        self.with_root(p.workspace, p.root, move |_, roots| {
+            ops::create(roots, &p.path, p.kind).map(|path| fsm::EntryResult { path })
+        })
+        .await
+    }
+
+    /// The real path of the entry `rel` names (its parent resolved, the
+    /// entry itself not followed), as `fs/rename` and `fs/delete` see it.
+    pub(crate) async fn entry_path(
+        self: &Arc<Self>,
+        workspace: WorkspaceId,
+        root: RootId,
+        rel: String,
+    ) -> Result<PathBuf, ErrorObject> {
+        self.with_root(workspace, root, move |_, roots| {
+            ops::entry(roots, &rel).map(|e| e.path)
+        })
+        .await
+    }
+
+    /// `fs/rename`, on disk only: [`crate::file_ops`] moves open buffers.
+    pub(crate) async fn rename_entry(
+        self: &Arc<Self>,
+        p: fsm::RenameParams,
+    ) -> Result<Renamed, ErrorObject> {
+        self.with_root(p.workspace, p.root, move |_, roots| {
+            ops::rename(roots, &p.from, &p.to)
+        })
+        .await
+    }
+
+    /// `fs/delete`.
+    pub async fn delete_entry(
+        self: &Arc<Self>,
+        p: fsm::DeleteParams,
+    ) -> Result<fsm::DeleteResult, ErrorObject> {
+        let trash = self.trash.clone();
+        self.with_root(p.workspace, p.root, move |_, roots| {
+            ops::delete(roots, &p.path, p.permanent, &trash)
+                .map(|trashed| fsm::DeleteResult { trashed })
+        })
+        .await
+    }
+
+    /// The `(root, path)` pairs under which `fs/changes` reports changes to
+    /// the real path `real`: one per root it is under.
+    pub(crate) async fn watch_keys(
+        self: &Arc<Self>,
+        workspace: WorkspaceId,
+        real: PathBuf,
+    ) -> Result<Vec<(RootId, String)>, ErrorObject> {
+        self.blocking(move |s| {
+            let roots = s.roots_of(&workspace)?;
+            Ok(roots
+                .iter()
+                .filter_map(|(id, path)| {
+                    let rest = real.strip_prefix(path).ok()?.to_str()?;
+                    (!rest.is_empty()).then(|| (*id, rest.replace(std::path::MAIN_SEPARATOR, "/")))
+                })
+                .collect())
+        })
+        .await
+    }
+
     /// Resolve a file for the buffer service: confined to the workspace's
     /// roots like `fs/read`, and with every `(root, path)` the watcher may
     /// report it under (the path as named, and its real path if that is
@@ -689,7 +772,9 @@ macro_rules! route {
 /// `coqod mcp` gets) may read its own workspace: `workspace/get`,
 /// `workspace/getState`, `fs/*` and `workspace/events` filtered to it.
 /// Opening, listing and managing workspaces (adding a root widens file
-/// access) and writing the UI's state need the daemon token.
+/// access) and writing the UI's state need the daemon token. The file
+/// operations (`fs/create`, `fs/rename`, `fs/delete`) are registered by
+/// [`crate::file_ops::register`], also for the daemon token only.
 pub fn register(router: Router, svc: Arc<WorkspaceService>) -> Router {
     let router = route!(router, svc, wsm::Open, Access::daemon(), |s, p| s
         .open_workspace(p));

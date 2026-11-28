@@ -9,8 +9,9 @@
 //! [`Client::subscribe`](crate::Client::subscribe).
 //!
 //! - [`workspace`]: `workspace/*`, workspaces (folder roots) and their state.
-//! - [`fs`]: `fs/*`, read-only file-system access inside a workspace and
-//!   live change events.
+//! - [`fs`]: `fs/*`, file-system access inside a workspace (listing,
+//!   reading, and the file tree's create, rename and delete) and live change
+//!   events.
 //! - [`agents`]: `agents/*` and `sessions/*`, agent providers and the
 //!   daemon-owned agent sessions (`coqo.agents@1`, PLAN §7.3).
 //! - [`buffer`]: `buffer/*`, replicated text buffers (open, edit, save).
@@ -67,8 +68,15 @@ pub mod codes {
     pub const NOT_A_FILE: i64 = 1007;
     /// The operation needs an open workspace.
     pub const WORKSPACE_CLOSED: i64 = 1008;
-    /// A file-system error (permissions, I/O).
+    /// A file-system error (I/O).
     pub const IO_ERROR: i64 = 1009;
+    /// Something is already at the path (`fs/create`, `fs/rename`).
+    pub const ALREADY_EXISTS: i64 = 1010;
+    /// The operating system refused: no permission for the path.
+    pub const PERMISSION_DENIED: i64 = 1011;
+    /// The entry could not be moved to the OS trash (no trash on that file
+    /// system, say). It was left alone: delete it with `permanent` instead.
+    pub const TRASH_FAILED: i64 = 1012;
     /// No agent session has the given id.
     pub const UNKNOWN_SESSION: i64 = 1101;
     /// No agent provider has the given id, or it is not available (its mod

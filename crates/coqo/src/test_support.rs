@@ -54,6 +54,8 @@ impl TestDaemon {
 
     pub fn serve(&mut self) {
         let (paths, data) = (self.paths.clone(), DataDirs::at(&self.data));
+        // Never the user's trash.
+        let trash = coqod::workspace::Trash::Folder(self.trash());
         // Binding needs the runtime's reactor.
         let _entered = self.runtime.enter();
         let lock = coqod::daemon::acquire(&paths).unwrap();
@@ -63,10 +65,15 @@ impl TestDaemon {
             exit_after: None,
         };
         self.serving = Some(self.runtime.spawn(async move {
-            coqod::daemon::serve(paths, data, policy, lock, listener)
+            coqod::daemon::serve_with(paths, data, policy, lock, listener, trash)
                 .await
                 .unwrap();
         }));
+    }
+
+    /// Where `fs/delete` puts deleted entries: a folder next to the data.
+    pub fn trash(&self) -> PathBuf {
+        self.data.with_file_name("trash")
     }
 
     /// `daemon/shutdown`, and wait until it stopped.

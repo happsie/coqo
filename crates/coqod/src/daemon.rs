@@ -27,6 +27,7 @@ use crate::auth::{self, Auth};
 use crate::lifecycle::{Activity, IdlePhase, IdlePolicy, idle_monitor};
 use crate::mods::{self, Mods};
 use crate::routes;
+use crate::workspace::Trash;
 
 /// The daemon's version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -76,6 +77,9 @@ pub struct DaemonContext {
     /// Where ACP agents' `terminal/*` commands run: set to the daemon's
     /// terminals in [`routes::router`], like `agent_fs`.
     pub agent_terminals: coqo_acp_host::TerminalHandle,
+    /// Where `fs/delete` puts deleted entries: the OS trash, or a folder
+    /// (tests).
+    pub trash: Trash,
 }
 
 /// Why the daemon could not start.
@@ -194,6 +198,19 @@ pub async fn serve(
     lock: InstanceLock,
     listener: UnixListener,
 ) -> Result<()> {
+    serve_with(paths, data, idle_policy, lock, listener, Trash::System).await
+}
+
+/// [`serve`], with `fs/delete` putting deleted entries in `trash` (tests
+/// pass a folder, so they never touch the user's trash).
+pub async fn serve_with(
+    paths: DaemonPaths,
+    data: DataDirs,
+    idle_policy: IdlePolicy,
+    lock: InstanceLock,
+    listener: UnixListener,
+    trash: Trash,
+) -> Result<()> {
     // Nobody can have swapped the directory (it is ours and 0700, and so
     // is its entry in a sticky /tmp), but check before trusting the
     // path-bound socket.
@@ -219,6 +236,7 @@ pub async fn serve(
         auth: auth.clone(),
         agent_fs,
         agent_terminals,
+        trash,
     };
     let router = routes::router(&ctx)?;
     tracing::debug!(?router, "routes registered");
