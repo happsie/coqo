@@ -18,6 +18,17 @@
 //! nobody else can create or rename entries in a directory that is ours
 //! and `0700`, and [`RuntimeDir::check_still_at_path`] confirms the path
 //! still leads to the directory we checked.
+//!
+//! "Open, creating if missing" (`O_CREAT` without `O_EXCL`) is never handed
+//! to the kernel as one `openat`: on macOS, an `openat` that loses the race
+//! to create the file fails with `ENOENT` instead of opening the file the
+//! winner created (#262). XNU's `vn_open_auth` gets `EEXIST` from the create
+//! and looks the name up again, but by then it has dropped the starting
+//! directory (`ni_dvp`) while keeping `USEDVP`, so `namei` starts from no
+//! directory and returns `ENOENT`. A plain `open` (no directory fd) retries
+//! fine, and Linux has no such path. So [`RuntimeDir::open_file`] opens
+//! without `O_CREAT`, creates with `O_CREAT | O_EXCL` if that finds nothing,
+//! and opens again if another process created the file in between.
 
 use std::fs::{DirBuilder, File, Metadata, OpenOptions};
 use std::io::{self, Read as _};
@@ -36,6 +47,10 @@ use crate::paths::{RUNTIME_DIR_ENV, TOKEN_FILE};
 const GROUP_OTHER: u32 = 0o077;
 /// Upper bound on the token file; real tokens are 64 bytes.
 const MAX_TOKEN_LEN: u64 = 1024;
+/// How many times [`RuntimeDir::open_file`] goes round "open, else create".
+/// Another round is needed only when another process created the file and
+/// removed it again before this one could open it, so one is the norm.
+const CREATE_ATTEMPTS: usize = 8;
 
 /// Why the runtime directory (or a file in it) cannot be trusted or used.
 #[derive(Debug, thiserror::Error)]
@@ -98,12 +113,13 @@ pub enum RuntimeDirError {
         path: PathBuf,
     },
     /// An OS error.
-    #[error("cannot use {}: {source}", path.display())]
+    #[error("cannot use {}: {error}", path.display())]
     Io {
         /// The path.
         path: PathBuf,
-        /// The OS error.
-        source: io::Error,
+        /// The OS error. It is part of the message, so it is not also the
+        /// error's `source()`: a `{:#}` chain would print it twice.
+        error: io::Error,
     },
 }
 
@@ -111,7 +127,7 @@ impl RuntimeDirError {
     fn io(path: &Path, source: impl Into<io::Error>) -> Self {
         RuntimeDirError::Io {
             path: path.to_owned(),
-            source: source.into(),
+            error: source.into(),
         }
     }
 }
@@ -191,7 +207,7 @@ impl RuntimeDir {
     /// Used by clients, which never create it.
     pub fn open(path: &Path) -> Result<Option<Self>, RuntimeDirError> {
         match Self::open_existing(path) {
-            Err(RuntimeDirError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Err(RuntimeDirError::Io { error, .. }) if error.kind() == io::ErrorKind::NotFound => {
                 Ok(None)
             }
             other => other.map(Some),
@@ -249,14 +265,51 @@ impl RuntimeDir {
 
     /// Open `name` inside the directory (`openat`, never following a
     /// symlink). `mode` applies when `flags` include `O_CREAT`.
+    ///
+    /// `O_CREAT` without `O_EXCL` is safe from racing processes: they all
+    /// end up with the same file (the module docs say why that takes more
+    /// than one `openat`).
     pub fn open_file(&self, name: &str, flags: OFlag, mode: u32) -> Result<File, RuntimeDirError> {
+        if flags.contains(OFlag::O_CREAT) && !flags.contains(OFlag::O_EXCL) {
+            return self.open_or_create(name, flags, mode, || {});
+        }
+        self.openat(name, flags, mode)
+            .map_err(|e| self.file_error(name, e))
+    }
+
+    /// "Open, else create": `flags` without `O_CREAT`; if there is no such
+    /// file, `flags | O_EXCL`; and if another process created it in between
+    /// (`EEXIST`), open that one. `before_create` runs just before each
+    /// create, so tests can lose the race on purpose.
+    fn open_or_create(
+        &self,
+        name: &str,
+        flags: OFlag,
+        mode: u32,
+        mut before_create: impl FnMut(),
+    ) -> Result<File, RuntimeDirError> {
+        let mut last = Errno::ENOENT;
+        for _ in 0..CREATE_ATTEMPTS {
+            match self.openat(name, flags & !OFlag::O_CREAT, 0) {
+                Err(Errno::ENOENT) => {}
+                other => return other.map_err(|e| self.file_error(name, e)),
+            }
+            before_create();
+            match self.openat(name, flags | OFlag::O_EXCL, mode) {
+                Err(Errno::EEXIST) => last = Errno::EEXIST,
+                other => return other.map_err(|e| self.file_error(name, e)),
+            }
+        }
+        Err(self.file_error(name, last))
+    }
+
+    fn openat(&self, name: &str, flags: OFlag, mode: u32) -> nix::Result<File> {
         let fd = openat(
             self.dir.as_fd(),
             name,
             flags | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
             Mode::from_bits_truncate(mode as nix::libc::mode_t),
-        )
-        .map_err(|e| self.file_error(name, e))?;
+        )?;
         Ok(File::from(fd))
     }
 
@@ -278,7 +331,7 @@ impl RuntimeDir {
         let path = self.path.join(TOKEN_FILE);
         let mut file = match self.open_file(TOKEN_FILE, OFlag::O_RDONLY, 0) {
             Ok(file) => file,
-            Err(RuntimeDirError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Err(RuntimeDirError::Io { error, .. }) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok(None);
             }
             Err(e) => return Err(e),
@@ -430,6 +483,108 @@ mod tests {
             dir.check_still_at_path(),
             Err(RuntimeDirError::Replaced { .. })
         ));
+    }
+
+    const CREATE: OFlag = OFlag::O_RDWR.union(OFlag::O_CREAT);
+
+    fn contents(mut file: &File) -> String {
+        let mut s = String::new();
+        file.read_to_string(&mut s).unwrap();
+        s
+    }
+
+    #[test]
+    fn open_file_creates_a_private_file_or_opens_the_existing_one() {
+        let tmp = private_tmp();
+        let path = tmp.path().join("run");
+        let dir = RuntimeDir::create(&path).unwrap();
+        let file = dir.open_file("f", CREATE, 0o600).unwrap();
+        assert_eq!(mode(&path.join("f")), 0o600);
+        drop(file);
+
+        // An existing file is opened as it is: not truncated, not chmodded.
+        fs::write(path.join("f"), "4242\n").unwrap();
+        fs::set_permissions(path.join("f"), fs::Permissions::from_mode(0o640)).unwrap();
+        let file = dir.open_file("f", CREATE, 0o600).unwrap();
+        assert_eq!(contents(&file), "4242\n");
+        assert_eq!(mode(&path.join("f")), 0o640);
+    }
+
+    #[test]
+    fn open_file_never_creates_through_a_symlink() {
+        let tmp = private_tmp();
+        let path = tmp.path().join("run");
+        let dir = RuntimeDir::create(&path).unwrap();
+        let target = tmp.path().join("target");
+        std::os::unix::fs::symlink(&target, path.join("f")).unwrap();
+        // Dangling: creating would make `target`.
+        let e = dir.open_file("f", CREATE, 0o600).unwrap_err();
+        assert!(matches!(e, RuntimeDirError::WrongType { .. }), "{e}");
+        assert!(!target.exists());
+        fs::write(&target, "planted").unwrap();
+        let e = dir.open_file("f", CREATE, 0o600).unwrap_err();
+        assert!(matches!(e, RuntimeDirError::WrongType { .. }), "{e}");
+    }
+
+    /// #262: another process creates the file between our "no such file"
+    /// and our create. That lost race is what macOS's single `openat
+    /// O_CREAT` turns into `ENOENT`; here it must open the winner's file.
+    #[test]
+    fn open_file_opens_the_file_another_process_created_first() {
+        let tmp = private_tmp();
+        let path = tmp.path().join("run");
+        let dir = RuntimeDir::create(&path).unwrap();
+        let mut races = 0;
+        let file = dir
+            .open_or_create("coqod.lock", CREATE, 0o600, || {
+                races += 1;
+                fs::write(path.join("coqod.lock"), "4242\n").unwrap();
+            })
+            .unwrap();
+        assert_eq!(races, 1, "created once, by the other process");
+        assert_eq!(contents(&file), "4242\n", "theirs, not truncated");
+        let theirs = fs::metadata(path.join("coqod.lock")).unwrap();
+        assert_eq!(file.metadata().unwrap().ino(), theirs.ino());
+    }
+
+    /// Many processes creating the lock at once (concurrent spawns) all
+    /// get the same file. Threads race through the same kernel path as
+    /// processes do, and this failed on macOS before #262.
+    #[test]
+    fn racing_creates_all_open_the_same_file() {
+        const THREADS: usize = 16;
+        const ROUNDS: usize = 300;
+        let tmp = private_tmp();
+        for round in 0..ROUNDS {
+            let path = tmp.path().join(format!("run{round}"));
+            let barrier = std::sync::Barrier::new(THREADS);
+            let inodes: Vec<u64> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..THREADS)
+                    .map(|_| {
+                        s.spawn(|| {
+                            let dir = RuntimeDir::create(&path).unwrap();
+                            barrier.wait();
+                            let file = dir
+                                .open_file("coqod.lock", CREATE, 0o600)
+                                .unwrap_or_else(|e| panic!("round {round}: {e}"));
+                            file.metadata().unwrap().ino()
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            assert!(inodes.iter().all(|&i| i == inodes[0]), "{inodes:?}");
+        }
+    }
+
+    #[test]
+    fn io_errors_name_the_os_error_once() {
+        let e = RuntimeDirError::io(Path::new("/run/coqod.lock"), Errno::ENOENT);
+        let message = e.to_string();
+        let os = io::Error::from(Errno::ENOENT).to_string();
+        assert_eq!(message, format!("cannot use /run/coqod.lock: {os}"));
+        // In the message, so not also the source an error chain prints.
+        assert!(std::error::Error::source(&e).is_none());
     }
 
     #[test]
