@@ -1,12 +1,32 @@
 # 33. Mods from GitHub repositories
 
-- **Status:** Accepted
+- **Status:** Accepted, revised 2026-11-28 (see below)
 - **Date:** 2026-11-28
 - **Spike:** S10, issue #355. Prototype in [`spikes/s10-mods-from-github/`](../../spikes/s10-mods-from-github/), with recorded runs in its [`results.md`](../../spikes/s10-mods-from-github/results.md). Builds on PLAN §5 (the mod system), §7.3 (the Claude policy), [ADR 0005](0005-claude-integration.md) (Claude through ACP), and the release format of #348 and #349 (GitHub Releases, `manifest.json`, minisign; [ADR 0031](0031-in-app-updater.md)).
 
+## Revision 2026-11-28
+
+The maintainer decided (verbatim): "claude plugins are not related to coqo, thats just for the harness. The mods are for the editor and everything around it."
+
+What this removes from the original decision:
+- **Claude Code plugins are not mods.** Coqo does not install them, and does not read Claude marketplaces (`marketplace.json`, `plugin.json`). Sources are `owner/repo[@ref][#subdir]` and Coqo marketplaces (`coqo.marketplace.toml`) only.
+- **No "agent plugins" part of the content tier.** The `[[contributes.agent_plugins]]` point is dropped, and so is `agent-claude` collecting mod plugins per session.
+- **No skills or slash commands bundled by mods for agents.** Skills, slash commands and agent plugins belong to the agent harness, not to Coqo mods.
+- **Trust level 2, "prompts for Claude", is removed.** It existed only for agent plugins. There are now three levels (content only, sandboxed code, runs programs as you), and the old level 4 is level 3.
+- The Claude-marketplace go/fallback rows, the `claude.*` id rule, the `CLAUDE PLUGIN` badge, and open questions 1 (plugins that run code) and 6 (`userConfig`) go with them.
+
+What stays:
+- Mods may still contribute **editor MCP tools**, served to agents through `coqod mcp` (PLAN §5's "MCP tools" contribution point), because those are editor capabilities. **Assumed, confirm with the maintainer.**
+- Coqo's own built-in Claude Code plugin (`integrations/claude-code/coqo-plugin`, the walkthrough skill) is a separate integration and is not affected.
+- Everything about resolving, pinning, the store, the lock, updates, WASM and process mods, and the dry-run plan.
+
+**The first slice is now:** install a content mod (a settings section, keybindings, and themes once a loader exists) from GitHub, pinned to a commit.
+
+The prototype's measurements of Claude marketplaces below are kept as a historical note only. Text marked "historical" or "revised" no longer describes the plan.
+
 ## Context
 
-The maintainer wants users to add mods by pointing Coqo at a GitHub repository, the way Claude Code plugins work: `/plugin marketplace add owner/repo`, then install by name. PLAN §5 already says mods install "from a local folder, a git URL, or an OCI/HTTP tarball", but it never says how, or how safely.
+The maintainer wants users to add mods by pointing Coqo at a GitHub repository, the way Claude Code plugins are added (`/plugin marketplace add owner/repo`, then install by name). Claude Code is prior art for the flow only; see the revision above. PLAN §5 already says mods install "from a local folder, a git URL, or an OCI/HTTP tarball", but it never says how, or how safely.
 
 **What the mod system can do today:**
 
@@ -38,13 +58,13 @@ The prototype resolves `owner/repo[@ref][#subdir]` to a commit through the publi
 - one raw fetch per text file it reads, by SHA.
 
 **What it does with the files:**
-- finds a `coqo.mod.toml`, a Coqo marketplace index, a Claude `marketplace.json` or a Claude plugin;
+- finds a `coqo.mod.toml` or a Coqo marketplace index (the prototype also read Claude `marketplace.json` and plugins; that part is dropped, see the revision);
 - validates manifests with the real `coqo_mod_api::Manifest`;
 - prints a dry-run plan: the files, the permissions, the contributions, a trust level, and everything that would run.
 
 It never executes, builds or installs what it reads. 12 offline tests cover the fixtures under `fixtures/`.
 
-**The runs (pinned to commits; 25 API calls in all):**
+**The runs (pinned to commits; 25 API calls in all). Historical: the Claude-marketplace rows are kept as measurements only, since Coqo no longer installs Claude plugins.**
 
 | Target | Result |
 |---|---|
@@ -81,21 +101,15 @@ It never executes, builds or installs what it reads. 12 offline tests cover the 
 - **Zed's central build farm.** Coqo has no registry or CI to build third-party WASM.
 - **VS Code's trust-the-publisher model.** There is no Coqo marketplace to verify publishers.
 
-**Can Coqo read Claude Code marketplaces? Yes, for the parts Claude Code itself runs.**
-- A Claude plugin is a folder that Claude Code interprets: skills, commands, agents, hooks, MCP and LSP servers.
-- Coqo only has to fetch it, pin it, show what it does, and hand the folder to its own Claude sessions, the way it already hands over `coqo-plugin`.
-- In the official marketplace, the 55 plugins that live in the repository read cleanly.
-- External sources:
-  - **Same path:** `github`, `url` and `git-subdir` sources on github.com resolve through the same code. They cost one more resolve each, and most are already SHA-pinned.
-  - **Refused:** `npm`, `archive` and `command` sources. A `command` source runs a program to produce the plugin, so it is never supported.
-- For other providers (the native loop, #62), skills (`SKILL.md`), commands (Markdown) and `.mcp.json` are portable, but hooks are Claude-specific.
+**Claude Code marketplaces: not read (revised 2026-11-28).**
+- Historical finding: the prototype could read them (22 of the official marketplace's 55 in-repository plugins are prompts only, and 33 have hooks or MCP or LSP servers).
+- The maintainer decided that Claude plugins are for the harness, not for Coqo. Coqo does not install them, read `marketplace.json` or `plugin.json`, or hand them to Claude sessions.
 
 ### What a repository can hold, per tier (question 2)
 
 | Tier | What the repository holds | What runs | UI it can contribute |
 |---|---|---|---|
-| **Content** (new, `tier = "content"`) | A manifest and data files: themes, keybindings, a settings schema, languages (without servers), static views, and agent plugins (skills, commands, agents) | Nothing in Coqo. An agent plugin's prompts reach Claude, and Claude Code's permission prompts still guard every tool. | **A settings section** (the `settings` schema, rendered by #26); **static declarative views** (a view tree file: markdown, lists, links, and buttons that run already-registered commands) in the sidebar, panel or a tab, through #35's renderer; themes, once a theme loader exists; keybindings |
-| **Agent plugin with code** (a content mod's `agent_plugins`, or a bare Claude plugin) | Hooks, MCP servers, LSP servers, scripts | Claude Code runs them with the user's rights. Coqo starts none of them. | None in Coqo (Claude Code's own output only) |
+| **Content** (new, `tier = "content"`) | A manifest and data files: themes, keybindings, a settings schema, languages (without servers), static views | Nothing | **A settings section** (the `settings` schema, rendered by #26); **static declarative views** (a view tree file: markdown, lists, links, and buttons that run already-registered commands) in the sidebar, panel or a tab, through #35's renderer; themes, once a theme loader exists; keybindings |
 | **WASM** | A prebuilt component, either committed at the pinned SHA or attached to a GitHub Release with its sha256 in `coqo-mod.json` | The component in the WASM host, limited by WASI capabilities from the granted permissions (#33, #36) | **Declarative view trees** (#35) in every view location, status items, commands, settings, MCP tools, alert sources, and editor contributions as #353 defines them |
 | **Process** | Per-platform executables from release assets (`<id>-<version>-<target>.tar.gz` in `coqo-mod.json`), or a script run by an interpreter on `PATH` | A supervised process with the user's rights (#34) | Same as WASM: declarative view trees over the Coqo Mod Protocol |
 | **Core** | Not installable: core mods are Rust crates compiled into Coqo | – | Native GPUI views through the UI-side mod API (#353 designs it) |
@@ -122,7 +136,7 @@ It never executes, builds or installs what it reads. 12 offline tests cover the 
 - **Marketplaces.** The source is the marketplace repository, and the user picks entries in the dialog, or with `--pick <id>` in the CLI.
 - **Pinning.** On install the ref becomes a 40-character SHA, and the files come from that SHA only: `GET /repos/{o}/{r}/tarball/{sha}`, one more API call.
   - The extractor keeps only the mod's folder. It refuses absolute paths, `..`, symlinks, hard links and devices, and caps the unpacked size and the number of files.
-  - A content mod's files lose their executable bit. An agent plugin keeps its git modes only once the user has approved "runs programs as you".
+  - A content mod's files lose their executable bit.
   - The repository's numeric id (from `GET /repos/{o}/{r}`) goes in the lock. If `owner/repo` later resolves to a different repository, Coqo refuses the update. This covers renames, transfers and repo-jacking.
 - **The store.**
   - Mods go in `<data>/mods/<id>/<version>-<sha12>/`, read-only. `<data>` is the daemon data directory (PLAN §8).
@@ -140,12 +154,11 @@ It never executes, builds or installs what it reads. 12 offline tests cover the 
 
 ### Trust and security (question 4)
 
-**Trust levels.** The install dialog shows one of four, each computed from the plan:
+**Trust levels.** The install dialog shows one of three, each computed from the plan. (Revised: the former level 2, "prompts for Claude", existed only for agent plugins and is removed; the former level 4 is now level 3.)
 
 1. **Content only:** nothing runs.
-2. **Prompts for Claude:** skills, commands and agents. They run nothing by themselves, and Claude Code's permission prompts still apply.
-3. **Sandboxed code:** WASM, limited to the listed permissions.
-4. **Runs programs as you:** process mods, language servers, and agent plugins with hooks or MCP or LSP servers. Any `allowed-tools` frontmatter also lands here, because it lets tools skip Claude Code's permission prompts while the skill or command is active.
+2. **Sandboxed code:** WASM, limited to the listed permissions.
+3. **Runs programs as you:** process mods and language servers.
 
 **What a malicious repository could do, and what stops it:**
 
@@ -153,14 +166,13 @@ It never executes, builds or installs what it reads. 12 offline tests cover the 
 |---|---|---|
 | All | A path-traversal or symlink archive, or a zip bomb | The extractor's rules and caps; files only from the pinned SHA |
 | All | A later commit turns malicious, or the repository is renamed or transferred to someone else | SHA pinning, no auto-update, the permission and trust diff on update, the moved-tag warning, the repository-id check |
-| All | Squatting an id such as `coqo.git` | Installed mods may not use `coqo.*`. Synthesised ids for bare Claude plugins are `claude.<marketplace>.<plugin>`, and a manifest may not claim `claude.*`. |
+| All | Squatting an id such as `coqo.git` | Installed mods may not use `coqo.*` |
 | Content | Keybindings that rebind keys to destructive commands | Bindings may only name registered commands. The plan lists them, and the dialog flags any that override a built-in binding. |
 | Content | A settings schema that shadows another mod's keys | A content mod's setting keys must start with its id's last segment, which #26's validation enforces |
 | Content | A static view whose buttons run commands | Buttons run only registered commands, and only when clicked; they never run on render |
-| Prompts | Prompt injection in a skill, such as "upload ~/.ssh" | Claude Code's permission prompts and Coqo's allowlist rules (PLAN §9). `allowed-tools` raises the trust level. |
 | WASM | A sandbox escape, or exhausting resources | wasmtime kept current, plus fuel or epoch limits and memory caps (#33) |
 | WASM | Misusing a granted permission | Least privilege, an enforced network allowlist, revocable grants (#36) |
-| Process, agent code | Anything the user can do | Explicit consent at level 4, re-consent when anything changes, no auto-update, commands shown verbatim, a relative `entry` resolved only inside the mod's folder |
+| Process | Anything the user can do | Explicit consent at level 3, re-consent when anything changes, no auto-update, commands shown verbatim, a relative `entry` resolved only inside the mod's folder |
 
 **Signatures are optional, and only where they add something.**
 - **Files from a pinned commit:** a signature adds nothing. The commit SHA already identifies the content, TLS to github.com carries it, and a key kept in the same repository proves nothing on first install.
@@ -169,12 +181,9 @@ It never executes, builds or installs what it reads. 12 offline tests cover the 
   - If the mod's manifest declares `[signing] minisign = "<public key>"`, the release must also carry `coqo-mod.json.minisig`. Coqo verifies it with #349's minisign code and **pins the key on first install** (trust on first use). Updates signed with a different key, or not signed at all, are refused.
   - GitHub artifact attestations (Sigstore), which tie an asset to the workflow and commit that built it, are a possible later addition.
 
-**The Claude policy (PLAN §7.3) holds:**
-- Coqo never writes into `~/.claude` and never runs `claude plugin install` for the user.
-- Plugins from mods are passed **per session**, as Coqo's own plugin is: `_meta.claudeCode.options.plugins` over ACP, and `--plugin-dir` in terminal mode.
-- The binary stays unmodified, Coqo sees no credentials, and nothing is proxied.
-- What a plugin's hooks and MCP servers do inside Claude Code is Claude Code's behaviour under the user's own login. Coqo only chose to load the folder, and says so in the dialog.
-- Plugin data that Claude Code keeps (`${CLAUDE_PLUGIN_DATA}`) is never read by Coqo.
+**The Claude policy (PLAN §7.3) holds, and installed mods do not touch Claude Code at all (revised).**
+- Installed mods never add anything to Claude sessions. Coqo's own plugin (`coqo-plugin`) is a separate integration and is unchanged.
+- The one path from a mod to an agent is an editor MCP tool served through `coqod mcp` (assumed, confirm with the maintainer).
 
 ### UX (question 5)
 
@@ -184,7 +193,7 @@ It never executes, builds or installs what it reads. 12 offline tests cover the 
 - the CLI: `coqo mod add <source> [--pick <id>]`, `list`, `enable`, `disable`, `remove`, `outdated` and `update`.
 
 **The install dialog** shows the plan, in the order the prototype prints it:
-- what it is (the tier badge, with CONTENT and CLAUDE PLUGIN next to board 8's CORE, WASM and PROCESS);
+- what it is (the tier badge, with CONTENT next to board 8's CORE, WASM and PROCESS);
 - the source and short SHA, linked to the commit;
 - the trust level as one sentence;
 - the permission chips, in board 8 style;
@@ -194,7 +203,7 @@ It never executes, builds or installs what it reads. 12 offline tests cover the 
 
 For a marketplace, the dialog lists the entries with their trust badges first.
 
-**Install** is enabled only for a plan with no errors. A level-4 plan needs a second, explicit confirmation. Nothing is downloaded beyond the plan's text files until Install is clicked, and nothing activates until the files are verified.
+**Install** is enabled only for a plan with no errors. A level-3 plan needs a second, explicit confirmation. Nothing is downloaded beyond the plan's text files until Install is clicked, and nothing activates until the files are verified.
 
 **After install:**
 - Enabling and disabling is live (`ModManager::enable` and `disable`) and is saved in the lock.
@@ -214,7 +223,6 @@ For a marketplace, the dialog lists the entries with their trust badges first.
 | Resolve, fetch, verify, store, lock; CLI | Nothing from #353. Plus the new mod store, and #154 for the `mods/*` routes. |
 | Content mods: keybindings, languages | The content tier in `coqo-mod-api`, and loading installed mods in the daemon. The readers already exist. |
 | Content mods: settings section (UI) | #26's settings UI reading the `settings` point |
-| Agent plugins in Claude sessions | The `agent_plugins` point, and `agent-claude` collecting them (it already passes one plugin) |
 | Static views (UI) | #35's view tree schema and renderer (unblocked: #31 and #24 are closed) |
 | Themes | A theme loader reading the `themes` point (`crates/ui/src/theme.rs` is fixed) |
 | Install dialog, mod manager | A design for the dialog; #37, which needs #35, #36 and #26 |
@@ -229,45 +237,42 @@ S10 does not wait for #353. The audit moves built-in features into mods and desi
 **Go.** Coqo installs mods from GitHub repositories, pinned to a commit, after a dry-run plan the user approves.
 
 **Recommended design:**
-- **Sources:** `owner/repo[@ref][#subdir]`, a Coqo marketplace (`coqo.marketplace.toml`), or a Claude Code marketplace or plugin.
+- **Sources:** `owner/repo[@ref][#subdir]`, or a Coqo marketplace (`coqo.marketplace.toml`). No Claude plugins or marketplaces.
 - **Install:** a single daemon-side mod store resolves the ref to a SHA (two to four unauthenticated GitHub API calls) and builds a plan without running anything.
 - **Storage:** the mod is extracted read-only into `<data>/mods/<id>/<version>-<sha12>/` and recorded in `installed.toml`.
 - **Updates:** offered, never applied silently.
-- **The new content tier:** no code; it carries data and agent plugins in Claude Code plugin format.
-- **Agent plugins** go to Coqo's own Claude sessions per session, exactly as `coqo-plugin` does.
+- **The new content tier:** no code; it carries data only (settings, keybindings, themes, languages without servers, static views).
+- **Agent-facing:** a mod may contribute editor MCP tools, served through `coqod mcp` (assumed, confirm with the maintainer). No skills, slash commands or agent plugins.
 
 ### Go / fallback per tier
 
 | Tier | Decision | UI it can contribute | Fallback |
 |---|---|---|---|
-| **Content** | **Go, the first slice** | Settings sections (#26), static declarative views (#35), keybindings, themes (with a theme loader) | If #35 slips: settings sections, keybindings and agent plugins only |
-| **Agent plugins** (Claude format, in a content mod or bare) | **Go, in the first slice**: "prompts" plugins without a second step, plugins with hooks or MCP or LSP servers at level 4 | None in Coqo | If the maintainer wants a narrower start: only plugins whose plan is "prompts" (no hooks, MCP or LSP servers, and no `allowed-tools`) |
+| **Content** | **Go, the first slice** | Settings sections (#26), static declarative views (#35), keybindings, themes (with a theme loader) | If #35 slips: settings sections and keybindings only |
 | **WASM** | **Go after #14, #33 and #36**: prebuilt components only, committed or as release assets with sha256, optional minisign with the key pinned on first use. Never built on install. | Declarative view trees in every view location, status items, settings, plus what #353 adds | If S7 decides process mods are the primary third-party tier: WASM installs wait, and process mods take that place |
-| **Process** | **Go after #34 and #36**, at level 4: per-platform release assets with sha256, optional minisign, no auto-update, re-consent on change | Declarative view trees, as WASM | Only scripts run by an interpreter on `PATH` (pinned by the commit), no prebuilt binaries |
+| **Process** | **Go after #34 and #36**, at level 3: per-platform release assets with sha256, optional minisign, no auto-update, re-consent on change | Declarative view trees, as WASM | Only scripts run by an interpreter on `PATH` (pinned by the commit), no prebuilt binaries |
 | **Core** | **No-go**: compiled into Coqo | Native GPUI views through #353's UI-side API, in the repository only | – |
-| **Claude marketplace sources** | **Go** for relative sources and for `github`, `url` and `git-subdir` sources on github.com | – | Relative sources only |
-|  | **No-go** for `npm`, `archive` and `command` sources | – | – |
+| **Claude plugins and marketplaces** | **No-go (2026-11-28)**: they are for the harness, not Coqo mods | – | – |
 
 ### The first slice
 
-> Install a content mod or a Claude Code plugin from GitHub, pinned to a commit, from the CLI and the palette. Its skills and commands work in Coqo's Claude sessions, its keybindings in the keymap, and **its settings appear as a section in Settings**. A static sidebar view follows as soon as #35's renderer exists.
+> Install a content mod from GitHub, pinned to a commit, from the CLI and the palette. Its keybindings work in the keymap, its themes apply once a theme loader exists, and **its settings appear as a section in Settings**. A static sidebar view follows as soon as #35's renderer exists.
 
 **Why settings for the UI piece:**
 - The smallest safe UI contribution is a settings section through #26's schema point. It is data on both sides: a manifest table in, a native form out.
 - A static declarative sidebar view is the first one users will notice. It depends on #35, which is unblocked but not started, so it is the next task rather than part of the slice.
 
 **In order:**
-1. **#360, the content tier and `agent_plugins` in `coqo-mod-api`.** The tier, its validation rules, the `agent_plugins` point, and `docs/mods/manifest.md`.
+1. **#360, the content tier in `coqo-mod-api`.** The tier, its validation rules, and `docs/mods/manifest.md`.
 2. **#361, the mod store.** Resolve, plan, fetch the tarball at the SHA, extract safely, the lock, and the repository-id check.
 3. **#362, installed mods in the daemon.** Load them at start, `mods/plan`, `mods/install` and `mods/remove` next to #154's `list`, `enable` and `disable`, and the `coqo mod` CLI.
-4. **#364, agent plugins in Claude sessions,** over ACP and in terminal mode.
-5. **#365, installed mods' settings in Settings.**
-6. **#366, "Add from GitHub" and the install dialog** (needs a design).
+4. **#365, installed mods' settings in Settings.**
+5. **#366, "Add from GitHub" and the install dialog** (needs a design).
 
 **Then:**
 - #367: static views from content mods
 - #368: update checks
-- #369: marketplaces (Coqo and Claude)
+- #369: Coqo marketplaces
 - #370: WASM and process mods from release assets
 - #371: workspace recommendations
 
@@ -289,9 +294,6 @@ default = "ACME"
 id = "team-kit.handbook"
 title = "Handbook"
 source = "views/handbook.toml"
-
-[[contributes.agent_plugins]]      # a folder in Claude Code plugin format
-path = "agent"
 ```
 
 ```toml
@@ -314,37 +316,38 @@ source = "acme/coqo-mods@v1.2.0#team-kit"
 sha = "<40 hex>"
 repository_id = 123456789
 files_sha256 = "<hex>"
-trust = "prompts"
+trust = "content"
 granted = { }                      # the permissions approved (#36)
 enabled = true
 ```
 
 ## Open questions for the maintainer
 
-1. **Plugins that run code in the first slice.** Should the first slice accept Claude plugins with hooks or MCP or LSP servers (level 4, with a second confirmation), or only "prompts" plugins? The ADR recommends accepting them with the second step, because they are most of what people install (33 of the official marketplace's 55 in-repository plugins).
-2. **The install dialog's design.** Board 8 has only the "Install mod" button. Should it be a modal, a sheet in Settings, or a tab? Do CONTENT and CLAUDE PLUGIN get their own badges?
+1. ~~Plugins that run code in the first slice.~~ **Answered 2026-11-28:** no Claude plugins at all.
+2. **The install dialog's design.** Board 8 has only the "Install mod" button. Should it be a modal, a sheet in Settings, or a tab? Does CONTENT get its own badge?
 3. **Per-workspace enablement.** Should an installed mod be enabled per workspace, as Claude Code's project scope does, or only globally? And should `.coqo/mods.toml` recommendations wait for a workspace-trust prompt, which Coqo doesn't have yet?
 4. **Private repositories and the rate limit.** Should installs and update checks use the user's GitHub token from the keychain (the PR inbox's) when one exists? That raises the limit from 60 to 5,000 an hour and reaches private repositories, but it sends a credential with every install request.
 5. **Auto-update.** Keep it off for everything, or allow it as an opt-in per mod for content mods whose update doesn't change the trust level or the permissions?
-6. **Claude plugin `userConfig`.** Should Coqo render a plugin's `userConfig` as a settings section? This needs a confirmed way to hand the values to Claude Code per session, without writing them into Claude Code's own settings.
-7. **Size caps.** 64 MiB unpacked and 20,000 files per mod are the proposed defaults. anthropics/skills' plugins are the whole 11.8 MB repository.
+6. ~~Claude plugin `userConfig`.~~ **Dropped 2026-11-28** with Claude plugins.
+7. **Mods contributing editor MCP tools (assumed, confirm with the maintainer).** The ADR assumes mods keep PLAN §5's "MCP tools" contribution point, served through `coqod mcp`.
+8. **Size caps.** 64 MiB unpacked and 20,000 files per mod are the proposed defaults. anthropics/skills' plugins are the whole 11.8 MB repository.
 
 ## Consequences
 
 - PLAN §5 gains the content tier and the install-from-GitHub flow, §8 gains the mod store paths, and §11 gains S10.
-- `coqo-mod-api` gains a fourth tier and an `agent_plugins` point. A static view's `source` file is added with #35's schema.
-- `agent-claude` passes a list of plugins rather than one. The existing `coqo-plugin` becomes the first entry.
+- `coqo-mod-api` gains a fourth tier. A static view's `source` file is added with #35's schema.
+- `agent-claude` is unchanged: `coqo-plugin` stays its only plugin.
 - The mod store and the updater (#349) share the GitHub Releases client (ETag polling, generic User-Agent) and minisign verification, so they should live in one place rather than be written twice.
 - Third-party UI stays declarative. Which view locations and editor contributions are open to it follows #353.
 - **Follow-up tasks under epic #30:**
-  - #360: the content tier and `agent_plugins`
+  - #360: the content tier
   - #361: the mod store
   - #362: installed mods in the daemon, and the CLI
-  - #364: agent plugins in Claude sessions
+  - #364: agent plugins in Claude sessions (closed as not planned, 2026-11-28)
   - #365: settings sections
   - #366: "Add from GitHub" and the install dialog (`human-needed`)
   - #367: static views
   - #368: update checks
-  - #369: marketplaces
+  - #369: Coqo marketplaces
   - #370: WASM and process mods from release assets
   - #371: workspace recommendations (`human-needed`)
