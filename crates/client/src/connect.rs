@@ -3,7 +3,9 @@
 //! Connect to the daemon, or spawn it and connect.
 
 use std::ffi::OsString;
-use std::io;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read as _, Seek as _, SeekFrom};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
@@ -13,7 +15,10 @@ use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::time::Instant;
 
-use crate::paths::{DAEMON_BIN_ENV, DaemonPaths, NoRuntimeDir, RUNTIME_DIR_ENV};
+use crate::paths::{
+    DAEMON_BIN_ENV, DATA_DIR_ENV, DaemonPaths, LOG_DIR, NoRuntimeDir, RUNTIME_DIR_ENV, STDERR_FILE,
+    STDERR_PREVIOUS_FILE, data_dir, stderr_prefix,
+};
 use crate::runtime_dir::{RuntimeDir, RuntimeDirError, current_uid};
 
 /// The flag [`connect_or_spawn`] passes to `coqod`: start a new session
@@ -65,10 +70,16 @@ pub enum ConnectError {
         source: io::Error,
     },
     /// The spawned daemon exited before its socket came up.
-    #[error("coqod exited during startup ({status}); see its log in the data directory")]
+    #[error("coqod exited during startup ({status}){}", exit_detail(reason.as_deref(), log.as_deref()))]
     DaemonExited {
         /// How it exited.
         status: ExitStatus,
+        /// Why: what it wrote to stderr before exiting (its last lines,
+        /// without the [`stderr_prefix`](crate::stderr_prefix)), or why its
+        /// stderr could not be captured.
+        reason: Option<String>,
+        /// Where its stderr went ([`STDERR_FILE`]), for more.
+        log: Option<PathBuf>,
     },
     /// The spawned daemon did not open its socket in time.
     #[error("coqod did not open {} within {timeout:?}", path.display())]
@@ -82,6 +93,14 @@ pub enum ConnectError {
     /// [`ProtocolError::IncompatibleVersion`]: restart it (PLAN §4.3).
     #[error(transparent)]
     Protocol(#[from] ProtocolError),
+}
+
+fn exit_detail(reason: Option<&str>, log: Option<&Path>) -> String {
+    match (reason, log) {
+        (Some(reason), _) => format!(": {reason}"),
+        (None, Some(log)) => format!("; see {}", log.display()),
+        (None, None) => "; see its log in the data directory".to_owned(),
+    }
 }
 
 /// How to start `coqod` when it is not running.
@@ -278,12 +297,26 @@ pub async fn connect_or_spawn(
             Err(e) => return Err(e),
         }
 
-        if let Some(status) = child.try_wait().map_err(|source| ConnectError::Spawn {
-            program: options.spawn.program.clone(),
-            source,
-        })? {
+        let exited = child
+            .process
+            .try_wait()
+            .map_err(|source| ConnectError::Spawn {
+                program: options.spawn.program.clone(),
+                source,
+            })?;
+        if let Some(status) = exited {
             if status.code() != Some(EXIT_ALREADY_RUNNING) {
-                return Err(ConnectError::DaemonExited { status });
+                let reason = child.stderr.reason(child.pid);
+                tracing::warn!(
+                    %status,
+                    reason = reason.as_deref().unwrap_or("unknown"),
+                    "coqod exited during startup"
+                );
+                return Err(ConnectError::DaemonExited {
+                    status,
+                    reason,
+                    log: child.stderr.path,
+                });
             }
             // Another daemon holds the lock: it is starting (we attach to it
             // on the next try) or shutting down (it is gone soon, so try to
@@ -301,9 +334,18 @@ pub async fn connect_or_spawn(
     }
 }
 
-fn spawn(paths: &DaemonPaths, options: &SpawnOptions) -> Result<Child, ConnectError> {
+/// A daemon this client started.
+struct Spawned {
+    process: Child,
+    /// Taken right away: the pid is gone once the child is reaped.
+    pid: Option<u32>,
+    stderr: StderrCapture,
+}
+
+fn spawn(paths: &DaemonPaths, options: &SpawnOptions) -> Result<Spawned, ConnectError> {
     tracing::info!(program = %options.program.display(), dir = %paths.runtime_dir().display(), "starting coqod");
-    Command::new(&options.program)
+    let (stderr, capture) = StderrCapture::open(options);
+    let process = Command::new(&options.program)
         .arg(DETACHED_FLAG)
         .args(&options.args)
         .env(RUNTIME_DIR_ENV, paths.runtime_dir())
@@ -312,13 +354,132 @@ fn spawn(paths: &DaemonPaths, options: &SpawnOptions) -> Result<Child, ConnectEr
         .current_dir(Path::new("/"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(stderr)
         .kill_on_drop(false)
         .spawn()
         .map_err(|source| ConnectError::Spawn {
             program: options.program.clone(),
             source,
-        })
+        })?;
+    Ok(Spawned {
+        pid: process.id(),
+        process,
+        stderr: capture,
+    })
+}
+
+/// Where a spawned daemon's stderr goes: `<data dir>/logs/coqod.stderr`,
+/// appended to (other daemons may be writing to it too). So whatever it
+/// writes before it can log, or outside the log, is kept (ADR 0007).
+#[derive(Debug, Default)]
+struct StderrCapture {
+    /// [`STDERR_FILE`], if it could be opened.
+    path: Option<PathBuf>,
+    /// Why it could not be opened (the daemon then gets `/dev/null`).
+    error: Option<String>,
+}
+
+/// At most this much of the end of a stderr file is read.
+const STDERR_TAIL_BYTES: u64 = 64 * 1024;
+/// At most this many of a daemon's last stderr lines make the reason.
+const REASON_LINES: usize = 20;
+
+impl StderrCapture {
+    fn open(options: &SpawnOptions) -> (Stdio, Self) {
+        // The daemon's `COQO_DATA_DIR`: from the spawn options, else ours.
+        let dir = options
+            .env
+            .iter()
+            .rev()
+            .find(|(k, _)| k == DATA_DIR_ENV)
+            .map(|(_, v)| v.clone())
+            .or_else(|| std::env::var_os(DATA_DIR_ENV));
+        let Some(logs) = data_dir(dir.as_deref()).map(|d| d.join(LOG_DIR)) else {
+            return (Stdio::null(), Self::default());
+        };
+        let path = logs.join(STDERR_FILE);
+        let opened = fs::create_dir_all(&logs).and_then(|()| {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .mode(0o600)
+                .open(&path)
+        });
+        match opened {
+            Ok(file) => (
+                file.into(),
+                Self {
+                    path: Some(path),
+                    error: None,
+                },
+            ),
+            Err(e) => {
+                let error = format!("cannot open {}: {e}", path.display());
+                tracing::warn!(%error, "coqod's stderr is not captured");
+                (
+                    Stdio::null(),
+                    Self {
+                        path: None,
+                        error: Some(error),
+                    },
+                )
+            }
+        }
+    }
+
+    /// Why the daemon with `pid` exited: its lines in the stderr file (and
+    /// in the previous one, in case a starting daemon rotated it meanwhile),
+    /// else why there is no file.
+    fn reason(&self, pid: Option<u32>) -> Option<String> {
+        if let Some(error) = &self.error {
+            return Some(format!("its output was not captured ({error})"));
+        }
+        let (path, pid) = (self.path.as_ref()?, pid?);
+        let mut lines = Vec::new();
+        for file in [path.with_file_name(STDERR_PREVIOUS_FILE), path.clone()] {
+            if let Ok(text) = read_tail(&file) {
+                lines.extend(lines_of(&text, pid).map(str::to_owned));
+            }
+        }
+        let skip = lines.len().saturating_sub(REASON_LINES);
+        let reason = lines[skip..].join("\n");
+        (!reason.trim().is_empty()).then_some(reason)
+    }
+}
+
+fn read_tail(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(STDERR_TAIL_BYTES)))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The lines daemon `pid` wrote to a shared stderr file: those that start
+/// with its [`stderr_prefix`] (without it), and the untagged lines that
+/// follow them, such as the rest of a multi-line panic message.
+fn lines_of(text: &str, pid: u32) -> impl Iterator<Item = &str> {
+    let prefix = stderr_prefix(pid);
+    let mut ours = false;
+    text.lines().filter_map(move |line| {
+        if let Some(rest) = line.strip_prefix(prefix.as_str()) {
+            ours = true;
+            Some(rest)
+        } else if is_tagged(line) {
+            ours = false;
+            None
+        } else {
+            ours.then_some(line)
+        }
+    })
+}
+
+/// Whether `line` starts with some daemon's [`stderr_prefix`].
+fn is_tagged(line: &str) -> bool {
+    line.strip_prefix("coqod[")
+        .and_then(|rest| rest.split_once("]: "))
+        .is_some_and(|(pid, _)| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()))
 }
 
 #[cfg(test)]
@@ -332,11 +493,23 @@ mod tests {
         (tmp, paths)
     }
 
-    fn options(program: &str) -> ConnectOptions {
+    /// Spawn `program`, with the daemon's data (and so its stderr file)
+    /// under `tmp`, never the user's.
+    fn options(program: impl Into<PathBuf>, tmp: &tempfile::TempDir) -> ConnectOptions {
         let mut options = ConnectOptions::new(ClientConfig::new("test", "test"));
         options.spawn = SpawnOptions::new(program);
+        options.spawn.env = vec![(DATA_DIR_ENV.into(), tmp.path().join("data").into())];
         options.ready_timeout = Duration::from_secs(5);
         options
+    }
+
+    /// An executable `sh` script in `tmp`, standing in for `coqod`.
+    fn script(tmp: &tempfile::TempDir, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = tmp.path().join("fake-coqod");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
     }
 
     #[tokio::test]
@@ -386,8 +559,8 @@ mod tests {
 
     #[tokio::test]
     async fn missing_binary_is_a_spawn_error() {
-        let (_tmp, paths) = run_dir();
-        let err = connect_or_spawn(&paths, &options("/nonexistent/coqod"))
+        let (tmp, paths) = run_dir();
+        let err = connect_or_spawn(&paths, &options("/nonexistent/coqod", &tmp))
             .await
             .unwrap_err();
         assert!(matches!(err, ConnectError::Spawn { .. }), "{err}");
@@ -395,17 +568,89 @@ mod tests {
 
     #[tokio::test]
     async fn daemon_that_exits_is_reported() {
-        let (_tmp, paths) = run_dir();
-        let err = connect_or_spawn(&paths, &options("false"))
+        let (tmp, paths) = run_dir();
+        let err = connect_or_spawn(&paths, &options("false", &tmp))
             .await
             .unwrap_err();
         assert!(matches!(err, ConnectError::DaemonExited { .. }), "{err}");
     }
 
     #[tokio::test]
+    async fn a_daemon_that_exits_says_why() {
+        let (tmp, paths) = run_dir();
+        // Another daemon's lines in the same file are not ours; ours are,
+        // with the untagged lines after them.
+        let program = script(
+            &tmp,
+            "echo 'coqod[1]: someone else' >&2\n\
+             echo \"coqod[$$]: cannot open the database\" >&2\n\
+             echo 'caused by: disk full' >&2\n\
+             echo 'coqod[1]: someone else again' >&2\n\
+             exit 1",
+        );
+        let err = connect_or_spawn(&paths, &options(program, &tmp))
+            .await
+            .unwrap_err();
+        let ConnectError::DaemonExited { reason, log, .. } = &err else {
+            panic!("{err}");
+        };
+        assert_eq!(
+            reason.as_deref(),
+            Some("cannot open the database\ncaused by: disk full")
+        );
+        let log = log.as_ref().expect("the stderr file");
+        assert_eq!(log, &tmp.path().join("data/logs/coqod.stderr"));
+        assert!(
+            err.to_string()
+                .ends_with("): cannot open the database\ncaused by: disk full"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_uncapturable_stderr_is_the_reason() {
+        let (tmp, paths) = run_dir();
+        // The data directory is a file: neither the launcher nor the daemon
+        // can write there.
+        std::fs::write(tmp.path().join("data"), "").unwrap();
+        let err = connect_or_spawn(&paths, &options("false", &tmp))
+            .await
+            .unwrap_err();
+        let ConnectError::DaemonExited { reason, .. } = &err else {
+            panic!("{err}");
+        };
+        let reason = reason.as_deref().unwrap_or_default();
+        assert!(reason.contains("not captured"), "{reason}");
+        assert!(reason.contains("coqod.stderr"), "{reason}");
+    }
+
+    #[test]
+    fn stderr_lines_are_attributed_by_pid() {
+        let text = "early untagged\n\
+                    coqod[7]: one\n\
+                    more of one\n\
+                    coqod[8]: other\n\
+                    more of other\n\
+                    coqod[7]: two\n\
+                    coqod[x]: not a tag\n";
+        assert_eq!(
+            lines_of(text, 7).collect::<Vec<_>>(),
+            ["one", "more of one", "two", "coqod[x]: not a tag"]
+        );
+        assert_eq!(
+            lines_of(text, 8).collect::<Vec<_>>(),
+            ["other", "more of other"]
+        );
+        assert_eq!(lines_of(text, 9).count(), 0);
+        assert!(is_tagged("coqod[12]: x"));
+        assert!(!is_tagged("coqod[]: x"));
+        assert!(!is_tagged("coqod: x"));
+    }
+
+    #[tokio::test]
     async fn an_insecure_runtime_dir_is_refused_before_connecting() {
         use std::os::unix::fs::PermissionsExt as _;
-        let (_tmp, paths) = run_dir();
+        let (tmp, paths) = run_dir();
         std::fs::create_dir(paths.runtime_dir()).unwrap();
         std::fs::set_permissions(paths.runtime_dir(), std::fs::Permissions::from_mode(0o777))
             .unwrap();
@@ -422,7 +667,7 @@ mod tests {
             "{err}"
         );
         // connect_or_spawn does not spawn over it either.
-        let err = connect_or_spawn(&paths, &options("/nonexistent/coqod"))
+        let err = connect_or_spawn(&paths, &options("/nonexistent/coqod", &tmp))
             .await
             .unwrap_err();
         assert!(matches!(err, ConnectError::RuntimeDir(_)), "{err}");

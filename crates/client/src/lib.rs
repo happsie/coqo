@@ -38,7 +38,8 @@ pub use connect::{
     connect, connect_or_spawn,
 };
 pub use paths::{
-    DAEMON_BIN_ENV, DATA_DIR_ENV, DaemonPaths, LOCK_FILE, NoRuntimeDir, RUNTIME_DIR_ENV,
-    SESSION_TOKEN_ENV, SOCKET_FILE, TOKEN_FILE,
+    DAEMON_BIN_ENV, DATA_DIR_ENV, DaemonPaths, LOCK_FILE, LOG_DIR, LOG_FILE, NoRuntimeDir,
+    RUNTIME_DIR_ENV, SESSION_TOKEN_ENV, SOCKET_FILE, STDERR_FILE, STDERR_PREVIOUS_FILE, TOKEN_FILE,
+    data_dir, default_data_dir, stderr_prefix,
 };
 pub use runtime_dir::{RuntimeDir, RuntimeDirError, current_uid};

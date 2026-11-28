@@ -15,8 +15,10 @@ Modes:
   (none)          Start the daemon in the background if it is not running,
                   then print its pid and socket.
   --foreground    Serve in this process, logging to stderr.
-  --detached      Serve in a new session (setsid), logging to a file. This is
-                  what the UI and CLI use when they spawn coqod.
+  --detached      Serve in a new session (setsid), logging to
+                  <data dir>/logs/coqod.log, with stderr (start-up errors,
+                  panics) in coqod.stderr beside it. This is what the UI and
+                  CLI use when they spawn coqod.
   --version, -V   Print the version.
   --help, -h      Print this help.
   mcp             The coqo-editor MCP server for one agent session, on stdin

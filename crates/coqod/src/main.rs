@@ -7,7 +7,8 @@ use std::process::ExitCode;
 
 use anyhow::{Context as _, Result};
 use coqo_client::{
-    ConnectOptions, DaemonPaths, EXIT_ALREADY_RUNNING, SpawnOptions, connect_or_spawn,
+    ConnectOptions, DETACHED_FLAG, DaemonPaths, EXIT_ALREADY_RUNNING, LOG_DIR, LOG_FILE,
+    STDERR_FILE, SpawnOptions, connect_or_spawn, stderr_prefix,
 };
 use coqo_kernel::logging::{self, LogConfig, LogTarget};
 use coqo_protocol::ClientConfig;
@@ -16,8 +17,19 @@ use coqod::cli::{self, Args, Mode};
 use coqod::{daemon, editor_mcp};
 
 fn main() -> ExitCode {
+    // A detached daemon's stderr is a file shared with other daemons (ADR
+    // 0007): tag what it writes there, from the first line on, so the
+    // launcher that started it can tell why it exited.
+    let detached = std::env::args_os().any(|a| a == DETACHED_FLAG);
+    if detached {
+        tag_panics();
+    }
     let args = match cli::parse(std::env::args_os().skip(1)) {
         Ok(args) => args,
+        Err(e) if detached => {
+            report(detached, &e);
+            return ExitCode::from(2);
+        }
         Err(e) => {
             eprintln!("coqod: {e}\n\n{}", cli::USAGE);
             return ExitCode::from(2);
@@ -39,16 +51,41 @@ fn main() -> ExitCode {
     match result {
         Ok(code) => code,
         Err(e) => {
-            tracing::error!(error = format!("{e:#}"), "coqod failed");
-            eprintln!("coqod: {e:#}");
+            let error = format!("{e:#}");
+            tracing::error!(pid = std::process::id(), error, "coqod failed");
+            report(detached, &error);
             ExitCode::FAILURE
         }
     }
 }
 
+/// Print a fatal error on stderr: tagged with the pid when detached.
+fn report(detached: bool, error: &str) {
+    if detached {
+        eprintln!("{}{error}", stderr_prefix(std::process::id()));
+    } else {
+        eprintln!("coqod: {error}");
+    }
+}
+
+/// Panics go to the log and, tagged, to stderr, instead of only to an
+/// untagged stderr line.
+fn tag_panics() {
+    let prefix = stderr_prefix(std::process::id());
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!(panic = %info, "coqod panicked");
+        eprintln!("{prefix}{info}");
+        let backtrace = std::backtrace::Backtrace::capture();
+        if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
+            eprintln!("{backtrace}");
+        }
+    }));
+}
+
 /// `--foreground` / `--detached`: serve until idle or told to stop.
 fn run(args: &Args) -> Result<ExitCode> {
-    if args.mode == Mode::Detached {
+    let detached = args.mode == Mode::Detached;
+    if detached {
         // Leave the spawning UI's session and process group, so closing it
         // (or its terminal) does not signal us. EPERM means we already lead
         // a process group (started from a shell), which is detached enough.
@@ -56,25 +93,40 @@ fn run(args: &Args) -> Result<ExitCode> {
     }
     let paths = DaemonPaths::from_env()?;
     let data = daemon::data_dirs()?;
-    let target = match args.mode {
-        Mode::Detached => LogTarget::File(data.root().join("logs").join("coqod.log")),
-        _ => LogTarget::Stderr,
+    let logs = data.root().join(LOG_DIR);
+    let (target, redirected) = if detached {
+        // Launchers already point our stderr at coqod.stderr; do it here
+        // too, for a daemon started some other way (`2>/dev/null`).
+        let redirected = daemon::redirect_stderr(&logs.join(STDERR_FILE));
+        (LogTarget::File(logs.join(LOG_FILE)), Some(redirected))
+    } else {
+        (LogTarget::Stderr, None)
     };
     logging::init(&LogConfig {
         target,
         ..LogConfig::default()
     })
     .context("cannot set up logging")?;
+    if let Some(Err(e)) = redirected {
+        tracing::warn!(error = %e, "cannot send stderr to {STDERR_FILE}");
+    }
 
     let lock = match daemon::acquire(&paths) {
         Ok(lock) => lock,
         Err(e @ daemon::StartError::AlreadyRunning { .. }) => {
+            // An expected outcome for a spawned daemon (the launcher attaches
+            // to the running one), so not on a detached daemon's stderr.
             tracing::warn!("{e}");
-            eprintln!("coqod: {e}");
+            if !detached {
+                eprintln!("coqod: {e}");
+            }
             return Ok(ExitCode::from(EXIT_ALREADY_RUNNING as u8));
         }
         Err(daemon::StartError::Other(e)) => return Err(e),
     };
+    if detached && let Err(e) = daemon::rotate_stderr(&logs) {
+        tracing::warn!(error = %e, "cannot rotate {STDERR_FILE}");
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("coqod")
