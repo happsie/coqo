@@ -9,8 +9,9 @@
 //!   you first (a question, a permission request, blocked), then errors,
 //!   then working, then done and idle ([`ordered`]). Each row says what the
 //!   agent is doing and how long it has been so, and offers the next step:
-//!   **Answer** (the question's popover), **Allow once** / **Deny**, **Open
-//!   chat**, stop and close. The rail's agents button and `Ctrl Shift A`
+//!   **Answer** (the question's popover), **Allow once** / **Deny**,
+//!   **Walkthrough** (a done session's published walkthrough, #265), **Open
+//!   chat**, stop and close. The header has the daemon's uptime and memory. The rail's agents button and `Ctrl Shift A`
 //!   (`Cmd Shift A`) show it.
 //! - **Welcome back** ([`away`]): when the UI attaches after being away for
 //!   more than [`away::AWAY_AFTER`], a banner over the tab area sums up what
@@ -25,6 +26,7 @@ mod tests;
 use coqo_protocol::methods::{
     agents::{AgentState, PermissionRequest, SessionId, SessionInfo},
     questions::{Question, QuestionId},
+    walkthroughs::{WalkthroughId, WalkthroughSummary},
     workspace::WorkspaceId,
 };
 use coqo_ui::keys;
@@ -302,14 +304,30 @@ pub enum AgentTarget {
         session: SessionId,
         question: QuestionId,
     },
+    /// A walkthrough it published, in the player at the first unread step.
+    Walkthrough {
+        session: SessionId,
+        walkthrough: WalkthroughId,
+    },
 }
 
 impl AgentTarget {
     /// The session it leads to.
     pub fn session(&self) -> &SessionId {
         match self {
-            Self::Chat(session) | Self::Question { session, .. } => session,
+            Self::Chat(session)
+            | Self::Question { session, .. }
+            | Self::Walkthrough { session, .. } => session,
         }
+    }
+}
+
+/// A done session's walkthrough line, board 6's "Walkthrough ready · 6
+/// steps".
+pub fn walkthrough_line(w: &WalkthroughSummary) -> String {
+    match w.steps {
+        1 => "Walkthrough ready · 1 step".to_owned(),
+        n => format!("Walkthrough ready · {n} steps"),
     }
 }
 

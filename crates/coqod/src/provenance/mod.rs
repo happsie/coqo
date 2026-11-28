@@ -34,6 +34,9 @@
 //! `agents/changedBy {workspace, root, paths}` (daemon token only) returns
 //! the sessions that last changed any of `paths`, the most recent change
 //! first, with each one's title, provider and whether it was closed.
+//! `agents/changedSince {since, workspace?}` counts the files whose last
+//! change is at or after `since`, in all and by session: the welcome back's
+//! files changed while the UI was away (#265).
 //!
 //! [`AgentFs::wrote`]: coqo_acp_host::AgentFs::wrote
 
@@ -49,9 +52,9 @@ use std::time::{Duration, Instant};
 
 use coqo_agents::{SessionManager, UpdateObserver};
 use coqo_protocol::methods::agents::{
-    self as agm, ChangeStrength, ChangedByParams, ChangedByResult, ListSessionsParams,
-    SessionChange, SessionId, SessionInfo, SessionUpdate, ToolCallContent, ToolCallId,
-    ToolCallStatus, ToolKind,
+    self as agm, ChangeStrength, ChangedByParams, ChangedByResult, ChangedSinceParams,
+    ChangedSinceResult, ListSessionsParams, SessionChange, SessionFiles, SessionId, SessionInfo,
+    SessionUpdate, ToolCallContent, ToolCallId, ToolCallStatus, ToolKind,
 };
 use coqo_protocol::methods::codes;
 use coqo_protocol::methods::fs::{ChangesParams, FsChanges};
@@ -352,6 +355,20 @@ impl Provenance {
         Ok(ChangedByResult { sessions })
     }
 
+    /// `agents/changedSince`.
+    pub fn changed_since(&self, p: &ChangedSinceParams) -> Result<ChangedSinceResult, ErrorObject> {
+        let counts = lock(&self.store)
+            .counts_since(p.since, p.workspace.as_ref())
+            .map_err(|e| storage_error(&e))?;
+        Ok(ChangedSinceResult {
+            files: counts.iter().map(|(_, n)| *n).fold(0, u32::saturating_add),
+            sessions: counts
+                .into_iter()
+                .map(|(session, files)| SessionFiles { session, files })
+                .collect(),
+        })
+    }
+
     // ---- recording ------------------------------------------------------------
 
     /// `workspace`'s roots, resolved.
@@ -615,11 +632,16 @@ impl FollowsMoves for Provenance {
     }
 }
 
-/// Registers `agents/changedBy` (daemon token only: it is the user's view
-/// of who changed what).
+/// Registers `agents/changedBy` and `agents/changedSince` (daemon token
+/// only: they are the user's view of who changed what).
 pub fn register(router: Router, svc: Arc<Provenance>) -> Router {
-    router.method_with::<agm::ChangedBy, _, _>(Access::daemon(), move |_ctx, p| {
-        let svc = Arc::clone(&svc);
-        async move { svc.changed_by(p).await }
-    })
+    let since = Arc::clone(&svc);
+    router
+        .method_with::<agm::ChangedBy, _, _>(Access::daemon(), move |_ctx, p| {
+            let svc = Arc::clone(&svc);
+            async move { svc.changed_by(p).await }
+        })
+        .method_with::<agm::ChangedSince, _, _>(Access::daemon(), move |_ctx, p| {
+            std::future::ready(since.changed_since(&p))
+        })
 }

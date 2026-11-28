@@ -181,6 +181,10 @@ async fn status_reports_the_daemon() {
     assert_eq!(status.idle.phase, IdlePhase::Active);
     assert_eq!(status.idle.exit_after_secs, Some(300));
     assert_eq!(status.idle.stop_services_after_secs, Some(1800));
+    // Its memory, with its child processes (#265).
+    let memory = status.memory.expect("the memory");
+    assert!(memory.rss_bytes > 0, "{memory:?}");
+    assert!(memory.processes >= 1, "{memory:?}");
 
     // A user-only directory and socket.
     let mode = |p: PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;

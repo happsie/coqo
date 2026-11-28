@@ -8,16 +8,19 @@
 //! the app quits, to a [`LastSeenStore`] (a small file next to the saved
 //! layouts, so it survives the UI being closed). When the UI attaches (it
 //! starts, or reconnects) and was last attached more than [`AWAY_AFTER`]
-//! ago, it asks the daemon for the sessions and alerts (`sessions/list`,
-//! `alerts/list`) and sums up what changed since then ([`WelcomeBack`]):
-//! sessions that finished, failed, need you or still work, and the alerts
-//! raised meanwhile that are unread. Nothing is shown after a quick
+//! ago, it asks the daemon for the sessions, alerts and changed files
+//! (`sessions/list`, `alerts/list`, `agents/changedSince`) and sums up what
+//! changed since then ([`WelcomeBack`]): sessions that finished, failed,
+//! need you or still work, the files agents changed, and the alerts raised
+//! meanwhile that are unread. A heartbeat that comes more than
+//! [`AWAY_AFTER`] late (the machine slept with the UI attached) is summed
+//! up the same way ([`Away::Asleep`]). Nothing is shown after a quick
 //! reconnect, or when nothing happened. The banner stays until dismissed.
 
 use std::{cell::Cell, path::PathBuf, rc::Rc, time::Duration};
 
 use coqo_protocol::methods::{
-    agents::{self as agm, AgentState, ListSessionsParams, SessionInfo},
+    agents::{self as agm, AgentState, ChangedSinceParams, ListSessionsParams, SessionInfo},
     alerts::{self as am, ListParams},
 };
 use coqo_ui::{
@@ -120,6 +123,17 @@ pub fn away_since(last_seen: Option<i64>, now: i64) -> Option<i64> {
     last_seen.filter(|&at| now - at > after)
 }
 
+/// How the UI was away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Away {
+    /// It was closed: this is its first attach since it started.
+    Closed,
+    /// It lost the daemon a while, and reconnected.
+    Disconnected,
+    /// It stayed attached, but its heartbeat came late: the machine slept.
+    Asleep,
+}
+
 /// What happened while the UI was away.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WelcomeBack {
@@ -127,12 +141,14 @@ pub struct WelcomeBack {
     pub since: i64,
     /// Back at.
     pub at: i64,
-    /// Whether the UI had been closed (else it lost the daemon a while).
-    pub was_closed: bool,
+    /// How it was away.
+    pub away: Away,
     /// The sessions it is about, in overview order.
     pub sessions: Vec<SessionInfo>,
     /// Alerts raised meanwhile and still unread.
     pub unread_alerts: usize,
+    /// Files agents changed meanwhile (`agents/changedSince`).
+    pub files_changed: u32,
 }
 
 /// Counts of what the sessions did.
@@ -147,17 +163,18 @@ pub struct AwayCounts {
 }
 
 impl WelcomeBack {
-    /// Sum up `sessions` and `alerts` as of `at`, for a UI away since
-    /// `since`. `None` if nothing happened worth telling.
+    /// Sum up `sessions`, `alerts` and the `files_changed` as of `at`, for
+    /// a UI away since `since`. `None` if nothing happened worth telling.
     ///
     /// A session counts if it needs you or works now (whenever that
     /// began), or finished or failed while the UI was away.
     pub fn build(
         since: i64,
         at: i64,
-        was_closed: bool,
+        away: Away,
         sessions: &[SessionInfo],
         alerts: &[am::Alert],
+        files_changed: u32,
     ) -> Option<Self> {
         let sessions: Vec<SessionInfo> = ordered(sessions)
             .into_iter()
@@ -175,9 +192,10 @@ impl WelcomeBack {
         (!sessions.is_empty() || unread_alerts > 0).then_some(Self {
             since,
             at,
-            was_closed,
+            away,
             sessions,
             unread_alerts,
+            files_changed,
         })
     }
 
@@ -200,16 +218,18 @@ impl WelcomeBack {
 
     /// The banner's title.
     pub fn headline(&self) -> &'static str {
-        if self.was_closed {
-            "Welcome back. Your agents kept working while Coqo was closed."
-        } else {
-            "Welcome back. Your agents kept working while Coqo was disconnected."
+        match self.away {
+            Away::Closed => "Welcome back. Your agents kept working while Coqo was closed.",
+            Away::Disconnected => {
+                "Welcome back. Your agents kept working while Coqo was disconnected."
+            }
+            Away::Asleep => "Welcome back. Your agents kept working while you were away.",
         }
     }
 
     /// The banner's sentence: "In the last 2 h 14 m the daemon ran 5
     /// sessions: 1 finished, 1 is waiting on your answer, … and 1 hit an
-    /// error. 3 alerts are unread."
+    /// error. 12 files changed. 3 alerts are unread."
     pub fn sentence(&self) -> String {
         let c = self.counts();
         let n = |count: usize, one: &str, many: &str| match count {
@@ -240,10 +260,16 @@ impl WelcomeBack {
                 1 => "1 session".to_owned(),
                 n => format!("{n} sessions"),
             };
-            format!(
+            let mut out = format!(
                 "In the last {away} the daemon ran {sessions}: {}.",
                 list(&parts)
-            )
+            );
+            match self.files_changed {
+                0 => {}
+                1 => out.push_str(" 1 file changed."),
+                n => out.push_str(&format!(" {n} files changed.")),
+            }
+            out
         };
         match self.unread_alerts {
             0 => {}
@@ -377,29 +403,54 @@ impl Presence {
 
     /// The UI attached at `now`.
     fn attached(&mut self, now: i64, cx: &mut Context<Self>) {
-        let was_closed = !self.attached_before;
+        let away = if self.attached_before {
+            Away::Disconnected
+        } else {
+            Away::Closed
+        };
         self.attached_before = true;
         if let Some(since) = away_since(self.last_seen, now) {
-            self.summarise(since, now, was_closed, cx);
+            self.summarise(since, now, away, cx);
         }
         self.touch(now);
         self._heartbeat = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(HEARTBEAT).await;
-                if this.update(cx, |this, _| this.touch(now_ms())).is_err() {
+                if this.update(cx, |this, cx| this.beat(now_ms(), cx)).is_err() {
                     break;
                 }
             }
         }));
     }
 
-    fn summarise(&mut self, since: i64, now: i64, was_closed: bool, cx: &mut Context<Self>) {
+    /// The heartbeat, at `now` (wall clock). Timers don't run while the
+    /// machine sleeps, so a heartbeat [`AWAY_AFTER`] late means the UI
+    /// stayed attached through a sleep: sum it up like an absence.
+    fn beat(&mut self, now: i64, cx: &mut Context<Self>) {
+        if let Some(since) = away_since(self.last_seen, now) {
+            self.summarise(since, now, Away::Asleep, cx);
+        }
+        self.touch(now);
+    }
+
+    /// Pretend the UI was last seen at `at`, as if the next heartbeat came
+    /// late.
+    #[cfg(test)]
+    pub fn set_last_seen_for_tests(&mut self, at: i64) {
+        self.last_seen = Some(at);
+    }
+
+    fn summarise(&mut self, since: i64, now: i64, away: Away, cx: &mut Context<Self>) {
         let Some(daemon) = Daemon::global(cx) else {
             return;
         };
         let daemon = daemon.read(cx);
         let sessions = daemon.request::<agm::List>(ListSessionsParams::default());
         let alerts = daemon.request::<am::List>(ListParams::default());
+        let files = daemon.request::<agm::ChangedSince>(ChangedSinceParams {
+            since,
+            workspace: None,
+        });
         self._summary = Some(cx.spawn(async move |this, cx| {
             let sessions = match sessions.await {
                 Ok(list) => list.sessions,
@@ -408,9 +459,11 @@ impl Presence {
                     return;
                 }
             };
-            // Alerts are a bonus: without them, still sum up the sessions.
+            // Alerts and files are a bonus: without them, still sum up the
+            // sessions.
             let alerts = alerts.await.map(|l| l.alerts).unwrap_or_default();
-            let welcome = WelcomeBack::build(since, now, was_closed, &sessions, &alerts);
+            let files = files.await.map(|f| f.files).unwrap_or_default();
+            let welcome = WelcomeBack::build(since, now, away, &sessions, &alerts, files);
             this.update(cx, |this, cx| {
                 if welcome.is_some() {
                     this.welcome = welcome;
@@ -591,7 +644,7 @@ pub fn banner(welcome: &WelcomeBack, actions: &BannerActions, cx: &App) -> AnyEl
 mod unit_tests {
     use coqo_protocol::methods::agents::AgentState;
 
-    use super::{WelcomeBack, away_for, away_since};
+    use super::{Away, WelcomeBack, away_for, away_since};
     use crate::agents::unit_tests::session;
 
     const MIN: i64 = 60_000;
@@ -626,7 +679,7 @@ mod unit_tests {
             session("done-before", AgentState::Done, since - MIN),
             session("idle", AgentState::Idle, now - MIN),
         ];
-        let welcome = WelcomeBack::build(since, now, true, &sessions, &[]).unwrap();
+        let welcome = WelcomeBack::build(since, now, Away::Closed, &sessions, &[], 0).unwrap();
         let ids: Vec<_> = welcome.sessions.iter().map(|s| s.id.0.as_str()).collect();
         assert_eq!(ids, ["answer", "permission", "error", "working", "done"]);
         assert_eq!(welcome.first().unwrap().id.0, "answer");
@@ -636,8 +689,19 @@ mod unit_tests {
              your answer, 1 needs permission, 1 is still working and 1 hit an error."
         );
         assert!(
-            WelcomeBack::build(since, now, true, &sessions[5..], &[]).is_none(),
+            WelcomeBack::build(since, now, Away::Closed, &sessions[5..], &[], 0).is_none(),
             "nothing happened"
+        );
+        // The files agents changed meanwhile (#265).
+        let welcome = WelcomeBack::build(since, now, Away::Asleep, &sessions[..1], &[], 12);
+        let welcome = welcome.unwrap();
+        assert_eq!(
+            welcome.sentence(),
+            "In the last 2 h 14 m the daemon ran 1 session: 1 finished. 12 files changed."
+        );
+        assert_eq!(
+            welcome.headline(),
+            "Welcome back. Your agents kept working while you were away."
         );
         assert_eq!(away_for(45 * MIN), "45 m");
         assert_eq!(away_for(26 * 60 * MIN), "1 d 2 h");

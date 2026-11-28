@@ -4,7 +4,9 @@
 
 use std::time::UNIX_EPOCH;
 
-use coqo_protocol::daemon::{DaemonStatus, IdleStatus, Shutdown, ShutdownResult, Status};
+use coqo_protocol::daemon::{
+    DaemonStatus, IdleStatus, MemoryUsage, Shutdown, ShutdownResult, Status,
+};
 use coqo_protocol::{Access, PROTOCOL_VERSION, Router};
 
 use crate::daemon::{BUILD, DaemonContext, VERSION};
@@ -13,6 +15,22 @@ fn millis(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// The memory of this process and everything it started (#265), if the
+/// platform can tell.
+pub async fn memory() -> Option<MemoryUsage> {
+    match coqo_kernel::supervisor::tree_usage(std::process::id()).await {
+        Ok(usage) => usage.map(|u| MemoryUsage {
+            rss_bytes: u.rss_bytes,
+            processes: u.processes,
+        }),
+        Err(error) => {
+            tracing::debug!(%error, "cannot measure the daemon's memory");
+            None
+        }
+    }
+}
+
+/// `daemon/status`, without the memory (see [`memory`]).
 pub fn status(ctx: &DaemonContext) -> DaemonStatus {
     let activity = ctx.activity.snapshot();
     DaemonStatus {
@@ -35,6 +53,7 @@ pub fn status(ctx: &DaemonContext) -> DaemonStatus {
             stop_services_after_secs: ctx.idle_policy.stop_services_after.map(|d| d.as_secs()),
             exit_after_secs: ctx.idle_policy.exit_after.map(|d| d.as_secs()),
         },
+        memory: None,
     }
 }
 
@@ -47,7 +66,12 @@ pub fn register(router: Router, ctx: &DaemonContext) -> Router {
     router
         .method_with::<Status, _, _>(Access::daemon(), move |_, ()| {
             let status = status(&status_ctx);
-            async move { Ok(status) }
+            async move {
+                Ok(DaemonStatus {
+                    memory: memory().await,
+                    ..status
+                })
+            }
         })
         .method_with::<Shutdown, _, _>(Access::daemon(), move |req, params| {
             let busy = shutdown_ctx.activity.snapshot().busy;

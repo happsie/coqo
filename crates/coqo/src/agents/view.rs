@@ -13,6 +13,7 @@ use coqo_protocol::{
             self as agm, AgentState, PermissionOptionKind, PermissionOutcome, PermissionRequest,
             RespondPermissionParams, SessionId, SessionInfo, SessionParams,
         },
+        walkthroughs::WalkthroughSummary,
         workspace::WorkspaceId,
     },
 };
@@ -30,7 +31,8 @@ use coqo_ui::{
 
 use super::{
     AgentTarget, Confirm, Detail, Group, KEY_CONTEXT, KIND, SelectNext, SelectPrev, badge,
-    criteria_line, detail, group, meta, ordered, questions_of, target_of, title, workspace_name,
+    criteria_line, detail, group, meta, ordered, questions_of, target_of, title, walkthrough_line,
+    workspace_name,
 };
 use crate::{
     activity::AgentActivity,
@@ -38,11 +40,13 @@ use crate::{
     daemon::{Daemon, DaemonEvent},
     questions::{WorkspaceQuestions, questions_for},
     shell::Shell,
+    walkthrough::marks::{WorkspaceWalkthroughs, walkthroughs_for},
     welcome::shortcut,
     workspace::KnownWorkspaces,
 };
 
-/// How often the waiting times are redrawn.
+/// How often the waiting times are redrawn, and the daemon's status (its
+/// memory) fetched again.
 const TICK: Duration = Duration::from_secs(30);
 
 /// A new agents overview tab.
@@ -66,10 +70,17 @@ pub struct AgentsTab {
     stores: HashMap<WorkspaceId, Entity<WorkspaceQuestions>>,
     /// Permission requests of sessions that need permission.
     asks: HashMap<SessionId, Ask>,
+    /// The walkthroughs of the workspaces that have sessions: a done
+    /// session that published one offers **Walkthrough**.
+    walkthroughs: HashMap<WorkspaceId, Entity<WorkspaceWalkthroughs>>,
+    /// Walkthroughs by session, for screenshots without a daemon.
+    #[cfg(test)]
+    test_walkthroughs: HashMap<SessionId, WalkthroughSummary>,
     /// Provider names by id.
     providers: HashMap<String, String>,
     status: Option<DaemonStatus>,
     _fetches: Vec<Task<()>>,
+    _status: Option<Task<()>>,
     _tick: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -101,7 +112,11 @@ impl AgentsTab {
         let tick = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(TICK).await;
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                let tick = this.update(cx, |this, cx| {
+                    this.fetch_status(cx);
+                    cx.notify();
+                });
+                if tick.is_err() {
                     break;
                 }
             }
@@ -112,9 +127,13 @@ impl AgentsTab {
             selected: None,
             stores: HashMap::new(),
             asks: HashMap::new(),
+            walkthroughs: HashMap::new(),
+            #[cfg(test)]
+            test_walkthroughs: HashMap::new(),
             providers: HashMap::new(),
             status: None,
             _fetches: Vec::new(),
+            _status: None,
             _tick: tick,
             _subscriptions: subscriptions,
         };
@@ -129,27 +148,70 @@ impl AgentsTab {
             return;
         };
         let providers = daemon.read(cx).request::<agm::Providers>(());
+        self._fetches = vec![cx.spawn(async move |this, cx| {
+            if let Ok(list) = providers.await {
+                this.update(cx, |this, cx| {
+                    this.providers = list.into_iter().map(|p| (p.id, p.name)).collect();
+                    cx.notify();
+                })
+                .ok();
+            }
+        })];
+        self.fetch_status(cx);
+    }
+
+    /// Fetch the daemon's status: its uptime and memory.
+    fn fetch_status(&mut self, cx: &mut Context<Self>) {
+        let Some(daemon) = Daemon::global(cx).filter(|d| d.read(cx).is_connected()) else {
+            return;
+        };
         let status = daemon.read(cx).request::<Status>(());
-        self._fetches = vec![
-            cx.spawn(async move |this, cx| {
-                if let Ok(list) = providers.await {
-                    this.update(cx, |this, cx| {
-                        this.providers = list.into_iter().map(|p| (p.id, p.name)).collect();
-                        cx.notify();
-                    })
-                    .ok();
-                }
-            }),
-            cx.spawn(async move |this, cx| {
-                if let Ok(status) = status.await {
-                    this.update(cx, |this, cx| {
-                        this.status = Some(status);
-                        cx.notify();
-                    })
-                    .ok();
-                }
-            }),
-        ];
+        self._status = Some(cx.spawn(async move |this, cx| {
+            if let Ok(status) = status.await {
+                this.update(cx, |this, cx| {
+                    this.status = Some(status);
+                    cx.notify();
+                })
+                .ok();
+            }
+        }));
+    }
+
+    /// The daemon's status, once fetched.
+    #[allow(dead_code)] // Tests use it.
+    pub fn status(&self) -> Option<&DaemonStatus> {
+        self.status.as_ref()
+    }
+
+    /// The header's facts about `rows` at `now`: "coqod up 3 days · 5
+    /// sessions · 3 workspaces · 2.1 GB incl. language servers".
+    pub fn facts(&self, rows: &[SessionInfo], now: i64) -> String {
+        let workspaces = {
+            let mut list: Vec<_> = rows.iter().filter_map(|r| r.workspace.as_ref()).collect();
+            list.sort();
+            list.dedup();
+            list.len()
+        };
+        let mut facts = Vec::new();
+        if let Some(status) = &self.status {
+            let started = i64::try_from(status.started_at_ms).unwrap_or(now);
+            facts.push(format!("coqod up {}", uptime(now - started)));
+        }
+        facts.push(match rows.len() {
+            1 => "1 session".to_owned(),
+            n => format!("{n} sessions"),
+        });
+        if workspaces > 1 {
+            facts.push(format!("{workspaces} workspaces"));
+        }
+        // Board 6: the daemon with its child processes.
+        if let Some(memory) = self.status.as_ref().and_then(|s| s.memory) {
+            facts.push(format!(
+                "{} incl. language servers",
+                memory_size(memory.rss_bytes)
+            ));
+        }
+        facts.join(" · ")
     }
 
     /// The sessions changed: follow the questions of new workspaces and
@@ -166,7 +228,12 @@ impl AgentsTab {
             if let Some(store) = questions_for(&id, cx) {
                 self._subscriptions
                     .push(cx.observe(&store, |_, _, cx| cx.notify()));
-                self.stores.insert(id, store);
+                self.stores.insert(id.clone(), store);
+            }
+            if let Some(store) = walkthroughs_for(&id, cx) {
+                self._subscriptions
+                    .push(cx.observe(&store, |_, _, cx| cx.notify()));
+                self.walkthroughs.insert(id, store);
             }
         }
         self.asks.retain(|id, _| {
@@ -239,15 +306,23 @@ impl AgentsTab {
         self.selected.as_ref()
     }
 
-    /// Name the providers and set waiting permission requests, for
-    /// screenshots without a daemon.
+    /// Name the providers and set waiting permission requests, published
+    /// walkthroughs and the daemon's status, for screenshots without a
+    /// daemon.
     #[cfg(test)]
     pub fn set_for_tests(
         &mut self,
         providers: &[(&str, &str)],
         asks: Vec<(SessionId, PermissionRequest)>,
+        walkthroughs: Vec<WalkthroughSummary>,
+        status: Option<DaemonStatus>,
         cx: &mut Context<Self>,
     ) {
+        self.test_walkthroughs = walkthroughs
+            .into_iter()
+            .map(|w| (w.session.clone(), w))
+            .collect();
+        self.status = status;
         self.providers = providers
             .iter()
             .map(|(id, name)| ((*id).to_owned(), (*name).to_owned()))
@@ -304,8 +379,35 @@ impl AgentsTab {
             .as_ref()
             .and_then(|s| self.rows(cx).into_iter().find(|r| &r.id == s));
         if let Some(info) = info {
-            let target = target_of(&info, cx);
+            let target = self.primary_target(&info, cx);
             self.open(&info, target, window, cx);
+        }
+    }
+
+    /// The newest walkthrough of a done session, if it published one.
+    pub fn walkthrough_of(&self, info: &SessionInfo, cx: &App) -> Option<WalkthroughSummary> {
+        if info.state != AgentState::Done {
+            return None;
+        }
+        #[cfg(test)]
+        if let Some(w) = self.test_walkthroughs.get(&info.id) {
+            return Some(w.clone());
+        }
+        let store = self
+            .walkthroughs
+            .get(&WorkspaceId(info.workspace.clone()?))?;
+        store.read(cx).latest_of(&info.id).cloned()
+    }
+
+    /// Where the row's primary action (and Enter) leads: the question it
+    /// waits on, a done session's walkthrough, else its chat.
+    fn primary_target(&self, info: &SessionInfo, cx: &mut App) -> AgentTarget {
+        match self.walkthrough_of(info, cx) {
+            Some(w) => AgentTarget::Walkthrough {
+                session: info.id.clone(),
+                walkthrough: w.id,
+            },
+            None => target_of(info, cx),
         }
     }
 
@@ -414,6 +516,19 @@ fn uptime(ms: i64) -> String {
         60..1440 => format!("{} h", mins / 60),
         1440..2880 => "1 day".to_owned(),
         _ => format!("{} days", mins / 1440),
+    }
+}
+
+/// "2.1 GB", "640 MB": how much memory, for the header.
+pub fn memory_size(bytes: u64) -> String {
+    const MB: u64 = 1024 * 1024;
+    const GB: u64 = 1024 * MB;
+    if bytes >= GB {
+        // Tenths of a GB, rounded.
+        let tenths = (bytes * 10 + GB / 2) / GB;
+        format!("{}.{} GB", tenths / 10, tenths % 10)
+    } else {
+        format!("{} MB", ((bytes + MB / 2) / MB).max(1))
     }
 }
 
@@ -551,7 +666,14 @@ impl AgentsTab {
                 .cloned()
         });
         let ask = self.asks.get(&info.id).and_then(|a| a.request.as_ref());
-        let Detail { text, code } = detail(info, question.as_ref(), ask);
+        let walkthrough = self.walkthrough_of(info, cx);
+        let Detail { text, code } = match &walkthrough {
+            Some(w) => Detail {
+                text: walkthrough_line(w),
+                code: None,
+            },
+            None => detail(info, question.as_ref(), ask),
+        };
         let place = workspace_name(info, cx)
             .map(|w| format!(" · {w}"))
             .unwrap_or_default();
@@ -606,6 +728,18 @@ impl AgentsTab {
                             }))
                             .test_support(),
                     );
+            }
+            AgentState::Done if walkthrough.is_some() => {
+                let row = info.clone();
+                actions = actions.child(
+                    button(("agents-primary", ix), "Walkthrough", cx)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            let target = this.primary_target(&row, cx);
+                            this.open(&row, target, window, cx);
+                        }))
+                        .test_support(),
+                );
             }
             state => {
                 let label = if state == AgentState::Working {
@@ -792,24 +926,7 @@ impl Render for AgentsTab {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = now_ms();
         let rows = self.rows(cx);
-        let workspaces = {
-            let mut list: Vec<_> = rows.iter().filter_map(|r| r.workspace.as_ref()).collect();
-            list.sort();
-            list.dedup();
-            list.len()
-        };
-        let mut facts = Vec::new();
-        if let Some(status) = &self.status {
-            let started = i64::try_from(status.started_at_ms).unwrap_or(now);
-            facts.push(format!("coqod up {}", uptime(now - started)));
-        }
-        facts.push(match rows.len() {
-            1 => "1 session".to_owned(),
-            n => format!("{n} sessions"),
-        });
-        if workspaces > 1 {
-            facts.push(format!("{workspaces} workspaces"));
-        }
+        let facts = self.facts(&rows, now);
         let cards: Vec<AnyElement> = rows
             .iter()
             .enumerate()
@@ -873,7 +990,7 @@ impl Render for AgentsTab {
                             .test_support()
                             .text_size(px(12.))
                             .text_color(p.text_subtle.hsla())
-                            .child(facts.join(" · ")),
+                            .child(facts),
                     ),
             )
             .child(
@@ -897,7 +1014,7 @@ mod unit_tests {
         PermissionOption, PermissionOptionKind, PermissionRequest, PermissionRequestId,
     };
 
-    use super::{permission_option, uptime};
+    use super::{memory_size, permission_option, uptime};
 
     #[test]
     fn picks_the_once_options() {
@@ -921,5 +1038,14 @@ mod unit_tests {
         assert_eq!(permission_option(&request, false).as_deref(), Some("no"));
         assert_eq!(uptime(3 * 86_400_000), "3 days");
         assert_eq!(uptime(5 * 3_600_000), "5 h");
+    }
+
+    #[test]
+    fn memory_reads_like_board_6() {
+        const MB: u64 = 1024 * 1024;
+        assert_eq!(memory_size(2150 * MB), "2.1 GB");
+        assert_eq!(memory_size(1024 * MB), "1.0 GB");
+        assert_eq!(memory_size(640 * MB + 100), "640 MB");
+        assert_eq!(memory_size(10), "1 MB");
     }
 }

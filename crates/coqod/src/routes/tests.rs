@@ -169,6 +169,8 @@ async fn every_route_declares_who_may_call_it() {
         "search/replace",
         // Who changed which file is the user's review view (#286).
         "agents/changedBy",
+        // And what changed while the UI was away (#265).
+        "agents/changedSince",
     ] {
         let route = routes
             .iter()

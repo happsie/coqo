@@ -1834,6 +1834,50 @@ impl Method for ChangedBy {
     type Result = ChangedByResult;
 }
 
+/// Params of `agents/changedSince`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct ChangedSinceParams {
+    /// From when, Unix milliseconds.
+    pub since: i64,
+    /// Only this workspace's files. Default: every workspace's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<super::workspace::WorkspaceId>,
+}
+
+/// How many files one session changed (`agents/changedSince`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct SessionFiles {
+    /// The session.
+    pub session: SessionId,
+    /// How many files it changed last.
+    pub files: u32,
+}
+
+/// Result of `agents/changedSince`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct ChangedSinceResult {
+    /// How many files agent sessions changed since then, each file counted
+    /// once.
+    pub files: u32,
+    /// The same by session, most files first. A file counts for the session
+    /// that changed it last.
+    pub sessions: Vec<SessionFiles>,
+}
+
+/// `agents/changedSince`: how many files agent sessions changed since a
+/// time, from the same records as [`ChangedBy`]: the welcome back's "files
+/// changed while you were away" (#265).
+#[derive(Debug)]
+pub enum ChangedSince {}
+impl Method for ChangedSince {
+    const NAME: &'static str = "agents/changedSince";
+    type Params = ChangedSinceParams;
+    type Result = ChangedSinceResult;
+}
+
 // ---- topics --------------------------------------------------------------------
 
 /// `sessions/updates`: one session's transcript, persisted and resumable.

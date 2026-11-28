@@ -3,7 +3,8 @@
 //! `daemon/*`: the daemon's own lifecycle methods (PLAN §4.3).
 //!
 //! - [`Status`] (`daemon/status`): version, pid, uptime, attached clients,
-//!   busy work and the idle policy.
+//!   busy work, the idle policy and the memory it and its child processes
+//!   use.
 //! - [`Shutdown`] (`daemon/shutdown`): ask the daemon to exit. It refuses
 //!   while work is busy unless `force` is set.
 
@@ -54,6 +55,22 @@ pub struct DaemonStatus {
     pub busy: Vec<String>,
     /// The idle policy and where the daemon is in it.
     pub idle: IdleStatus,
+    /// The memory the daemon and every process it started (language
+    /// servers, agents, terminals, process mods) use. Absent when the
+    /// platform can't tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryUsage>,
+}
+
+/// The memory of the daemon and its child processes (`daemon/status`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryUsage {
+    /// Their resident set size together, in bytes.
+    pub rss_bytes: u64,
+    /// How many processes: the daemon and its descendants.
+    pub processes: u32,
 }
 
 /// The idle policy (PLAN §4.3) and the daemon's current idle phase.

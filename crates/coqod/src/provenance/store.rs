@@ -108,6 +108,25 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// How many files each session changed last at or after `since` (Unix
+    /// milliseconds), of `workspace` or of every workspace, most first.
+    pub fn counts_since(
+        &self,
+        since: i64,
+        workspace: Option<&WorkspaceId>,
+    ) -> Result<Vec<(SessionId, u32)>> {
+        let conn = self.db.connection();
+        let mut stmt = conn.prepare_cached(
+            "SELECT session, COUNT(*) AS n FROM file_changes \
+             WHERE at >= ?1 AND (?2 IS NULL OR workspace = ?2) \
+             GROUP BY session ORDER BY n DESC, session",
+        )?;
+        let rows = stmt.query_map(params![since, workspace.map(|w| w.0.as_str())], |r| {
+            Ok((SessionId(r.get(0)?), r.get(1)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Moves the records `mv` touches to their new paths (a record already
     /// at a new path is replaced: the moved file is there now). Returns how
     /// many moved.

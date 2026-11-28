@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The agents overview and "welcome back" against a daemon served
-//! in-process: the real workspace, session, buffer, question and alert
-//! services, with `ScriptedProvider` as the agent. Sessions in two
+//! in-process: the real workspace, session, buffer, question, walkthrough,
+//! provenance and alert services, with `ScriptedProvider` as the agent
+//! ([`AgentDaemon`]); the whole `coqod` for its status. Sessions in two
 //! workspaces are started by another client (as if the UI had been
 //! closed).
 
@@ -14,23 +15,22 @@ use std::{
 };
 
 use coqo_agents::{
-    ManagerOptions, PermissionAsk, SessionManager, SessionStore, StaticProviders,
+    AgentUpdate, PermissionAsk,
     model::{
         ContentBlock, CreateSessionParams, PermissionOption, PermissionOptionKind, PromptParams,
-        SessionId, StopReason,
+        SessionId, StopReason, ToolCall, ToolCallContent, ToolCallId, ToolCallStatus,
+        ToolCallUpdate, ToolKind,
     },
     testing::{ScriptedProvider, Step},
 };
-use coqo_client::{DaemonPaths, RuntimeDir, connect};
-use coqo_mod_api::contrib::{AgentProviderInfo, AgentProviderKind};
+use coqo_client::DaemonPaths;
 use coqo_protocol::methods::{
-    agents::{self as agm, AgentState, ListSessionsParams, SessionInfo},
+    agents::{self as agm, AgentState, ChangedSinceParams, ListSessionsParams, SessionInfo},
     editor::LineRange,
     questions::{self as qm, CreateParams, NewAnchor, QuestionId, QuestionKind},
+    walkthroughs::{self as wtm, WalkthroughId},
     workspace::{self as wsm, OpenParams, WorkspaceInfo},
 };
-use coqo_protocol::{Client, ClientConfig, Router, Server, ServerConfig};
-use coqo_storage::DataDirs;
 use coqo_ui::{
     Appearance,
     dock::{TabItem as _, store::MemoryLayoutStore},
@@ -38,15 +38,15 @@ use coqo_ui::{
         AnyWindowHandle, App, AppContext as _, Bounds, ElementId, Entity, Keystroke, Point, Window,
         WindowBounds, WindowOptions, px, size,
     },
+    serde_json::json,
     test::{TestAppContext, TestWindowExt as _},
 };
 use tempfile::TempDir;
-use tokio::{runtime::Runtime, sync::Notify};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::Notify;
 
 use super::{
     KIND,
-    away::{self, MemoryLastSeen, Presence},
+    away::{self, Away, MemoryLastSeen, Presence},
     view::AgentsTab,
 };
 use crate::{
@@ -55,101 +55,20 @@ use crate::{
     daemon::{self, DaemonConfig},
     files::editor::{self, FileEditor},
     shell::{DEFAULT_WORKSPACE, Shell},
+    test_support::AgentDaemon,
+    walkthrough::player::{self, WalkthroughPlayer},
     workspace::{self, Workspaces},
 };
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 const MIN: i64 = 60_000;
 
-/// The daemon's workspace, session, buffer, question and alert services on
-/// a socket.
-struct TestDaemon {
-    runtime: Runtime,
-    paths: DaemonPaths,
-    _stop: CancellationToken,
-}
-
-impl TestDaemon {
-    fn start(dir: &Path, provider: &ScriptedProvider) -> Self {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap();
-        let paths = DaemonPaths::at(dir.join("run"));
-        let data = DataDirs::at(dir.join("data"));
-        std::fs::create_dir_all(data.root()).unwrap();
-        let stop = CancellationToken::new();
-        let entered = runtime.enter();
-        let registry = StaticProviders::new().with(
-            AgentProviderInfo {
-                id: "fake".parse().unwrap(),
-                name: "Fake agent".into(),
-                kind: AgentProviderKind::Acp,
-                description: None,
-            },
-            Arc::new(provider.clone()),
-        );
-        let db = data.global_db();
-        let store = SessionStore::open(&db).unwrap();
-        let manager =
-            SessionManager::open(store, Arc::new(registry), ManagerOptions::default()).unwrap();
-        let workspaces = Arc::new(coqod::workspace::WorkspaceService::open(data.clone()).unwrap());
-        let buffers = coqod::buffers::BufferService::new(
-            Arc::clone(&workspaces),
-            data,
-            coqod::buffers::BufferConfig::default(),
-        );
-        let questions = coqod::questions::QuestionService::open(
-            &db,
-            Arc::clone(&workspaces),
-            Arc::clone(&buffers),
-            Some(manager.clone()),
-        )
-        .unwrap();
-        let alerts = coqod::alerts::AlertService::open(&db, None).unwrap();
-        coqod::alerts::agents::AgentSource::new(
-            Arc::clone(&alerts),
-            manager.clone(),
-            Some(questions.clone()),
-        )
-        .spawn(stop.clone());
-        let router = coqod::workspace::register(Router::new(), workspaces);
-        let router = coqo_agents::rpc::register(router, manager);
-        let router = coqod::questions::register(router, questions);
-        let router = coqod::buffers::register(router, buffers);
-        let router = coqod::alerts::register(router, alerts);
-        let server = Server::new(router, ServerConfig::new("coqod", "test"));
-        RuntimeDir::create(paths.runtime_dir()).unwrap();
-        let listener = tokio::net::UnixListener::bind(paths.socket()).unwrap();
-        runtime.spawn(coqo_protocol::unix::serve_unix(server, listener));
-        drop(entered);
-        Self {
-            runtime,
-            paths,
-            _stop: stop,
-        }
-    }
-
-    /// Run `f` with a client of its own (another UI, the CLI, an agent's
-    /// bridge).
-    fn with_client<R>(&self, f: impl AsyncFnOnce(Client) -> R) -> R {
-        let paths = self.paths.clone();
-        self.runtime.block_on(async move {
-            let (client, _) = connect(&paths, ClientConfig::new("coqo-tests", "test"))
-                .await
-                .unwrap();
-            f(client).await
-        })
-    }
-}
-
 /// Two project folders (workspaces A and B) and a daemon.
 struct Fixture {
     _tmp: TempDir,
     a: PathBuf,
     b: PathBuf,
-    daemon: TestDaemon,
+    daemon: AgentDaemon,
 }
 
 fn project(root: &Path, name: &str) -> PathBuf {
@@ -164,7 +83,7 @@ impl Fixture {
         let tmp = tempfile::tempdir().unwrap();
         let a = project(tmp.path(), "checkout-service");
         let b = project(tmp.path(), "web-storefront");
-        let daemon = TestDaemon::start(tmp.path(), provider);
+        let daemon = AgentDaemon::start(tmp.path(), provider);
         Self {
             _tmp: tmp,
             a,
@@ -240,6 +159,31 @@ impl Fixture {
         })
     }
 
+    /// The agent of `session` publishes a one-step walkthrough of
+    /// `src/main.rs` in `ws`, as its bridge's `publish_walkthrough` would.
+    fn publish_walkthrough(&self, ws: &WorkspaceInfo, session: &SessionId) -> WalkthroughId {
+        let params = wtm::CreateParams {
+            workspace: ws.id.clone(),
+            session: session.0.clone(),
+            walkthrough: json!({
+                "title": "Retry policy for 3DS callbacks",
+                "summary": "Callbacks are retried with a backoff.",
+                "scope": { "kind": "worktree" },
+                "steps": [{
+                    "id": "entry",
+                    "title": "Where the retry starts",
+                    "kind": "entry_point",
+                    "anchors": [{ "path": "src/main.rs", "start_line": 1, "end_line": 2 }],
+                    "what": "Retries the callback.",
+                    "why": "Banks time out.",
+                }],
+            }),
+        };
+        self.daemon.with_client(async move |client| {
+            client.request::<wtm::Create>(params).await.unwrap().id
+        })
+    }
+
     fn sessions(&self) -> Vec<SessionInfo> {
         self.daemon.with_client(async move |client| {
             client
@@ -272,10 +216,13 @@ struct Ui {
 
 /// Open the UI on workspace A. `last_seen` says when it was last attached.
 fn open_ui(fixture: &Fixture, last_seen: Rc<MemoryLastSeen>) -> Ui {
+    open_ui_at(fixture.daemon.paths.clone(), fixture.a.clone(), last_seen)
+}
+
+/// Open the UI on `folder`, with the daemon at `paths`.
+fn open_ui_at(paths: DaemonPaths, folder: PathBuf, last_seen: Rc<MemoryLastSeen>) -> Ui {
     let mut cx = TestAppContext::single();
     cx.executor().allow_parking();
-    let paths = fixture.daemon.paths.clone();
-    let folder = fixture.a.clone();
     let (window, shell) = cx.update(|cx| {
         coqo_ui::init(Appearance::Dark, cx);
         let mut config = DaemonConfig::at(paths);
@@ -394,6 +341,19 @@ impl Ui {
                 .filter(|t| t.kind == editor::KIND)
                 .filter_map(|t| dock.tab(t.id)?.downcast::<FileEditor>())
                 .map(|t| t.read(cx).path().to_owned())
+                .collect()
+        })
+    }
+
+    fn players(&mut self) -> Vec<Entity<WalkthroughPlayer>> {
+        let dock = self.cx.read(|cx| self.shell.read(cx).dock().clone());
+        self.cx.read(|cx| {
+            let dock = dock.read(cx);
+            dock.tree()
+                .tabs()
+                .into_iter()
+                .filter(|t| t.kind == player::KIND)
+                .filter_map(|t| dock.tab(t.id)?.downcast::<WalkthroughPlayer>())
                 .collect()
         })
     }
@@ -559,7 +519,7 @@ fn welcome_back_sums_up_a_long_absence() {
         ui.shows(ElementId::Name("welcome-back".into()))
     });
     let welcome = ui.welcome().unwrap();
-    assert!(welcome.was_closed);
+    assert_eq!(welcome.away, Away::Closed);
     let ids: Vec<_> = welcome.sessions.iter().map(|s| s.id.clone()).collect();
     assert_eq!(ids, [waits.clone(), done.clone()], "what needs you first");
     let sentence = welcome.sentence();
@@ -601,6 +561,232 @@ fn no_welcome_back_after_a_quick_reconnect() {
     assert!(!ui.shows(ElementId::Name("welcome-back".into())));
 }
 
+/// An agent's edit of `path`: a tool call with its diff, completed.
+fn edit(id: &str, path: &Path) -> [Step; 2] {
+    let path = path.to_string_lossy().into_owned();
+    [
+        Step::Update(AgentUpdate::ToolCall(ToolCall {
+            id: ToolCallId(id.into()),
+            title: format!("Edit {path}"),
+            name: None,
+            kind: ToolKind::Edit,
+            status: ToolCallStatus::Pending,
+            content: vec![ToolCallContent::Diff {
+                path,
+                old_text: None,
+                new_text: "fn main() {}\n".into(),
+            }],
+            locations: Vec::new(),
+            raw_input: None,
+            raw_output: None,
+        })),
+        Step::Update(AgentUpdate::ToolCallUpdate(ToolCallUpdate {
+            id: ToolCallId(id.into()),
+            status: Some(ToolCallStatus::Completed),
+            ..ToolCallUpdate::default()
+        })),
+    ]
+}
+
+/// #265: the welcome back says how many files the agents changed while the
+/// UI was away (`agents/changedSince`, from the daemon's provenance).
+#[test]
+fn welcome_back_counts_the_files_agents_changed() {
+    let provider = ScriptedProvider::new();
+    let fixture = Fixture::new(&provider);
+    let a = fixture.open_workspace(&fixture.a);
+    let mut turn: Vec<Step> = Vec::new();
+    turn.extend(edit("t1", &fixture.a.join("src/main.rs")));
+    turn.extend(edit("t2", &fixture.a.join("src/lib.rs")));
+    // The same file again counts once.
+    turn.extend(edit("t3", &fixture.a.join("src/main.rs")));
+    turn.push(Step::Stop(StopReason::EndTurn));
+    provider.push_turn(turn);
+    let before = now_ms() - 134 * MIN;
+    let done = fixture.start_session(&a, "Volume discount");
+    fixture.wait_state(&done, AgentState::Done);
+    let deadline = Instant::now() + TIMEOUT;
+    while fixture.daemon.with_client(async move |client| {
+        client
+            .request::<agm::ChangedSince>(ChangedSinceParams {
+                since: before,
+                workspace: None,
+            })
+            .await
+            .unwrap()
+            .files
+    }) < 2
+    {
+        assert!(Instant::now() < deadline, "the edits were never recorded");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let mut ui = open_ui(&fixture, Rc::new(MemoryLastSeen::at(Some(before))));
+    ui.wait_for("the welcome back", |ui| ui.welcome().is_some());
+    let welcome = ui.welcome().unwrap();
+    assert_eq!(welcome.files_changed, 2);
+    assert_eq!(
+        welcome.sentence(),
+        "In the last 2 h 14 m the daemon ran 1 session: 1 finished. 2 files changed. \
+         1 alert is unread."
+    );
+}
+
+/// #265: a UI that stayed attached while the machine slept sees its next
+/// heartbeat come late, and welcomes you back all the same.
+#[test]
+fn welcome_back_after_the_machine_slept() {
+    let (fixture, done, waits) = away_fixture();
+    let mut ui = open_ui(
+        &fixture,
+        Rc::new(MemoryLastSeen::at(Some(now_ms() - 2 * MIN))),
+    );
+    ui.wait_for("the sessions", |ui| {
+        ui.cx.read(|cx| {
+            crate::activity::AgentActivity::global(cx)
+                .is_some_and(|a| a.read(cx).sessions().count() == 2)
+        })
+    });
+    assert!(ui.welcome().is_none(), "attached a moment ago");
+
+    // A heartbeat on time: nothing to say.
+    ui.cx.executor().advance_clock(away::HEARTBEAT);
+    ui.cx.run_until_parked();
+    assert!(ui.welcome().is_none());
+
+    // The machine sleeps half an hour: the next heartbeat is that late.
+    ui.cx.update(|cx| {
+        let presence = Presence::global(cx).unwrap();
+        presence.update(cx, |p, _| p.set_last_seen_for_tests(now_ms() - 30 * MIN));
+    });
+    ui.cx.executor().advance_clock(away::HEARTBEAT);
+    ui.wait_for("the welcome back", |ui| {
+        ui.shows(ElementId::Name("welcome-back".into()))
+    });
+    let welcome = ui.welcome().unwrap();
+    assert_eq!(welcome.away, Away::Asleep);
+    assert_eq!(
+        welcome.headline(),
+        "Welcome back. Your agents kept working while you were away."
+    );
+    let ids: Vec<_> = welcome.sessions.iter().map(|s| s.id.clone()).collect();
+    assert_eq!(ids, [waits, done]);
+    let sentence = welcome.sentence();
+    assert!(
+        sentence.starts_with("In the last 30 m the daemon ran 2 sessions:"),
+        "{sentence}"
+    );
+}
+
+/// #265: the header's memory, from `daemon/status` of the whole `coqod`:
+/// it and its child processes.
+#[test]
+fn the_overview_header_shows_the_daemons_memory() {
+    let fixture = crate::test_support::Fixture::new();
+    let mut ui = open_ui_at(
+        fixture.daemon.paths.clone(),
+        fixture.project.clone(),
+        Rc::new(MemoryLastSeen::at(None)),
+    );
+    ui.click(ElementId::Name("rail-agents".into()));
+    ui.wait_for("the overview", |ui| ui.overview().is_some());
+    let tab = ui.overview().unwrap();
+    ui.wait_for("the daemon's memory", |ui| {
+        ui.cx
+            .read(|cx| tab.read(cx).status().is_some_and(|s| s.memory.is_some()))
+    });
+    let memory = ui
+        .cx
+        .read(|cx| tab.read(cx).status().and_then(|s| s.memory))
+        .unwrap();
+    assert!(memory.rss_bytes > 0 && memory.processes >= 1, "{memory:?}");
+    let facts = ui.cx.read(|cx| {
+        let tab = tab.read(cx);
+        tab.facts(&tab.rows(cx), now_ms())
+    });
+    assert!(facts.starts_with("coqod up "), "{facts}");
+    assert!(facts.ends_with(" incl. language servers"), "{facts}");
+    assert!(ui.shows(ElementId::Name("agents-facts".into())));
+}
+
+/// #265: a done session that published a walkthrough offers
+/// **Walkthrough**, which opens the player (in the session's workspace);
+/// one without falls back to **Open chat**.
+#[test]
+fn a_done_session_that_published_a_walkthrough_offers_it() {
+    let provider = ScriptedProvider::new()
+        .turn([Step::Stop(StopReason::EndTurn)])
+        .turn([Step::Stop(StopReason::EndTurn)]);
+    let fixture = Fixture::new(&provider);
+    let a = fixture.open_workspace(&fixture.a);
+    let b = fixture.open_workspace(&fixture.b);
+    let plain = fixture.start_session(&a, "Cart discount line");
+    fixture.wait_state(&plain, AgentState::Done);
+    let shown = fixture.start_session(&b, "Retry policy for 3DS callbacks");
+    fixture.wait_state(&shown, AgentState::Done);
+    let walkthrough = fixture.publish_walkthrough(&b, &shown);
+
+    let mut ui = open_ui(&fixture, Rc::new(MemoryLastSeen::at(None)));
+    ui.click(ElementId::Name("rail-agents".into()));
+    ui.wait_for("the overview", |ui| ui.overview().is_some());
+    let expected = [shown.clone(), plain.clone()];
+    ui.wait_for("both done sessions", |ui| ui.rows() == expected);
+    let tab = ui.overview().unwrap();
+    let walkthrough_of = |ui: &mut Ui, id: &SessionId| {
+        ui.cx
+            .read(|cx| tab.read(cx).walkthrough_of(&info_of(cx, &tab, id), cx))
+    };
+    ui.wait_for("the walkthrough", |ui| {
+        walkthrough_of(ui, &shown).is_some_and(|w| w.id == walkthrough)
+    });
+    assert!(
+        walkthrough_of(&mut ui, &plain).is_none(),
+        "it published none"
+    );
+    let summary = walkthrough_of(&mut ui, &shown).unwrap();
+    assert_eq!(
+        super::walkthrough_line(&summary),
+        "Walkthrough ready · 1 step"
+    );
+
+    // Without a walkthrough: **Open chat**.
+    ui.click(("agents-primary", 1usize));
+    ui.wait_for("its chat", |ui| ui.chat_sessions() == [plain.clone()]);
+
+    // **Walkthrough**: the window switches to B and opens the player.
+    ui.cx.update(|cx| {
+        cx.update_window(ui.window, |_, window, cx| {
+            window.dispatch_action(Box::new(super::ShowAgents), cx);
+        })
+        .unwrap();
+    });
+    ui.wait_for("the overview again", |ui| {
+        ui.shows(ElementId::Name("agents-overview".into()))
+    });
+    ui.click(("agents-primary", 0usize));
+    ui.wait_for("workspace B", |ui| {
+        ui.workspace().is_some_and(|w| w.id == b.id)
+    });
+    ui.wait_for("the player", |ui| {
+        let players = ui.players();
+        ui.cx.read(|cx| {
+            players.iter().any(|p| {
+                p.read(cx)
+                    .walkthrough()
+                    .is_some_and(|w| w.id == walkthrough)
+            })
+        })
+    });
+}
+
+fn info_of(cx: &App, tab: &Entity<AgentsTab>, id: &SessionId) -> SessionInfo {
+    tab.read(cx)
+        .rows(cx)
+        .into_iter()
+        .find(|r| &r.id == id)
+        .unwrap()
+}
+
 /// Renders the agents overview with a welcome back offscreen to PNGs, for
 /// visual review against board 6. Needs a GPU:
 /// `cargo test -p coqo -- --ignored agents_screenshots`. Writes to
@@ -608,12 +794,17 @@ fn no_welcome_back_after_a_quick_reconnect() {
 #[test]
 #[ignore = "needs a GPU; run manually"]
 fn agents_screenshots() {
-    use coqo_protocol::methods::{
-        agents::{
-            AcceptanceCriterion, AgentStatus, CriterionAuthor, CriterionStatus, PermissionRequest,
-            PermissionRequestId, StatusProgress,
+    use coqo_protocol::{
+        PROTOCOL_VERSION,
+        daemon::{DaemonStatus, IdlePhase, IdleStatus, MemoryUsage},
+        methods::{
+            agents::{
+                AcceptanceCriterion, AgentStatus, CriterionAuthor, CriterionStatus,
+                PermissionRequest, PermissionRequestId, StatusProgress,
+            },
+            walkthroughs::{ScopeKind, StorageMode, WalkthroughSummary},
+            workspace::{RootId, WorkspaceId, WorkspaceRoot},
         },
-        workspace::{RootId, WorkspaceId, WorkspaceRoot},
     };
     use coqo_ui::test::render_offscreen;
 
@@ -719,12 +910,49 @@ fn agents_screenshots() {
         60,
     );
     done.status = Some(AgentStatus {
-        text: "Walkthrough ready · 3 trace scenarios passed".into(),
+        text: "3 trace scenarios passed".into(),
         state: None,
         progress: None,
         turn: None,
         updated_at: now,
     });
+    // It published a walkthrough: **Walkthrough** (#265).
+    let walkthrough = WalkthroughSummary {
+        id: WalkthroughId("w-1".into()),
+        workspace: WorkspaceId("ws-3".into()),
+        session: done.id.clone(),
+        title: "Retry policy for 3DS callbacks".into(),
+        scope: ScopeKind::Worktree,
+        steps: 6,
+        understood: 0,
+        questions: 0,
+        start: None,
+        storage: StorageMode::Local,
+        coverage: None,
+        created_at: now - 60 * MIN,
+        revision: 0,
+    };
+    // Up 3 days, 2.1 GB with its language servers (#265).
+    const MB: u64 = 1024 * 1024;
+    let status = DaemonStatus {
+        version: "0.1.0".into(),
+        build: "test".into(),
+        protocol: PROTOCOL_VERSION,
+        pid: 1,
+        started_at_ms: u64::try_from(now - 3 * 1440 * MIN - 5 * MIN).unwrap(),
+        uptime_ms: 0,
+        connections: 1,
+        busy: Vec::new(),
+        idle: IdleStatus {
+            phase: IdlePhase::Active,
+            stop_services_after_secs: None,
+            exit_after_secs: None,
+        },
+        memory: Some(MemoryUsage {
+            rss_bytes: 2150 * MB,
+            processes: 6,
+        }),
+    };
     let sessions = vec![asks, perm.clone(), failed, working, done];
     let request = PermissionRequest {
         id: PermissionRequestId(1),
@@ -733,7 +961,8 @@ fn agents_screenshots() {
         options: ask().options,
         suggested_rule: None,
     };
-    let welcome = away::WelcomeBack::build(now - 134 * MIN, now, true, &sessions, &[]).unwrap();
+    let welcome =
+        away::WelcomeBack::build(now - 134 * MIN, now, Away::Closed, &sessions, &[], 12).unwrap();
     for (name, appearance) in [("dark", Appearance::Dark), ("light", Appearance::Light)] {
         let image = render_offscreen(appearance, size(1440., 900.), |window, cx| {
             workspace::init(None, cx);
@@ -752,6 +981,7 @@ fn agents_screenshots() {
             presence.update(cx, |p, cx| p.set_for_tests(Some(welcome.clone()), cx));
             let store = Rc::new(MemoryLayoutStore::default());
             let (perm, request) = (perm.id.clone(), request.clone());
+            let (walkthrough, status) = (walkthrough.clone(), status.clone());
             cx.new(|cx| {
                 let mut shell = Shell::new(store, DEFAULT_WORKSPACE, window, cx);
                 shell
@@ -773,7 +1003,13 @@ fn agents_screenshots() {
                             ("gemini", "Gemini CLI"),
                             ("codex", "Codex CLI"),
                         ];
-                        tab.set_for_tests(&providers, vec![(perm, request)], cx)
+                        tab.set_for_tests(
+                            &providers,
+                            vec![(perm, request)],
+                            vec![walkthrough],
+                            Some(status),
+                            cx,
+                        )
                     });
                 }
                 shell

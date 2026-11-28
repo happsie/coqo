@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use coqo_kernel::supervisor::resource_usage;
+use coqo_kernel::supervisor::{resource_usage, tree_usage};
 use coqo_kernel::{
     Backoff, ChildEvent, ChildHandle, ChildSpec, ChildState, ChildStdio, OutputStream, RestartMode,
     RestartPolicy, Supervisor,
@@ -167,6 +167,39 @@ async fn reports_rss_for_a_live_child_and_stops_it() {
             sleep(Duration::from_millis(10)).await;
         }
         panic!("stopped child still listed");
+    })
+    .await
+    .unwrap();
+}
+
+/// `tree_usage` counts a process and what it started (#265: the daemon's
+/// memory includes its language servers and agents).
+#[tokio::test]
+async fn tree_usage_includes_the_children() {
+    timeout(LIMIT, async {
+        let me = std::process::id();
+        let alone = tree_usage(me).await.unwrap().expect("this process");
+        assert!(alone.rss_bytes > 0, "{alone:?}");
+        let supervisor = Supervisor::new();
+        let mut child = supervisor
+            .spawn(
+                ChildSpec::new("sleeper", "sleep")
+                    .arg("5")
+                    .restart(RestartPolicy::never()),
+            )
+            .unwrap();
+        events_until(&mut child, |e| matches!(e, ChildEvent::Started { .. })).await;
+        let with_child = tree_usage(me).await.unwrap().expect("this process");
+        assert!(
+            with_child.processes > alone.processes,
+            "{alone:?} then {with_child:?}"
+        );
+        let pid = child.pid().unwrap();
+        let child_only = tree_usage(pid).await.unwrap().expect("the child");
+        assert_eq!(child_only.processes, 1);
+        assert!(child_only.rss_bytes > 0);
+        child.stop().await;
+        assert_eq!(tree_usage(pid).await.unwrap(), None);
     })
     .await
     .unwrap();

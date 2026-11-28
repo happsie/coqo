@@ -30,5 +30,5 @@ pub use service::{ProviderKind, ServiceDescriptor, ServiceError, ServiceRegistry
 pub use supervisor::{
     Backoff, ChildEvent, ChildExit, ChildHandle, ChildId, ChildIo, ChildSnapshot, ChildSpec,
     ChildState, ChildStatus, ChildStdio, OutputLine, OutputStream, ResourceUsage, RestartMode,
-    RestartPolicy, Supervisor,
+    RestartPolicy, Supervisor, TreeUsage,
 };

@@ -30,6 +30,7 @@ use std::{
 };
 
 use coqo_protocol::methods::{
+    agents::SessionId,
     codes,
     questions::AnchorStatus,
     walkthroughs::{
@@ -390,6 +391,12 @@ impl WorkspaceWalkthroughs {
             }));
         }
         self.sync(false, None, cx);
+    }
+
+    /// The newest walkthrough `session` published, if any (the agents
+    /// overview's **Walkthrough**, #265).
+    pub fn latest_of(&self, session: &SessionId) -> Option<&WalkthroughSummary> {
+        self.summaries.iter().find(|s| &s.session == session)
     }
 
     /// A loaded (active) walkthrough.
