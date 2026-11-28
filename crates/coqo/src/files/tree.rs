@@ -597,7 +597,13 @@ impl FileTree {
         match result {
             Ok(list) => {
                 self.errors.remove(&key);
-                self.prune_below(&key, &list.entries);
+                // A listing that is already out of date (the folder changed
+                // while it was in flight, so another one is coming) must not
+                // forget folders the tree just opened: they may be newer than
+                // the listing.
+                if !self.stale.contains(&key) {
+                    self.prune_below(&key, &list.entries);
+                }
                 self.dirs.insert(key.clone(), list.entries);
             }
             Err(err) if matches!(err.code(), Some(codes::NOT_FOUND | codes::NOT_A_DIRECTORY)) => {
