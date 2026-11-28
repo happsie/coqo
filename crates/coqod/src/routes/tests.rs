@@ -156,14 +156,15 @@ async fn every_route_declares_who_may_call_it() {
     open.sort_by_key(|(name, _)| *name);
     assert_eq!(open, SESSION_ROUTES, "the session-token allowlist changed");
 
-    // The file tree's operations are the user's: agents have file tools of
-    // their own (#161).
+    // The file tree's operations and the file finder are the user's: agents
+    // have file tools of their own (#161, #162).
     // Project search and replace are the user's too: agents search with
     // their own tools (#45).
     for name in [
         "fs/create",
         "fs/rename",
         "fs/delete",
+        "fs/find",
         "search/run",
         "search/replace",
     ] {

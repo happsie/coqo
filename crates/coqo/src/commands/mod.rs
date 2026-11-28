@@ -187,7 +187,7 @@ pub fn is_available(command: &Command, scope: &PaletteScope) -> bool {
 /// Open the palette with `text` in the active window's workbench. The
 /// workbench handles the actions itself while the focus is in it; this is
 /// for when nothing in the window has the focus.
-fn open_in_active_window(text: &'static str, cx: &mut App) {
+pub(crate) fn open_in_active_window(text: &'static str, cx: &mut App) {
     let Some(handle) = cx.active_window() else {
         return;
     };

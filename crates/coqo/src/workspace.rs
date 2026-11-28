@@ -395,7 +395,11 @@ impl Workspaces {
 
     /// The workspace of `window`.
     pub fn for_window(window: &Window, cx: &App) -> Option<Entity<Workspaces>> {
-        let handle = window.window_handle();
+        Self::for_handle(window.window_handle(), cx)
+    }
+
+    /// The workspace of the window `handle`.
+    pub fn for_handle(handle: AnyWindowHandle, cx: &App) -> Option<Entity<Workspaces>> {
         cx.try_global::<WindowWorkspaces>()?
             .0
             .iter()

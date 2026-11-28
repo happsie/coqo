@@ -332,6 +332,8 @@ impl FileEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // The file finder lists it first next time.
+        super::finder::RecentFiles::touch(&workspace, root, &path, cx);
         let mut subscriptions = Vec::new();
         if let Some(daemon) = Daemon::global(cx) {
             subscriptions.push(

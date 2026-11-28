@@ -137,6 +137,7 @@ fn run(folder: Option<PathBuf>) {
             },
             cx,
         );
+        files::finder::keep_recent_in(ui_dir().join("recent-files.json"), cx);
         if let Some(daemon) = daemon {
             let handle = daemon.read(cx).handle();
             terminal::init(Rc::new(terminal::DaemonBackend::new(handle)), cx);

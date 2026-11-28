@@ -35,7 +35,7 @@ use coqo_ui::{
         StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Task, WeakEntity,
         Window, div, px,
     },
-    input::{PromptInput, PromptInputEvent, PromptKey},
+    input::{InputEnter, PromptInput, PromptInputEvent, PromptKey},
     widgets::{FluentBuilder as _, Icon, TestSupportExt as _, icon, kbd, popover},
 };
 
@@ -52,7 +52,6 @@ const LIST_MAX: f32 = 380.;
 #[derive(Clone)]
 pub struct PaletteScope {
     /// The window.
-    #[allow(dead_code)] // For providers that open things (the file finder, #162).
     pub window: AnyWindowHandle,
     /// What had the focus before the palette took it. Commands run there.
     pub focus: Option<FocusHandle>,
@@ -61,7 +60,6 @@ pub struct PaletteScope {
     /// The types of the actions that focus path (and the app) handles.
     pub actions: Vec<TypeId>,
     /// The window's dock, to open tabs in.
-    #[allow(dead_code)] // For providers that open tabs (the file finder, #162).
     pub dock: WeakEntity<Dock>,
     /// The window's workspace, if one is open.
     pub workspace: Option<WorkspaceId>,
@@ -131,6 +129,9 @@ pub struct PaletteItem {
     /// Its keys, as shown (`Ctrl Shift P`).
     pub keys: Option<SharedString>,
     pub icon: Option<Icon>,
+    /// A file name: the row leads with its glyph (`files::glyph`), like the
+    /// file tree.
+    pub glyph: Option<SharedString>,
     /// Recently used: the list labels it.
     pub recent: bool,
 }
@@ -145,6 +146,7 @@ impl PaletteItem {
             detail: None,
             keys: None,
             icon: None,
+            glyph: None,
             recent: false,
         }
     }
@@ -167,6 +169,29 @@ pub trait PaletteProvider: 'static {
     /// Run `item`. The palette has closed and the focus is back where it
     /// was.
     fn confirm(&self, item: &PaletteItem, scope: &PaletteScope, window: &mut Window, cx: &mut App);
+    /// Run `item` the other way, for `Ctrl/Cmd+Enter` (the file finder opens
+    /// it in a split). The same as Enter unless the mode has one.
+    fn confirm_secondary(
+        &self,
+        item: &PaletteItem,
+        scope: &PaletteScope,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.confirm(item, scope, window, cx);
+    }
+    /// What Enter does, after its key cap in the footer.
+    fn confirm_hint(&self) -> SharedString {
+        "to run".into()
+    }
+    /// What `Ctrl/Cmd+Enter` does, if the mode has a second way.
+    fn secondary_hint(&self) -> Option<SharedString> {
+        None
+    }
+    /// How a recently used row is labelled.
+    fn recent_label(&self) -> SharedString {
+        "recently used".into()
+    }
 }
 
 /// The registered providers.
@@ -378,12 +403,25 @@ impl Palette {
 
     /// Run the selected item: close, then hand it to its provider.
     pub fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.run_selected(false, window, cx);
+    }
+
+    /// Run the selected item the provider's other way (`Ctrl/Cmd+Enter`).
+    pub fn confirm_secondary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.run_selected(true, window, cx);
+    }
+
+    fn run_selected(&mut self, secondary: bool, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(item), Some(provider)) = (self.selected().cloned(), self.provider.clone()) else {
             return;
         };
         let scope = self.scope.clone();
         self.close(window, cx);
-        provider.confirm(&item, &scope, window, cx);
+        if secondary {
+            provider.confirm_secondary(&item, &scope, window, cx);
+        } else {
+            provider.confirm(&item, &scope, window, cx);
+        }
     }
 
     /// Close: give the focus back to where it was.
@@ -428,6 +466,10 @@ impl Palette {
         let t = cx.tokens();
         let (p, m) = (t.palette.clone(), t.metrics.clone());
         let selected = ix == self.selected;
+        let recent_label = self
+            .provider
+            .as_ref()
+            .map_or_else(|| "recently used".into(), |p| p.recent_label());
         div()
             .id(("palette-item", ix))
             .test_support()
@@ -447,6 +489,11 @@ impl Palette {
                 this.confirm(window, cx);
             }))
             .children(item.icon.map(|i| icon(i, px(14.), p.text_muted.hsla())))
+            .children(
+                item.glyph
+                    .as_ref()
+                    .map(|name| crate::files::glyph::render(name, cx)),
+            )
             .child(
                 div()
                     .flex()
@@ -481,7 +528,7 @@ impl Palette {
                         .flex_none()
                         .text_size(m.text_xs)
                         .text_color(p.text_subtle.hsla())
-                        .child("recently used"),
+                        .child(recent_label),
                 )
             })
             .children(item.keys.clone().map(|keys| kbd(keys, cx).flex_none()))
@@ -565,6 +612,19 @@ impl Render for Palette {
                 )))
         });
 
+        let (confirm_hint, secondary_hint) = self.provider.as_ref().map_or_else(
+            || ("to run".into(), None),
+            |p| (p.confirm_hint(), p.secondary_hint()),
+        );
+        let secondary_key = if cfg!(target_os = "macos") {
+            "⌘Enter"
+        } else {
+            "Ctrl Enter"
+        };
+        let in_commands = self
+            .provider
+            .as_ref()
+            .is_some_and(|p| p.prefix() == super::COMMANDS_PREFIX);
         let hints = div()
             .flex()
             .items_center()
@@ -575,15 +635,21 @@ impl Render for Palette {
             .border_color(p.border.hsla())
             .text_size(m.text_xs)
             .text_color(p.text_subtle.hsla())
-            .child(kbd("↑↓", cx))
-            .child("to move")
+            // Room for the second Enter: the arrows go without saying.
+            .when(secondary_hint.is_none(), |hints| {
+                hints.child(kbd("↑↓", cx)).child("to move")
+            })
             .child(kbd("Enter", cx))
-            .child("to run")
+            .child(confirm_hint)
+            .when_some(secondary_hint, |hints, hint| {
+                hints.child(kbd(secondary_key, cx)).child(hint)
+            })
             .child(kbd("Esc", cx))
             .child("to close")
             .child(div().flex_1())
-            .child(kbd(">", cx))
-            .child("commands");
+            .when(!in_commands, |hints| {
+                hints.child(kbd(">", cx)).child("commands")
+            });
 
         let card = popover(cx)
             .id("command-palette")
@@ -594,6 +660,13 @@ impl Render for Palette {
             .min_w(px(MIN_WIDTH))
             .text_size(m.text_md)
             .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close(window, cx)))
+            // Before the field, which would take it as a submit.
+            .capture_action(cx.listener(|this, enter: &InputEnter, window, cx| {
+                if enter.secondary && !enter.shift {
+                    cx.stop_propagation();
+                    this.confirm_secondary(window, cx);
+                }
+            }))
             .child(field)
             .child(list)
             .children(problems)

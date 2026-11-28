@@ -7,14 +7,14 @@ The command palette opens from the top bar's command search (design board 1). Ev
 ## Opening it
 
 - **`Ctrl Shift P`** (`⌘⇧P` on macOS) opens it on the commands. The field starts with `>`.
-- **`Ctrl K`** (`⌘K`), the key the search field shows, and a **click on the search field** open it in its default mode. Until the file finder (#162) takes that mode, the default mode lists the commands too.
+- **`Ctrl P`** (`⌘P`), **`Ctrl K`** (`⌘K`, the key the search field shows) and a **click on the search field** open it in its default mode: the [file finder](#the-file-finder).
 - Pressing the same key again closes it. Pressing the other one switches mode.
 - **Esc** or a click outside closes it, and the focus goes back to where it was.
 
 ## Layout
 
 - **Card:** a popover (`surface`, `border_strong` hairline, 14 px radius, deep shadow). It hangs 44 px below the top of the command search, as wide as the search (at least 420 px), and above everything else in the window.
-- **Field:** a search icon in `text_muted` and a one-line field at `text_md`, 14 px side padding, with a `border` hairline under it. The placeholder belongs to the default mode ("Search commands" for now).
+- **Field:** a search icon in `text_muted` and a one-line field at `text_md`, 14 px side padding, with a `border` hairline under it. The placeholder belongs to the default mode ("Search files by name (add :line to go to a line)").
 - **Rows:** 10 px padding and a `radius_control` corner.
   - The category comes first in `text_subtle` ("Diff:"), then the title in `text`, with the matched characters semibold in `sage`.
   - At the right: "recently used" in `text_subtle` (`text_xs`) and the command's first key sequence as a key cap.
@@ -22,7 +22,7 @@ The command palette opens from the top bar's command search (design board 1). Ev
   - The list scrolls past 380 px and keeps the selection in view.
 - **Empty:** "No command matches here" in `text_subtle`.
 - **Problems:** if `keybindings.toml` has problems, a `sand` line says how many and points to the log.
-- **Footer:** key caps for `↑↓`, `Enter` and `Esc` with "to move / to run / to close", and the `>` mode hint at the right, all `text_xs` in `text_subtle` above a `border` hairline.
+- **Footer:** key caps for `↑↓`, `Enter` and `Esc` with "to move / to run / to close", and the `>` mode hint at the right (outside the commands), all `text_xs` in `text_subtle` above a `border` hairline. A mode with a second way to run an item (the finder's split) shows `Ctrl Enter` and its hint in place of the arrows.
 
 ![Typing "new" after the >: fuzzy matches highlighted in sage](screenshots/palette-query-dark.png)
 
@@ -41,16 +41,31 @@ The field's first character picks the provider (`commands::PaletteProvider`):
 
 | Prefix | Mode | State |
 |---|---|---|
-| `>` | Commands | This issue |
-| none | Default: files | The file finder, #162 (`Ctrl/Cmd+P`). Until it lands, the commands serve this mode. |
+| `>` | Commands | #25 |
+| none | Default: files | The file finder, #162 (`Ctrl/Cmd+P`) |
 | `@` | Symbols | Free |
 | `#` | Free | Free |
 
-A provider returns a `Task` of items, so a daemon query (`fs/find`) fits. It also gets the `PaletteScope` (window, previous focus, dock, workspace) to open what the user picks:
+A provider returns a `Task` of items, so a daemon query (`fs/find`) fits. It also gets the `PaletteScope` (window, previous focus, dock, workspace) to open what the user picks. `confirm_secondary` is `Ctrl/Cmd+Enter` (the same as Enter unless the mode has a second way):
 
 ```rust
-commands::palette::register_provider(cx, Rc::new(FilesProvider)); // prefix ""
+commands::palette::register_provider(cx, Rc::new(FilesProvider::default())); // prefix ""
 ```
+
+## The file finder
+
+![The finder with no query: a recently opened file first, then the files nearest the root](screenshots/finder-dark.png)
+
+The palette's default mode finds a file by its path (`crates/coqo/src/files/finder.rs`). The daemon does the searching (`fs/find`): it keeps an index of the workspace's files that the ignore rules keep, built when the workspace opens and kept current from the watcher, and returns the best 60 matches with their matched positions. A 200k-file repository is ready about 1.5 s after it opens, and answers in 3–23 ms.
+
+- **Rows:** the file's glyph (the tree's, `files/glyph.rs`), then the file name in `text` with the matched characters semibold in `sage`, then its folder at `text_sm` in `text_subtle`. In a multi-root workspace the folder starts with the root's name (`api · src/handlers`; just `api` for a file at the root).
+- **No query:** the workspace's recently opened files first, up to 20, labelled "recently opened", then the files nearest the roots. Every file tab opened counts (from the tree, the finder, an agent's link or a restored layout). The last 100 are kept in `<data dir>/ui/recent-files.json`, and they follow the tree's renames and deletes.
+- **A query:** fuzzy over the whole path, smart case, whitespace ignored. Matches at the start of a folder or name, after `_ - .`, at camelCase humps, in runs and in the file name rank higher, and so does a query that is the file name or its stem. Shorter paths win ties. Recently opened files get a small bonus.
+- **`path:line`** (`main.rs:42`, also `main.rs:42:7` for a column) puts the cursor on that line. The rows show the line after the name (`main.rs:42`).
+- **Keys:** `Enter` opens the file in the active group, or shows its tab if it's open. **`Ctrl Enter`** (`⌘Enter`) opens it in a new group to the right (a second view if it's open already). `Esc` closes. The footer says so: "Enter to open, Ctrl Enter to the side, Esc to close, > commands".
+- **Empty:** "No file matches", or "Open a folder to find its files" without a workspace. While the daemon is still building the index, the list waits for it.
+
+![Typing "tree": matches in sage, folders in text_subtle](screenshots/finder-query-dark.png)
 
 ## Commands
 
@@ -68,6 +83,7 @@ commands::register(cx, [
 |---|---|---|---|
 | `command_palette.open` | (opens the palette on `>`) | `Ctrl Shift P` | anywhere |
 | `command_palette.search` | (opens the default mode) | `Ctrl K` | anywhere |
+| `files.find` | Go to file… | `Ctrl P` | anywhere |
 | `command_palette.reload_keybindings` | Reload keybindings | | anywhere |
 | `workspace.open_folder` | Open folder… | `Ctrl O` | anywhere |
 | `window.new` | New window | `Ctrl Alt N` | anywhere |
@@ -118,4 +134,8 @@ The file lives in the config directory: `~/.config/coqo/keybindings.toml` (`$XDG
 
 ![Fuzzy matches in the light appearance](screenshots/palette-query-light.png)
 
-To regenerate the screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored palette_screenshots`. It renders offscreen and needs a GPU. Then downscale the 2× `coqo-palette[-query]-<appearance>.png` to 1440×900 as `palette[-query]-<appearance>.png`.
+![The file finder in the light appearance](screenshots/finder-light.png)
+
+![File matches in the light appearance](screenshots/finder-query-light.png)
+
+To regenerate the screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored palette_screenshots finder_screenshots`. It renders offscreen and needs a GPU. Then downscale the 2× `coqo-palette[-query]-<appearance>.png` and `coqo-finder[-query]-<appearance>.png` to 1440×900 as `palette[-query]-<appearance>.png` and `finder[-query]-<appearance>.png`.

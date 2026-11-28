@@ -293,12 +293,17 @@ fn the_header_search_opens_the_default_mode_and_arrows_move() {
     ui.frame(|window, cx| window.click("command-search", cx));
     ui.settle();
     assert!(ui.palette_open());
-    // No file finder yet (#162): the commands serve the default mode.
-    let mode = ui.cx.read(|cx| {
-        let palette = ui.shell.read(cx).palette().unwrap().read(cx);
-        (palette.text(cx), palette.mode())
-    });
-    assert_eq!(mode, (String::new(), Some(">")));
+    // The default mode is the file finder (#162); `>` switches to the
+    // commands.
+    let mode = |ui: &mut Ui| {
+        ui.cx.read(|cx| {
+            let palette = ui.shell.read(cx).palette().unwrap().read(cx);
+            (palette.text(cx), palette.mode())
+        })
+    };
+    assert_eq!(mode(&mut ui), (String::new(), Some("")));
+    ui.type_text(">");
+    assert_eq!(mode(&mut ui), (">".to_owned(), Some(">")));
     assert!(ui.listed().len() > 3);
     let first = ui.listed()[0].clone();
     let selected = |ui: &mut Ui| {

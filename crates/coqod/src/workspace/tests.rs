@@ -980,6 +980,260 @@ fn cpu_time() -> Option<Duration> {
     Some(Duration::from_millis(ticks * 10))
 }
 
+// ---- fs/find ----------------------------------------------------------------
+
+fn find(ws: &WorkspaceInfo, query: &str, limit: Option<u32>) -> fsm::FindParams {
+    fsm::FindParams {
+        workspace: ws.id.clone(),
+        query: query.to_owned(),
+        limit,
+    }
+}
+
+fn paths(found: &fsm::FindResult) -> Vec<&str> {
+    found.matches.iter().map(|m| m.path.as_str()).collect()
+}
+
+/// Ask `fs/find` until `done` holds for its answer (the index follows the
+/// watcher, a debounce window later).
+async fn find_until(
+    h: &Harness,
+    ws: &WorkspaceInfo,
+    query: &str,
+    done: impl Fn(&fsm::FindResult) -> bool,
+) -> fsm::FindResult {
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    loop {
+        let found = h.call::<fsm::Find>(find(ws, query, None)).await;
+        if done(&found) {
+            return found;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "fs/find {query:?} never got there: {found:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn find_ranks_the_indexed_files() {
+    let h = Harness::new().await;
+    let folder = tempfile::tempdir().unwrap();
+    let root = folder.path();
+    write(root, ".gitignore", b"target/\n*.log\n");
+    for f in [
+        "src/main.rs",
+        "src/domain/lib.rs",
+        "crates/app/src/main.rs",
+        "target/debug/main.rs",
+        "main.log",
+        "README.md",
+        "docs/über.md",
+        ".git/main",
+    ] {
+        write(root, f, b"");
+    }
+    let ws = h.open(root).await;
+
+    let found = h.call::<fsm::Find>(find(&ws, "main", None)).await;
+    assert!(!found.indexing, "the first query waits for the index");
+    assert_eq!(
+        paths(&found),
+        ["src/main.rs", "crates/app/src/main.rs", "src/domain/lib.rs"],
+        "ignored files and .git are not indexed"
+    );
+    assert_eq!(found.total, 3);
+    assert_eq!(found.files, 6, "{found:?}");
+    assert_eq!(found.matches[0].root, ws.roots[0].id);
+    assert_eq!(found.matches[0].positions, [4, 5, 6, 7]);
+    assert!(found.matches[0].score > found.matches[2].score);
+
+    // Smart case, limits, non-ASCII positions in bytes.
+    assert!(paths(&h.call::<fsm::Find>(find(&ws, "Main", None)).await).is_empty());
+    let one = h.call::<fsm::Find>(find(&ws, "main", Some(1))).await;
+    assert_eq!((paths(&one), one.total), (vec!["src/main.rs"], 3));
+    let uber = h.call::<fsm::Find>(find(&ws, "berm", None)).await;
+    assert_eq!(paths(&uber), ["docs/über.md"]);
+    assert_eq!(uber.matches[0].positions, [7, 8, 9, 11]);
+
+    // No query: the files nearest the root first.
+    let all = h.call::<fsm::Find>(find(&ws, "", Some(3))).await;
+    assert_eq!(paths(&all), ["README.md", ".gitignore", "src/main.rs"]);
+    assert_eq!(all.total, 6);
+
+    let too_many = h
+        .fail::<fsm::Find>(find(&ws, "x", Some(fsm::MAX_FIND_LIMIT + 1)))
+        .await;
+    assert_eq!(too_many.code, coqo_protocol::codes::INVALID_PARAMS);
+    h.call::<wsm::Close>(id(&ws)).await;
+    let closed = h.fail::<fsm::Find>(find(&ws, "main", None)).await;
+    assert_eq!(closed.code, codes::WORKSPACE_CLOSED);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn find_follows_creates_renames_and_deletes() {
+    let h = Harness::new().await;
+    let folder = tempfile::tempdir().unwrap();
+    let root = folder.path();
+    write(root, ".gitignore", b"*.tmp\n");
+    write(root, "src/old.rs", b"");
+    write(root, "src/util/helpers.rs", b"");
+    let ws = h.open(root).await;
+    find_until(&h, &ws, "old", |f| paths(f) == ["src/old.rs"]).await;
+
+    // Created: a file, a folder full of files, an ignored file.
+    write(root, "src/fresh.rs", b"");
+    write(root, "pkg/deep/er/nested.rs", b"");
+    write(root, "scratch.tmp", b"");
+    find_until(&h, &ws, "fresh", |f| paths(f) == ["src/fresh.rs"]).await;
+    find_until(&h, &ws, "nested", |f| paths(f) == ["pkg/deep/er/nested.rs"]).await;
+    assert!(paths(&h.call::<fsm::Find>(find(&ws, "scratch", None)).await).is_empty());
+
+    // Renamed: a file, and a folder with everything in it.
+    fs::rename(root.join("src/old.rs"), root.join("src/new.rs")).unwrap();
+    fs::rename(root.join("src/util"), root.join("src/tools")).unwrap();
+    find_until(&h, &ws, "new.rs", |f| paths(f) == ["src/new.rs"]).await;
+    find_until(&h, &ws, "helpers", |f| paths(f) == ["src/tools/helpers.rs"]).await;
+    assert!(paths(&h.call::<fsm::Find>(find(&ws, "old", None)).await).is_empty());
+
+    // Deleted: a file and a folder.
+    fs::remove_file(root.join("src/fresh.rs")).unwrap();
+    fs::remove_dir_all(root.join("pkg")).unwrap();
+    find_until(&h, &ws, "fresh", |f| f.matches.is_empty()).await;
+    find_until(&h, &ws, "nested", |f| f.matches.is_empty()).await;
+
+    // Ignored after the fact: a `.gitignore` edit.
+    write(root, ".gitignore", b"*.tmp\nsrc/tools/\n");
+    find_until(&h, &ws, "helpers", |f| f.matches.is_empty()).await;
+    write(root, ".gitignore", b"*.tmp\n");
+    find_until(&h, &ws, "helpers", |f| !f.matches.is_empty()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn find_covers_every_root() {
+    let h = Harness::new().await;
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    write(a.path(), "api/handler.rs", b"");
+    write(b.path(), "web/handler.ts", b"");
+    let ws = h.open(a.path()).await;
+    find_until(&h, &ws, "handler", |f| paths(f) == ["api/handler.rs"]).await;
+    let two = h
+        .call::<wsm::AddRoot>(AddRootParams {
+            id: ws.id.clone(),
+            path: b.path().to_str().unwrap().into(),
+            name: None,
+        })
+        .await;
+    let found = find_until(&h, &two, "handler", |f| f.matches.len() == 2).await;
+    let mut roots: Vec<(RootId, &str)> = found
+        .matches
+        .iter()
+        .map(|m| (m.root, m.path.as_str()))
+        .collect();
+    roots.sort();
+    assert_eq!(
+        roots,
+        [
+            (two.roots[0].id, "api/handler.rs"),
+            (two.roots[1].id, "web/handler.ts")
+        ]
+    );
+    h.call::<wsm::RemoveRoot>(RemoveRootParams {
+        id: ws.id.clone(),
+        root: two.roots[0].id,
+    })
+    .await;
+    find_until(&h, &two, "handler", |f| paths(f) == ["web/handler.ts"]).await;
+}
+
+/// Acceptance benchmark for #162: `fs/find` over a generated 200k-file
+/// tree, through a real client. Run with `cargo test -p coqod --release
+/// --lib -- --ignored --nocapture find_200k`. The tree goes under the
+/// workspace's `target/` (or `$COQO_BENCH_DIR`), not the system temp dir.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "benchmark: creates 200k files"]
+async fn find_200k_files_benchmark() {
+    use std::time::Instant;
+    let base = std::env::var_os("COQO_BENCH_DIR").map_or_else(
+        || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/bench"),
+        std::path::PathBuf::from,
+    );
+    fs::create_dir_all(&base).unwrap();
+    let folder = tempfile::tempdir_in(&base).unwrap();
+    let root = folder.path();
+    let words = [
+        "editor", "buffer", "palette", "render", "session", "index", "watch", "tree", "layout",
+        "theme",
+    ];
+    let t = Instant::now();
+    let mut n = 0;
+    for pkg in 0..20 {
+        for module in 0..100 {
+            let dir = root.join(format!(
+                "packages/pkg{pkg}/src/{}_{module}",
+                words[module % words.len()]
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            for f in 0..100 {
+                let name = format!("{}{}_{f}.rs", words[(f + pkg) % words.len()], module);
+                fs::write(dir.join(name), b"").unwrap();
+                n += 1;
+            }
+        }
+    }
+    write(root, ".gitignore", b"target/\n");
+    eprintln!("created {n} files in {:?}", t.elapsed());
+
+    let h = Harness::new().await;
+    let t = Instant::now();
+    let ws = h.open(root).await;
+    let first = h.call::<fsm::Find>(find(&ws, "", Some(1))).await;
+    let built = t.elapsed();
+    assert!(!first.indexing);
+    assert_eq!(first.files, n + 1);
+    eprintln!(
+        "index of {} files ready {built:?} after workspace/open",
+        first.files
+    );
+
+    let mut worst = Duration::ZERO;
+    for query in [
+        "e",
+        "pal",
+        "editor",
+        "pkg7render",
+        "packages/pkg19/src/theme_99/theme",
+        "tree42_7.rs",
+        "zzzz",
+        "",
+    ] {
+        let mut times = Vec::new();
+        let mut last = None;
+        for _ in 0..15 {
+            let t = Instant::now();
+            last = Some(h.call::<fsm::Find>(find(&ws, query, None)).await);
+            times.push(t.elapsed());
+        }
+        times.sort();
+        let (median, max) = (times[times.len() / 2], times[times.len() - 1]);
+        worst = worst.max(median);
+        let last = last.unwrap();
+        eprintln!(
+            "fs/find {query:?}: median {median:?}, max {max:?} ({} matches, best {:?})",
+            last.total,
+            last.matches.first().map(|m| &m.path)
+        );
+    }
+    if !cfg!(debug_assertions) {
+        assert!(
+            worst < Duration::from_millis(50),
+            "fs/find too slow: {worst:?}"
+        );
+    }
+}
+
 // ---- token scopes -----------------------------------------------------------
 
 async fn connect_with_token(

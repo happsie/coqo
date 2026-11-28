@@ -20,6 +20,12 @@
 //! They take the daemon token
 //! only: agents have file tools of their own. Writing a file's contents
 //! belongs to buffers, not to this module.
+//!
+//! **Finding files** ([`Find`]): the daemon keeps an index of each open
+//! workspace's non-ignored files, built in the background when the
+//! workspace opens and kept current from its watcher. It fuzzy-matches a
+//! query against the index, so a 200k-file repository never crosses the
+//! socket whole. Daemon token only.
 
 use serde::{Deserialize, Serialize};
 
@@ -262,6 +268,59 @@ pub struct RestoreParams {
     pub restore: String,
 }
 
+/// Default [`FindParams::limit`].
+pub const DEFAULT_FIND_LIMIT: u32 = 50;
+/// Largest accepted [`FindParams::limit`].
+pub const MAX_FIND_LIMIT: u32 = 1000;
+
+/// Params of [`Find`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct FindParams {
+    /// The workspace. It must be open.
+    pub workspace: WorkspaceId,
+    /// What to look for: a fuzzy pattern over the root-relative path, such
+    /// as `srcmain` or `tree.rs`. Whitespace is ignored. Smart case: an
+    /// upper-case letter makes the match case-sensitive. Empty lists the
+    /// files nearest the roots first.
+    #[serde(default)]
+    pub query: String,
+    /// How many matches to return, best first. Default
+    /// [`DEFAULT_FIND_LIMIT`], at most [`MAX_FIND_LIMIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// One file [`Find`] matched.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct FindMatch {
+    /// The root the path is relative to.
+    pub root: RootId,
+    /// `/`-separated path relative to the root.
+    pub path: String,
+    /// How well it matched: higher is better. Only comparable within one
+    /// result.
+    pub score: i64,
+    /// Byte offsets in `path` of the characters the query matched.
+    pub positions: Vec<u32>,
+}
+
+/// Result of [`Find`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct FindResult {
+    /// The best matches, best first (ties: shorter paths, then by path).
+    pub matches: Vec<FindMatch>,
+    /// How many indexed files matched in all.
+    pub total: u64,
+    /// How many files the index holds.
+    pub files: u64,
+    /// The index is still being built: ask again for complete results.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub indexing: bool,
+}
+
 /// `fs/list`: list a directory.
 #[derive(Debug)]
 pub enum ListDir {}
@@ -334,6 +393,16 @@ impl Method for Restore {
     const NAME: &'static str = "fs/restore";
     type Params = RestoreParams;
     type Result = EntryResult;
+}
+
+/// `fs/find`: fuzzy-find files in an open workspace by path, from the
+/// daemon's file index (non-ignored files only). Daemon token only.
+#[derive(Debug)]
+pub enum Find {}
+impl Method for Find {
+    const NAME: &'static str = "fs/find";
+    type Params = FindParams;
+    type Result = FindResult;
 }
 
 /// `fs/changes`: live, debounced change events for an open workspace. Not

@@ -152,6 +152,18 @@ impl IgnoreCache {
         }
     }
 
+    /// The rules inside `dir`, a directory directly inside the one `parent`
+    /// is for: a walk carries the chain down instead of rebuilding it from
+    /// the root for every directory.
+    pub fn descend(&self, parent: &IgnoreChain, dir: &Path) -> IgnoreChain {
+        let mut matchers = parent.matchers.clone();
+        matchers.extend(self.cached(dir.to_path_buf(), dir, &dir.join(".gitignore")));
+        IgnoreChain {
+            matchers,
+            dir_ignored: parent.dir_ignored,
+        }
+    }
+
     /// Whether `root/comps…` is ignored.
     pub fn is_ignored(&self, root: &Path, comps: &[impl AsRef<str>], is_dir: bool) -> bool {
         match comps.split_last() {
