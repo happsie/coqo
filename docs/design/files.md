@@ -33,7 +33,7 @@ The tree is virtualised (`uniform_list`): only the rows on screen are laid out, 
 | 200,200 rows, jumps, 300 frames | 6.80 ms | 6.91 ms | 7.62 ms |
 | Rebuilding the 200,200-row list (a folder collapsed or expanded, a listing landing) | 44.1 ms | 46.0 ms | 46.0 ms |
 
-A frame costs the same with 1,000 times the rows, well inside 16.7 ms (60 Hz), so scrolling is smooth. What grows with the tree is the flat row list, rebuilt on each change: 44 ms in a debug build for 200k expanded rows (expanding the 200 folders one by one took 7.3 s, as each listing rebuilds it). The test fails if a 200k-row frame costs more than 1.5× a 200-row one, and, in a release build, if the p95 is over 16.7 ms.
+A frame costs the same with 1,000 times the rows, well inside 16.7 ms (60 Hz), so scrolling is smooth. What grows with the tree is the flat row list, rebuilt on each change: 44 ms in a debug build for 200k expanded rows (expanding the 200 folders one by one took 7.3 s, as each listing rebuilds it; #330 makes it incremental). The test fails if a 200k-row frame costs more than 1.5× a 200-row one, and, in a release build, if the p95 is over 16.7 ms.
 
 ## Keyboard
 
