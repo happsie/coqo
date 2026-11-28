@@ -5612,6 +5612,24 @@
       ],
       "type": "object"
     },
+    "RenameParams3": {
+      "description": "Params of `sessions/rename`.",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The session."
+        },
+        "title": {
+          "description": "The new title: whitespace collapsed, cut at 120 characters; must not\nbe empty.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session",
+        "title"
+      ],
+      "type": "object"
+    },
     "ReplicaId": {
       "description": "Identifies one replica of a buffer (one editor in one window), e.g.\n`r-3f2a9c1d0b7e4a65`. Assigned by [`Open`]; a replica keeps it across\nreconnects and reopens so the daemon can recognise its changes.",
       "type": "string"
@@ -6497,7 +6515,7 @@
           "description": "What the agent says it is doing, if it said so this turn (or its\n`blocked` or `done` outcome)."
         },
         "title": {
-          "description": "Title for tabs and the sidebar.",
+          "description": "Title for tabs and the sidebar: the user's (`sessions/create`,\n`sessions/rename`), else the agent's own, else one derived from the\nfirst prompt. `None` until the first prompt.",
           "type": [
             "string",
             "null"
@@ -11353,6 +11371,17 @@
       },
       "result": {
         "$ref": "#/$defs/PromptResult"
+      }
+    },
+    "sessions/rename": {
+      "description": "Give a session the user's title (kept across restarts; the agent's title no longer replaces it).",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/RenameParams3"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionInfo"
       }
     },
     "sessions/respondPermission": {

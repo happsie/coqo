@@ -2,7 +2,8 @@
 
 //! The sidebar's CHATS list: the current workspace's sessions from
 //! `sessions/list`, kept current by `sessions/changes` (state dots, titles,
-//! the agent's status line, closed sessions dropping out).
+//! the agent's status line, closed sessions dropping out). A double-click
+//! on a row renames the chat in place ([`super::rename`]).
 
 use coqo_protocol::{
     codes,
@@ -14,14 +15,19 @@ use coqo_ui::{
     ActiveTokens as _,
     dock::Dock,
     gpui::{
-        AnyElement, App, AppContext as _, Context, ElementId, Entity, Global,
+        AnyElement, App, AppContext as _, ClickEvent, Context, ElementId, Entity, Global,
         InteractiveElement as _, IntoElement as _, ParentElement as _,
-        StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, div, px,
+        StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
+        px,
     },
     widgets::{Icon, TestSupportExt as _, icon, primary, section_label},
 };
 
-use super::{KIND, agent_dot, new_chat, open_session, press_action, status_line};
+use super::{
+    KIND, agent_dot, new_chat, open_session, press_action,
+    rename::{self, Place, Renaming},
+    status_line,
+};
 use crate::{
     daemon::{Daemon, DaemonEvent},
     workspace::{KnownWorkspaces, WindowWorkspaceChanged, Workspaces},
@@ -38,6 +44,8 @@ pub struct ChatList {
     /// buttons, as `(provider id, action)`.
     actions: Vec<(String, ProviderAction)>,
     creating: bool,
+    /// A chat being renamed in place.
+    pub(super) renaming: Option<Renaming>,
     _loading: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -86,6 +94,7 @@ impl ChatList {
             error: None,
             actions: Vec::new(),
             creating: false,
+            renaming: None,
             _loading: None,
             _subscriptions: subscriptions,
         };
@@ -159,6 +168,17 @@ impl ChatList {
         cx.notify();
     }
 
+    /// List `workspace`'s chats without a daemon (screenshots).
+    #[cfg(test)]
+    pub fn set_preview_workspace(&mut self, workspace: &str) {
+        self.workspace = Some(workspace.to_owned());
+    }
+
+    /// A rename was saved: show it before `sessions/changes` brings it.
+    pub(super) fn renamed(&mut self, info: SessionInfo, cx: &mut Context<Self>) {
+        self.upsert(info, cx);
+    }
+
     /// List the current workspace's sessions and follow their changes.
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.workspace =
@@ -217,8 +237,16 @@ impl ChatList {
     }
 }
 
+/// The title a chat shows: its own, or "New chat".
+pub fn title_or_new(info: &SessionInfo) -> String {
+    info.title
+        .clone()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| "New chat".into())
+}
+
 /// The CHATS section at the bottom of the sidebar.
-pub fn render_section(dock: WeakEntity<Dock>, cx: &App) -> AnyElement {
+pub fn render_section(dock: WeakEntity<Dock>, window: &Window, cx: &App) -> AnyElement {
     let t = cx.tokens();
     let (p, m) = (t.palette.clone(), t.metrics.clone());
     let list = ChatList::global(cx);
@@ -266,6 +294,10 @@ pub fn render_section(dock: WeakEntity<Dock>, cx: &App) -> AnyElement {
         }
         None => (Vec::new(), None, Vec::new()),
     };
+    let field_of = |id: &SessionId| {
+        list.as_ref()
+            .and_then(|l| l.read(cx).rename_field(id, Place::Row, window))
+    };
     if sessions.is_empty() && error.is_none() {
         section = section.child(
             div()
@@ -278,13 +310,13 @@ pub fn render_section(dock: WeakEntity<Dock>, cx: &App) -> AnyElement {
     }
     for (ix, info) in sessions.into_iter().enumerate() {
         let selected = active.as_deref() == Some(info.id.0.as_str());
-        let title = info
-            .title
-            .clone()
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| "New chat".into());
+        let title = title_or_new(&info);
         let (dock, id) = (dock.clone(), info.id.clone());
         let line = status_line(&info);
+        let name = match field_of(&info.id) {
+            Some(input) => rename::field(input, "chat-row-rename", None, cx),
+            None => div().truncate().child(title.clone()).into_any_element(),
+        };
         section = section.child(
             div()
                 .id(ElementId::Name(format!("chat-row-{}", info.id).into()))
@@ -304,7 +336,7 @@ pub fn render_section(dock: WeakEntity<Dock>, cx: &App) -> AnyElement {
                         .min_w_0()
                         .flex()
                         .flex_col()
-                        .child(div().truncate().child(title))
+                        .child(name)
                         .children(line.map(|line| {
                             div()
                                 .id(("chat-row-status", ix))
@@ -315,7 +347,13 @@ pub fn render_section(dock: WeakEntity<Dock>, cx: &App) -> AnyElement {
                                 .child(line)
                         })),
                 )
-                .on_click(move |_, window, cx| open_session(dock.clone(), id.clone(), window, cx)),
+                .on_click(move |e: &ClickEvent, window, cx| {
+                    if e.click_count() == 2 {
+                        rename::start(id.clone(), title.clone(), Place::Row, None, window, cx);
+                    } else {
+                        open_session(dock.clone(), id.clone(), window, cx);
+                    }
+                }),
         );
     }
     if let Some(error) = error {

@@ -7,8 +7,8 @@
 use coqo_protocol::methods::agents::CriterionAuthor;
 use coqo_protocol::methods::agents::{
     Cancel, Changes, Close, Create, DeletePermissionRule, Get, List, PermissionRules, Prompt,
-    Providers, RespondPermission, RunAction, SetConfigOption, SetCriteria, SetMode, SetStatus,
-    Updates,
+    Providers, Rename, RespondPermission, RunAction, SetConfigOption, SetCriteria, SetMode,
+    SetStatus, Updates,
 };
 use coqo_protocol::{Access, Router, Scope};
 
@@ -35,6 +35,7 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
     let set_config = m.clone();
     let set_status = m.clone();
     let set_criteria = m.clone();
+    let rename = m.clone();
     let close = m.clone();
     let rules = m.clone();
     let delete_rule = m.clone();
@@ -102,6 +103,10 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
                 CriterionAuthor::Agent
             };
             let r = set_criteria.set_criteria(p, author).map_err(Into::into);
+            async move { r }
+        })
+        .method_with::<Rename, _, _>(Access::daemon(), move |_, p| {
+            let r = rename.rename(&p.session, &p.title).map_err(Into::into);
             async move { r }
         })
         .method_with::<Close, _, _>(Access::daemon(), move |_, p| {

@@ -22,6 +22,9 @@
 //!   resolved at once (`byRule`) and never waits for the user. Every other
 //!   request waits, in `needs_permission`, for `sessions/respondPermission`;
 //!   with `remember` the answer also stores the request's suggested rule.
+//! - Titles ([`crate::title`]): the first prompt of an untitled session
+//!   gives it a title; the provider's own title replaces that one; a user's
+//!   title (`sessions/create`, `sessions/rename`) is never replaced.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -53,7 +56,8 @@ use crate::provider::{
 use crate::registry::ProviderRegistry;
 use crate::rules::{self, Subject};
 use crate::state::{self, Event, Tracked};
-use crate::store::{SessionStore, StoredSession};
+use crate::store::{SessionStore, StoredSession, TitleSource};
+use crate::title;
 use crate::tool_use;
 
 type Result<T> = std::result::Result<T, AgentError>;
@@ -230,6 +234,20 @@ impl Inner {
         {
             st.busy = Some(keep_alive.hold(format!("agent session {}", s.id)));
         }
+    }
+
+    /// Takes the provider's title for the session, unless the user gave one.
+    fn agent_title(&self, st: &mut SessionState, t: &str) -> Result<()> {
+        let t = title::clean(t, title::MAX);
+        if t.is_empty()
+            || st.stored.title_source == Some(TitleSource::User)
+            || st.info().title.as_deref() == Some(t.as_str())
+        {
+            return Ok(());
+        }
+        st.stored.info.title = Some(t);
+        st.stored.title_source = Some(TitleSource::Agent);
+        self.save_info(st)
     }
 
     /// Mirrors the folded current mode into the session info.
@@ -527,6 +545,13 @@ impl EventSink for Sink {
         if st.info().closed {
             return;
         }
+        if let AgentUpdate::Title(t) = &update {
+            // The session's state, not history: kept during a replay too.
+            if let Err(e) = inner.agent_title(&mut st, t) {
+                tracing::error!(session = %s.id, error = %e, "cannot record the agent's title");
+            }
+            return;
+        }
         match &update {
             // Config options are the session's state, not history: kept
             // during a replay too, but only when they changed.
@@ -547,7 +572,10 @@ impl EventSink for Sink {
             }
             _ => None,
         };
-        let result = inner.record(s, &mut st, update.into()).and_then(|_| {
+        let Some(update) = update.into_transcript() else {
+            return;
+        };
+        let result = inner.record(s, &mut st, update).and_then(|_| {
             if let Some((name, group)) = new_tool {
                 tool_use::count(&mut st.stored.info.tool_use, name, group);
                 inner.save_info(&mut st)?;
@@ -753,13 +781,19 @@ impl SessionManager {
             return Err(AgentError::UnknownProvider(params.provider));
         }
         let ts = now();
+        let title = params
+            .title
+            .as_deref()
+            .map(|t| title::clean(t, title::MAX))
+            .filter(|t| !t.is_empty());
         let stored = StoredSession {
+            title_source: title.as_ref().map(|_| TitleSource::User),
             info: SessionInfo {
                 id: SessionId(uuid::Uuid::new_v4().to_string()),
                 provider: params.provider,
                 workspace: params.workspace,
                 cwd: params.cwd,
-                title: params.title,
+                title,
                 state: AgentState::Idle,
                 state_reason: None,
                 state_since: Some(ts),
@@ -832,7 +866,16 @@ impl SessionManager {
             )?;
             inner.record(&s, &mut st, SessionUpdate::TurnStarted { turn })?;
             st.turn = Some(turn);
+            let titled = st.info().title.is_none()
+                && title::derive(&content).is_some_and(|t| {
+                    st.stored.info.title = Some(t);
+                    st.stored.title_source = Some(TitleSource::Prompt);
+                    true
+                });
             inner.transition(&s, &mut st, Event::TurnStarted)?;
+            if titled {
+                inner.save_info(&mut st)?;
+            }
             (turn, seq)
         };
 
@@ -1016,6 +1059,30 @@ impl SessionManager {
             .map_err(AgentError::InvalidParams)?;
         if next != st.info().criteria {
             st.stored.info.criteria = next;
+            inner.save_info(&mut st)?;
+        }
+        Ok(st.info().clone())
+    }
+
+    /// Gives the session the user's title (`sessions/rename`): whitespace
+    /// collapsed and cut at 120 characters. The agent's own title no longer
+    /// replaces it. Works on closed sessions too. Returns the session's new
+    /// info; a change also goes out on `sessions/changes`.
+    pub fn rename(&self, id: &SessionId, new_title: &str) -> Result<SessionInfo> {
+        let t = title::clean(new_title, title::MAX);
+        if t.is_empty() {
+            return Err(AgentError::InvalidParams(
+                "the title must not be empty".into(),
+            ));
+        }
+        let inner = &self.inner;
+        let s = inner.session(id)?;
+        let mut st = lock(&s.state);
+        let changed = st.info().title.as_deref() != Some(t.as_str());
+        let source = st.stored.title_source != Some(TitleSource::User);
+        if changed || source {
+            st.stored.info.title = Some(t);
+            st.stored.title_source = Some(TitleSource::User);
             inner.save_info(&mut st)?;
         }
         Ok(st.info().clone())

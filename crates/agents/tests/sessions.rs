@@ -1617,3 +1617,168 @@ async fn config_options_are_set_and_kept_across_a_daemon_restart() {
         "{after:?}"
     );
 }
+
+async fn rename(
+    client: &Client,
+    id: &SessionId,
+    title: &str,
+) -> Result<SessionInfo, ProtocolError> {
+    client
+        .request::<Rename>(RenameParams {
+            session: id.clone(),
+            title: title.into(),
+        })
+        .await
+}
+
+async fn listed_title(client: &Client, id: &SessionId) -> Option<String> {
+    let list = client
+        .request::<List>(ListSessionsParams {
+            workspace: Some("ws-1".into()),
+            include_closed: true,
+        })
+        .await
+        .unwrap();
+    list.sessions
+        .into_iter()
+        .find(|s| &s.id == id)
+        .expect("listed")
+        .title
+}
+
+/// Prompts and waits for the turn to end.
+async fn turn(client: &Client, sub: &mut Subscription<Updates>, id: &SessionId, t: &str) {
+    prompt(client, id, t).await.unwrap();
+    until(sub, turn_ended).await;
+}
+
+/// Waits for a `sessions/changes` event of session `id` with title `title`.
+async fn titled(changes: &mut Subscription<Changes>, id: &SessionId, title: &str) {
+    while next_change(changes, id).await.title.as_deref() != Some(title) {}
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn titles_come_from_the_first_prompt_the_agent_and_the_user() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("coqo.db");
+    let title = |t: &str| Step::Update(AgentUpdate::Title(t.into()));
+    let first = ScriptedProvider::new()
+        .turn([chunk("on it"), Step::Stop(StopReason::EndTurn)])
+        .turn([title("  Flaky\nIT fix "), Step::Stop(StopReason::EndTurn)])
+        .turn([
+            title("The agent's later title"),
+            Step::Stop(StopReason::EndTurn),
+        ]);
+    let id = {
+        let d = daemon(SessionStore::open(&db).unwrap(), &first);
+        let client = d.connect().await;
+        let created = client
+            .request::<Create>(CreateSessionParams {
+                provider: "fake".into(),
+                cwd: "/work/app".into(),
+                workspace: Some("ws-1".into()),
+                title: None,
+                mode: None,
+            })
+            .await
+            .unwrap();
+        let id = created.id;
+        assert_eq!(created.title, None, "untitled until the first prompt");
+        let mut changes = client
+            .subscribe::<Changes>(ChangesParams::default(), None)
+            .await
+            .unwrap();
+        let mut sub = subscribe(&client, &id, Some(0)).await;
+
+        // The first prompt titles it, on `sessions/changes` too (the sidebar
+        // shows it without opening the chat).
+        turn(
+            &client,
+            &mut sub,
+            &id,
+            "## Fix the **flaky** OrderControllerIT\n\nIt fails on CI about once a day.",
+        )
+        .await;
+        let derived = "Fix the flaky OrderControllerIT";
+        assert_eq!(listed_title(&client, &id).await.as_deref(), Some(derived));
+        titled(&mut changes, &id, derived).await;
+
+        // The agent's own title replaces the derived one; it is not part of
+        // the transcript.
+        turn(&client, &mut sub, &id, "and the other one").await;
+        assert_eq!(
+            listed_title(&client, &id).await.as_deref(),
+            Some("Flaky IT fix")
+        );
+        let transcript = until(&mut subscribe(&client, &id, Some(0)).await, |u| {
+            matches!(u, SessionUpdate::TurnEnded { turn: 2, .. })
+        })
+        .await;
+        assert!(transcript.iter().all(|u| kind(&u.event) != "title"));
+
+        // The user's title wins over the agent's, from then on.
+        let renamed = rename(&client, &id, "  Volume\n discount ").await.unwrap();
+        assert_eq!(renamed.title.as_deref(), Some("Volume discount"));
+        titled(&mut changes, &id, "Volume discount").await;
+        turn(&client, &mut sub, &id, "one more").await;
+        assert_eq!(
+            listed_title(&client, &id).await.as_deref(),
+            Some("Volume discount")
+        );
+
+        let bad = rename(&client, &id, " \n ").await.unwrap_err();
+        assert_eq!(app_error(bad), codes::INVALID_PARAMS);
+        let unknown = rename(&client, &SessionId("nope".into()), "x")
+            .await
+            .unwrap_err();
+        assert_eq!(app_error(unknown), app_codes::UNKNOWN_SESSION);
+        id
+    };
+
+    // After a restart the user's title is kept, even when the resumed agent
+    // reports its own again.
+    let second = ScriptedProvider::new()
+        .on_resume([AgentUpdate::Title("Resumed title".into())])
+        .turn([Step::Stop(StopReason::EndTurn)]);
+    let d = daemon(SessionStore::open(&db).unwrap(), &second);
+    let client = d.connect().await;
+    assert_eq!(
+        listed_title(&client, &id).await.as_deref(),
+        Some("Volume discount")
+    );
+    let mut sub = subscribe(&client, &id, None).await;
+    turn(&client, &mut sub, &id, "back again").await;
+    assert_eq!(second.calls()[0], Call::Resume("fake-1".into()));
+    assert_eq!(
+        listed_title(&client, &id).await.as_deref(),
+        Some("Volume discount")
+    );
+
+    // A closed chat can be renamed too.
+    client
+        .request::<Close>(SessionParams {
+            session: id.clone(),
+        })
+        .await
+        .unwrap();
+    let renamed = rename(&client, &id, "Volume discount, done").await.unwrap();
+    assert!(renamed.closed);
+    assert_eq!(
+        listed_title(&client, &id).await.as_deref(),
+        Some("Volume discount, done")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_title_given_at_create_is_the_users() {
+    let provider = ScriptedProvider::new().turn([
+        Step::Update(AgentUpdate::Title("Agent title".into())),
+        Step::Stop(StopReason::EndTurn),
+    ]);
+    let d = daemon(SessionStore::open_in_memory().unwrap(), &provider);
+    let client = d.connect().await;
+    let id = create(&client).await.id;
+    let mut sub = subscribe(&client, &id, Some(0)).await;
+    turn(&client, &mut sub, &id, "Something else entirely").await;
+    assert_eq!(listed_title(&client, &id).await.as_deref(), Some("Test"));
+}

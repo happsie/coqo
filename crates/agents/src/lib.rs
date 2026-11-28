@@ -68,6 +68,7 @@ mod rules;
 mod state;
 mod store;
 pub mod testing;
+mod title;
 mod tool_use;
 
 pub use error::AgentError;
@@ -79,7 +80,7 @@ pub use provider::{
 pub use registry::{
     AgentProviderImpls, ProviderRegistry, StaticProviders, provider_info, register_provider,
 };
-pub use store::{SessionStore, StoreError, StoredSession};
+pub use store::{SessionStore, StoreError, StoredSession, TitleSource};
 
 /// The wire types, re-exported.
 pub use coqo_protocol::methods::agents as model;

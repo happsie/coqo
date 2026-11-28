@@ -363,6 +363,12 @@ pub(crate) fn update(u: &acp::SessionUpdate) -> Option<AgentUpdate> {
         acp::SessionUpdate::ConfigOptionUpdate(c) => {
             AgentUpdate::ConfigOptions(config_options(&c.config_options))
         }
+        // The agent's own title (Claude Code titles a session from its first
+        // prompt). A cleared title keeps the one the session has.
+        acp::SessionUpdate::SessionInfoUpdate(i) => match i.title.value() {
+            Some(title) if !title.trim().is_empty() => AgentUpdate::Title(title.clone()),
+            _ => return None,
+        },
         _ => return None,
     })
 }
@@ -724,5 +730,35 @@ mod tests {
             },
         );
         assert!(matches!(bogus, acp::RequestPermissionOutcome::Cancelled));
+    }
+
+    #[test]
+    fn the_agents_title_comes_from_session_info_updates() {
+        // As claude-agent-acp 0.113 sends the title Claude Code generated.
+        let title = |v| {
+            let u: acp::SessionUpdate = serde_json::from_value(v).unwrap();
+            update(&u)
+        };
+        assert_eq!(
+            title(
+                json!({"sessionUpdate": "session_info_update", "title": "Fix the flaky IT",
+                          "updatedAt": "2026-11-28T10:00:00Z"})
+            ),
+            Some(AgentUpdate::Title("Fix the flaky IT".into()))
+        );
+        assert_eq!(
+            title(json!({"sessionUpdate": "session_info_update", "title": null})),
+            None
+        );
+        assert_eq!(
+            title(
+                json!({"sessionUpdate": "session_info_update", "updatedAt": "2026-11-28T10:00:00Z"})
+            ),
+            None
+        );
+        assert_eq!(
+            title(json!({"sessionUpdate": "session_info_update", "title": "  "})),
+            None
+        );
     }
 }

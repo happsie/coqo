@@ -12,6 +12,10 @@
 //!   line (`set_status`) and its progress.
 //! - [`NewChat`] (`Ctrl/Cmd+Shift+N`, and the **+** next to CHATS): a session
 //!   in the open workspace with the first available provider.
+//! - Titles come from the daemon (the first prompt, the agent's own title,
+//!   or the user's). [`RenameChat`] (F2 in a chat, "Rename chat" in the
+//!   palette), a double-click on the tab label or on the CHATS row renames
+//!   the chat in place ([`rename`]).
 //!
 //! A permission request shows as a card with one button per option, Enter
 //! and Esc for "allow once" and "deny", and "remember for this workspace",
@@ -31,6 +35,7 @@
 
 pub mod diff;
 pub mod list;
+pub mod rename;
 pub mod tab;
 pub mod transcript;
 
@@ -85,6 +90,8 @@ coqo_ui::gpui::actions!(
         AllowPermission,
         /// Deny the focused permission request once (Esc).
         RejectPermission,
+        /// Rename the focused chat in place, on its tab label.
+        RenameChat,
     ]
 );
 
@@ -142,6 +149,9 @@ pub fn init(cx: &mut App) {
                 .key(NEW_CHAT_KEY),
             crate::commands::Command::new("chat.cancel_turn", "Stop the agent", "Chat", CancelTurn)
                 .key("escape")
+                .context("ChatTab"),
+            crate::commands::Command::new("chat.rename", "Rename chat", "Chat", RenameChat)
+                .key("f2")
                 .context("ChatTab"),
         ],
     );

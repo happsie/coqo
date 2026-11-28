@@ -1926,6 +1926,14 @@ export type RenameParams2 = {
   workspace: WorkspaceId;
 };
 
+/** Params of `sessions/rename`. */
+export type RenameParams3 = {
+  /** The session. */
+  session: SessionId;
+  /** The new title: whitespace collapsed, cut at 120 characters; must not be empty. */
+  title: string;
+};
+
 /** Identifies one replica of a buffer (one editor in one window), e.g. `r-3f2a9c1d0b7e4a65`. Assigned by [`Open`]; a replica keeps it across reconnects and reopens so the daemon can recognise its changes. */
 export type ReplicaId = string;
 
@@ -2243,7 +2251,7 @@ export type SessionInfo = {
   stateSince?: number | null;
   /** What the agent says it is doing, if it said so this turn (or its `blocked` or `done` outcome). */
   status?: AgentStatus | null;
-  /** Title for tabs and the sidebar. */
+  /** Title for tabs and the sidebar: the user's (`sessions/create`, `sessions/rename`), else the agent's own, else one derived from the first prompt. `None` until the first prompt. */
   title?: string | null;
   /** The tools the agent called this session and how often, in order of first use, counted from its tool calls (live ones, not replays). */
   toolUse?: Array<ToolUse>;
@@ -3482,6 +3490,8 @@ export interface Requests {
   "sessions/setStatus": { params: SetStatusParams; result: SessionInfo };
   /** Set or update the session's acceptance criteria (session tokens: own session). (client→server) */
   "sessions/setCriteria": { params: SetCriteriaParams; result: SessionInfo };
+  /** Give a session the user's title (kept across restarts; the agent's title no longer replaces it). (client→server) */
+  "sessions/rename": { params: RenameParams3; result: SessionInfo };
   /** End a session; its transcript stays readable. Result is true if it was open. (client→server) */
   "sessions/close": { params: SessionParams; result: boolean };
   /** A workspace's permission rules (auto-approve and auto-reject), oldest first. (client→server) */
