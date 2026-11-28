@@ -65,6 +65,9 @@ thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = "0.7"
 tracing = "0.1"
+# `fs/delete` moves entries to the OS trash (MIT; the freedesktop.org trash
+# on Linux, the Finder's on macOS).
+trash = "5"
 
 [dev-dependencies]
 nix = { version = "0.30", default-features = false, features = ["fs", "process", "signal"] }

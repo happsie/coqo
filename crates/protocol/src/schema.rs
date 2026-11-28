@@ -174,6 +174,21 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "Read a file in a workspace root, up to a size limit.",
         ),
+        request::<fs::Create>(
+            g,
+            "client→server",
+            "Create an empty file or a folder in a workspace root (daemon token only).",
+        ),
+        request::<fs::Rename>(
+            g,
+            "client→server",
+            "Rename or move an entry within a workspace root; open buffers follow it (daemon token only).",
+        ),
+        request::<fs::Delete>(
+            g,
+            "client→server",
+            "Move an entry to the OS trash, or delete it for good with permanent (daemon token only).",
+        ),
         topic::<fs::Changes>(
             g,
             "Debounced file-system changes in an open workspace (live only).",
@@ -567,6 +582,9 @@ fn error_codes() -> Value {
         ("NOT_A_FILE", methods::codes::NOT_A_FILE),
         ("WORKSPACE_CLOSED", methods::codes::WORKSPACE_CLOSED),
         ("IO_ERROR", methods::codes::IO_ERROR),
+        ("ALREADY_EXISTS", methods::codes::ALREADY_EXISTS),
+        ("PERMISSION_DENIED", methods::codes::PERMISSION_DENIED),
+        ("TRASH_FAILED", methods::codes::TRASH_FAILED),
         ("UNAUTHORIZED", codes::UNAUTHORIZED),
         ("FORBIDDEN", codes::FORBIDDEN),
         ("UNKNOWN_SESSION", methods::codes::UNKNOWN_SESSION),
@@ -970,6 +988,9 @@ fn schema_covers_the_application_methods() {
         fs::ListDir::NAME,
         fs::Stat::NAME,
         fs::ReadFile::NAME,
+        fs::Create::NAME,
+        fs::Rename::NAME,
+        fs::Delete::NAME,
     ] {
         assert_eq!(methods[name]["kind"], "request", "{name}");
     }
@@ -1002,6 +1023,18 @@ fn application_wire_shapes() {
     let list: fs::PathParams =
         serde_json::from_value(json!({"workspace": "ws-1", "root": 1})).unwrap();
     assert_eq!(list.path, "");
+    let create: fs::CreateParams = serde_json::from_value(
+        json!({"workspace": "ws-1", "root": 1, "path": "src/new", "kind": "dir"}),
+    )
+    .unwrap();
+    assert_eq!(create.kind, fs::EntryKind::Dir);
+    let delete: fs::DeleteParams =
+        serde_json::from_value(json!({"workspace": "ws-1", "root": 1, "path": "a"})).unwrap();
+    assert!(!delete.permanent);
+    assert_eq!(
+        serde_json::to_value(&delete).unwrap(),
+        json!({"workspace": "ws-1", "root": 1, "path": "a"})
+    );
 }
 
 /// The git wire shapes the UI and later clients (diff view, review threads,

@@ -30,7 +30,7 @@ use crate::syntax::{self, SyntaxService};
 use crate::threads::{self, ThreadService};
 use crate::walkthroughs::{self, WalkthroughService};
 use crate::workspace::{self, WorkspaceService};
-use crate::{agents, alerts, methods, terminal};
+use crate::{agents, alerts, file_ops, methods, terminal};
 
 /// Build the daemon's router. Called once at startup, inside the runtime;
 /// an error stops the daemon before it accepts clients.
@@ -42,7 +42,8 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
         McpToolService::new(ctx.mods.clone(), ctx.shutdown.clone()),
     );
     // Services, one line each.
-    let workspaces = Arc::new(WorkspaceService::open(ctx.data.clone())?);
+    let workspaces =
+        Arc::new(WorkspaceService::open(ctx.data.clone())?.with_trash(ctx.trash.clone()));
     let router = workspace::register(router, Arc::clone(&workspaces));
     let router = editor::register(router, EditorService::new(Arc::clone(&workspaces)));
     let sessions = agents::open(ctx)?;
@@ -77,12 +78,13 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
         router,
         WalkthroughService::open(
             &ctx.data.global_db(),
-            workspaces,
+            Arc::clone(&workspaces),
             Arc::clone(&buffers),
             Some(sessions.clone()),
             Some(git_service),
         )?,
     );
+    let router = file_ops::register(router, workspaces, Arc::clone(&buffers));
     let router = syntax::register(router, SyntaxService::new(Arc::clone(&buffers)));
     let router = buffers::register(router, buffers);
     // One set of terminals: the `terminal/*` routes and ACP agents' commands

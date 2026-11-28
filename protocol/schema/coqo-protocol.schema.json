@@ -1950,6 +1950,34 @@
     "CreateParams": {
       "description": "Params of [`Create`].",
       "properties": {
+        "kind": {
+          "$ref": "#/$defs/EntryKind",
+          "description": "[`File`](EntryKind::File) (empty) or [`Dir`](EntryKind::Dir)."
+        },
+        "path": {
+          "description": "`/`-separated path of the new entry, relative to the root. Missing\nfolders on the way are created.",
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root the path is relative to."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root",
+        "path",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "CreateParams2": {
+      "description": "Params of [`Create`].",
+      "properties": {
         "anchors": {
           "description": "The code it is about: 1 to [`MAX_ANCHORS`] locations, the files\nas they are now (open buffers with their unsaved edits).",
           "items": {
@@ -2001,7 +2029,7 @@
       ],
       "type": "object"
     },
-    "CreateParams2": {
+    "CreateParams3": {
       "description": "Params of [`Create`].",
       "properties": {
         "session": {
@@ -2024,7 +2052,7 @@
       ],
       "type": "object"
     },
-    "CreateParams3": {
+    "CreateParams4": {
       "description": "Params of [`Create`].",
       "properties": {
         "body": {
@@ -2373,6 +2401,33 @@
     "DeleteParams": {
       "description": "Params of [`Delete`].",
       "properties": {
+        "path": {
+          "description": "The entry to delete (a folder with everything in it). A symlink is\ndeleted itself, not its target.",
+          "type": "string"
+        },
+        "permanent": {
+          "description": "Delete it for good instead of moving it to the OS trash. Without it,\nan entry that cannot go to the trash is left alone and the call fails\nwith [`TRASH_FAILED`](super::codes::TRASH_FAILED).",
+          "type": "boolean"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root the path is relative to."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root",
+        "path"
+      ],
+      "type": "object"
+    },
+    "DeleteParams2": {
+      "description": "Params of [`Delete`].",
+      "properties": {
         "deleteFile": {
           "description": "Also delete its committed file, if it has one. Default: the file\nstays (it may be committed already; git is the user's).",
           "type": "boolean"
@@ -2384,6 +2439,19 @@
       },
       "required": [
         "id"
+      ],
+      "type": "object"
+    },
+    "DeleteResult": {
+      "description": "Result of [`Delete`].",
+      "properties": {
+        "trashed": {
+          "description": "Whether it went to the OS trash (`false`: deleted for good).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "trashed"
       ],
       "type": "object"
     },
@@ -2840,6 +2908,19 @@
           "type": "string"
         }
       ]
+    },
+    "EntryResult": {
+      "description": "Result of [`Create`] and [`Rename`]: the entry's path, normalised\n(`./a//b` is `a/b`).",
+      "properties": {
+        "path": {
+          "description": "`/`-separated path relative to the root.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
     },
     "ErrorObject": {
       "description": "A JSON-RPC 2.0 error object (§5.1).",
@@ -5388,6 +5469,34 @@
       "required": [
         "id",
         "name"
+      ],
+      "type": "object"
+    },
+    "RenameParams2": {
+      "description": "Params of [`Rename`].",
+      "properties": {
+        "from": {
+          "description": "The entry to rename or move. A symlink is moved itself, not its\ntarget.",
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root both paths are relative to."
+        },
+        "to": {
+          "description": "Its new path. The folder it goes in must exist, and nothing may be\nthere yet ([`ALREADY_EXISTS`](super::codes::ALREADY_EXISTS)).",
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root",
+        "from",
+        "to"
       ],
       "type": "object"
     },
@@ -10125,6 +10234,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Coqo Protocol",
   "x-error-codes": {
+    "ALREADY_EXISTS": 1010,
     "AUTH_REQUIRED": 1107,
     "FILE_TOO_LARGE": 1005,
     "FORBIDDEN": -32007,
@@ -10146,6 +10256,7 @@
     "NO_SUCH_TERMINAL": 1301,
     "PARSE_ERROR": -32700,
     "PATH_OUTSIDE_WORKSPACE": 1003,
+    "PERMISSION_DENIED": 1011,
     "PROVIDER_ERROR": 1108,
     "REQUEST_CANCELLED": -32005,
     "RESUME_GAP": -32003,
@@ -10156,6 +10267,7 @@
     "SPAWN_FAILED": 1302,
     "STALE_SELECTION": 1602,
     "STORAGE_ERROR": 1109,
+    "TRASH_FAILED": 1012,
     "UNAUTHORIZED": -32006,
     "UNKNOWN_BUFFER": 1201,
     "UNKNOWN_COMMENT": 1802,
@@ -10495,6 +10607,28 @@
         "$ref": "#/$defs/ChangesParams"
       }
     },
+    "fs/create": {
+      "description": "Create an empty file or a folder in a workspace root (daemon token only).",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/CreateParams"
+      },
+      "result": {
+        "$ref": "#/$defs/EntryResult"
+      }
+    },
+    "fs/delete": {
+      "description": "Move an entry to the OS trash, or delete it for good with permanent (daemon token only).",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/DeleteParams"
+      },
+      "result": {
+        "$ref": "#/$defs/DeleteResult"
+      }
+    },
     "fs/list": {
       "description": "List a directory in a workspace root.",
       "direction": "client→server",
@@ -10515,6 +10649,17 @@
       },
       "result": {
         "$ref": "#/$defs/ReadResult"
+      }
+    },
+    "fs/rename": {
+      "description": "Rename or move an entry within a workspace root; open buffers follow it (daemon token only).",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/RenameParams2"
+      },
+      "result": {
+        "$ref": "#/$defs/EntryResult"
       }
     },
     "fs/stat": {
@@ -10786,7 +10931,7 @@
       "direction": "client→server",
       "kind": "request",
       "params": {
-        "$ref": "#/$defs/CreateParams"
+        "$ref": "#/$defs/CreateParams2"
       },
       "result": {
         "$ref": "#/$defs/Question"
@@ -11152,7 +11297,7 @@
       "direction": "client→server",
       "kind": "request",
       "params": {
-        "$ref": "#/$defs/CreateParams3"
+        "$ref": "#/$defs/CreateParams4"
       },
       "result": {
         "$ref": "#/$defs/Thread"
@@ -11251,7 +11396,7 @@
       "direction": "client→server",
       "kind": "request",
       "params": {
-        "$ref": "#/$defs/CreateParams2"
+        "$ref": "#/$defs/CreateParams3"
       },
       "result": {
         "$ref": "#/$defs/Walkthrough"
@@ -11262,7 +11407,7 @@
       "direction": "client→server",
       "kind": "request",
       "params": {
-        "$ref": "#/$defs/DeleteParams"
+        "$ref": "#/$defs/DeleteParams2"
       },
       "result": {
         "type": "boolean"

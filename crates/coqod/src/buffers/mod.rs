@@ -28,6 +28,10 @@
 //!   pending, it is held until that text lands (up to [`MAX_AGENT_HOLD`]).
 //!   Merging the empty moment would turn one change into a deletion plus a
 //!   re-insertion, lose the agent attribution and misplace unsaved edits.
+//! - **Renames.** `fs/rename` moves the open buffers of the files it moves
+//!   ([`BufferService::move_files`]): same id, text and unsaved edits, new
+//!   path. A deleted file's buffer keeps its text; saving it writes the file
+//!   again.
 //! - **Save** writes atomically and then makes the written text the disk
 //!   baseline, so the watcher seeing Coqo's own write is a no-op. If the file
 //!   changed on disk since it was read, the change is merged first and the
@@ -71,7 +75,7 @@ use tokio::sync::watch;
 
 use self::agent::AgentWrites;
 use self::journal::Journal;
-use crate::workspace::{ResolvedFile, WorkspaceService};
+use crate::workspace::{Renamed, ResolvedFile, WorkspaceService};
 
 /// Buffer service tuning.
 #[derive(Clone, Debug)]
@@ -167,15 +171,25 @@ struct State {
     since_snapshot: usize,
 }
 
+/// Where an open buffer's file is. It changes when `fs/rename` moves the
+/// file ([`BufferService::moved`]).
+#[derive(Debug)]
+struct Location {
+    /// Canonical path.
+    real: PathBuf,
+    /// The journal key (the canonical path, as a string).
+    key: String,
+    /// `(root, path)` pairs `fs/changes` reports the file under.
+    watch_keys: Vec<(RootId, String)>,
+}
+
 /// One open buffer.
 #[derive(Debug)]
 struct OpenBuffer {
     id: BufferId,
     workspace: WorkspaceId,
-    /// Canonical path; also the journal key.
-    real: PathBuf,
-    key: String,
-    watch_keys: Vec<(RootId, String)>,
+    /// Lock order: `state`, then `location`.
+    location: Mutex<Location>,
     state: Mutex<State>,
     log: Arc<SeqLog<BufferChange>>,
     /// Serialises file I/O (save, re-reading after a disk change).
@@ -188,6 +202,29 @@ struct OpenBuffer {
 impl OpenBuffer {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn location(&self) -> MutexGuard<'_, Location> {
+        self.location.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The file's canonical path.
+    fn real(&self) -> PathBuf {
+        self.location().real.clone()
+    }
+
+    /// The journal key.
+    fn key(&self) -> String {
+        self.location().key.clone()
+    }
+
+    /// Whether `fs/changes` of `root` reporting `paths` (sorted) covers the
+    /// file.
+    fn watched_in(&self, root: RootId, paths: &[String]) -> bool {
+        self.location()
+            .watch_keys
+            .iter()
+            .any(|(r, path)| *r == root && paths.binary_search(path).is_ok())
     }
 
     fn open_result(&self, st: &State, replica: ReplicaId) -> OpenResult {
@@ -359,7 +396,7 @@ impl BufferService {
         self.registry()
             .buffers
             .values()
-            .find(|b| b.real == path)
+            .find(|b| b.real() == path)
             .cloned()
     }
 
@@ -382,7 +419,7 @@ impl BufferService {
             moved_baseline || matches!(change.origin.kind, OriginKind::Disk | OriginKind::Save);
         if !st.buf.is_dirty() {
             if st.journaled {
-                self.journal.delete(&b.workspace, &b.key);
+                self.journal.delete(&b.workspace, &b.key());
                 st.journaled = false;
                 st.since_snapshot = 0;
             }
@@ -391,11 +428,11 @@ impl BufferService {
             || st.since_snapshot >= self.config.snapshot_every
         {
             self.journal
-                .snapshot(&b.workspace, &b.key, st.buf.snapshot());
+                .snapshot(&b.workspace, &b.key(), st.buf.snapshot());
             st.journaled = true;
             st.since_snapshot = 0;
         } else {
-            self.journal.change(&b.workspace, &b.key, change);
+            self.journal.change(&b.workspace, &b.key(), change);
             st.since_snapshot += 1;
         }
     }
@@ -580,9 +617,11 @@ impl BufferService {
         let b = Arc::new(OpenBuffer {
             id,
             workspace: workspace.clone(),
-            real: file.real.clone(),
-            key,
-            watch_keys: file.watch_keys,
+            location: Mutex::new(Location {
+                real: file.real.clone(),
+                key,
+                watch_keys: file.watch_keys,
+            }),
             state: Mutex::new(State {
                 buf,
                 journaled,
@@ -601,11 +640,11 @@ impl BufferService {
             if let Some(c) = st.buf.apply_disk(disk, Origin::of(OriginKind::Disk)) {
                 self.commit(&b, &mut st, c, true);
             }
-            tracing::info!(path = %b.real.display(), rev = st.buf.rev(), dirty = st.buf.is_dirty(), "restored unsaved edits from the journal");
+            tracing::info!(path = %b.real().display(), rev = st.buf.rev(), dirty = st.buf.is_dirty(), "restored unsaved edits from the journal");
         }
         {
             let mut reg = self.registry();
-            reg.by_path.insert((workspace.clone(), b.real.clone()), id);
+            reg.by_path.insert((workspace.clone(), b.real()), id);
             reg.buffers.insert(id, Arc::clone(&b));
         }
         self.ensure_watch(workspace);
@@ -631,7 +670,7 @@ impl BufferService {
         }
         b.unloaded.store(true, Ordering::Release);
         reg.buffers.remove(&b.id);
-        reg.by_path.remove(&(b.workspace.clone(), b.real.clone()));
+        reg.by_path.remove(&(b.workspace.clone(), b.real()));
         let workspace_done = !reg.buffers.values().any(|o| o.workspace == b.workspace);
         if workspace_done && let Some(task) = reg.watches.remove(&b.workspace) {
             task.abort();
@@ -641,13 +680,13 @@ impl BufferService {
         if st.buf.is_dirty() {
             // Keep the unsaved edits, compactly.
             self.journal
-                .snapshot(&b.workspace, &b.key, st.buf.snapshot());
+                .snapshot(&b.workspace, &b.key(), st.buf.snapshot());
         } else if st.journaled {
-            self.journal.delete(&b.workspace, &b.key);
+            self.journal.delete(&b.workspace, &b.key());
         }
         drop(st);
         b.closed.send_replace(true);
-        tracing::debug!(buffer = %b.id, path = %b.real.display(), "buffer unloaded");
+        tracing::debug!(buffer = %b.id, path = %b.real().display(), "buffer unloaded");
     }
 
     // ---- disk changes ---------------------------------------------------------
@@ -713,12 +752,7 @@ impl BufferService {
             .buffers
             .values()
             .filter(|b| &b.workspace == workspace)
-            .filter(|b| {
-                c.rescan
-                    || b.watch_keys
-                        .iter()
-                        .any(|(root, path)| *root == c.root && c.paths.binary_search(path).is_ok())
-            })
+            .filter(|b| c.rescan || b.watched_in(c.root, &c.paths))
             .cloned()
             .collect();
         for b in hit {
@@ -754,7 +788,7 @@ impl BufferService {
                 return;
             };
             if disk.len() == 0 && self.maybe_mid_write(b, held, started.elapsed()) {
-                tracing::debug!(path = %b.real.display(), "open file reads as empty; waiting for the rest of the write");
+                tracing::debug!(path = %b.real().display(), "open file reads as empty; waiting for the rest of the write");
                 held = true;
                 tokio::time::sleep(self.config.truncate_settle).await;
                 continue;
@@ -775,25 +809,25 @@ impl BufferService {
         }
         let ttl = self.config.agent_write_ttl;
         let mut writes = self.agent_writes.lock().unwrap_or_else(|e| e.into_inner());
-        if writes.awaits_text(&b.real, ttl) {
+        if writes.awaits_text(&b.real(), ttl) {
             return waited < MAX_AGENT_HOLD;
         }
-        !held && !writes.explains(&b.real, before, &Rope::new(), ttl)
+        !held && !writes.explains(&b.real(), before, &Rope::new(), ttl)
     }
 
     /// Read and decode `b`'s file; `None` if it cannot be (logged).
     async fn read_disk(&self, b: &OpenBuffer) -> Option<Rope> {
-        let (path, limit) = (b.real.clone(), self.config.max_file_bytes);
+        let (path, limit) = (b.real(), self.config.max_file_bytes);
         let read = tokio::task::spawn_blocking(move || disk::read(&path, limit)).await;
         let bytes = match read {
             Ok(Ok(bytes)) => bytes,
             Ok(Err(disk::ReadError::Io(e))) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Deleted (or mid-rename); the buffer keeps its text.
-                tracing::debug!(path = %b.real.display(), "open file is gone from disk");
+                tracing::debug!(path = %b.real().display(), "open file is gone from disk");
                 return None;
             }
             Ok(Err(e)) => {
-                tracing::warn!(path = %b.real.display(), error = ?e, "cannot re-read an open file");
+                tracing::warn!(path = %b.real().display(), error = ?e, "cannot re-read an open file");
                 return None;
             }
             Err(e) => {
@@ -804,7 +838,7 @@ impl BufferService {
         match buftext::decode(bytes) {
             Ok(d) => Some(Rope::from_str(&d.text)),
             Err(e) => {
-                tracing::warn!(path = %b.real.display(), error = %e, "open file is no longer UTF-8; keeping the buffer");
+                tracing::warn!(path = %b.real().display(), error = %e, "open file is no longer UTF-8; keeping the buffer");
                 None
             }
         }
@@ -820,14 +854,14 @@ impl BufferService {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take_match(
-                &b.real,
+                &b.real(),
                 st.buf.disk(),
                 &new_disk,
                 self.config.agent_write_ttl,
             )
             .map_or_else(|| Origin::of(OriginKind::Disk), Origin::agent);
         if let Some(c) = st.buf.apply_disk(new_disk, origin) {
-            tracing::debug!(path = %b.real.display(), rev = c.rev, origin = ?c.origin.kind, conflict = c.conflict, "merged a disk change");
+            tracing::debug!(path = %b.real().display(), rev = c.rev, origin = ?c.origin.kind, conflict = c.conflict, "merged a disk change");
             self.commit(b, &mut st, c, true);
         }
     }
@@ -888,7 +922,7 @@ impl BufferService {
                 st.buf.encoding(),
             )
         };
-        let (path, limit, force) = (b.real.clone(), self.config.max_file_bytes, p.force);
+        let (path, limit, force) = (b.real(), self.config.max_file_bytes, p.force);
         let written = text.clone();
         let outcome = tokio::task::spawn_blocking(move || -> Result<Option<Rope>, ErrorObject> {
             if !force {
@@ -919,7 +953,7 @@ impl BufferService {
                 codes::SAVE_CONFLICT,
                 format!(
                     "{} changed on disk; the change was merged into the buffer (now at rev {rev}). Review it and save again, or save with force",
-                    b.real.display()
+                    b.real().display()
                 ),
             )
             .with_data(serde_json::json!({ "rev": rev })));
@@ -1078,7 +1112,7 @@ impl BufferService {
         let text = changes.is_none().then(|| st.buf.text().to_string());
         Ok(SyntaxView {
             workspace: b.workspace.clone(),
-            path: b.real.clone(),
+            path: b.real(),
             rev,
             changes,
             text,
@@ -1091,6 +1125,82 @@ impl BufferService {
             .by_path
             .get(&(workspace.clone(), real.to_path_buf()))
             .copied()
+    }
+
+    /// Run `rename` (`fs/rename` on disk) and move the open buffers of the
+    /// files it moved with it: their path, `fs/changes` keys and journal
+    /// entry change, their id, text and unsaved edits stay. `from` is the
+    /// real path being moved; while `rename` runs, those buffers' I/O is held,
+    /// so a save cannot write the old path in the middle.
+    pub(crate) async fn move_files<F>(
+        &self,
+        workspace: &WorkspaceId,
+        from: &Path,
+        rename: F,
+    ) -> Result<Renamed, ErrorObject>
+    where
+        F: Future<Output = Result<Renamed, ErrorObject>>,
+    {
+        let mut affected: Vec<Arc<OpenBuffer>> = self
+            .registry()
+            .buffers
+            .values()
+            .filter(|b| &b.workspace == workspace && b.real().starts_with(from))
+            .cloned()
+            .collect();
+        affected.sort_by_key(|b| b.id);
+        let mut held = Vec::with_capacity(affected.len());
+        for b in &affected {
+            held.push(b.io.lock().await);
+        }
+        let renamed = rename.await?;
+        for b in &affected {
+            let old = b.real();
+            let Ok(rest) = old.strip_prefix(&renamed.from) else {
+                continue;
+            };
+            let real = if rest.as_os_str().is_empty() {
+                renamed.to.clone()
+            } else {
+                renamed.to.join(rest)
+            };
+            let watch_keys = self
+                .workspaces
+                .watch_keys(workspace.clone(), real.clone())
+                .await
+                .unwrap_or_default();
+            self.relocate(b, real, watch_keys);
+        }
+        drop(held);
+        Ok(renamed)
+    }
+
+    /// Point `b` at its file's new path.
+    fn relocate(&self, b: &OpenBuffer, real: PathBuf, watch_keys: Vec<(RootId, String)>) {
+        let key = real.to_string_lossy().into_owned();
+        let st = b.lock();
+        let (old_real, old_key) = {
+            let mut loc = b.location();
+            loc.watch_keys = watch_keys;
+            (
+                std::mem::replace(&mut loc.real, real.clone()),
+                std::mem::replace(&mut loc.key, key.clone()),
+            )
+        };
+        if st.journaled {
+            // The unsaved edits move to the new key.
+            self.journal.snapshot(&b.workspace, &key, st.buf.snapshot());
+            self.journal.delete(&b.workspace, &old_key);
+        }
+        drop(st);
+        let mut reg = self.registry();
+        if !b.unloaded.load(Ordering::Acquire) {
+            reg.by_path.remove(&(b.workspace.clone(), old_real.clone()));
+            reg.by_path
+                .insert((b.workspace.clone(), real.clone()), b.id);
+        }
+        drop(reg);
+        tracing::debug!(buffer = %b.id, from = %old_real.display(), to = %real.display(), "an open file was moved");
     }
 
     /// What anchors need of an open buffer: its text and revision and, if

@@ -208,6 +208,16 @@ impl Shell {
         if let Some(known) = KnownWorkspaces::global(cx) {
             subscriptions.push(cx.observe(&known, |_, _, cx| cx.notify()));
         }
+        if let Some(events) = files::ops::FileEvents::global(cx) {
+            // A file tab followed a rename (or lost its file): save the
+            // layout with its new path and tell agents.
+            subscriptions.push(
+                cx.subscribe(&events, |this, _, _: &files::ops::FileEvent, cx| {
+                    this.schedule_save(cx);
+                    ContextPublisher::schedule(this, cx);
+                }),
+            );
+        }
         if let Some(presence) = Presence::global(cx) {
             subscriptions.push(cx.observe(&presence, |_, _, cx| cx.notify()));
         }

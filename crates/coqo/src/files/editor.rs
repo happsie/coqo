@@ -72,6 +72,7 @@ use coqo_ui::{
     widgets::{Icon, TestSupportExt as _, icon, raised},
 };
 
+use super::ops::{self, FileEvent, FileEvents};
 use crate::{
     daemon::{Daemon, DaemonError, DaemonEvent, EventStream, ServerNotification},
     questions::{
@@ -144,6 +145,9 @@ pub enum Notice {
     SaveConflict,
     /// Saving failed.
     SaveFailed(String),
+    /// The file was deleted from the tree while it had unsaved edits: they
+    /// stay here, and saving writes the file again.
+    Deleted,
 }
 
 /// How opening the file went.
@@ -332,6 +336,13 @@ impl FileEditor {
                 },
             ));
         }
+        if let Some(events) = FileEvents::global(cx) {
+            subscriptions.push(cx.subscribe_in(
+                &events,
+                window,
+                |this, _, event: &FileEvent, window, cx| this.file_event(event, window, cx),
+            ));
+        }
         subscriptions.push(cx.on_release(|this, cx| this.close(cx)));
         let questions = questions::questions_for(&workspace, cx);
         if let Some(store) = &questions {
@@ -452,6 +463,64 @@ impl FileEditor {
 
     fn file_name(&self) -> &str {
         self.path.rsplit('/').next().unwrap_or(&self.path)
+    }
+
+    // ---- the tree's file operations -----------------------------------------
+
+    /// Follow a move or a delete of this file (or a folder holding it).
+    fn file_event(&mut self, event: &FileEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            FileEvent::Moved {
+                workspace,
+                root,
+                from,
+                to,
+            } if *workspace == self.workspace && *root == self.root => {
+                if let Some(path) = ops::moved_path(&self.path, from, to) {
+                    self.moved(path, window, cx);
+                }
+            }
+            FileEvent::Deleted {
+                workspace,
+                root,
+                path,
+            } if *workspace == self.workspace
+                && *root == self.root
+                && ops::is_at_or_under(&self.path, path) =>
+            {
+                self.deleted(cx);
+            }
+            _ => {}
+        }
+    }
+
+    /// The file is now at `path`. The daemon moved its buffer, so the
+    /// session carries on; only the path, the title and the language change.
+    fn moved(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.path = path;
+        if let Some(session) = &self.session {
+            let language = editor::language_for(&self.path, &session.replica.text().to_string());
+            session
+                .editor
+                .update(cx, |editor, cx| editor.set_language(language, cx));
+        } else {
+            // A message (missing, binary, …) is about the old path.
+            self.open(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The file was deleted. Unsaved edits stay in the tab (saving writes the
+    /// file again); a clean tab lets its buffer go and says the file is gone.
+    fn deleted(&mut self, cx: &mut Context<Self>) {
+        if self.is_dirty() {
+            self.notice = Some(Notice::Deleted);
+        } else {
+            self.close(cx);
+            self.notice = None;
+            self.content = Content::Missing;
+        }
+        cx.notify();
     }
 
     fn daemon(cx: &App) -> Option<Entity<Daemon>> {
@@ -1617,6 +1686,13 @@ impl FileEditor {
                 ),
             ),
             Notice::SaveFailed(e) => (p.rose, format!("Couldn't save {}: {e}", self.file_name())),
+            Notice::Deleted => (
+                p.sand,
+                format!(
+                    "{} was deleted. Your unsaved edits are still here; save to write the file again.",
+                    self.file_name()
+                ),
+            ),
         };
         let mut bar = div()
             .id("file-notice")

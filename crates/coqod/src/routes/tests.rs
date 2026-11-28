@@ -123,6 +123,7 @@ pub(crate) fn context_with(dir: &Path, agent: ScriptedProvider) -> DaemonContext
         auth: Auth::generate().unwrap(),
         agent_fs: coqo_acp_host::FsHandle::new(),
         agent_terminals: coqo_acp_host::TerminalHandle::new(),
+        trash: crate::workspace::Trash::Folder(dir.join("trash")),
     }
 }
 
@@ -151,6 +152,16 @@ async fn every_route_declares_who_may_call_it() {
         .collect();
     open.sort_by_key(|(name, _)| *name);
     assert_eq!(open, SESSION_ROUTES, "the session-token allowlist changed");
+
+    // The file tree's operations are the user's: agents have file tools of
+    // their own (#161).
+    for name in ["fs/create", "fs/rename", "fs/delete"] {
+        let route = routes
+            .iter()
+            .find(|r| r.name == name)
+            .unwrap_or_else(|| panic!("{name} is not registered"));
+        assert_eq!(route.access, Some(AccessKind::Daemon), "{name}");
+    }
     ctx.shutdown.cancel();
 }
 

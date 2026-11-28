@@ -17,7 +17,21 @@ The tree is virtualised (`uniform_list`): only the rows on screen are laid out, 
 
 ## Keyboard
 
-With the tree focused (click a row): `Up`/`Down` select, `Right` expands a folder or steps into it, `Left` collapses a folder or selects its parent, `Enter` opens a file or toggles a folder. `Ctrl O` (`Cmd O` on macOS) opens a folder from anywhere in the window.
+With the tree focused (click a folder, or move with the arrows; opening a file puts the keyboard in its tab): `Up`/`Down` select, `Right` expands a folder or steps into it, `Left` collapses a folder or selects its parent, `Enter` opens a file or toggles a folder. `F2` renames the selected entry in place, `Delete` (also `Cmd Backspace` on macOS) asks to delete it, and `Escape` closes a menu, a confirmation or an error. These are plain keys only in the tree (`coqo_ui::keys::binding`), so they never fire while a name is being typed. `Ctrl O` (`Cmd O` on macOS) opens a folder from anywhere in the window.
+
+## File operations
+
+![The context menu on a file](screenshots/files-menu-dark.png)
+
+- **Context menu** (right-click a row; the empty space below the rows is the root): New File…, New Folder…, Rename… `F2`, Copy Path, Copy Relative Path, Reveal in File Manager (Finder on macOS), and Delete… `Del` in `rose` below a separator. Roots of a multi-root workspace have no Rename or Delete. The menu is the `popover` card (`surface`, `border_strong` hairline, 14 px radius) at the pointer, 230 px wide, with 14 px `text_muted` Lucide icons and the shortcut right-aligned in `text_subtle`, like the rail's workspace menu.
+- **Naming in place.** New entries and renames are typed in the row itself: a 22 px field on `panel_raised` with a `blue` hairline (`rose` while the name is refused), in a `surface_selected` row. A new entry's row sits at the top of its folder, with a muted `file` or `folder` icon. `Enter` sends, `Escape` cancels, clicking elsewhere sends. A name may contain `/` (`docs/guide.md` makes `docs` too). The new or renamed entry is selected; a new file opens in a tab.
+- **Delete** asks first, in a card above the rows that names the entry ("Delete “tests.rs”?", "Delete the folder “src”?") and says where it goes: the OS trash. **Move to Trash** is `rose` (18% fill, 45% hairline), **Cancel** is raised; `Enter` confirms, `Escape` cancels. If an open tab has unsaved edits in what would be deleted, a `sand` line says they stay in the tab. If the trash refuses (no trash on that file system), the card offers **Delete Permanently** instead.
+- **Drag a row onto a folder** (or a file in it, or the empty space for the root) to move it; the target row is tinted `blue` at 16% while hovered.
+- **Errors** (a name that exists, no permission) show in a `surface` line with a `rose` alert icon above the rows.
+- **Open tabs follow.** A rename or move keeps the tab's buffer, unsaved edits and undo; its title, key, language and saved path change (the daemon moves the buffer, `fs/rename`). After a delete, a clean tab shows "File not found"; a tab with unsaved edits keeps them, with a `sand` bar: saving writes the file again.
+- **No undo** in Coqo yet: deleted entries are in the OS trash.
+
+![A rename in place and a delete waiting for confirmation](screenshots/files-ops-dark.png)
 
 ## File tabs
 
@@ -43,4 +57,6 @@ Remote changes wait while an IME composition is in progress and apply when it en
 
 ![The Files pane in the light appearance](screenshots/files-light.png)
 
-To regenerate these screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored files_screenshots` (offscreen, needs a GPU) and downscale the 2× PNGs to 1440×900 as `files-<appearance>.png` (and `coqo-editor-dark.png` as `editor-dark.png`).
+![File operations in the light appearance](screenshots/files-ops-light.png)
+
+To regenerate these screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored files_screenshots` (offscreen, needs a GPU) and downscale the 2× PNGs to 1440×900 as `files-<appearance>.png` (and `coqo-editor-dark.png` as `editor-dark.png`, `coqo-files-menu-dark.png` as `files-menu-dark.png`, `coqo-files-ops-<appearance>.png` as `files-ops-<appearance>.png`).
