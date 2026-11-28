@@ -259,17 +259,21 @@ impl SessionStore {
         Ok(rows)
     }
 
-    /// Ids of sessions whose stored state says a turn was running.
+    /// Ids of sessions whose stored state says a turn may have been
+    /// running: `working`, `needs_permission`, or `needs_input` (a question
+    /// waits mid-turn, but an agent's own `needs_input` can outlive its
+    /// turn, so the manager checks those against the transcript).
     pub fn running(&self) -> Result<Vec<SessionId>> {
         let db = self.db();
-        let mut stmt = db
-            .connection()
-            .prepare_cached("SELECT id FROM agent_sessions WHERE state IN (?1, ?2) ORDER BY id")?;
+        let mut stmt = db.connection().prepare_cached(
+            "SELECT id FROM agent_sessions WHERE state IN (?1, ?2, ?3) ORDER BY id",
+        )?;
         let rows = stmt
             .query_map(
                 params![
                     state_str(AgentState::Working),
-                    state_str(AgentState::NeedsPermission)
+                    state_str(AgentState::NeedsPermission),
+                    state_str(AgentState::NeedsInput)
                 ],
                 |r| r.get(0).map(SessionId),
             )?

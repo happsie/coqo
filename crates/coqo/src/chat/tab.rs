@@ -12,12 +12,14 @@
 //!
 //! The composer (mentions, slash commands, the provider and mode dropdowns,
 //! prompt history) is in [`composer`]; permission cards, their keys and the
-//! workspace's permission rules are in [`permission`]; the acceptance
+//! workspace's permission rules are in [`permission`]; the agent's own
+//! questions (`AskUserQuestion`, forms) are in [`question`]; the acceptance
 //! criteria card is in [`criteria`].
 
 pub(crate) mod composer;
 mod criteria;
 mod permission;
+mod question;
 mod walkthroughs;
 
 #[cfg(test)]
@@ -103,6 +105,8 @@ pub struct ChatTab {
     switching: bool,
     /// Permission focus, "remember" ticks and the workspace's rules.
     permissions: permission::Permissions,
+    /// The agent's own questions: what is filled in, and their focus.
+    questions: question::QuestionCards,
     _updates: Option<Task<()>>,
     _index: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -177,6 +181,7 @@ impl ChatTab {
             history: None,
             switching: false,
             permissions: permission::Permissions::new(cx.focus_handle()),
+            questions: question::QuestionCards::new(cx.focus_handle()),
             _updates: None,
             _index: None,
             _subscriptions: subscriptions,
@@ -332,6 +337,7 @@ impl ChatTab {
             return;
         }
         self.jump_to_pending();
+        self.jump_to_question();
         let after = self.transcript.entries.len();
         if after > before {
             self.list.splice(before..before, after - before);
@@ -678,7 +684,7 @@ fn format_tokens(n: u64) -> String {
 }
 
 impl ChatTab {
-    fn render_entry(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn render_entry(&mut self, ix: usize, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(entry) = self.transcript.entries.get(ix).cloned() else {
             return div().into_any_element();
         };
@@ -695,6 +701,11 @@ impl ChatTab {
                 .into_any_element(),
             Entry::Thought { text } => self.render_thought(ix, text, cx),
             Entry::Tool(tool) => self.render_tool(ix, &tool, cx),
+            Entry::Permission {
+                request, outcome, ..
+            } if request.is_question() => {
+                self.render_question_request(ix, &request, outcome.as_ref(), window, cx)
+            }
             Entry::Permission {
                 request,
                 outcome,
@@ -1911,6 +1922,8 @@ fn resolved_label(request: &PermissionRequest, outcome: Option<&PermissionOutcom
                 || format!("Answered: {option_id}"),
                 |o| format!("Answered: {}", o.name),
             ),
+        Some(PermissionOutcome::Answered { .. }) => "Answered".into(),
+        Some(PermissionOutcome::Declined) => "Declined".into(),
         Some(PermissionOutcome::Cancelled) | None => "Cancelled before an answer".into(),
     }
 }
@@ -1976,7 +1989,9 @@ fn usage_label(t: &Transcript) -> Option<String> {
 
 impl Render for ChatTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_question_forms(window, cx);
         self.apply_focus(window, cx);
+        self.apply_question_focus(window, cx);
         let banners = self.render_banners(cx);
         let composer = self.render_composer(cx);
         let panel = self.render_panel(cx);
@@ -1985,7 +2000,7 @@ impl Render for ChatTab {
         let p = &t.palette;
         let transcript = list(
             self.list.clone(),
-            cx.processor(|this, ix: usize, _, cx| this.render_entry(ix, cx)),
+            cx.processor(|this, ix: usize, window, cx| this.render_entry(ix, window, cx)),
         )
         .size_full();
         let empty = self.transcript.entries.is_empty();

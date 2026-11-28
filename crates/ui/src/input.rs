@@ -16,6 +16,9 @@
 //! - **History keys:** `Up` in an empty field, and `Up`/`Down` while the field
 //!   still holds a [`recalled`](PromptInput::recall) prompt, are reported as
 //!   keys too, so the owner can step through earlier prompts.
+//! - **Edge keys:** with [`PromptInput::set_edge_keys`], `Up` on the text's
+//!   first line and `Down` on its last are reported, so arrows can leave a
+//!   short field (a question card's answer box).
 
 use std::ops::Range;
 
@@ -92,6 +95,8 @@ pub struct PromptInput {
     capture: bool,
     /// The text last set by [`Self::recall`], while it is unchanged.
     recalled: Option<SharedString>,
+    /// `Up` / `Down` at the first / last line are reported.
+    edge_keys: bool,
     _events: Subscription,
 }
 
@@ -144,6 +149,7 @@ impl PromptInput {
             state,
             capture: false,
             recalled: None,
+            edge_keys: false,
             _events: events,
         }
     }
@@ -282,13 +288,23 @@ impl PromptInput {
         self.capture
     }
 
+    /// While on, `Up` with the cursor on the text's first line and `Down`
+    /// on its last are reported as [`PromptInputEvent::Key`] instead of
+    /// moving the cursor, so the owner can move focus out of the field.
+    pub fn set_edge_keys(&mut self, on: bool) {
+        self.edge_keys = on;
+    }
+
     fn key(&self, key: PromptKey, cx: &App) -> bool {
         if self.capture {
             return true;
         }
+        let state = self.state.read(cx);
+        let (text, cursor) = (state.value(), state.cursor().min(state.value().len()));
+        let edge = |part: Option<&str>| self.edge_keys && part.is_some_and(|p| !p.contains('\n'));
         match key {
-            PromptKey::Up => self.state.read(cx).value().is_empty() || self.is_recalled(cx),
-            PromptKey::Down => self.is_recalled(cx),
+            PromptKey::Up => text.is_empty() || self.is_recalled(cx) || edge(text.get(..cursor)),
+            PromptKey::Down => self.is_recalled(cx) || edge(text.get(cursor..)),
             _ => false,
         }
     }
@@ -331,6 +347,9 @@ impl Render for PromptInput {
             )
             // The field propagates `Escape` when it has nothing to dismiss.
             .on_action(cx.listener(|_, _: &Escape, _, cx| cx.emit(PromptInputEvent::Cancel)))
+            // It propagates a submitting `Enter` too: handle it here, or the
+            // unhandled keystroke is typed as a newline after the submit.
+            .on_action(cx.listener(|_, _: &Enter, _, _| {}))
             .child(
                 Textarea::new(&self.state)
                     .appearance(false)
@@ -484,6 +503,7 @@ mod tests {
         h.with(|i, _, _| i.set_capture(false));
         h.press("enter");
         assert!(h.events.borrow().contains(&PromptInputEvent::Submit));
+        assert_eq!(h.text(), "ab", "a submitting Enter adds no newline");
     }
 
     #[test]
@@ -501,6 +521,25 @@ mod tests {
         h.press("up");
         assert_eq!(h.keys(), []);
         assert_eq!(h.text(), "earlier!");
+    }
+
+    #[test]
+    fn edge_keys_report_up_on_the_first_line_and_down_on_the_last() {
+        let mut h = open();
+        h.with(|i, window, cx| i.set_text("one\ntwo", window, cx));
+        // Off: Up and Down move the cursor.
+        h.press("down");
+        h.press("up");
+        assert_eq!(h.keys(), []);
+        h.with(|i, _, _| i.set_edge_keys(true));
+        h.with(|i, window, cx| i.set_text("one\ntwo", window, cx));
+        // On the last line: Down leaves; Up moves to the first line, then
+        // leaves.
+        h.press("down");
+        h.press("up");
+        h.press("up");
+        assert_eq!(h.keys(), [PromptKey::Down, PromptKey::Up]);
+        assert_eq!(h.text(), "one\ntwo");
     }
 
     #[test]

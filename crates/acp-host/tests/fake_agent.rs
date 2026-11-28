@@ -1089,3 +1089,120 @@ async fn a_session_the_agent_lost_ends_instead_of_starting_afresh() {
     assert_eq!(snap.info.state, AgentState::Error);
     manager.shutdown().await;
 }
+
+/// The response JSON the fake agent said after an `ask`.
+fn answer_of(updates: &[SessionUpdate]) -> Value {
+    let said = said(updates);
+    let json = said
+        .strip_prefix("answer ")
+        .unwrap_or_else(|| panic!("no answer: {said}"));
+    serde_json::from_str(json).unwrap()
+}
+
+/// Prompts `ask <script>` and returns where it started and the question
+/// request it raised.
+async fn ask(manager: &SessionManager, id: &SessionId, script: &str) -> (u64, PermissionRequest) {
+    let since = head(manager, id);
+    prompt(manager, id, &format!("ask {script}")).await;
+    let updates = until(manager, id, since, |u| {
+        matches!(u, SessionUpdate::PermissionRequested(_))
+    })
+    .await;
+    let SessionUpdate::PermissionRequested(request) = updates.last().unwrap().clone() else {
+        unreachable!()
+    };
+    (since, request)
+}
+
+fn answered(id: &str, picks: &[&str], text: Option<&str>) -> PermissionOutcome {
+    PermissionOutcome::Answered {
+        answers: vec![QuestionAnswer {
+            id: id.into(),
+            picks: picks.iter().map(|p| (*p).to_owned()).collect(),
+            text: text.map(str::to_owned),
+        }],
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ask_user_question_forms_are_answered_declined_and_cancelled() {
+    let env = Env::new();
+    let manager = env.manager(env.provider(&[]));
+    let id = manager.create(env.params("ws-1")).await.unwrap().id;
+
+    // The host advertises form elicitation (the adapter disables
+    // AskUserQuestion without it).
+    let init = env.logged("initialize");
+    assert!(
+        init[0]["clientCapabilities"]["elicitation"]["form"].is_object(),
+        "{init:?}"
+    );
+
+    // The question arrives as a question request, and the session waits for
+    // input, not permission.
+    let (since, request) = ask(&manager, &id, "Which colour?|Red,Blue").await;
+    assert!(request.is_question());
+    assert!(request.options.is_empty());
+    let q = &request.questions[0];
+    assert_eq!(q.id, "question_0");
+    assert_eq!(q.question, "Which colour?");
+    assert_eq!(q.kind, AgentQuestionKind::Single);
+    assert!(q.other, "the _custom companion is the Other box");
+    let labels: Vec<_> = q.options.iter().map(|o| o.label.as_str()).collect();
+    assert_eq!(labels, ["Red", "Blue"]);
+    assert_eq!(q.options[1].description.as_deref(), Some("Pick Blue"));
+    let info = manager.snapshot(&id).unwrap().info;
+    assert_eq!(info.state, AgentState::NeedsInput);
+    assert_eq!(
+        info.state_reason.as_deref(),
+        Some("Waiting for your answer: Which colour?")
+    );
+
+    // A pick goes back under the question's key.
+    manager
+        .respond_permission(&id, request.id, answered("question_0", &["Blue"], None))
+        .unwrap();
+    let rest = until(&manager, &id, since, turn_ended).await;
+    let answer = answer_of(&rest);
+    assert_eq!(answer["action"], "accept", "{answer}");
+    assert_eq!(answer["content"]["question_0"], "Blue", "{answer}");
+    assert_eq!(manager.snapshot(&id).unwrap().info.state, AgentState::Done);
+
+    // An "Other" answer goes in the companion field.
+    let (since, request) = ask(&manager, &id, "Which colour?|Red,Blue").await;
+    manager
+        .respond_permission(&id, request.id, answered("question_0", &[], Some("Teal")))
+        .unwrap();
+    let answer = answer_of(&until(&manager, &id, since, turn_ended).await);
+    assert_eq!(answer["content"]["question_0_custom"], "Teal", "{answer}");
+
+    // A pick that is not an option is refused, and the question still waits;
+    // skipping declines.
+    let (since, request) = ask(&manager, &id, "Which colour?|Red,Blue").await;
+    let wrong =
+        manager.respond_permission(&id, request.id, answered("question_0", &["Green"], None));
+    assert!(wrong.is_err());
+    assert_eq!(
+        manager.snapshot(&id).unwrap().info.state,
+        AgentState::NeedsInput
+    );
+    manager
+        .respond_permission(&id, request.id, PermissionOutcome::Declined)
+        .unwrap();
+    let answer = answer_of(&until(&manager, &id, since, turn_ended).await);
+    assert_eq!(answer["action"], "decline", "{answer}");
+
+    // Cancelling the turn cancels the form.
+    let (since, request) = ask(&manager, &id, "Which colour?|Red,Blue").await;
+    manager.cancel(&id).await.unwrap();
+    let rest = until(&manager, &id, since, turn_ended).await;
+    assert!(rest.iter().any(|u| matches!(
+        u,
+        SessionUpdate::PermissionResolved {
+            request_id,
+            outcome: PermissionOutcome::Cancelled,
+            ..
+        } if *request_id == request.id
+    )));
+    assert_eq!(answer_of(&rest)["action"], "cancel");
+}

@@ -31,9 +31,10 @@ use std::sync::Arc;
 
 use coqo_mod_api::BoxFuture;
 use coqo_protocol::methods::agents::{
-    AgentState, AuthStatus, AvailableCommand, ConfigValue, ContentBlock, PermissionOption,
-    PermissionOutcome, PlanEntry, ProviderCapabilities, ProviderStatus, SessionConfigOption,
-    SessionId, SessionModes, SessionUpdate, StopReason, ToolCall, ToolCallUpdate, Usage,
+    AgentQuestion, AgentState, AuthStatus, AvailableCommand, ConfigValue, ContentBlock,
+    PermissionOption, PermissionOutcome, PlanEntry, ProviderCapabilities, ProviderStatus,
+    SessionConfigOption, SessionId, SessionModes, SessionUpdate, StopReason, ToolCall,
+    ToolCallUpdate, Usage,
 };
 
 /// An MCP server to inject into a session (ACP `session/new.mcpServers`),
@@ -273,21 +274,30 @@ impl AgentUpdate {
     }
 }
 
-/// A permission request from the agent (ACP `session/request_permission`).
-#[derive(Clone, Debug, PartialEq)]
+/// A permission request from the agent (ACP `session/request_permission`),
+/// or questions it asks with its own tooling (ACP form elicitation, such
+/// as Claude Code's `AskUserQuestion`): then `questions` is not empty and
+/// `options` is.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PermissionAsk {
-    /// What is asked, such as `Write pong.txt`.
+    /// What is asked, such as `Write pong.txt`, or the questions' message.
     pub title: String,
     /// The tool call it is about.
     pub tool_call: Option<ToolCallUpdate>,
     /// The possible answers.
     pub options: Vec<PermissionOption>,
+    /// The questions, for a question request.
+    pub questions: Vec<AgentQuestion>,
 }
 
 /// The receiving side of [`SessionEvents`]; the session manager implements it.
 pub(crate) trait EventSink: Send + Sync + 'static {
     fn update(&self, update: AgentUpdate);
-    fn request_permission(&self, ask: PermissionAsk) -> BoxFuture<'static, PermissionOutcome>;
+    fn request_permission(
+        &self,
+        ask: PermissionAsk,
+        withdrawn: Option<BoxFuture<'static, ()>>,
+    ) -> BoxFuture<'static, PermissionOutcome>;
     fn report_state(&self, state: AgentState, reason: Option<String>);
 }
 
@@ -318,6 +328,7 @@ impl SessionEvents {
             fn request_permission(
                 &self,
                 _: PermissionAsk,
+                _: Option<BoxFuture<'static, ()>>,
             ) -> BoxFuture<'static, PermissionOutcome> {
                 Box::pin(std::future::ready(PermissionOutcome::Cancelled))
             }
@@ -336,7 +347,19 @@ impl SessionEvents {
     /// session closes. With no UI attached it simply waits (the daemon
     /// raises an alert).
     pub fn request_permission(&self, ask: PermissionAsk) -> BoxFuture<'static, PermissionOutcome> {
-        self.sink.request_permission(ask)
+        self.sink.request_permission(ask, None)
+    }
+
+    /// [`Self::request_permission`], for a request the agent may take back:
+    /// once `withdrawn` resolves before an answer, the request is resolved
+    /// as [`PermissionOutcome::Cancelled`] (its card closes, the session
+    /// stops waiting) and so is the returned future.
+    pub fn request_permission_until(
+        &self,
+        ask: PermissionAsk,
+        withdrawn: BoxFuture<'static, ()>,
+    ) -> BoxFuture<'static, PermissionOutcome> {
+        self.sink.request_permission(ask, Some(withdrawn))
     }
 
     /// Reports the agent's own state, such as `needs_input` or `blocked`

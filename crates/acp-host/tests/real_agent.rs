@@ -323,3 +323,206 @@ async fn a_real_agent_that_lost_the_session_ends_it() {
 fn uuid_like() -> String {
     "00000000-0000-4000-8000-000000000067".into()
 }
+
+/// A new session of the real agent in a fresh directory.
+async fn real_session(manager: &SessionManager, cwd: &std::path::Path) -> SessionId {
+    manager
+        .create(CreateSessionParams {
+            provider: "real".into(),
+            cwd: cwd.display().to_string(),
+            workspace: None,
+            title: None,
+            mode: None,
+            from: None,
+        })
+        .await
+        .unwrap()
+        .id
+}
+
+/// Runs the turn `started` of session `id` to its end, answering each
+/// pending request with `answer` (`None`: cancel it). Returns the
+/// requests asked.
+async fn run_turn(
+    manager: &SessionManager,
+    id: &SessionId,
+    mut answer: impl FnMut(&PermissionRequest) -> Option<PermissionOutcome>,
+) -> Vec<PermissionRequest> {
+    let mut asked = Vec::new();
+    tokio::time::timeout(Duration::from_secs(240), async {
+        loop {
+            let snap = manager.snapshot(id).unwrap();
+            for p in &snap.pending_permissions {
+                eprintln!(
+                    "asked (state {:?}, {:?}): {p:#?}",
+                    snap.info.state, snap.info.state_reason
+                );
+                let outcome = answer(p).unwrap_or(PermissionOutcome::Cancelled);
+                manager.respond_permission(id, p.id, outcome).unwrap();
+                asked.push((p.clone(), snap.info.state));
+            }
+            if !snap.running {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("the turn ends");
+    asked
+        .into_iter()
+        .map(|(p, state)| {
+            let want = if p.is_question() {
+                AgentState::NeedsInput
+            } else {
+                AgentState::NeedsPermission
+            };
+            assert_eq!(
+                state, want,
+                "the session waits while {:?} is asked",
+                p.title
+            );
+            p
+        })
+        .collect()
+}
+
+/// Claude Code's own `AskUserQuestion` reaches Coqo as a form
+/// elicitation, and the answer continues the turn (#339, ADR 0029). One
+/// prompt:
+///
+/// ```sh
+/// COQO_ACP_AGENT=<dir>/node_modules/.bin/claude-agent-acp \
+///   cargo test -p coqo-acp-host --test real_agent ask_user_question -- --ignored --nocapture
+/// ```
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a real ACP agent in COQO_ACP_AGENT; uses the model"]
+async fn a_real_agent_asks_with_ask_user_question() {
+    let Some(command) = real_command() else {
+        eprintln!("COQO_ACP_AGENT is not set; skipping");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = std::fs::canonicalize(dir.path()).unwrap();
+    let db = dir.path().join("coqo.db");
+    let manager = real_manager(command, &db);
+    let id = real_session(&manager, &cwd).await;
+    let started = manager
+        .prompt(
+            &id,
+            vec![ContentBlock::text(
+                "Call your AskUserQuestion tool once, with two questions: which colour I like \
+                 (options Red and Blue) and which pets I like (multi-select, options Cat and \
+                 Dog). Then reply with one line listing exactly the answers you got, nothing else.",
+            )],
+        )
+        .await
+        .unwrap();
+    let asked = run_turn(&manager, &id, |p| {
+        let answers = p
+            .questions
+            .iter()
+            .map(|q| match q.kind {
+                AgentQuestionKind::Multi => QuestionAnswer {
+                    id: q.id.clone(),
+                    picks: vec![q.options[0].value.clone()],
+                    text: q.other.then(|| "Axolotl".to_owned()),
+                },
+                _ => QuestionAnswer {
+                    id: q.id.clone(),
+                    picks: vec![q.options[0].value.clone()],
+                    text: None,
+                },
+            })
+            .collect();
+        Some(PermissionOutcome::Answered { answers })
+    })
+    .await;
+    let said = text_since(&db, &id, started.seq);
+    eprintln!("said: {said:?}");
+    let question = asked
+        .iter()
+        .find(|p| p.is_question())
+        .expect("AskUserQuestion is asked as a question");
+    assert_eq!(question.questions.len(), 2, "{question:#?}");
+    assert!(question.questions.iter().all(|q| q.other));
+    let first = &question.questions[0].options[0].label;
+    assert!(said.contains(first.as_str()), "{said:?} has {first:?}");
+    assert!(said.contains("Axolotl"), "{said:?} has the typed pet");
+    manager.close(&id).await.unwrap();
+}
+
+/// Plan mode's approval (`ExitPlanMode`) reaches Coqo as a permission
+/// request with the plan and the adapter's options; rejecting it keeps
+/// Claude planning (#339). One prompt:
+///
+/// ```sh
+/// COQO_ACP_AGENT=<dir>/node_modules/.bin/claude-agent-acp \
+///   cargo test -p coqo-acp-host --test real_agent approve_a_plan -- --ignored --nocapture
+/// ```
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a real ACP agent in COQO_ACP_AGENT; uses the model"]
+async fn a_real_agent_asks_to_approve_a_plan() {
+    let Some(command) = real_command() else {
+        eprintln!("COQO_ACP_AGENT is not set; skipping");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = std::fs::canonicalize(dir.path()).unwrap();
+    let db = dir.path().join("coqo.db");
+    let manager = real_manager(command, &db);
+    let id = real_session(&manager, &cwd).await;
+    manager.set_mode(&id, "plan".into()).await.unwrap();
+    let started = manager
+        .prompt(
+            &id,
+            vec![ContentBlock::text(
+                "Plan creating a file hello.txt that contains the word hi. The folder is empty, \
+                 so do not explore: present the one-step plan for approval right away.",
+            )],
+        )
+        .await
+        .unwrap();
+    let asked = run_turn(&manager, &id, |p| {
+        let reject = p
+            .options
+            .iter()
+            .find(|o| o.kind == PermissionOptionKind::RejectOnce)?;
+        Some(PermissionOutcome::Selected {
+            option_id: reject.id.clone(),
+        })
+    })
+    .await;
+    eprintln!("said: {:?}", text_since(&db, &id, started.seq));
+    let plan = asked
+        .iter()
+        .find(|p| p.tool_call.as_ref().and_then(|t| t.kind) == Some(ToolKind::SwitchMode))
+        .expect("the plan approval is asked");
+    assert!(!plan.is_question());
+    assert!(
+        plan.options
+            .iter()
+            .any(|o| o.kind == PermissionOptionKind::RejectOnce)
+    );
+    assert!(
+        !cwd.join("hello.txt").exists(),
+        "a rejected plan writes nothing"
+    );
+    manager.close(&id).await.unwrap();
+}
+
+/// The agent's text since `seq`.
+fn text_since(db: &std::path::Path, id: &SessionId, seq: u64) -> String {
+    SessionStore::open(db)
+        .unwrap()
+        .updates_since(id, seq, 10_000)
+        .unwrap()
+        .into_iter()
+        .filter_map(|(_, u)| match u {
+            SessionUpdate::AgentMessageChunk {
+                content: ContentBlock::Text { text },
+            } => Some(text),
+            _ => None,
+        })
+        .collect()
+}

@@ -37,6 +37,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::convert;
+use crate::elicit;
 use crate::fs::{self, FsHandle};
 use crate::provider::{AcpOptions, AgentCommand};
 use crate::terminal::{self, AgentTerminal, TerminalExit, TerminalHandle, TerminalRequest};
@@ -360,7 +361,12 @@ impl Shared {
                     if let Some(content) = ask.tool_call.as_mut().and_then(|t| t.content.as_mut()) {
                         self.map_terminal_content(&id, content);
                     }
-                    route.events.request_permission(ask)
+                    // The agent may take the request back (`$/cancel_request`).
+                    let cancellation = responder.cancellation();
+                    route.events.request_permission_until(
+                        ask,
+                        Box::pin(async move { cancellation.cancelled().await }),
+                    )
                 })
         };
         let Some(answer) = answer else {
@@ -373,6 +379,55 @@ impl Shared {
             let outcome = convert::permission_outcome(&req, answer.await);
             if let Err(e) = responder.respond(acp::RequestPermissionResponse::new(outcome)) {
                 tracing::debug!(error = %e, "cannot answer a permission request");
+            }
+            Ok(())
+        })
+    }
+
+    /// An `elicitation/create`: a form for a session (Claude Code's
+    /// `AskUserQuestion`, an MCP server's question) goes to the user as
+    /// questions ([`elicit`]); its answer goes back in the schema's shape.
+    /// A form Coqo can't show is an error, so the agent knows nobody saw
+    /// it; anything not for a live session is cancelled.
+    fn on_elicitation(
+        &self,
+        req: acp::CreateElicitationRequest,
+        responder: Responder<acp::CreateElicitationResponse>,
+        cx: &ConnectionTo<Agent>,
+    ) -> Result<(), agent_client_protocol::Error> {
+        let cancel = || acp::CreateElicitationResponse::new(acp::ElicitationAction::Cancel);
+        let Some(target) = elicit::target(&req) else {
+            tracing::warn!(agent = %self.name, "cancelling an elicitation that is no form for a session");
+            return responder.respond(cancel());
+        };
+        let form = match elicit::form(&req, target.tool_call.as_ref()) {
+            Ok(form) => form,
+            Err(e) => {
+                tracing::warn!(agent = %self.name, error = %e, "cannot show an elicitation");
+                return responder
+                    .respond_with_error(agent_client_protocol::Error::invalid_params().data(e));
+            }
+        };
+        let answer = {
+            let routes = lock(&self.routes);
+            routes
+                .get(&*target.session.0)
+                .filter(|r| r.replay == Replay::Live)
+                .map(|route| {
+                    let cancellation = responder.cancellation();
+                    route.events.request_permission_until(
+                        form.ask.clone(),
+                        Box::pin(async move { cancellation.cancelled().await }),
+                    )
+                })
+        };
+        let Some(answer) = answer else {
+            return responder.respond(cancel());
+        };
+        cx.spawn(async move {
+            let response = elicit::response(&form, answer.await);
+            if let Err(e) = responder.respond(response) {
+                tracing::debug!(error = %e, "cannot answer an elicitation");
             }
             Ok(())
         })
@@ -768,6 +823,7 @@ async fn connect(
         Arc::clone(&shared),
         Arc::clone(&shared),
     );
+    let on_elicitation = Arc::clone(&shared);
     let state = state.clone();
     let client_name = options.client_name.clone();
     let client_version = options.client_version.clone();
@@ -807,6 +863,12 @@ async fn connect(
         .on_receive_request(
             async move |req: acp::RequestPermissionRequest, responder, cx| {
                 on_permission.on_permission(req, responder, &cx)
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: acp::CreateElicitationRequest, responder, cx| {
+                on_elicitation.on_elicitation(req, responder, &cx)
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -911,6 +973,13 @@ async fn connect(
                                     .read_text_file(true)
                                     .write_text_file(true))
                                 .plan(acp::PlanCapabilities::new())
+                                // Forms only: Claude's adapter then turns
+                                // `AskUserQuestion` on (#339). No `url`
+                                // mode: Coqo opens no sign-in pages.
+                                .elicitation(
+                                    acp::ElicitationCapabilities::new()
+                                        .form(acp::ElicitationFormCapabilities::new()),
+                                )
                                 .session(
                                     acp::ClientSessionCapabilities::new().config_options(
                                         acp::SessionConfigOptionsCapabilities::new()

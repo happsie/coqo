@@ -405,6 +405,7 @@ pub(crate) fn permission(req: &acp::RequestPermissionRequest) -> PermissionAsk {
                 })
             })
             .collect(),
+        questions: Vec::new(),
     }
 }
 

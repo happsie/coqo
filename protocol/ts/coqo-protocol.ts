@@ -119,6 +119,29 @@ export type AddWorktreeResult = {
   worktree: Worktree;
 };
 
+/** A question an agent asks with its own tooling, provider-neutral: the chat shows it as a question card and the answer goes back through the request that asked it, in the shape the agent expects. */
+export type AgentQuestion = {
+  /** Where in the code it is about, if the agent said. */
+  anchor?: QuestionAnchorHint | null;
+  /** A short label, such as `Auth method`. */
+  header?: string | null;
+  /** Identifies the question within its request; [`QuestionAnswer::id`]. */
+  id: string;
+  /** How it is answered. */
+  kind?: AgentQuestionKind;
+  /** The options, for `single` and `multi`. */
+  options?: Array<QuestionChoice>;
+  /** Whether a typed answer ("Other") is taken besides the options. */
+  other?: boolean;
+  /** The question. */
+  question: string;
+  /** Whether it must be answered for the answers to be taken. */
+  required?: boolean;
+};
+
+/** How an [`AgentQuestion`] is answered. */
+export type AgentQuestionKind = "single" | "multi" | "text" | "number";
+
 /** Params of [`AgentReply`]. */
 export type AgentReplyParams = {
   /** The reply, in markdown. */
@@ -1781,6 +1804,12 @@ export type PermissionOutcome = {
   optionId: string;
   outcome: "selected";
 } | {
+  /** One per question answered. */
+  answers: Array<QuestionAnswer>;
+  outcome: "answered";
+} | {
+  outcome: "declined";
+} | {
   outcome: "cancelled";
 };
 
@@ -1790,6 +1819,8 @@ export type PermissionRequest = {
   id: PermissionRequestId;
   /** The possible answers. */
   options: Array<PermissionOption>;
+  /** Questions the agent asks with its own tooling (ACP form elicitation, such as Claude Code's `AskUserQuestion`). A request with questions is a question, not a permission: the session is `needs_input`, `options` is empty, and it is answered with [`PermissionOutcome::Answered`] or [`PermissionOutcome::Declined`]. Rules never answer it. */
+  questions?: Array<AgentQuestion>;
   /** The workspace rule that answering with `remember: true` creates. Only offered for requests a rule may answer (a simple command, or files inside the workspace's roots), and only in a workspace. */
   suggestedRule?: PermissionRuleSpec | null;
   /** What is asked, such as `Write pong.txt`. */
@@ -1967,7 +1998,7 @@ export type Question = {
   /** The code it is about, at least one. */
   anchors: Array<QuestionAnchor>;
   /** The answer, once answered. */
-  answer?: QuestionAnswer | null;
+  answer?: QuestionAnswer2 | null;
   /** Who asked: an agent, or the user ([`Ask`]). */
   author?: QuestionAuthor;
   /** The question or note, in markdown. */
@@ -2006,8 +2037,28 @@ export type QuestionAnchor = {
   resolution: AnchorResolution;
 };
 
-/** The user's answer. */
+/** Where in the code a question is about, when the agent says so. No provider fills it yet; spike #340 explores pinning these questions to code like `ask_question` does. */
+export type QuestionAnchorHint = {
+  /** The last line, 1-based, inclusive. */
+  endLine?: number | null;
+  /** The first line, 1-based. */
+  line?: number | null;
+  /** The file, absolute or relative to the session's cwd. */
+  path: string;
+};
+
+/** The answer to one [`AgentQuestion`]. A question left out, or with no picks and no text, was skipped. */
 export type QuestionAnswer = {
+  /** The question's id. */
+  id: string;
+  /** The values of the picked options. */
+  picks?: Array<string>;
+  /** The typed answer: "Other", or a `text` or `number` question's. */
+  text?: string | null;
+};
+
+/** The user's answer. */
+export type QuestionAnswer2 = {
   /** The chosen option's id. */
   option?: string | null;
   /** A free-text reply or comment (markdown). */
@@ -2016,6 +2067,18 @@ export type QuestionAnswer = {
 
 /** Who started a question. */
 export type QuestionAuthor = "agent" | "user";
+
+/** One option of an [`AgentQuestion`]. */
+export type QuestionChoice = {
+  /** A line under the label. */
+  description?: string | null;
+  /** What it says. */
+  label: string;
+  /** Shown while the option is focused, such as a mockup or a code snippet (Claude's `preview`). Plain text, often several lines. */
+  preview?: string | null;
+  /** What is sent back when it is picked. */
+  value: string;
+};
 
 /** Identifies a question or note. Assigned by the daemon, never reused. */
 export type QuestionId = number;

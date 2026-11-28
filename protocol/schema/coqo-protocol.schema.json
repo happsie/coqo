@@ -122,6 +122,87 @@
       ],
       "type": "object"
     },
+    "AgentQuestion": {
+      "description": "A question an agent asks with its own tooling, provider-neutral: the\nchat shows it as a question card and the answer goes back through the\nrequest that asked it, in the shape the agent expects.",
+      "properties": {
+        "anchor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuestionAnchorHint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where in the code it is about, if the agent said."
+        },
+        "header": {
+          "description": "A short label, such as `Auth method`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Identifies the question within its request; [`QuestionAnswer::id`].",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/AgentQuestionKind",
+          "default": "single",
+          "description": "How it is answered."
+        },
+        "options": {
+          "description": "The options, for `single` and `multi`.",
+          "items": {
+            "$ref": "#/$defs/QuestionChoice"
+          },
+          "type": "array"
+        },
+        "other": {
+          "description": "Whether a typed answer (\"Other\") is taken besides the options.",
+          "type": "boolean"
+        },
+        "question": {
+          "description": "The question.",
+          "type": "string"
+        },
+        "required": {
+          "description": "Whether it must be answered for the answers to be taken.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "question"
+      ],
+      "type": "object"
+    },
+    "AgentQuestionKind": {
+      "description": "How an [`AgentQuestion`] is answered.",
+      "oneOf": [
+        {
+          "const": "single",
+          "description": "Pick one option (or, with `other`, type an answer instead).",
+          "type": "string"
+        },
+        {
+          "const": "multi",
+          "description": "Pick any number of options (and, with `other`, add a typed one).",
+          "type": "string"
+        },
+        {
+          "const": "text",
+          "description": "Type an answer.",
+          "type": "string"
+        },
+        {
+          "const": "number",
+          "description": "Type a number.",
+          "type": "string"
+        }
+      ]
+    },
     "AgentReplyParams": {
       "description": "Params of [`AgentReply`].",
       "properties": {
@@ -5178,7 +5259,41 @@
           "type": "object"
         },
         {
-          "description": "The turn was cancelled (or the session closed) before an answer.",
+          "description": "The user answered a request's questions.",
+          "properties": {
+            "answers": {
+              "description": "One per question answered.",
+              "items": {
+                "$ref": "#/$defs/QuestionAnswer"
+              },
+              "type": "array"
+            },
+            "outcome": {
+              "const": "answered",
+              "type": "string"
+            }
+          },
+          "required": [
+            "outcome",
+            "answers"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The user skipped a request's questions (Esc, \"Skip\"): the agent is\ntold so and goes on.",
+          "properties": {
+            "outcome": {
+              "const": "declined",
+              "type": "string"
+            }
+          },
+          "required": [
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The turn was cancelled (or the session closed, the daemon stopped,\nthe agent withdrew the request) before an answer.",
           "properties": {
             "outcome": {
               "const": "cancelled",
@@ -5203,6 +5318,13 @@
           "description": "The possible answers.",
           "items": {
             "$ref": "#/$defs/PermissionOption"
+          },
+          "type": "array"
+        },
+        "questions": {
+          "description": "Questions the agent asks with its own tooling (ACP form\nelicitation, such as Claude Code's `AskUserQuestion`). A request\nwith questions is a question, not a permission: the session is\n`needs_input`, `options` is empty, and it is answered with\n[`PermissionOutcome::Answered`] or [`PermissionOutcome::Declined`].\nRules never answer it.",
+          "items": {
+            "$ref": "#/$defs/AgentQuestion"
           },
           "type": "array"
         },
@@ -5733,7 +5855,7 @@
         "answer": {
           "anyOf": [
             {
-              "$ref": "#/$defs/QuestionAnswer"
+              "$ref": "#/$defs/QuestionAnswer2"
             },
             {
               "type": "null"
@@ -5849,7 +5971,65 @@
       ],
       "type": "object"
     },
+    "QuestionAnchorHint": {
+      "description": "Where in the code a question is about, when the agent says so. No\nprovider fills it yet; spike #340 explores pinning these questions to\ncode like `ask_question` does.",
+      "properties": {
+        "endLine": {
+          "description": "The last line, 1-based, inclusive.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "line": {
+          "description": "The first line, 1-based.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "The file, absolute or relative to the session's cwd.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
     "QuestionAnswer": {
+      "description": "The answer to one [`AgentQuestion`]. A question left out, or with no\npicks and no text, was skipped.",
+      "properties": {
+        "id": {
+          "description": "The question's id.",
+          "type": "string"
+        },
+        "picks": {
+          "description": "The values of the picked options.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "The typed answer: \"Other\", or a `text` or `number` question's.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "QuestionAnswer2": {
       "description": "The user's answer.",
       "properties": {
         "option": {
@@ -5883,6 +6063,38 @@
           "type": "string"
         }
       ]
+    },
+    "QuestionChoice": {
+      "description": "One option of an [`AgentQuestion`].",
+      "properties": {
+        "description": {
+          "description": "A line under the label.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "description": "What it says.",
+          "type": "string"
+        },
+        "preview": {
+          "description": "Shown while the option is focused, such as a mockup or a code\nsnippet (Claude's `preview`). Plain text, often several lines.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": {
+          "description": "What is sent back when it is picked.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "label"
+      ],
+      "type": "object"
     },
     "QuestionId": {
       "description": "Identifies a question or note. Assigned by the daemon, never reused.",

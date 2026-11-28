@@ -263,7 +263,10 @@ impl AgentsTab {
                         let Ok(snapshot) = get.await else { return };
                         this.update(cx, |this, cx| {
                             if let Some(ask) = this.asks.get_mut(&id) {
-                                ask.request = snapshot.pending_permissions.into_iter().next();
+                                ask.request = snapshot
+                                    .pending_permissions
+                                    .into_iter()
+                                    .find(|r| !r.is_question());
                                 cx.notify();
                             }
                         })
@@ -1033,6 +1036,7 @@ mod unit_tests {
                 option("no", PermissionOptionKind::RejectOnce),
             ],
             suggested_rule: None,
+            questions: Vec::new(),
         };
         assert_eq!(permission_option(&request, true).as_deref(), Some("once"));
         assert_eq!(permission_option(&request, false).as_deref(), Some("no"));

@@ -91,6 +91,17 @@ coqo_ui::gpui::actions!(
         AllowPermission,
         /// Deny the focused permission request once (Esc).
         RejectPermission,
+        /// Send the focused question card's answers (Enter).
+        SendAnswers,
+        /// Skip the focused question card's questions (Esc).
+        SkipQuestions,
+        /// Move to the question card's next option (Down).
+        NextAnswer,
+        /// Move to the question card's previous option (Up).
+        PreviousAnswer,
+        /// Pick or untick the option under the question card's cursor
+        /// (Space).
+        ToggleAnswer,
         /// Rename the focused chat in place, on its tab label.
         RenameChat,
         /// Start a new chat with the focused chat's whole transcript as
@@ -112,6 +123,14 @@ pub struct StartFromChat {
     pub session: String,
     pub through: Option<u64>,
     pub prompt: Option<String>,
+}
+
+/// Pick option `n` (1-based) of the question under the question card's
+/// cursor (the digit keys).
+#[derive(Clone, Debug, PartialEq, Eq, Action)]
+#[action(namespace = chat, no_json)]
+pub struct PickAnswer {
+    pub n: usize,
 }
 
 /// Open a file a tool call or a criterion's evidence names (absolute path)
@@ -192,6 +211,20 @@ pub fn init(cx: &mut App) {
     cx.bind_keys([
         keys::binding("enter", AllowPermission, Some("ChatPermission")),
         keys::binding("escape", RejectPermission, Some("ChatPermission")),
+        keys::binding("enter", SendAnswers, Some("ChatQuestion")),
+        keys::binding("escape", SkipQuestions, Some("ChatQuestion")),
+        keys::binding("down", NextAnswer, Some("ChatQuestion")),
+        keys::binding("up", PreviousAnswer, Some("ChatQuestion")),
+        keys::binding("space", ToggleAnswer, Some("ChatQuestion")),
+        keys::binding("1", PickAnswer { n: 1 }, Some("ChatQuestion")),
+        keys::binding("2", PickAnswer { n: 2 }, Some("ChatQuestion")),
+        keys::binding("3", PickAnswer { n: 3 }, Some("ChatQuestion")),
+        keys::binding("4", PickAnswer { n: 4 }, Some("ChatQuestion")),
+        keys::binding("5", PickAnswer { n: 5 }, Some("ChatQuestion")),
+        keys::binding("6", PickAnswer { n: 6 }, Some("ChatQuestion")),
+        keys::binding("7", PickAnswer { n: 7 }, Some("ChatQuestion")),
+        keys::binding("8", PickAnswer { n: 8 }, Some("ChatQuestion")),
+        keys::binding("9", PickAnswer { n: 9 }, Some("ChatQuestion")),
     ]);
     register_tab_kind(cx, KIND, |state, window, cx| {
         tab::restore(state, window, cx).map(AnyTab::new)
