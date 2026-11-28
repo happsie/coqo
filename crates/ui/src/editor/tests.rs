@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Headless tests (GPUI's test platform: no window on screen, no GPU) for
-//! remote edits, in the spirit of `spikes/s6-buffers/editor-map`.
+//! remote edits, in the spirit of `docs/spikes/s6-buffers/editor-map`.
 
 // `&[a..b]` is a list of one selection here, not a mistaken range literal.
 #![allow(clippy::single_range_in_vec_init)]

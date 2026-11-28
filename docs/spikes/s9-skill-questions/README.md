@@ -1,6 +1,6 @@
 # Spike S9: skills' questions and findings in the code
 
-Throwaway prototype for issue #340. The findings and the decision are in [`docs/adr/0030-skill-questions-in-code.md`](../../docs/adr/0030-skill-questions-in-code.md).
+Throwaway prototype for issue #340. The findings and the decision are in [`docs/adr/0030-skill-questions-in-code.md`](../../adr/0030-skill-questions-in-code.md).
 
 This directory is its own Cargo workspace, so the Coqo workspace and CI don't build it.
 

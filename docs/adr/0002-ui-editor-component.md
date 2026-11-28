@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-26
-- **Spike:** S4, issue #11. Prototype in [`spikes/s4-gpui/`](../../spikes/s4-gpui/).
+- **Spike:** S4, issue #11. Prototype in [`docs/spikes/s4-gpui/`](../spikes/s4-gpui/).
 
 ## Context
 
@@ -14,7 +14,7 @@ PLAN §3.1 picks GPUI plus gpui-component for the UI, and the code editor is the
 
 ## What we tested
 
-A standalone GPUI app (`spikes/s4-gpui`, not part of the workspace) on **gpui-kit 0.11.0**, gpui-component's umbrella crate. It has three scenes plus a scripted benchmark (`--bench`) and an offscreen screenshot mode (`--shot`):
+A standalone GPUI app (`docs/spikes/s4-gpui`, not part of the workspace) on **gpui-kit 0.11.0**, gpui-component's umbrella crate. It has three scenes plus a scripted benchmark (`--bench`) and an offscreen screenshot mode (`--shot`):
 
 - **Editor:** a generated 100k-line Rust file (3.25 MB) with tree-sitter highlighting, plus 500 decorations: 200 range fills or frames, 150 wavy-underline text decorations, 100 gutter marks and 50 overview-ruler marks. Ghost values sit after line ends, and an agent-question popover is anchored to a code range.
 - **Diff:** a 5,008-line file with an agent-style patch (1,158 patch lines, about 100 hunks) in split mode.
@@ -102,5 +102,5 @@ Cost grows with *cursors × file size*, about 0.7 ms per cursor at 100k lines. I
 - #23 (UI shell) depends on `gpui-kit = "=0.11.0"`, adds the licence exceptions above to `deny.toml`, and installs the Linux system packages in CI.
 - The `coqo-ui` facade is mandatory from the first UI PR, not an optional nicety.
 - Follow-up issues: large-file editing performance (multi-cursor scaling and memory), and inline virtual text for ghost values (feeding #43 and the trace UI).
-- **macOS is unmeasured.** The first macOS developer, or the macOS CI job, should run `cargo run --release -- --bench` in `spikes/s4-gpui` and add the numbers here.
+- **macOS is unmeasured.** The first macOS developer, or the macOS CI job, should run `cargo run --release -- --bench` in `docs/spikes/s4-gpui` and add the numbers here.
 - PLAN §3.1 and §11 are updated: GPUI comes from the `gpui-pre` snapshots via `gpui-kit`, pinned exactly, rather than from a Zed git revision.

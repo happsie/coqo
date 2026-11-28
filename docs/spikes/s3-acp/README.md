@@ -1,6 +1,6 @@
 # Spike S3: Claude via ACP from a Rust daemon (issue #10)
 
-Throwaway prototype behind [ADR 0005](../../docs/adr/0005-claude-integration.md). It isn't part of the Coqo workspace and CI doesn't build it.
+Throwaway prototype behind [ADR 0005](../../adr/0005-claude-integration.md). It isn't part of the Coqo workspace and CI doesn't build it.
 
 One binary, three subcommands:
 

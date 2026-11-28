@@ -6,7 +6,7 @@ Coqo is an agent-first desktop editor written in Rust: a GPUI UI plus a backgrou
 
 - **Milestones** `M0` … `M10` follow the roadmap in PLAN §12. Work in the **lowest open milestone** unless a maintainer says otherwise.
 - **Epics** (`type:epic`) group a milestone's work as GitHub **sub-issues**. Don't implement an epic directly. Pick one of its sub-issues.
-- **Tasks** (`type:task`) are sized for **one PR**. **Spikes** (`type:spike`) are time-boxed investigations whose output is an ADR plus a throwaway prototype under `spikes/`.
+- **Tasks** (`type:task`) are sized for **one PR**. **Spikes** (`type:spike`) are time-boxed investigations whose output is an ADR plus a throwaway prototype under `docs/spikes/`.
 - **Dependencies** use GitHub's native *blocked by* links, and each issue's **Dependencies** section repeats them. An issue is unblocked only when every issue it is blocked by is **closed**.
 - Labels:
   - `agent-ready`: fully specified, and an agent can take it once unblocked.
@@ -51,7 +51,7 @@ Coqo is an agent-first desktop editor written in Rust: a GPUI UI plus a backgrou
 
   If you have no Artifact tool, ask the maintainer for screenshots. Never copy the canvas into the public repo; take only the tokens and layout you need, and record the visual language in `docs/design/` as PLAN §14 describes.
 - If the implementation has to differ from PLAN.md, write or update an ADR in `docs/adr/` and update PLAN.md in the same PR.
-- Spikes: answer the questions in the issue, write `docs/adr/NNNN-<topic>.md` with findings, measurements and a clear **go / fallback** decision, and keep prototype code in `spikes/<id>/`.
+- Spikes: answer the questions in the issue, write `docs/adr/NNNN-<topic>.md` with findings, measurements and a clear **go / fallback** decision, and keep prototype code in `docs/spikes/<id>/`.
 
 ## Choosing a model for subagents
 
