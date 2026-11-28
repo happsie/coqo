@@ -29,13 +29,12 @@ use coqo_storage::DataDirs;
 use futures_util::StreamExt as _;
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use super::router;
 use crate::auth::Auth;
 use crate::daemon::DaemonContext;
-use crate::lifecycle::{Activity, IdlePhase, IdlePolicy};
+use crate::lifecycle::{Activity, IdlePolicy};
 use crate::mods::Mods;
 use crate::mods::tests::test_builtins;
 
@@ -106,11 +105,12 @@ pub(crate) fn context(dir: &Path) -> DaemonContext {
 /// A test daemon's context whose `fake` agent provider (once its mods
 /// start) is `agent`.
 pub(crate) fn context_with(dir: &Path, agent: ScriptedProvider) -> DaemonContext {
+    let activity = Activity::new();
     DaemonContext {
         paths: DaemonPaths::at(dir.join("run")),
         data: DataDirs::at(dir.join("data")),
-        activity: Activity::new(),
-        idle: watch::channel(IdlePhase::Active).1,
+        idle: activity.idle_phase(),
+        activity,
         idle_policy: IdlePolicy::default(),
         shutdown: CancellationToken::new(),
         started_at: SystemTime::now(),

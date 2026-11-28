@@ -18,6 +18,12 @@
 //! returns, which shuts the daemon down. Any client or busy guard resets it
 //! to [`IdlePhase::Active`]. Timers use `tokio::time`, so tests drive them
 //! with a paused (fake) clock.
+//!
+//! The phase lives in the [`Activity`] and changes under the same lock as
+//! the counts: a new connection or busy guard sets it to `Active` at once
+//! (not when the monitor next runs), and the monitor moves it on only while
+//! nothing is attached or busy. So a snapshot never shows a client attached
+//! with the daemon idle (issue #306).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -56,6 +62,9 @@ struct State {
     connections: u32,
     busy: BTreeMap<u64, String>,
     next_busy: u64,
+    /// Connections and busy guards ever taken: tells the idle monitor that
+    /// a client came (and maybe went) since it last looked.
+    attaches: u64,
 }
 
 impl State {
@@ -64,19 +73,26 @@ impl State {
     }
 }
 
-/// A snapshot of the [`Activity`].
+/// A snapshot of the [`Activity`], taken at one instant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActivitySnapshot {
     /// Attached clients.
     pub connections: u32,
     /// Reasons of the busy guards held, oldest first.
     pub busy: Vec<String>,
+    /// The idle phase. `Active` whenever a client is attached or work is
+    /// busy.
+    pub phase: IdlePhase,
 }
 
-/// Attached clients and busy work. Cheap to clone.
+/// Attached clients, busy work and the idle phase. Cheap to clone.
+///
+/// The phase is written only while the `state` lock is held, so it always
+/// agrees with the counts. Lock order: `state`, then `phase`.
 #[derive(Clone)]
 pub struct Activity {
     state: Arc<watch::Sender<State>>,
+    phase: Arc<watch::Sender<IdlePhase>>,
 }
 
 impl fmt::Debug for Activity {
@@ -92,16 +108,22 @@ impl Default for Activity {
 }
 
 impl Activity {
-    /// No clients, nothing busy.
+    /// No clients, nothing busy. The phase starts `Active` and turns
+    /// `Idle` once [`idle_monitor`] runs.
     pub fn new() -> Self {
         Self {
             state: Arc::new(watch::Sender::new(State::default())),
+            phase: Arc::new(watch::Sender::new(IdlePhase::Active)),
         }
     }
 
     /// Count a client as attached until the guard is dropped.
     pub fn connection(&self) -> ConnectionGuard {
-        self.state.send_modify(|s| s.connections += 1);
+        self.state.send_modify(|s| {
+            s.connections += 1;
+            s.attaches += 1;
+            self.set_active();
+        });
         ConnectionGuard {
             state: Arc::clone(&self.state),
         }
@@ -117,6 +139,8 @@ impl Activity {
             id = s.next_busy;
             s.next_busy += 1;
             s.busy.insert(id, reason);
+            s.attaches += 1;
+            self.set_active();
         });
         BusyGuard {
             state: Arc::clone(&self.state),
@@ -124,17 +148,60 @@ impl Activity {
         }
     }
 
-    /// The current counts.
+    /// The current counts and phase.
     pub fn snapshot(&self) -> ActivitySnapshot {
         let s = self.state.borrow();
         ActivitySnapshot {
             connections: s.connections,
             busy: s.busy.values().cloned().collect(),
+            phase: *self.phase.borrow(),
         }
+    }
+
+    /// The idle phase, for services that release resources when the
+    /// daemon idles ([`IdlePhase::ServicesStopped`]).
+    pub fn idle_phase(&self) -> watch::Receiver<IdlePhase> {
+        self.phase.subscribe()
     }
 
     fn subscribe(&self) -> watch::Receiver<State> {
         self.state.subscribe()
+    }
+
+    /// Only with the `state` lock held.
+    fn set_active(&self) {
+        self.phase.send_if_modified(|p| {
+            let changed = *p != IdlePhase::Active;
+            *p = IdlePhase::Active;
+            changed
+        });
+    }
+
+    /// Whether nothing was attached or busy since the idle moment at which
+    /// `attaches` was read.
+    fn idle_since(&self, attaches: u64) -> bool {
+        let s = self.state.borrow();
+        s.is_idle() && s.attaches == attaches
+    }
+
+    /// Move to `phase` if the daemon stayed idle since `attaches` was read,
+    /// under the `state` lock so a client attaching at the same time wins.
+    /// Returns whether it did.
+    fn set_idle_phase(&self, phase: IdlePhase, attaches: u64) -> bool {
+        let mut idle = false;
+        self.state.send_if_modified(|s| {
+            idle = s.is_idle() && s.attaches == attaches;
+            if idle {
+                self.phase.send_if_modified(|p| {
+                    let changed = *p != phase;
+                    *p = phase;
+                    changed
+                });
+            }
+            // The counts did not change: no need to wake their watchers.
+            false
+        });
+        idle
     }
 }
 
@@ -177,23 +244,26 @@ impl Drop for BusyGuard {
     }
 }
 
-/// Run the idle policy. Publishes the phase on `phase` and returns when the
-/// daemon has been idle for `policy.exit_after`. Never returns when the
-/// daemon is always on.
-pub async fn idle_monitor(activity: Activity, policy: IdlePolicy, phase: watch::Sender<IdlePhase>) {
+/// Run the idle policy. Moves the activity's phase to `Idle` and
+/// `ServicesStopped`, and returns when the daemon has been idle for
+/// `policy.exit_after`. Never returns when the daemon is always on.
+pub async fn idle_monitor(activity: Activity, policy: IdlePolicy) {
     let mut rx = activity.subscribe();
     loop {
-        if rx.wait_for(State::is_idle).await.is_err() {
+        let Ok(attaches) = rx.wait_for(State::is_idle).await.map(|s| s.attaches) else {
             return std::future::pending().await;
-        }
+        };
         let since = Instant::now();
-        phase.send_replace(IdlePhase::Idle);
+        if !activity.set_idle_phase(IdlePhase::Idle, attaches) {
+            // A client attached since: wait for the next idle moment.
+            continue;
+        }
         tracing::debug!("idle: no clients and nothing busy");
         let stop_at = policy.stop_services_after.map(|d| since + d);
         let exit_at = policy.exit_after.map(|d| since + d);
 
         loop {
-            let stopped = *phase.borrow() == IdlePhase::ServicesStopped;
+            let stopped = *activity.phase.borrow() == IdlePhase::ServicesStopped;
             let next = [stop_at.filter(|_| !stopped), exit_at]
                 .into_iter()
                 .flatten()
@@ -209,8 +279,9 @@ pub async fn idle_monitor(activity: Activity, policy: IdlePolicy, phase: watch::
                     if changed.is_err() {
                         return std::future::pending().await;
                     }
-                    if !rx.borrow_and_update().is_idle() {
-                        phase.send_replace(IdlePhase::Active);
+                    // A client that attached (even one that has left again)
+                    // set `Active` and resets the timers.
+                    if rx.borrow_and_update().attaches != attaches {
                         tracing::debug!("active again");
                         break;
                     }
@@ -218,12 +289,17 @@ pub async fn idle_monitor(activity: Activity, policy: IdlePolicy, phase: watch::
                 () = timer => {
                     let now = Instant::now();
                     if exit_at.is_some_and(|at| now >= at) {
+                        if !activity.idle_since(attaches) {
+                            break;
+                        }
                         tracing::info!(after = ?policy.exit_after, "idle timeout reached; shutting down");
                         return;
                     }
                     if stop_at.is_some_and(|at| now >= at) {
+                        if !activity.set_idle_phase(IdlePhase::ServicesStopped, attaches) {
+                            break;
+                        }
                         tracing::info!(after = ?policy.stop_services_after, "idle: stopping services");
-                        phase.send_replace(IdlePhase::ServicesStopped);
                     }
                 }
             }
@@ -250,8 +326,8 @@ mod tests {
         activity: &Activity,
         policy: IdlePolicy,
     ) -> (JoinHandle<()>, watch::Receiver<IdlePhase>) {
-        let (tx, rx) = watch::channel(IdlePhase::Active);
-        (tokio::spawn(idle_monitor(activity.clone(), policy, tx)), rx)
+        let rx = activity.idle_phase();
+        (tokio::spawn(idle_monitor(activity.clone(), policy)), rx)
     }
 
     /// Let spawned tasks run without moving the (paused) clock.
@@ -271,7 +347,8 @@ mod tests {
             activity.snapshot(),
             ActivitySnapshot {
                 connections: 2,
-                busy: vec!["agent session 1".into()]
+                busy: vec!["agent session 1".into()],
+                phase: IdlePhase::Active,
             }
         );
         drop((c1, b));
@@ -358,6 +435,64 @@ mod tests {
         assert!(!monitor.is_finished());
         assert_eq!(*phase.borrow(), IdlePhase::ServicesStopped);
         advance(MIN).await;
+        settle().await;
+        assert!(monitor.is_finished());
+    }
+
+    /// #306: `daemon/status` on a just-accepted connection saw `Idle`
+    /// because the monitor had not run since the client attached.
+    #[tokio::test(start_paused = true)]
+    async fn a_client_is_active_before_the_monitor_runs() {
+        let activity = Activity::new();
+        let (_monitor, phase) = start(&activity, policy(Some(10), Some(20)));
+        settle().await;
+        assert_eq!(activity.snapshot().phase, IdlePhase::Idle);
+
+        // No yield: the monitor has not seen the client yet.
+        let conn = activity.connection();
+        let snapshot = activity.snapshot();
+        assert_eq!(
+            (snapshot.connections, snapshot.phase),
+            (1, IdlePhase::Active)
+        );
+        assert_eq!(*phase.borrow(), IdlePhase::Active);
+        drop(conn);
+
+        let busy = activity.busy("agent session 3");
+        assert_eq!(activity.snapshot().phase, IdlePhase::Active);
+        drop(busy);
+        settle().await;
+        assert_eq!(activity.snapshot().phase, IdlePhase::Idle);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_client_that_comes_and_goes_unseen_resets_the_timers() {
+        let activity = Activity::new();
+        let (monitor, phase) = start(&activity, policy(Some(10), Some(20)));
+        settle().await;
+        advance(MIN * 9).await;
+        settle().await;
+
+        // Attach and detach before the monitor runs.
+        drop(activity.connection());
+        settle().await;
+        assert_eq!(
+            *phase.borrow(),
+            IdlePhase::Idle,
+            "idle again, not stuck at Active"
+        );
+
+        advance(MIN * 9).await;
+        settle().await;
+        assert_eq!(
+            *phase.borrow(),
+            IdlePhase::Idle,
+            "the 10 minutes start over"
+        );
+        advance(MIN).await;
+        settle().await;
+        assert_eq!(*phase.borrow(), IdlePhase::ServicesStopped);
+        advance(MIN * 10).await;
         settle().await;
         assert!(monitor.is_finished());
     }
