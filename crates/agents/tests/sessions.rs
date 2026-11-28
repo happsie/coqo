@@ -136,6 +136,7 @@ async fn create(client: &Client) -> SessionInfo {
             workspace: Some("ws-1".into()),
             title: Some("Test".into()),
             mode: None,
+            from: None,
         })
         .await
         .unwrap()
@@ -820,6 +821,7 @@ async fn a_provider_that_cannot_start_fails_create() {
             workspace: None,
             title: None,
             mode: None,
+            from: None,
         })
         .await
         .unwrap_err();
@@ -846,6 +848,7 @@ async fn a_provider_that_cannot_start_fails_create() {
                 workspace: None,
                 title: None,
                 mode: None,
+                from: None,
             })
             .await
             .unwrap_err();
@@ -945,6 +948,7 @@ async fn create_in(client: &Client, root: &std::path::Path) -> SessionId {
             workspace: Some("ws-rules".into()),
             title: None,
             mode: None,
+            from: None,
         })
         .await
         .unwrap()
@@ -1707,6 +1711,7 @@ async fn titles_come_from_the_first_prompt_the_agent_and_the_user() {
                 workspace: Some("ws-1".into()),
                 title: None,
                 mode: None,
+                from: None,
             })
             .await
             .unwrap();
@@ -1809,4 +1814,286 @@ async fn a_title_given_at_create_is_the_users() {
     let mut sub = subscribe(&client, &id, Some(0)).await;
     turn(&client, &mut sub, &id, "Something else entirely").await;
     assert_eq!(listed_title(&client, &id).await.as_deref(), Some("Test"));
+}
+
+// ---- resume, new chats with context, forks, retry, reopen (#67) -------------------
+
+/// A session with one finished turn ("first" → "one"), on a daemon over
+/// `db` that is then dropped (a daemon restart).
+async fn one_turn(db: &std::path::Path) -> SessionId {
+    let first = ScriptedProvider::new().turn([chunk("one"), Step::Stop(StopReason::EndTurn)]);
+    let d = daemon(SessionStore::open(db).unwrap(), &first);
+    let client = d.connect().await;
+    let id = create(&client).await.id;
+    let mut sub = subscribe(&client, &id, Some(0)).await;
+    turn(&client, &mut sub, &id, "first").await;
+    id
+}
+
+/// The whole transcript of `id`.
+async fn transcript(client: &Client, id: &SessionId) -> Vec<SessionUpdate> {
+    let head = snapshot(client, id).await.head;
+    let mut sub = subscribe(client, id, Some(0)).await;
+    let mut out = Vec::new();
+    while (out.len() as u64) < head {
+        let item = tokio::time::timeout(TIMEOUT, sub.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        out.push(item.event);
+    }
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_the_agent_cant_resume_is_ended_not_restarted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("coqo.db");
+    let id = one_turn(&db).await;
+
+    // The agent can't be reached: the prompt fails, and the next one tries
+    // again.
+    let down = ScriptedProvider::new().fail_resume(ProviderError::Failed("spawn failed".into()));
+    {
+        let d = daemon(SessionStore::open(&db).unwrap(), &down);
+        let client = d.connect().await;
+        let e = prompt(&client, &id, "second").await.unwrap_err();
+        assert_eq!(app_error(e), app_codes::PROVIDER_ERROR);
+        assert_eq!(snapshot(&client, &id).await.info.state, AgentState::Done);
+    }
+    assert_eq!(down.calls(), [Call::Resume("fake-1".into())]);
+
+    // The agent no longer has the session: it ends, rather than start a
+    // new agent session that knows nothing of the transcript.
+    let lost =
+        ScriptedProvider::new().fail_resume(ProviderError::SessionLost("Session not found".into()));
+    let d = daemon(SessionStore::open(&db).unwrap(), &lost);
+    let client = d.connect().await;
+    let mut changes = client
+        .subscribe::<Changes>(ChangesParams { workspace: None }, None)
+        .await
+        .unwrap();
+    let e = prompt(&client, &id, "second").await.unwrap_err();
+    assert_eq!(app_error(e), app_codes::SESSION_ENDED);
+    assert_eq!(lost.calls(), [Call::Resume("fake-1".into())]);
+    let info = next_change(&mut changes, &id).await;
+    assert_eq!(info.state, AgentState::Error);
+    assert_eq!(
+        info.state_reason.as_deref(),
+        Some("Can't resume: Session not found")
+    );
+    let all = transcript(&client, &id).await;
+    assert!(all.contains(&SessionUpdate::Ended {
+        reason: "Session not found".into()
+    }));
+    assert!(
+        !all.iter().any(
+            |u| matches!(u, SessionUpdate::UserMessage { content } if content == &[text("second")])
+        ),
+        "the refused prompt is not recorded"
+    );
+
+    // Ended for good: no more attempts.
+    let e = prompt(&client, &id, "third").await.unwrap_err();
+    assert_eq!(app_error(e), app_codes::SESSION_ENDED);
+    assert_eq!(lost.calls().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_without_resume_ends_a_session_with_turns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("coqo.db");
+    let id = one_turn(&db).await;
+    let plain = ScriptedProvider::new().capabilities(ProviderCapabilities::default());
+    let d = daemon(SessionStore::open(&db).unwrap(), &plain);
+    let client = d.connect().await;
+    let e = prompt(&client, &id, "second").await.unwrap_err();
+    assert_eq!(app_error(e), app_codes::SESSION_ENDED);
+    assert!(plain.calls().is_empty(), "{:?}", plain.calls());
+    // A session without turns just starts afresh.
+    let fresh = create(&client).await.id;
+    assert_eq!(snapshot(&client, &fresh).await.info.state, AgentState::Idle);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_chat_and_a_fork_carry_the_transcript_as_context() {
+    let provider = ScriptedProvider::new()
+        .turn([chunk("Looking at it."), Step::Stop(StopReason::EndTurn)])
+        .turn([chunk("Fixed."), Step::Stop(StopReason::EndTurn)])
+        .turn([chunk("ok"), Step::Stop(StopReason::EndTurn)])
+        .turn([chunk("ok"), Step::Stop(StopReason::EndTurn)])
+        .turn([chunk("ok"), Step::Stop(StopReason::EndTurn)]);
+    let d = daemon(SessionStore::open_in_memory().unwrap(), &provider);
+    let client = d.connect().await;
+    let source = create(&client).await.id;
+    rename(&client, &source, "Flaky test").await.unwrap();
+    let mut sub = subscribe(&client, &source, Some(0)).await;
+    turn(&client, &mut sub, &source, "Fix the flaky test").await;
+    let second = prompt(&client, &source, "Now run it").await.unwrap();
+    until(&mut sub, turn_ended).await;
+
+    let start = |through: Option<u64>| CreateSessionParams {
+        provider: "fake".into(),
+        cwd: "/work/app".into(),
+        workspace: Some("ws-1".into()),
+        title: None,
+        mode: None,
+        from: Some(StartFrom {
+            session: source.clone(),
+            through,
+        }),
+    };
+    let prompts = |p: &ScriptedProvider| -> Vec<Vec<ContentBlock>> {
+        p.calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                Call::Prompt(content) => Some(content),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // All of it: the new chat takes the title, and its first prompt (only)
+    // carries the transcript.
+    let new = client.request::<Create>(start(None)).await.unwrap();
+    assert_eq!(new.title.as_deref(), Some("Flaky test"));
+    let head = snapshot(&client, &source).await.head;
+    assert_eq!(
+        transcript(&client, &new.id).await[0],
+        SessionUpdate::StartedFrom(SessionOrigin {
+            session: source.clone(),
+            title: Some("Flaky test".into()),
+            through: head,
+        })
+    );
+    let mut sub = subscribe(&client, &new.id, Some(1)).await;
+    turn(&client, &mut sub, &new.id, "And the other one?").await;
+    turn(&client, &mut sub, &new.id, "Thanks").await;
+    let sent = prompts(&provider);
+    let [context, asked] = &sent[2][..] else {
+        panic!("{:?}", sent[2]);
+    };
+    assert_eq!(asked, &text("And the other one?"));
+    let ContentBlock::Text { text: context } = context else {
+        panic!("{context:?}");
+    };
+    assert!(context.starts_with("This chat continues an earlier one (\"Flaky test\")."));
+    assert!(context.contains(
+        "User: Fix the flaky test\n\nAssistant: Looking at it.\n\nUser: Now run it\n\nAssistant: Fixed."
+    ));
+    assert_eq!(sent[3], [text("Thanks")], "only the first prompt");
+    // Its own transcript has the user's prompt, without the context.
+    assert!(
+        transcript(&client, &new.id)
+            .await
+            .contains(&SessionUpdate::UserMessage {
+                content: vec![text("And the other one?")]
+            })
+    );
+
+    // A fork before the second prompt leaves it out.
+    let fork = client
+        .request::<Create>(start(Some(second.seq - 1)))
+        .await
+        .unwrap();
+    let mut sub = subscribe(&client, &fork.id, Some(1)).await;
+    turn(&client, &mut sub, &fork.id, "Run it twice").await;
+    let ContentBlock::Text { text: context } = &prompts(&provider)[4][0] else {
+        panic!()
+    };
+    assert!(context.contains("Assistant: Looking at it.\n</earlier-chat>"));
+    assert!(!context.contains("Now run it"));
+
+    // From a session that doesn't exist: nothing is created.
+    let mut bad = start(None);
+    bad.from = Some(StartFrom {
+        session: SessionId("nope".into()),
+        through: None,
+    });
+    let e = client.request::<Create>(bad).await.unwrap_err();
+    assert_eq!(app_error(e), app_codes::UNKNOWN_SESSION);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retry_sends_the_last_prompt_again() {
+    let provider = ScriptedProvider::new()
+        .turn([Step::Fail("overloaded".into())])
+        .turn([chunk("done"), Step::Stop(StopReason::EndTurn)]);
+    let d = daemon(SessionStore::open_in_memory().unwrap(), &provider);
+    let client = d.connect().await;
+    let id = create(&client).await.id;
+    let retry = |id: &SessionId| {
+        client.request::<Retry>(SessionParams {
+            session: id.clone(),
+        })
+    };
+    let e = retry(&id).await.unwrap_err();
+    assert_eq!(e.rpc().unwrap().code, codes::INVALID_PARAMS);
+
+    let mut sub = subscribe(&client, &id, Some(0)).await;
+    turn(&client, &mut sub, &id, "Fix it").await;
+    let again = retry(&id).await.unwrap();
+    assert_eq!(again.turn, 2);
+    until(&mut sub, turn_ended).await;
+    let prompts: Vec<_> = provider
+        .calls()
+        .into_iter()
+        .filter(|c| matches!(c, Call::Prompt(_)))
+        .collect();
+    assert_eq!(
+        prompts,
+        [
+            Call::Prompt(vec![text("Fix it")]),
+            Call::Prompt(vec![text("Fix it")])
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_closed_session_reopens_and_resumes() {
+    let provider = ScriptedProvider::new()
+        .turn([chunk("one"), Step::Stop(StopReason::EndTurn)])
+        .turn([chunk("two"), Step::Stop(StopReason::EndTurn)]);
+    let d = daemon(SessionStore::open_in_memory().unwrap(), &provider);
+    let client = d.connect().await;
+    let id = create(&client).await.id;
+    let mut sub = subscribe(&client, &id, Some(0)).await;
+    turn(&client, &mut sub, &id, "first").await;
+    client
+        .request::<Close>(SessionParams {
+            session: id.clone(),
+        })
+        .await
+        .unwrap();
+    let e = prompt(&client, &id, "second").await.unwrap_err();
+    assert_eq!(app_error(e), app_codes::SESSION_CLOSED);
+
+    let reopen = || {
+        client.request::<Reopen>(SessionParams {
+            session: id.clone(),
+        })
+    };
+    let info = reopen().await.unwrap();
+    assert!(!info.closed);
+    assert_eq!(listed_title(&client, &id).await.as_deref(), Some("Test"));
+    let info = reopen().await.unwrap();
+    assert!(!info.closed, "reopening an open session changes nothing");
+    let all = transcript(&client, &id).await;
+    assert_eq!(
+        all.iter()
+            .filter(|u| **u == SessionUpdate::Reopened)
+            .count(),
+        1
+    );
+
+    turn(&client, &mut sub, &id, "second").await;
+    let calls = provider.calls();
+    assert_eq!(
+        calls[calls.len() - 2..],
+        [
+            Call::Resume("fake-1".into()),
+            Call::Prompt(vec![text("second")])
+        ]
+    );
 }

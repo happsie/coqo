@@ -426,6 +426,7 @@ async fn run(
             workspace: Some(ws.id.0.clone()),
             title: Some(format!("eval: {}", scenario.name)),
             mode: None,
+            from: None,
         })
         .await?;
     let session = info.id.clone();

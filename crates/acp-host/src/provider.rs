@@ -205,8 +205,18 @@ impl Inner {
         what: &str,
         call: impl Future<Output = Result<R, agent_client_protocol::Error>>,
     ) -> Result<R, ProviderError> {
+        self.request_or(what, call, provider_error).await
+    }
+
+    /// [`request`](Self::request), with the agent's errors mapped by `map`.
+    async fn request_or<R>(
+        &self,
+        what: &str,
+        call: impl Future<Output = Result<R, agent_client_protocol::Error>>,
+        map: fn(agent_client_protocol::Error) -> ProviderError,
+    ) -> Result<R, ProviderError> {
         match tokio::time::timeout(self.options.request_timeout, call).await {
-            Ok(result) => result.map_err(provider_error),
+            Ok(result) => result.map_err(map),
             Err(_) => Err(ProviderError::Failed(format!(
                 "the agent did not answer {what} within {:?}",
                 self.options.request_timeout
@@ -295,7 +305,7 @@ impl Inner {
         if conn.caps.resume {
             host.shared.register(id, route(Replay::Live));
             let resumed = self
-                .request(
+                .request_or(
                     "session/resume",
                     conn.cx
                         .send_request(
@@ -305,6 +315,7 @@ impl Inner {
                                 .meta(self.session_meta()),
                         )
                         .block_task(),
+                    session_lost,
                 )
                 .await;
             match resumed {
@@ -322,12 +333,12 @@ impl Inner {
         if !conn.caps.load {
             host.shared.unregister(id);
             return Err(failure.unwrap_or_else(|| {
-                ProviderError::Unsupported("the agent cannot resume sessions".into())
+                ProviderError::SessionLost("the agent can't resume sessions".into())
             }));
         }
         host.shared.register(id, route(replay));
         let loaded = self
-            .request(
+            .request_or(
                 "session/load",
                 conn.cx
                     .send_request(
@@ -337,6 +348,7 @@ impl Inner {
                             .meta(self.session_meta()),
                     )
                     .block_task(),
+                session_lost,
             )
             .await;
         match loaded {
@@ -389,11 +401,13 @@ fn publish(events: &SessionEvents, config: &ConfigState, options: Vec<SessionCon
 }
 
 /// The error for a failed ACP request.
+const EXITED: &str = "the agent process exited";
+
 fn provider_error(e: agent_client_protocol::Error) -> ProviderError {
     if agent_client_protocol::is_connection_terminated(&e)
         || agent_client_protocol::is_incoming_transport_closed(&e)
     {
-        return ProviderError::Failed("the agent process exited".into());
+        return ProviderError::Failed(EXITED.into());
     }
     let detail = match &e.data {
         Some(serde_json::Value::String(s)) => format!(" ({s})"),
@@ -410,6 +424,16 @@ fn provider_error(e: agent_client_protocol::Error) -> ProviderError {
         ProviderError::AuthRequired(message)
     } else {
         ProviderError::Failed(message)
+    }
+}
+
+/// An agent's answer to `session/resume` or `session/load`: an error it
+/// sent means it won't take the session back ([`ProviderError::SessionLost`]);
+/// the process exiting is a failure to try again.
+fn session_lost(e: agent_client_protocol::Error) -> ProviderError {
+    match provider_error(e) {
+        ProviderError::Failed(m) if m != EXITED => ProviderError::SessionLost(m),
+        other => other,
     }
 }
 

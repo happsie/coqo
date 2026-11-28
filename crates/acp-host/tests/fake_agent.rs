@@ -147,6 +147,7 @@ impl Env {
             workspace: Some(workspace.into()),
             title: None,
             mode: None,
+            from: None,
         }
     }
 
@@ -1056,5 +1057,34 @@ async fn config_options_are_set_again_after_a_resume_or_a_crash() {
     until(&manager, &id, since, turn_ended).await;
     assert_eq!(env.logged("session/set_config_option").len(), 6);
     assert_eq!(value(&manager, &id, "effort"), select("high"));
+    manager.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_the_agent_lost_ends_instead_of_starting_afresh() {
+    let env = Env::new();
+    let id = {
+        let manager = env.manager(env.provider(&[]));
+        let id = manager.create(env.params("ws-1")).await.unwrap().id;
+        prompt(&manager, &id, "say first").await;
+        until(&manager, &id, 0, turn_ended).await;
+        manager.shutdown().await;
+        id
+    };
+    // A new process that no longer has the session: resume and load fail.
+    let manager = env.manager(env.provider(&[("FAKE_ACP_FORGETS", "1")]));
+    let err = manager
+        .prompt(&id, vec![ContentBlock::text("say second")])
+        .await
+        .unwrap_err();
+    let AgentError::Ended { reason, .. } = &err else {
+        panic!("{err:?}");
+    };
+    assert!(reason.contains("Session not found"), "{reason}");
+    assert_eq!(env.logged("session/resume").len(), 1);
+    assert_eq!(env.logged("session/load").len(), 1);
+    assert_eq!(env.logged("session/new").len(), 1, "no fresh session");
+    let snap = manager.snapshot(&id).unwrap();
+    assert_eq!(snap.info.state, AgentState::Error);
     manager.shutdown().await;
 }

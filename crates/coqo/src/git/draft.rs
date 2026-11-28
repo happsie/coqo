@@ -309,6 +309,7 @@ async fn draft(
             workspace: None,
             title: Some(SESSION_TITLE.into()),
             mode: None,
+            from: None,
         },
         cx,
     )

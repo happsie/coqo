@@ -35,9 +35,9 @@ use std::{
 use coqo_protocol::methods::{
     agents::{
         AvailableCommand, Close, ConfigOptionKind, ConfigOptionValue, ConfigValue, ContentBlock,
-        Create, CreateSessionParams, Prompt, PromptParams, ProviderInfo, SessionConfigOption,
-        SessionInfo, SessionParams, SetConfigOption, SetConfigOptionParams, SetMode, SetModeParams,
-        config_category,
+        Create, CreateSessionParams, Prompt, PromptParams, ProviderInfo, Reopen, Retry,
+        SessionConfigOption, SessionInfo, SessionParams, SetConfigOption, SetConfigOptionParams,
+        SetMode, SetModeParams, config_category,
     },
     codes as app_codes,
     fs::{self, EntryKind, PathParams, ReadParams},
@@ -58,7 +58,10 @@ use futures_util::future::join_all;
 
 use super::{ChatTab, Transcript, billing_label, usage_label};
 use crate::{
-    chat::{SIGN_IN_HELP, SessionSwitched, diff::file_name, list::ChatList, transcript::Entry},
+    chat::{
+        SIGN_IN_HELP, SessionSwitched, StartFromChat, diff::file_name, list::ChatList,
+        transcript::Entry,
+    },
     daemon::Daemon,
     files::glyph,
     workspace::{KnownWorkspaces, Workspaces},
@@ -1020,6 +1023,9 @@ impl ChatTab {
                 this.update_in(cx, |this, window, cx| {
                     if e.code() == Some(app_codes::AUTH_REQUIRED) {
                         this.transcript.sign_in = Some(e.to_string());
+                    } else if e.code() == Some(app_codes::SESSION_ENDED) {
+                        // The `ended` notice and the composer's "Start a new
+                        // chat with this context" say it; the text goes along.
                     } else {
                         this.error = Some(format!("The message wasn't sent: {e}"));
                     }
@@ -1035,6 +1041,123 @@ impl ChatTab {
         })
         .detach();
         cx.notify();
+    }
+
+    /// Send the last prompt again (`sessions/retry`).
+    pub(in crate::chat) fn retry(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.transcript.can_retry() || self.is_closed() || self.switching {
+            return;
+        }
+        let Some(daemon) = Self::daemon(cx) else {
+            return;
+        };
+        self.error = None;
+        let call = daemon.read(cx).request::<Retry>(SessionParams {
+            session: self.session.clone(),
+        });
+        self.spawn_request(call, "Couldn't retry", cx);
+        cx.notify();
+    }
+
+    /// Put `text` in the composer, to edit and send (a fork's prompt).
+    pub fn set_draft(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer
+            .update(cx, |c, cx| c.set_text(text, window, cx));
+        cx.notify();
+    }
+
+    /// Reopen the closed chat (`sessions/reopen`).
+    fn reopen(&mut self, cx: &mut Context<Self>) {
+        let Some(daemon) = Self::daemon(cx) else {
+            return;
+        };
+        let call = daemon.read(cx).request::<Reopen>(SessionParams {
+            session: self.session.clone(),
+        });
+        cx.spawn(async move |this, cx| {
+            let result = call.await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(info) => {
+                        if let Some(list) = ChatList::global(cx) {
+                            list.update(cx, |l, cx| l.upsert(info.clone(), cx));
+                        }
+                        this.info = Some(info);
+                    }
+                    Err(e) => this.error = Some(format!("Couldn't reopen the chat: {e}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// In place of the composer when the chat takes no more prompts: closed
+    /// (with "Reopen"), or ended (with "Start a new chat with this
+    /// context", which takes the composer's text along).
+    fn render_finished(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let ended = self.transcript.ended.is_some();
+        let (id, text, label) = if ended {
+            (
+                "chat-ended",
+                "The agent can't resume this chat. Its transcript stays here to read.",
+                "Start a new chat with this context",
+            )
+        } else {
+            (
+                "chat-closed",
+                "This chat is closed. Its transcript stays here to read.",
+                "Reopen",
+            )
+        };
+        let session = self.session.0.clone();
+        let draft = self.composer.read(cx).text(cx).trim().to_owned();
+        let button = primary(
+            div()
+                .px(px(12.))
+                .py(px(5.))
+                .rounded(px(8.))
+                .text_size(m.text_sm),
+            cx,
+        )
+        .id(if ended {
+            "chat-continue"
+        } else {
+            "chat-reopen"
+        })
+        .test_support()
+        .cursor_pointer()
+        .child(label)
+        .on_click(cx.listener(move |this, _, window, cx| {
+            if ended {
+                window.dispatch_action(
+                    Box::new(StartFromChat {
+                        session: session.clone(),
+                        through: None,
+                        prompt: (!draft.is_empty()).then(|| draft.clone()),
+                    }),
+                    cx,
+                );
+            } else {
+                this.reopen(cx);
+            }
+        }));
+        div()
+            .id(id)
+            .test_support()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_between()
+            .gap(px(12.))
+            .text_size(m.text_sm)
+            .text_color(p.text_subtle.hsla())
+            .child(text)
+            .child(button)
+            .into_any_element()
     }
 
     /// Switch the session's mode.
@@ -1105,6 +1228,7 @@ impl ChatTab {
             workspace: info.workspace,
             title: None,
             mode: None,
+            from: None,
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = create.await;
@@ -1708,14 +1832,8 @@ impl ChatTab {
     pub(super) fn render_composer(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.tokens();
         let (p, m) = (t.palette.clone(), t.metrics.clone());
-        if self.is_closed() {
-            return div()
-                .id("chat-closed")
-                .test_support()
-                .text_size(m.text_sm)
-                .text_color(p.text_subtle.hsla())
-                .child("This chat is closed. Its transcript stays here to read.")
-                .into_any_element();
+        if self.is_closed() || self.transcript.ended.is_some() {
+            return self.render_finished(cx);
         }
         let provider = if self.switching {
             "Switching…".to_owned()

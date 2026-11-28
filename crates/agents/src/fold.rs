@@ -7,8 +7,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use coqo_protocol::methods::agents::{
-    AuthStatus, AvailableCommand, PermissionRequest, PermissionRequestId, PlanEntry,
-    SessionConfigOption, SessionModes, SessionUpdate, ToolCallId, Usage, follow_mode,
+    AuthStatus, AvailableCommand, ContentBlock, PermissionRequest, PermissionRequestId, PlanEntry,
+    SessionConfigOption, SessionModes, SessionOrigin, SessionUpdate, ToolCallId, Usage,
+    follow_mode,
 };
 
 use crate::rules::ToolFacts;
@@ -32,6 +33,12 @@ pub(crate) struct Fold {
     pub auth: Option<AuthStatus>,
     /// What each tool call is, for permission rules.
     pub tools: HashMap<ToolCallId, ToolFacts>,
+    /// The last prompt, for `sessions/retry`.
+    pub last_prompt: Option<Vec<ContentBlock>>,
+    /// Why the agent's session can't be resumed, once it couldn't.
+    pub ended: Option<String>,
+    /// The transcript the session started from.
+    pub started_from: Option<SessionOrigin>,
 }
 
 impl Fold {
@@ -76,14 +83,17 @@ impl Fold {
             SessionUpdate::ToolCallUpdate(u) => {
                 self.tools.entry(u.id.clone()).or_default().apply(u);
             }
-            SessionUpdate::UserMessage { .. }
-            | SessionUpdate::UserMessageChunk { .. }
+            SessionUpdate::UserMessage { content } => self.last_prompt = Some(content.clone()),
+            SessionUpdate::Ended { reason } => self.ended = Some(reason.clone()),
+            SessionUpdate::StartedFrom(origin) => self.started_from = Some(origin.clone()),
+            SessionUpdate::UserMessageChunk { .. }
             | SessionUpdate::AgentMessageChunk { .. }
             | SessionUpdate::AgentThoughtChunk { .. }
             | SessionUpdate::State { .. }
             | SessionUpdate::Question(_)
             | SessionUpdate::Walkthrough(_)
-            | SessionUpdate::Closed => {}
+            | SessionUpdate::Closed
+            | SessionUpdate::Reopened => {}
         }
     }
 

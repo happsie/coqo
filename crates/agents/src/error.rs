@@ -24,6 +24,15 @@ pub enum AgentError {
     /// The session was closed.
     #[error("agent session {0} is closed")]
     Closed(SessionId),
+    /// The agent's session can't be resumed, so the session takes no more
+    /// prompts.
+    #[error("the agent can't resume this chat ({reason}); start a new chat with its context")]
+    Ended {
+        /// The session.
+        session: SessionId,
+        /// Why, from the agent.
+        reason: String,
+    },
     /// No such pending permission request, or not one of its options.
     #[error("agent session {session} has no pending permission request {request} with that option")]
     UnknownPermission {
@@ -58,6 +67,9 @@ impl AgentError {
             Self::UnknownProvider(_) => codes::UNKNOWN_PROVIDER,
             Self::Busy(_) => codes::SESSION_BUSY,
             Self::Closed(_) => codes::SESSION_CLOSED,
+            Self::Ended { .. } | Self::Provider(ProviderError::SessionLost(_)) => {
+                codes::SESSION_ENDED
+            }
             Self::UnknownPermission { .. } => codes::UNKNOWN_PERMISSION_REQUEST,
             Self::InvalidParams(m) => return ErrorObject::invalid_params(m.clone()),
             Self::Provider(ProviderError::AuthRequired(_)) => codes::AUTH_REQUIRED,

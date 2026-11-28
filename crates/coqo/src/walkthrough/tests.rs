@@ -328,6 +328,7 @@ fn published(ui: &mut Ui, daemon: &AgentDaemon, project: &Path) -> (SessionId, W
                 workspace: Some(ws_id),
                 title: Some("Discount".into()),
                 mode: None,
+                from: None,
             })
             .await
             .unwrap()

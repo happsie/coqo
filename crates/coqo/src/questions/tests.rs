@@ -920,6 +920,7 @@ fn asking_about_selected_lines_pins_a_thread_with_the_agents_reply() {
                 workspace: Some(ws_id),
                 title: Some("Cart work".into()),
                 mode: None,
+                from: None,
             })
             .await
             .unwrap()
@@ -1218,6 +1219,7 @@ If the cap should hold for what they pay, subtract the bonus first and cap \
                             workspace: Some(ws_id),
                             title: Some("Volume discount".into()),
                             mode: None,
+                            from: None,
                         })
                         .await
                         .unwrap()

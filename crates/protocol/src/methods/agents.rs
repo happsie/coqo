@@ -1224,8 +1224,38 @@ pub enum SessionUpdate {
     /// The agent published a code walkthrough (`walkthroughs/*`): the chat
     /// shows a card that opens it where it starts.
     Walkthrough(Box<super::walkthroughs::WalkthroughSummary>),
-    /// The session was closed. Nothing follows.
+    /// The session was closed. Nothing follows, unless it is reopened.
     Closed,
+    /// A closed session was reopened (`sessions/reopen`): prompts are taken
+    /// again, and the next one resumes the agent's session.
+    Reopened,
+    /// The agent's session can't be resumed (after a daemon or agent
+    /// restart): the agent no longer has it, or can't resume sessions. The
+    /// transcript stays readable, but nothing more can be sent; start a new
+    /// chat with its context (`sessions/create` with `from`).
+    Ended {
+        /// Why, from the agent.
+        reason: String,
+    },
+    /// The session starts from another one's transcript (a new chat with
+    /// its context, or a fork): its first prompt carries that transcript
+    /// to the agent as context.
+    StartedFrom(SessionOrigin),
+}
+
+/// Where a session started from: another session's transcript, through
+/// one update.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct SessionOrigin {
+    /// The session.
+    pub session: SessionId,
+    /// Its title then, if it had one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The seq of its last update the context includes.
+    pub through: u64,
 }
 
 /// A session, as listed.
@@ -1416,6 +1446,24 @@ pub struct CreateSessionParams {
     /// Initial mode id, if the provider has modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// Start from another session's transcript: "Start a new chat with
+    /// this context", and forks. The new session's first prompt carries
+    /// that transcript to the agent as context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<StartFrom>,
+}
+
+/// The transcript a new session starts from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct StartFrom {
+    /// The session (open, closed or ended).
+    pub session: SessionId,
+    /// The seq of its last update to include; all of it if absent. To fork
+    /// before a prompt, give the seq just before that prompt's
+    /// `user_message`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through: Option<u64>,
 }
 
 /// `sessions/create`: start a session with a provider. The provider starts
@@ -1646,6 +1694,29 @@ impl Method for Rename {
     const NAME: &'static str = "sessions/rename";
     type Params = RenameParams;
     type Result = SessionInfo;
+}
+
+/// `sessions/reopen`: reopen a closed session. Its next prompt resumes the
+/// agent's session, or, if the agent can't, ends it (`ended`). Returns the
+/// session's info, which also goes out on `sessions/changes`. Reopening an
+/// open session changes nothing.
+#[derive(Debug)]
+pub enum Reopen {}
+impl Method for Reopen {
+    const NAME: &'static str = "sessions/reopen";
+    type Params = SessionParams;
+    type Result = SessionInfo;
+}
+
+/// `sessions/retry`: send the session's last prompt again, as a new turn
+/// (after an error or an interruption, say). `INVALID_PARAMS` if it has
+/// none; otherwise as `sessions/prompt`.
+#[derive(Debug)]
+pub enum Retry {}
+impl Method for Retry {
+    const NAME: &'static str = "sessions/retry";
+    type Params = SessionParams;
+    type Result = PromptResult;
 }
 
 /// `sessions/close`: end a session (cancelling a running turn). Its

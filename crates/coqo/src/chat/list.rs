@@ -26,7 +26,7 @@ use coqo_ui::{
 use super::{
     KIND, agent_dot, new_chat, open_session, press_action,
     rename::{self, Place, Renaming},
-    status_line,
+    reopen_chat, status_line,
 };
 use crate::{
     daemon::{Daemon, DaemonEvent},
@@ -38,6 +38,12 @@ pub struct ChatList {
     workspace: Option<String>,
     /// Most recently updated first; closed sessions are left out.
     sessions: Vec<SessionInfo>,
+    /// The closed ones (HISTORY), most recently updated first. Untitled
+    /// ones, never prompted (an empty chat left by a provider switch), are
+    /// left out.
+    closed: Vec<SessionInfo>,
+    /// HISTORY is expanded.
+    history_open: bool,
     /// Why the last "new chat" (or the list) failed.
     error: Option<String>,
     /// What the user can do about it: a provider's setup or sign-in
@@ -91,6 +97,8 @@ impl ChatList {
         let mut this = Self {
             workspace: None,
             sessions: Vec::new(),
+            closed: Vec::new(),
+            history_open: false,
             error: None,
             actions: Vec::new(),
             creating: false,
@@ -110,6 +118,22 @@ impl ChatList {
     /// The listed sessions, most recently updated first.
     pub fn sessions(&self) -> &[SessionInfo] {
         &self.sessions
+    }
+
+    /// The closed chats, most recently updated first.
+    pub fn closed(&self) -> &[SessionInfo] {
+        &self.closed
+    }
+
+    /// Whether HISTORY is expanded.
+    pub fn history_open(&self) -> bool {
+        self.history_open
+    }
+
+    /// Expand or collapse HISTORY.
+    pub fn toggle_history(&mut self, cx: &mut Context<Self>) {
+        self.history_open = !self.history_open;
+        cx.notify();
     }
 
     /// One session's latest info, if listed.
@@ -151,20 +175,26 @@ impl ChatList {
         cx.notify();
     }
 
-    /// Add or update a session (closed ones drop out).
+    /// Add or update a session (closed ones move to HISTORY).
     pub fn upsert(&mut self, info: SessionInfo, cx: &mut Context<Self>) {
         if info.workspace != self.workspace {
             return;
         }
         self.sessions.retain(|s| s.id != info.id);
-        if !info.closed {
-            let at = self
-                .sessions
-                .iter()
-                .position(|s| s.updated_at <= info.updated_at)
-                .unwrap_or(self.sessions.len());
-            self.sessions.insert(at, info);
-        }
+        self.closed.retain(|s| s.id != info.id);
+        let list = match (info.closed, info.title.is_some()) {
+            (false, _) => &mut self.sessions,
+            (true, true) => &mut self.closed,
+            (true, false) => {
+                cx.notify();
+                return;
+            }
+        };
+        let at = list
+            .iter()
+            .position(|s| s.updated_at <= info.updated_at)
+            .unwrap_or(list.len());
+        list.insert(at, info);
         cx.notify();
     }
 
@@ -184,6 +214,7 @@ impl ChatList {
         self.workspace =
             Workspaces::global(cx).and_then(|w| w.read(cx).current().map(|c| c.id.0.clone()));
         self.sessions.clear();
+        self.closed.clear();
         cx.notify();
         let Some(daemon) = Daemon::global(cx).filter(|d| d.read(cx).is_connected()) else {
             self._loading = None;
@@ -195,7 +226,7 @@ impl ChatList {
         };
         let list = daemon.read(cx).request::<List>(ListSessionsParams {
             workspace: Some(workspace.clone()),
-            include_closed: false,
+            include_closed: true,
         });
         let daemon = daemon.downgrade();
         self._loading = Some(cx.spawn(async move |this, cx| {
@@ -208,7 +239,10 @@ impl ChatList {
             };
             let seq = listed.seq;
             let changes = this.update(cx, |this, cx| {
-                this.sessions = listed.sessions;
+                let (closed, open): (Vec<_>, _) =
+                    listed.sessions.into_iter().partition(|s| s.closed);
+                this.sessions = open;
+                this.closed = closed.into_iter().filter(|s| s.title.is_some()).collect();
                 cx.notify();
                 daemon.upgrade().map(|d| {
                     d.read(cx).subscribe_since::<Changes>(
@@ -244,6 +278,9 @@ pub fn title_or_new(info: &SessionInfo) -> String {
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| "New chat".into())
 }
+
+/// At most this many closed chats under HISTORY.
+const HISTORY: usize = 10;
 
 /// The CHATS section at the bottom of the sidebar.
 pub fn render_section(dock: WeakEntity<Dock>, window: &Window, cx: &App) -> AnyElement {
@@ -283,16 +320,22 @@ pub fn render_section(dock: WeakEntity<Dock>, window: &Window, cx: &App) -> AnyE
         .gap(px(2.))
         .text_size(px(12.))
         .child(header);
-    let (sessions, error, actions) = match &list {
+    let (sessions, closed, history_open, error, actions) = match &list {
         Some(list) => {
             let list = list.read(cx);
             (
                 list.sessions().to_vec(),
+                list.closed()
+                    .iter()
+                    .take(HISTORY)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                list.history_open(),
                 list.error().map(str::to_owned),
                 list.actions().to_vec(),
             )
         }
-        None => (Vec::new(), None, Vec::new()),
+        None => (Vec::new(), Vec::new(), false, None, Vec::new()),
     };
     let field_of = |id: &SessionId| {
         list.as_ref()
@@ -355,6 +398,62 @@ pub fn render_section(dock: WeakEntity<Dock>, window: &Window, cx: &App) -> AnyE
                     }
                 }),
         );
+    }
+    if let Some(list) = list.as_ref().filter(|_| !closed.is_empty()) {
+        let list = list.clone();
+        let chevron = if history_open {
+            Icon::ChevronDown
+        } else {
+            Icon::ChevronRight
+        };
+        section = section.child(
+            div()
+                .id("chat-history")
+                .test_support()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .px(px(8.))
+                .pt(px(6.))
+                .pb(px(2.))
+                .cursor_pointer()
+                .text_size(m.text_label)
+                .text_color(p.text_subtle.hsla())
+                .hover(|s| s.text_color(p.text_muted.hsla()))
+                .child(icon(chevron, px(12.), p.text_subtle.hsla()))
+                .child("History")
+                .on_click(move |_, _, cx| list.update(cx, |l, cx| l.toggle_history(cx))),
+        );
+        if history_open {
+            for info in closed {
+                let (dock, session) = (dock.clone(), info.id.clone());
+                section = section.child(
+                    div()
+                        .id(ElementId::Name(format!("chat-closed-{}", info.id).into()))
+                        .test_support()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(9.))
+                        .cursor_pointer()
+                        .text_color(p.text_subtle.hsla())
+                        .hover(|s| s.bg(p.surface.hsla()).text_color(p.text_muted.hsla()))
+                        .child(icon(Icon::History, px(12.), p.text_subtle.hsla()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(title_or_new(&info)),
+                        )
+                        .on_click(move |_, window, cx| {
+                            reopen_chat(dock.clone(), session.clone(), window, cx);
+                        }),
+                );
+            }
+        }
     }
     if let Some(error) = error {
         section = section.child(

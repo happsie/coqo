@@ -91,6 +91,7 @@ impl Fixture {
                     workspace: Some(ws),
                     title: Some("Run the tests".into()),
                     mode: None,
+                    from: None,
                 })
                 .await
                 .unwrap()

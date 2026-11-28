@@ -458,6 +458,7 @@ async fn a_session_token_reaches_only_its_own_workspace() {
         workspace: Some(ws.id.0.clone()),
         title: None,
         mode: None,
+        from: None,
     };
     let a_session = admin
         .request::<agm::Create>(session_in(&a_dir, &a))

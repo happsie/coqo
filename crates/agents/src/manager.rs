@@ -11,7 +11,12 @@
 //!   [`KeepAlive`] guard, so the daemon does not idle-exit mid-turn.
 //! - When the daemon starts, sessions whose stored state says a turn was
 //!   running get their turn ended as `interrupted` and their state set to
-//!   `error`. Their provider session is resumed on the next prompt.
+//!   `error`. Their provider session is resumed on the next prompt. A
+//!   session with a transcript whose agent can't resume it is never
+//!   silently restarted: it is marked `ended` (and `error`, "Can't
+//!   resume"), and takes no more prompts. `sessions/create` with `from`
+//!   starts a new one with its transcript as context ([`crate::context`]),
+//!   which is also how chats are forked. ADR 0026 has the reasons.
 //! - The session's state follows the state machine in [`crate::state`]:
 //!   every change goes through `Inner::transition`, which records a
 //!   `state` update when the state or its reason changes and saves the info
@@ -35,10 +40,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use coqo_mod_api::BoxFuture;
 use coqo_protocol::methods::agents::{
-    AgentState, AgentStatus, ConfigValue, CreateSessionParams, CriterionAuthor, ListSessionsParams,
-    PermissionOutcome, PermissionRequest, PermissionRequestId, PermissionRule, PermissionRuleId,
-    PromptResult, ProviderInfo, SessionId, SessionInfo, SessionList, SessionSnapshot,
-    SessionUpdate, SetCriteriaParams, SetStatusParams, StatusProgress, StopReason, ToolCallUpdate,
+    AgentState, AgentStatus, ConfigValue, ContentBlock, CreateSessionParams, CriterionAuthor,
+    ListSessionsParams, PermissionOutcome, PermissionRequest, PermissionRequestId, PermissionRule,
+    PermissionRuleId, PromptResult, ProviderInfo, SessionId, SessionInfo, SessionList,
+    SessionOrigin, SessionSnapshot, SessionUpdate, SetCriteriaParams, SetStatusParams, StartFrom,
+    StatusProgress, StopReason, ToolCallUpdate,
 };
 use coqo_protocol::methods::questions::Question;
 use coqo_protocol::methods::walkthroughs::WalkthroughSummary;
@@ -46,7 +52,6 @@ use coqo_protocol::{ErrorObject, EventFeed, Sequenced};
 use coqo_storage::Timestamp;
 use tokio::sync::{broadcast, oneshot};
 
-use crate::criteria;
 use crate::error::AgentError;
 use crate::feed::{Page, feed};
 use crate::fold::Fold;
@@ -60,6 +65,7 @@ use crate::state::{self, Event, Tracked};
 use crate::store::{SessionStore, StoredSession, TitleSource};
 use crate::title;
 use crate::tool_use;
+use crate::{context, criteria};
 
 type Result<T> = std::result::Result<T, AgentError>;
 
@@ -380,7 +386,7 @@ impl Inner {
     /// The live provider session, starting or resuming it if needed.
     async fn ensure_live(self: &Arc<Self>, s: &Arc<Session>) -> Result<Arc<dyn ProviderSession>> {
         let _starting = s.live_lock.lock().await;
-        let (info, provider_session, head, config_options) = {
+        let (info, provider_session, head, config_options, turns) = {
             let st = lock(&s.state);
             if st.info().closed {
                 return Err(AgentError::Closed(s.id.clone()));
@@ -388,11 +394,18 @@ impl Inner {
             if let Some(live) = &st.live {
                 return Ok(Arc::clone(live));
             }
+            if let Some(reason) = &st.fold.ended {
+                return Err(AgentError::Ended {
+                    session: s.id.clone(),
+                    reason: reason.clone(),
+                });
+            }
             (
                 st.info().clone(),
                 st.stored.provider_session.clone(),
                 st.head,
                 st.fold.config_options.clone(),
+                st.fold.turns,
             )
         };
         let provider = self
@@ -413,6 +426,11 @@ impl Inner {
             session: Arc::clone(s),
         }));
 
+        // A session with turns needs the agent's own session back: a fresh
+        // one would know nothing of the transcript the user sees.
+        let mut lost = (turns > 0
+            && !(provider_session.is_some() && provider.capabilities().resume))
+            .then(|| "the agent can't resume sessions".to_owned());
         let mut live = None;
         if let Some(provider_session) = provider_session
             && provider.capabilities().resume
@@ -432,11 +450,28 @@ impl Inner {
             match resumed {
                 Ok(l) => live = Some(l),
                 Err(e @ ProviderError::AuthRequired(_)) => return Err(e.into()),
+                Err(ProviderError::SessionLost(reason) | ProviderError::Unsupported(reason))
+                    if turns > 0 =>
+                {
+                    lost = Some(reason);
+                }
+                // The agent couldn't be asked (it didn't start, say): the
+                // next prompt tries again.
+                Err(e) if turns > 0 => return Err(e.into()),
                 Err(e) => tracing::warn!(
                     session = %s.id, error = %e,
-                    "cannot resume the provider session; starting a new one"
+                    "cannot resume the provider session (no turns yet); starting a new one"
                 ),
             }
+        }
+        if let Some(reason) = lost {
+            tracing::warn!(session = %s.id, %reason, "the agent's session can't be resumed; ending it");
+            let mut st = lock(&s.state);
+            self.end(s, &mut st, &reason)?;
+            return Err(AgentError::Ended {
+                session: s.id.clone(),
+                reason,
+            });
         }
         let live = match live {
             Some(live) => live,
@@ -451,6 +486,54 @@ impl Inner {
         }
         st.live = Some(Arc::clone(&live));
         Ok(live)
+    }
+
+    /// Marks the session ended: its agent's session can't be resumed.
+    fn end(&self, s: &Session, st: &mut SessionState, reason: &str) -> Result<()> {
+        if st.fold.ended.is_some() {
+            return Ok(());
+        }
+        self.record(
+            s,
+            st,
+            SessionUpdate::Ended {
+                reason: reason.to_owned(),
+            },
+        )?;
+        self.transition(s, st, Event::Failed(format!("Can't resume: {reason}")))
+    }
+
+    /// Where a session that starts `from` another starts: that session's
+    /// title and seq then.
+    fn origin(&self, from: &StartFrom) -> Result<SessionOrigin> {
+        let source = self
+            .store
+            .get(&from.session)?
+            .ok_or_else(|| AgentError::UnknownSession(from.session.clone()))?;
+        let head = self.store.head(&from.session)?;
+        Ok(SessionOrigin {
+            session: from.session.clone(),
+            title: source.info.title,
+            through: from.through.map_or(head, |t| t.min(head)),
+        })
+    }
+
+    /// The context a session started from `origin` gives the agent with
+    /// its first prompt, if that transcript has any messages.
+    fn context(&self, origin: &SessionOrigin) -> Result<Option<String>> {
+        let mut updates = Vec::new();
+        let mut after = 0;
+        while after < origin.through {
+            let page = self.store.updates_since(&origin.session, after, PAGE)?;
+            let Some((last, _)) = page.last() else { break };
+            after = *last;
+            updates.extend(
+                page.into_iter()
+                    .take_while(|(seq, _)| *seq <= origin.through)
+                    .map(|(_, u)| u),
+            );
+        }
+        Ok(context::render(origin.title.as_deref(), &updates))
     }
 
     fn finish_turn(
@@ -796,14 +879,24 @@ impl SessionManager {
         if inner.providers.provider(&params.provider).is_none() {
             return Err(AgentError::UnknownProvider(params.provider));
         }
+        let origin = params.from.as_ref().map(|f| inner.origin(f)).transpose()?;
         let ts = now();
         let title = params
             .title
             .as_deref()
             .map(|t| title::clean(t, title::MAX))
             .filter(|t| !t.is_empty());
+        // Without a title of its own, a session started from another takes
+        // that one's, until the agent names it.
+        let (title, title_source) = match (title, &origin) {
+            (Some(t), _) => (Some(t), Some(TitleSource::User)),
+            (None, Some(SessionOrigin { title: Some(t), .. })) => {
+                (Some(t.clone()), Some(TitleSource::Prompt))
+            }
+            (None, _) => (None, None),
+        };
         let stored = StoredSession {
-            title_source: title.as_ref().map(|_| TitleSource::User),
+            title_source,
             info: SessionInfo {
                 id: SessionId(uuid::Uuid::new_v4().to_string()),
                 provider: params.provider,
@@ -825,7 +918,13 @@ impl SessionManager {
         };
         let id = stored.info.id.clone();
         let s = Arc::new(Session::new(stored, 0, Fold::default()));
-        inner.save_info(&mut lock(&s.state))?;
+        {
+            let mut st = lock(&s.state);
+            inner.save_info(&mut st)?;
+            if let Some(origin) = origin {
+                inner.record(&s, &mut st, SessionUpdate::StartedFrom(origin))?;
+            }
+        }
         lock(&inner.sessions).insert(id.clone(), Arc::clone(&s));
 
         if let Err(e) = inner.ensure_live(&s).await {
@@ -868,6 +967,24 @@ impl SessionManager {
         };
         check(&lock(&s.state))?;
         let live = inner.ensure_live(&s).await?;
+        // A session started from another's transcript sends it with its
+        // first prompt.
+        let origin = {
+            let st = lock(&s.state);
+            st.fold.started_from.clone().filter(|_| st.fold.turns == 0)
+        };
+        let context = match origin {
+            Some(origin) => inner.context(&origin)?,
+            None => None,
+        };
+        let sent = match context {
+            Some(context) => {
+                let mut sent = vec![ContentBlock::text(context)];
+                sent.extend(content.iter().cloned());
+                sent
+            }
+            None => content.clone(),
+        };
 
         let (turn, seq) = {
             let mut st = lock(&s.state);
@@ -897,12 +1014,36 @@ impl SessionManager {
 
         let task_inner = Arc::clone(inner);
         tokio::spawn(async move {
-            let result = live.prompt(content).await;
+            let result = live.prompt(sent).await;
             if let Err(e) = task_inner.finish_turn(&s, turn, result) {
                 tracing::error!(session = %s.id, error = %e, "cannot record the end of a turn");
             }
         });
         Ok(PromptResult { turn, seq })
+    }
+
+    /// Sends the last prompt again, as a new turn.
+    pub async fn retry(&self, id: &SessionId) -> Result<PromptResult> {
+        let s = self.inner.session(id)?;
+        let content =
+            lock(&s.state).fold.last_prompt.clone().ok_or_else(|| {
+                AgentError::InvalidParams("the chat has no prompt to retry".into())
+            })?;
+        self.prompt(id, content).await
+    }
+
+    /// Reopens a closed session; its next prompt resumes the agent's
+    /// session. Changes nothing for an open one.
+    pub fn reopen(&self, id: &SessionId) -> Result<SessionInfo> {
+        let inner = &self.inner;
+        let s = inner.session(id)?;
+        let mut st = lock(&s.state);
+        if st.info().closed {
+            st.stored.info.closed = false;
+            inner.record(&s, &mut st, SessionUpdate::Reopened)?;
+            inner.save_info(&mut st)?;
+        }
+        Ok(st.info().clone())
     }
 
     /// Cancels the running turn. Returns whether one was running.

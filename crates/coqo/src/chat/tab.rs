@@ -54,8 +54,8 @@ use coqo_ui::{
 };
 
 use super::{
-    CancelTurn, KIND, OpenLocation, OpenTerminal, RenameChat, RunInTerminal, SIGN_IN_HELP,
-    agent_dot, attention_label,
+    CancelTurn, ForkChat, KIND, OpenLocation, OpenTerminal, RenameChat, RetryPrompt, RunInTerminal,
+    SIGN_IN_HELP, StartFromChat, agent_dot, attention_label,
     diff::{DiffLine, DiffPreview, LineKind, file_name},
     list::ChatList,
     rename::{self, Place},
@@ -854,9 +854,44 @@ impl ChatTab {
                 ContentBlock::Image { .. } => chips.push("image".into()),
             }
         }
+        // "Fork from here": a new chat with the transcript before this
+        // prompt, and the prompt in its composer to edit and send.
+        let fork = self.transcript.before_prompt(ix).map(|through| {
+            let (session, prompt) = (self.session.0.clone(), text.clone());
+            div()
+                .id(("chat-fork", ix))
+                .test_support()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .px(px(6.))
+                .py(px(2.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .text_size(m.text_label)
+                .text_color(p.text_subtle.hsla())
+                .opacity(0.)
+                .group_hover("chat-user", |s| s.opacity(1.))
+                .hover(|s| s.bg(p.surface.hsla()).text_color(p.text_muted.hsla()))
+                .child(icon(Icon::GitBranch, px(11.), p.text_subtle.hsla()))
+                .child("Fork from here")
+                .on_click(move |_, window, cx| {
+                    window.dispatch_action(
+                        Box::new(StartFromChat {
+                            session: session.clone(),
+                            through: Some(through),
+                            prompt: Some(prompt.clone()),
+                        }),
+                        cx,
+                    );
+                })
+        });
         div()
+            .group("chat-user")
             .flex()
-            .justify_end()
+            .flex_col()
+            .items_end()
+            .gap(px(4.))
             .child(
                 div()
                     .id(("chat-user", ix))
@@ -893,6 +928,7 @@ impl ChatTab {
                     })
                     .child(text),
             )
+            .children(fork)
             .into_any_element()
     }
 
@@ -1240,7 +1276,25 @@ impl ChatTab {
             NoticeKind::Attention => (Icon::CircleAlert, p.sand.hsla()),
             NoticeKind::Stopped => (Icon::Square, p.text_subtle.hsla()),
             NoticeKind::Closed => (Icon::X, p.text_subtle.hsla()),
+            NoticeKind::Info => (Icon::History, p.text_subtle.hsla()),
         };
+        // A failed or stopped last turn can be sent again.
+        let retry = (matches!(kind, NoticeKind::Error | NoticeKind::Stopped)
+            && ix + 1 == self.transcript.entries.len()
+            && self.transcript.can_retry())
+        .then(|| {
+            raised(div().px(px(8.)).py(px(2.)).rounded(px(7.)), cx)
+                .id("chat-retry")
+                .test_support()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .cursor_pointer()
+                .text_color(p.text_muted.hsla())
+                .child(icon(Icon::RotateCw, px(11.), p.text_muted.hsla()))
+                .child("Retry")
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(RetryPrompt), cx))
+        });
         div()
             .id(("chat-notice", ix))
             .test_support()
@@ -1251,6 +1305,7 @@ impl ChatTab {
             .text_color(color)
             .child(div().pt(px(2.)).child(icon(glyph, px(13.), color)))
             .child(div().flex_1().child(text))
+            .children(retry)
             .into_any_element()
     }
 
@@ -1804,6 +1859,17 @@ impl Render for ChatTab {
             .key_context("ChatTab")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &CancelTurn, _, cx| this.cancel(cx)))
+            .on_action(cx.listener(|this, _: &RetryPrompt, window, cx| this.retry(window, cx)))
+            .on_action(cx.listener(|this, _: &ForkChat, window, cx| {
+                window.dispatch_action(
+                    Box::new(StartFromChat {
+                        session: this.session.0.clone(),
+                        through: None,
+                        prompt: None,
+                    }),
+                    cx,
+                );
+            }))
             .on_action(cx.listener(|this, _: &RenameChat, window, cx| {
                 let title = this.title(cx).to_string();
                 let restore = Some(this.composer.read(cx).focus_handle(cx));

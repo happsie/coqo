@@ -39,6 +39,7 @@ export const ErrorCodes = {
   SEARCH_UNAVAILABLE: 2002,
   SESSION_BUSY: 1103,
   SESSION_CLOSED: 1104,
+  SESSION_ENDED: 1110,
   SPAWN_FAILED: 1302,
   STALE_SELECTION: 1602,
   STORAGE_ERROR: 1109,
@@ -795,6 +796,8 @@ export type CreateParams4 = {
 export type CreateSessionParams = {
   /** The agent's working directory (absolute; the workspace root). */
   cwd: string;
+  /** Start from another session's transcript: "Start a new chat with this context", and forks. The new session's first prompt carries that transcript to the agent as context. */
+  from?: StartFrom | null;
   /** Initial mode id, if the provider has modes. */
   mode?: string | null;
   /** Provider id, from `agents/providers`. */
@@ -2479,6 +2482,16 @@ export type SessionModes = {
   currentModeId: string;
 };
 
+/** Where a session started from: another session's transcript, through one update. */
+export type SessionOrigin = {
+  /** The session. */
+  session: SessionId;
+  /** The seq of its last update the context includes. */
+  through: number;
+  /** Its title then, if it had one. */
+  title?: string | null;
+};
+
 /** Params naming one session. */
 export type SessionParams = {
   /** The session. */
@@ -2577,7 +2590,13 @@ export type SessionUpdate = {
   update: "turn_ended";
 } | Question | WalkthroughSummary | {
   update: "closed";
-};
+} | {
+  update: "reopened";
+} | {
+  /** Why, from the agent. */
+  reason: string;
+  update: "ended";
+} | SessionOrigin;
 
 /** Params of `sessions/setConfigOption`. */
 export type SetConfigOptionParams = {
@@ -2701,6 +2720,14 @@ export type StageParams = {
   root: RootId;
   /** The workspace. */
   workspace: WorkspaceId;
+};
+
+/** The transcript a new session starts from. */
+export type StartFrom = {
+  /** The session (open, closed or ended). */
+  session: SessionId;
+  /** The seq of its last update to include; all of it if absent. To fork before a prompt, give the seq just before that prompt's `user_message`. */
+  through?: number | null;
 };
 
 /** A stash entry, in [`StashListResult`]. */
@@ -3688,6 +3715,10 @@ export interface Requests {
   "sessions/setCriteria": { params: SetCriteriaParams; result: SessionInfo };
   /** Give a session the user's title (kept across restarts; the agent's title no longer replaces it). (client→server) */
   "sessions/rename": { params: RenameParams3; result: SessionInfo };
+  /** Reopen a closed session; its next prompt resumes the agent's session. (client→server) */
+  "sessions/reopen": { params: SessionParams; result: SessionInfo };
+  /** Send the session's last prompt again, as a new turn. (client→server) */
+  "sessions/retry": { params: SessionParams; result: PromptResult };
   /** End a session; its transcript stays readable. Result is true if it was open. (client→server) */
   "sessions/close": { params: SessionParams; result: boolean };
   /** A workspace's permission rules (auto-approve and auto-reject), oldest first. (client→server) */

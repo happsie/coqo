@@ -200,6 +200,7 @@ impl Fixture {
                     workspace: Some(ws),
                     title: Some(title),
                     mode: None,
+                    from: None,
                 })
                 .await
                 .unwrap()

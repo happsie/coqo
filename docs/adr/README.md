@@ -29,3 +29,4 @@ Architecture decisions for Coqo, one file per decision. See [ADR 0001](0001-reco
 | [0023](0023-commands-and-keybindings.md) | Commands, the command palette and keybindings (`keybindings.toml`, `commands/*`) | Accepted |
 | [0024](0024-agent-drafted-commit-messages.md) | Agent-drafted commit messages: a short-lived session, the staged diff, no tools | Accepted |
 | [0025](0025-search-mod.md) | Project search and replace: the search mod and `search/*` | Accepted |
+| [0026](0026-session-resume-and-forks.md) | Session resume: ended sessions, new chats with context, forks, retry and reopen | Accepted |

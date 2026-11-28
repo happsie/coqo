@@ -58,6 +58,7 @@ async fn a_real_agent_starts_a_session() {
             workspace: None,
             title: None,
             mode: None,
+            from: None,
         })
         .await
         .unwrap();
@@ -220,6 +221,7 @@ async fn a_real_agent_titles_and_resumes_after_a_restart() {
                 workspace: None,
                 title: None,
                 mode: None,
+                from: None,
             })
             .await
             .unwrap();
@@ -258,4 +260,66 @@ async fn a_real_agent_titles_and_resumes_after_a_restart() {
         "the resumed session remembers: {said:?}"
     );
     manager.close(&id).await.unwrap();
+}
+
+/// A session the agent no longer has ends, rather than restart behind the
+/// transcript. It sends one short prompt:
+///
+/// ```sh
+/// COQO_ACP_AGENT=<dir>/node_modules/.bin/claude-agent-acp \
+///   cargo test -p coqo-acp-host --test real_agent lost -- --ignored --nocapture
+/// ```
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a real ACP agent in COQO_ACP_AGENT; uses the model"]
+async fn a_real_agent_that_lost_the_session_ends_it() {
+    let Some(command) = real_command() else {
+        eprintln!("COQO_ACP_AGENT is not set; skipping");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = std::fs::canonicalize(dir.path()).unwrap();
+    let db = dir.path().join("coqo.db");
+    let id = {
+        let manager = real_manager(command.clone(), &db);
+        let session = manager
+            .create(CreateSessionParams {
+                provider: "real".into(),
+                cwd: cwd.display().to_string(),
+                workspace: None,
+                title: None,
+                mode: None,
+                from: None,
+            })
+            .await
+            .unwrap();
+        ask(&manager, &db, &session.id, "Reply with just: ok").await;
+        manager.shutdown().await;
+        session.id
+    };
+    // The agent's session id now names a session it never had.
+    let store = SessionStore::open(&db).unwrap();
+    let mut stored = store.get(&id).unwrap().unwrap();
+    stored.provider_session = Some(uuid_like());
+    store
+        .save(&stored, store.change_head().unwrap() + 1)
+        .unwrap();
+    drop(store);
+
+    let manager = real_manager(command, &db);
+    let err = manager
+        .prompt(&id, vec![ContentBlock::text("Hello again")])
+        .await
+        .unwrap_err();
+    eprintln!("the second prompt: {err}");
+    assert!(
+        matches!(err, coqo_agents::AgentError::Ended { .. }),
+        "{err:?}"
+    );
+    let snap = manager.snapshot(&id).unwrap();
+    eprintln!("state {:?}: {:?}", snap.info.state, snap.info.state_reason);
+}
+
+/// A session id no agent has.
+fn uuid_like() -> String {
+    "00000000-0000-4000-8000-000000000067".into()
 }
