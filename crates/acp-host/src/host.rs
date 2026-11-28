@@ -411,8 +411,10 @@ impl Shared {
     async fn write_text(&self, req: &acp::WriteTextFileRequest) -> Result<(), String> {
         let (coqo, roots) = self.route_for(&req.session_id)?;
         let path = fs::inside(&req.path, &roots).map_err(|e| e.to_string())?;
-        if let Some(fs) = self.fs.get() {
+        let fs = self.fs.get();
+        if let Some(fs) = &fs {
             if fs.replace_open(&coqo, &path, &req.content) {
+                fs.wrote(&coqo, &path);
                 return Ok(());
             }
             fs.expect_write(&coqo, &path, None, req.content.clone());
@@ -424,7 +426,11 @@ impl Shared {
         }
         tokio::fs::write(&path, &req.content)
             .await
-            .map_err(|e| format!("cannot write {}: {e}", req.path.display()))
+            .map_err(|e| format!("cannot write {}: {e}", req.path.display()))?;
+        if let Some(fs) = &fs {
+            fs.wrote(&coqo, &path);
+        }
+        Ok(())
     }
 
     /// `terminal/create`: runs the command in a daemon terminal, in the

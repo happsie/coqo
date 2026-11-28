@@ -322,6 +322,27 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
             ALTER TABLE agent_sessions ADD COLUMN title_source TEXT;
         ",
     },
+    Migration {
+        version: 14,
+        name: "file change provenance",
+        // Which agent session last changed each file (#286, `coqod`'s
+        // provenance, `agents/changedBy`): one row per workspace, root and
+        // root-relative path. `strength` is `write` (the session wrote it:
+        // ACP `fs/write_text_file` or a completed tool call naming it) or
+        // `turn` (it changed while only that session's turn ran). `at` is
+        // Unix milliseconds. Rows follow renames.
+        sql: "
+            CREATE TABLE file_changes (
+                workspace TEXT    NOT NULL,
+                root      INTEGER NOT NULL,
+                path      TEXT    NOT NULL,
+                session   TEXT    NOT NULL,
+                strength  TEXT    NOT NULL,
+                at        INTEGER NOT NULL,
+                PRIMARY KEY (workspace, root, path)
+            ) WITHOUT ROWID;
+        ",
+    },
 ];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.

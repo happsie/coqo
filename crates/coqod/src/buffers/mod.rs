@@ -52,12 +52,12 @@ mod journal;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use coqo_buffers::{Anchor, AnchorId, BufferError, LogLimits, Rope, ServerBuffer, text as buftext};
 use coqo_protocol::methods::buffer::{
@@ -265,7 +265,13 @@ pub struct BufferService {
     next_id: AtomicU64,
     agent_writes: Mutex<AgentWrites>,
     sessions: Mutex<SessionReplicas>,
+    /// Files `buffer/save` wrote lately (canonical path, when), newest
+    /// last: the user's saves, which no agent made (#286).
+    saves: Mutex<VecDeque<(PathBuf, Instant)>>,
 }
+
+/// Saves remembered for [`BufferService::saved_recently`] at most.
+const RECENT_SAVES: usize = 64;
 
 /// The replicas session-scoped connections opened (#198). A session token
 /// may edit and close only these, and reopen only these by id: replica ids
@@ -354,6 +360,7 @@ impl BufferService {
             next_id: AtomicU64::new(1),
             agent_writes: Mutex::default(),
             sessions: Mutex::default(),
+            saves: Mutex::default(),
         })
     }
 
@@ -958,11 +965,30 @@ impl BufferService {
             )
             .with_data(serde_json::json!({ "rev": rev })));
         }
+        {
+            let mut saves = self.saves.lock().unwrap_or_else(|e| e.into_inner());
+            if saves.len() >= RECENT_SAVES {
+                saves.pop_front();
+            }
+            saves.push_back((b.real(), Instant::now()));
+        }
         let mut st = b.lock();
         let c = st.buf.mark_saved(text, rev);
         let saved_rev = c.rev;
         self.commit(&b, &mut st, c, true);
         Ok(SaveResult { saved_rev })
+    }
+
+    /// Whether `buffer/save` wrote `path` (canonical) in the last `within`:
+    /// the watcher then reports the user's save, not an agent's change.
+    pub fn saved_recently(&self, path: &Path, within: Duration) -> bool {
+        self.saves
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .rev()
+            .take_while(|(_, at)| at.elapsed() < within)
+            .any(|(p, _)| p == path)
     }
 
     /// `buffer/close` on a connection: [`close`](Self::close) if the

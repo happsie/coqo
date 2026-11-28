@@ -1764,6 +1764,76 @@ impl Method for DeletePermissionRule {
     type Result = bool;
 }
 
+/// How sure the daemon is that a session made a file's change
+/// (`agents/changedBy`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeStrength {
+    /// The file changed on disk while the session's turn ran, the only
+    /// turn running in the workspace: likely the agent's own tool (a shell
+    /// command), but possibly someone else.
+    Turn,
+    /// The session wrote the file: an ACP `fs/write_text_file`, or a
+    /// completed tool call whose diff (or, for an edit, location) names it.
+    Write,
+}
+
+/// Params of `agents/changedBy`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct ChangedByParams {
+    /// The workspace.
+    pub workspace: super::workspace::WorkspaceId,
+    /// The root the paths are relative to.
+    pub root: super::workspace::RootId,
+    /// `/`-separated paths, relative to the root.
+    pub paths: Vec<String>,
+}
+
+/// One session that changed some of the files asked about.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct SessionChange {
+    /// The session.
+    pub session: SessionId,
+    /// Its provider id.
+    pub provider: String,
+    /// Its title, if it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Whether the session was closed.
+    pub closed: bool,
+    /// The files asked about whose last change is this session's, sorted.
+    pub paths: Vec<String>,
+    /// When the latest of those changes was recorded, Unix milliseconds.
+    pub at: i64,
+    /// The strongest evidence among them.
+    pub strength: ChangeStrength,
+}
+
+/// Result of `agents/changedBy`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct ChangedByResult {
+    /// The sessions, most recent change first. A file counts for the
+    /// session that changed it last; files no session changed are left
+    /// out.
+    pub sessions: Vec<SessionChange>,
+}
+
+/// `agents/changedBy`: which agent sessions last changed files of a
+/// workspace (#286), recorded by the daemon so it survives closing the
+/// chat and restarts: who made a diff's change, to send its review to.
+#[derive(Debug)]
+pub enum ChangedBy {}
+impl Method for ChangedBy {
+    const NAME: &'static str = "agents/changedBy";
+    type Params = ChangedByParams;
+    type Result = ChangedByResult;
+}
+
 // ---- topics --------------------------------------------------------------------
 
 /// `sessions/updates`: one session's transcript, persisted and resumable.

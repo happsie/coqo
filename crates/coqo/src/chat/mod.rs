@@ -329,9 +329,9 @@ fn list_problem(problem: Problem, cx: &mut App) {
     }
 }
 
-/// The provider that sessions Coqo starts for a feature prefer (an
-/// anchored question, a review sent to a new chat, a commit-message draft):
-/// Claude Code.
+/// The provider that sessions Coqo starts prefer (a new chat, an anchored
+/// question, a review sent to a new chat, a commit-message draft): Claude
+/// Code.
 pub const PREFERRED_PROVIDER: &str = CLAUDE_PROVIDER_ID;
 
 /// The provider such a session goes to: [`PREFERRED_PROVIDER`] when it is
@@ -482,8 +482,8 @@ pub fn open_terminal(
     });
 }
 
-/// Start a chat in the open workspace with the first available provider,
-/// and open its tab. Failures show under CHATS in the sidebar.
+/// Start a chat in the open workspace with the [`preferred_provider`]
+/// (Claude Code when it is available), and open its tab. Failures show under CHATS in the sidebar.
 pub fn new_chat(dock: WeakEntity<Dock>, window: &mut Window, cx: &mut App) {
     let workspace = Workspaces::for_window(window, cx)
         .or_else(|| Workspaces::global(cx))
@@ -507,9 +507,7 @@ pub fn new_chat(dock: WeakEntity<Dock>, window: &mut Window, cx: &mut App) {
         .spawn(cx, async move |cx| {
             let result = async {
                 let providers = providers.await.map_err(|e| Problem::from(e.to_string()))?;
-                let provider = providers
-                    .iter()
-                    .find(|p| p.available)
+                let provider = preferred_provider(&providers)
                     .cloned()
                     .ok_or_else(|| unavailable(&providers))?;
                 let create = cx

@@ -128,6 +128,7 @@ impl Env {
         let providers = StaticProviders::new().with(info, Arc::new(provider));
         let options = ManagerOptions {
             keep_alive: None,
+            observer: None,
             mcp_servers: Some(Arc::new(|_: &SessionInfo| {
                 vec![McpServer {
                     name: "coqo-editor".into(),

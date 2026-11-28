@@ -471,6 +471,25 @@ export type CallResult = {
 /** What happened to a walkthrough. */
 export type ChangeKind = "published" | "updated" | "deleted";
 
+/** How sure the daemon is that a session made a file's change (`agents/changedBy`). */
+export type ChangeStrength = "turn" | "write";
+
+/** Params of `agents/changedBy`. */
+export type ChangedByParams = {
+  /** `/`-separated paths, relative to the root. */
+  paths: Array<string>;
+  /** The root the paths are relative to. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Result of `agents/changedBy`. */
+export type ChangedByResult = {
+  /** The sessions, most recent change first. A file counts for the session that changed it last; files no session changed are left out. */
+  sessions: Array<SessionChange>;
+};
+
 /** A file that differs, in [`DiffFilesResult`]. */
 export type ChangedFile = {
   /** Added lines (0 for binary files). */
@@ -2397,6 +2416,24 @@ export type SentReview = {
   turn: number;
 };
 
+/** One session that changed some of the files asked about. */
+export type SessionChange = {
+  /** When the latest of those changes was recorded, Unix milliseconds. */
+  at: number;
+  /** Whether the session was closed. */
+  closed: boolean;
+  /** The files asked about whose last change is this session's, sorted. */
+  paths: Array<string>;
+  /** Its provider id. */
+  provider: string;
+  /** The session. */
+  session: SessionId;
+  /** The strongest evidence among them. */
+  strength: ChangeStrength;
+  /** Its title, if it has one. */
+  title?: string | null;
+};
+
 /** A setting the agent offers for the session (ACP session config options): the model, the reasoning effort, a fast-mode toggle, the mode, an agent persona, …. The agent decides which there are and their order; they can change at any time (a new model may offer other efforts), and every [`SessionUpdate::ConfigOptions`] replaces the whole list. */
 export type SessionConfigOption = {
   /** What the option is about, for placement and icons only: ACP's [`config_category`] names (`mode`, `model`, `model_config`, `thought_level`, `speed`) or any other string. Never needed to use the option. */
@@ -3725,6 +3762,8 @@ export interface Requests {
   "agents/permissionRules": { params: WorkspaceRulesParams; result: Array<PermissionRule> };
   /** Delete a permission rule. Result is true if it existed. (client→server) */
   "agents/deletePermissionRule": { params: RuleParams; result: boolean };
+  /** Which agent sessions last changed files of a workspace, most recent first (with each one's title and provider). (client→server) */
+  "agents/changedBy": { params: ChangedByParams; result: ChangedByResult };
   /** Open (or join) the buffer of a file: text, rev and a replica id. (client→server) */
   "buffer/open": { params: OpenParams2; result: OpenResult };
   /** Undo one change (typically an agent's), transformed past later changes. (client→server) */

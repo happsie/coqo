@@ -26,6 +26,7 @@ use crate::buffers::BufferService;
 use crate::daemon::DaemonContext;
 use crate::editor_mcp;
 use crate::lifecycle::Activity;
+use crate::provenance::Signals;
 
 /// Busy guards for agent work.
 #[derive(Debug, Clone)]
@@ -40,9 +41,33 @@ impl KeepAlive for ActivityKeepAlive {
 /// ACP agents' file access through the daemon's replicated buffers (ADR
 /// 0010): `fs/read_text_file` sees unsaved edits, `fs/write_text_file` into
 /// an open buffer is a tracked `agent` change, and tool-call diffs mark the
-/// disk write that follows as the session's.
+/// disk write that follows as the session's. With [`provenance`], every
+/// `fs/write_text_file` is recorded as the session's change of the file
+/// (#286).
+///
+/// [`provenance`]: crate::provenance
 #[derive(Debug, Clone)]
-pub struct BufferFs(pub Arc<BufferService>);
+pub struct BufferFs {
+    buffers: Arc<BufferService>,
+    provenance: Option<Signals>,
+}
+
+impl BufferFs {
+    /// File access through `buffers`.
+    pub fn new(buffers: Arc<BufferService>) -> Self {
+        Self {
+            buffers,
+            provenance: None,
+        }
+    }
+
+    /// Also report the agents' writes to `signals`.
+    #[must_use]
+    pub fn with_provenance(mut self, signals: Signals) -> Self {
+        self.provenance = Some(signals);
+        self
+    }
+}
 
 impl AgentFs for BufferFs {
     fn expect_write(
@@ -52,16 +77,22 @@ impl AgentFs for BufferFs {
         old_text: Option<String>,
         new_text: String,
     ) {
-        self.0
+        self.buffers
             .expect_agent_write(&session.0, path, old_text, new_text);
     }
 
     fn open_text(&self, path: &Path) -> Option<String> {
-        self.0.open_text(path)
+        self.buffers.open_text(path)
     }
 
     fn replace_open(&self, session: &SessionId, path: &Path, text: &str) -> bool {
-        self.0.agent_replace(&session.0, path, text).is_some()
+        self.buffers.agent_replace(&session.0, path, text).is_some()
+    }
+
+    fn wrote(&self, session: &SessionId, path: &Path) {
+        if let Some(signals) = &self.provenance {
+            signals.wrote(session, path);
+        }
     }
 }
 
@@ -97,10 +128,10 @@ impl ProviderRegistry for ModProviders {
     }
 }
 
-/// Opens the session manager on the daemon's global database. Running turns
-/// are ended as interrupted when the daemon shuts down (and, after a crash,
-/// when it next starts).
-pub fn open(ctx: &DaemonContext) -> Result<SessionManager> {
+/// Opens the session manager on the daemon's global database, reporting
+/// what sessions do to `provenance`. Running turns are ended as interrupted
+/// when the daemon shuts down (and, after a crash, when it next starts).
+pub fn open(ctx: &DaemonContext, provenance: &Signals) -> Result<SessionManager> {
     let path = ctx.data.global_db();
     let store = SessionStore::open(&path)
         .with_context(|| format!("cannot open agent sessions in {}", path.display()))?;
@@ -109,6 +140,8 @@ pub fn open(ctx: &DaemonContext) -> Result<SessionManager> {
         keep_alive: Some(Arc::new(ActivityKeepAlive(ctx.activity.clone()))),
         // The `coqo-editor` MCP server (`coqod mcp`) in every session.
         mcp_servers: editor_mcp::source(ctx)?,
+        // Who changed which file (#286).
+        observer: Some(provenance.observer()),
     };
     let manager = SessionManager::open(store, providers, options)?;
     editor_mcp::revoke_on_close(&manager, ctx.auth.clone(), ctx.shutdown.clone());

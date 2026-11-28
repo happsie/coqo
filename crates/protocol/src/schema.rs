@@ -289,6 +289,11 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "Delete a permission rule. Result is true if it existed.",
         ),
+        request::<agents::ChangedBy>(
+            g,
+            "client→server",
+            "Which agent sessions last changed files of a workspace, most recent first (with each one's title and provider).",
+        ),
         topic::<agents::Updates>(
             g,
             "One session's persisted transcript (resumable with since; seqs per session).",
@@ -1004,6 +1009,7 @@ fn schema_covers_every_builtin_method() {
         agents::Retry::NAME,
         agents::PermissionRules::NAME,
         agents::DeletePermissionRule::NAME,
+        agents::ChangedBy::NAME,
         agents::Updates::NAME,
         agents::Changes::NAME,
         buffer::Open::NAME,

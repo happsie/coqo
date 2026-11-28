@@ -73,7 +73,7 @@ mod title;
 mod tool_use;
 
 pub use error::AgentError;
-pub use manager::{ManagerOptions, McpServerSource, SessionManager};
+pub use manager::{ManagerOptions, McpServerSource, SessionManager, UpdateObserver};
 pub use provider::{
     AgentProvider, AgentUpdate, KeepAlive, McpServer, PermissionAsk, ProviderError,
     ProviderSession, ResumeRequest, SessionContext, SessionEvents,

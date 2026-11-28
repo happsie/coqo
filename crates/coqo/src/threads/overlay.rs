@@ -20,14 +20,18 @@
 //! - **The review.** The header counts the pending comments of threads
 //!   started in this diff and holds "Send N comments to <agent>" (#95). It
 //!   opens a popover with the chats to send to, as pills: the one whose
-//!   agent changed these files first (from the open chats' transcripts),
-//!   then the chats shown in the workbench, then the rest by activity, and
-//!   "New chat". A chat in a turn is refused with what to do; nothing is
+//!   agent changed these files first (the daemon's record, #286, else the
+//!   open chats' transcripts), then the chats shown in the workbench, then
+//!   the rest by activity, and "New chat". A chat in a turn is refused with what to do; nothing is
 //!   lost. While the agent's turn runs the header says "Claude is
 //!   addressing N comments", its replies appear in the cards as they land,
 //!   and threads it resolves stay open until the turn ends, then fold.
 //!   Each file row shows its pending count; a note under the file list
 //!   says what the pending review is.
+//! - **Provenance** (#286): the header's summary ends with "made by Claude
+//!   in \"<chat>\"" when the daemon records an agent session as the last to
+//!   change the diff's files (`agents/changedBy`, fetched whenever the diff
+//!   loads its files).
 //! - **Gutter.** A marker on each thread's first line (sand while it has
 //!   pending comments, sage once resolved, blue otherwise); pending threads'
 //!   lines are tinted sand.
@@ -45,7 +49,7 @@ use std::{
 };
 
 use coqo_protocol::methods::{
-    agents::SessionId,
+    agents::{self as agm, ChangeStrength, ChangedByParams, SessionChange, SessionId},
     git::{DiffSide, FileDiff},
     threads::{
         Author, Comment, CommentId, CreateParams, Thread, ThreadId, ThreadLines, ThreadSide,
@@ -71,6 +75,7 @@ use coqo_ui::{
 use super::{WorkspaceThreads, author_label, in_turn, threads_for};
 use crate::{
     chat::{self, list::ChatList},
+    daemon::Daemon,
     diff::{DiffOverlay, DiffSource, DiffView, DiffViewEvent, source::SourceVersions},
     questions::ask::{self, AskTarget},
     workspace::Workspaces,
@@ -244,6 +249,10 @@ pub struct ReviewState {
     sending: bool,
     /// The send popover, while open.
     send: Option<SendState>,
+    /// The sessions that last changed the diff's files, most recent first
+    /// (`agents/changedBy`, #286).
+    changed_by: Vec<SessionChange>,
+    _changed_by: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -270,10 +279,12 @@ impl ReviewState {
                 this.sync_inputs(window, cx);
                 cx.notify();
             }),
-            // The files changed: list again for where the anchors are now.
-            cx.subscribe(view, |this, _, event: &DiffViewEvent, cx| {
+            // The files changed: list again for where the anchors are now,
+            // and ask who changed them.
+            cx.subscribe(view, |this, view, event: &DiffViewEvent, cx| {
                 if *event == DiffViewEvent::Loaded {
                     this.store.update(cx, |s, cx| s.relist(cx));
+                    this.load_changed_by(&view, cx);
                 }
             }),
         ];
@@ -288,14 +299,80 @@ impl ReviewState {
             error: None,
             sending: false,
             send: None,
+            changed_by: Vec::new(),
+            _changed_by: None,
             _subscriptions: subscriptions,
         };
         if let Some(list) = ChatList::global(cx) {
             this._subscriptions
                 .push(cx.observe(&list, |_, _, cx| cx.notify()));
         }
+        this.load_changed_by(view, cx);
         this.sync_inputs(window, cx);
         this
+    }
+
+    /// Ask the daemon which sessions last changed `view`'s files.
+    fn load_changed_by(&mut self, view: &Entity<DiffView>, cx: &mut Context<Self>) {
+        let Some(v) = self.versions(cx) else { return };
+        let paths: Vec<String> = view
+            .read(cx)
+            .files()
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
+        if paths.is_empty() {
+            self.changed_by.clear();
+            return;
+        }
+        let Some(daemon) = Daemon::global(cx).filter(|d| d.read(cx).is_connected()) else {
+            return;
+        };
+        let call = daemon.read(cx).request::<agm::ChangedBy>(ChangedByParams {
+            workspace: v.workspace,
+            root: v.root,
+            paths,
+        });
+        self._changed_by = Some(cx.spawn(async move |this, cx| {
+            // An older daemon without the method: no provenance.
+            let sessions = call.await.map(|r| r.sessions).unwrap_or_default();
+            this.update(cx, |this, cx| {
+                this.changed_by = sessions;
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// The sessions the daemon records as the last to change this diff's
+    /// files, most recent first.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn changed_by(&self) -> &[SessionChange] {
+        &self.changed_by
+    }
+
+    /// Show `sessions` as the ones that changed the files (offscreen
+    /// renders, with no daemon).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_changed_by(&mut self, sessions: Vec<SessionChange>, cx: &mut Context<Self>) {
+        self.changed_by = sessions;
+        cx.notify();
+    }
+
+    /// The header's provenance ("made by Claude in \"Volume discount\""):
+    /// the most recent session that wrote the files, else the one whose
+    /// turn changed them.
+    pub fn made_by(&self, cx: &App) -> Option<String> {
+        let c = self
+            .changed_by
+            .iter()
+            .find(|c| c.strength == ChangeStrength::Write)
+            .or_else(|| self.changed_by.first())?;
+        let name = self.store.read(cx).provider_label(Some(&c.provider));
+        Some(match c.title.as_deref().filter(|t| !t.is_empty()) {
+            Some(title) => format!("made by {name} in \"{title}\""),
+            None => format!("made by {name}"),
+        })
     }
 
     /// The state of a file tab's thread cards (#258) and composer (#311):
@@ -320,6 +397,8 @@ impl ReviewState {
             error: None,
             sending: false,
             send: None,
+            changed_by: Vec::new(),
+            _changed_by: None,
             _subscriptions: subscriptions,
         };
         this.sync_inputs(window, cx);
@@ -329,7 +408,10 @@ impl ReviewState {
     // ---- sending (#95) ---------------------------------------------------------
 
     /// The chats to send this diff's review to, the default first, and the
-    /// one whose agent made the change, if open.
+    /// one whose agent made the change, if it is not closed: the session the
+    /// daemon records as the last to change the commented files (its chat
+    /// tab may be closed, #286), else an open chat tab whose transcript
+    /// edits them.
     fn send_choices(&self, cx: &App) -> (Vec<SessionId>, Option<SessionId>) {
         let Some(v) = self.versions(cx) else {
             return (Vec::new(), None);
@@ -343,6 +425,7 @@ impl ReviewState {
                 .map(|r| r.path.trim_end_matches('/').to_owned())
         });
         let mut files = Vec::new();
+        let mut commented = HashSet::new();
         for t in self.store.read(cx).all() {
             if t.diff.as_deref() != Some(identity.as_str()) || t.pending().next().is_none() {
                 continue;
@@ -351,6 +434,7 @@ impl ReviewState {
                 files.push(format!("{root}/{}", t.anchor.path));
             }
             files.push(t.anchor.path.clone());
+            commented.insert(t.anchor.path.clone());
         }
         let open: Vec<SessionId> = ChatList::global(cx)
             .map(|l| {
@@ -362,9 +446,17 @@ impl ReviewState {
                     .collect()
             })
             .unwrap_or_default();
-        let origin = crate::shell::chats_that_changed(&v.workspace, &files, cx)
-            .into_iter()
+        let recorded = self
+            .changed_by
+            .iter()
+            .filter(|c| !c.closed && c.paths.iter().any(|p| commented.contains(p)))
+            .map(|c| c.session.clone())
             .find(|s| open.contains(s));
+        let origin = recorded.or_else(|| {
+            crate::shell::chats_that_changed(&v.workspace, &files, cx)
+                .into_iter()
+                .find(|s| open.contains(s))
+        });
         let shown = crate::shell::shown_chats(&v.workspace, cx);
         let mut sessions = ask::choices(&v.workspace, &shown, cx);
         if let Some(origin) = &origin {
@@ -402,6 +494,12 @@ impl ReviewState {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn send_target(&self) -> Option<&AskTarget> {
         self.send.as_ref().map(|s| &s.target)
+    }
+
+    /// The chat the popover says made the change, if any.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn send_origin(&self) -> Option<&SessionId> {
+        self.send.as_ref().and_then(|s| s.origin.as_ref())
     }
 
     /// The popover's error, if it shows one.
@@ -1910,6 +2008,10 @@ impl DiffOverlay for ThreadsOverlay {
     fn on_add(&self, range: &LineRange, window: &mut Window, cx: &mut App) {
         self.state
             .update(cx, |s, cx| s.open_composer(range, window, cx));
+    }
+
+    fn summary(&self, cx: &App) -> Option<SharedString> {
+        self.state.read(cx).made_by(cx).map(SharedString::from)
     }
 
     fn header(&self, _: &mut Window, cx: &mut App) -> Option<AnyElement> {

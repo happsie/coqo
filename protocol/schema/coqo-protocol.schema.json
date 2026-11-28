@@ -1267,6 +1267,63 @@
         }
       ]
     },
+    "ChangeStrength": {
+      "description": "How sure the daemon is that a session made a file's change\n(`agents/changedBy`).",
+      "oneOf": [
+        {
+          "const": "turn",
+          "description": "The file changed on disk while the session's turn ran, the only\nturn running in the workspace: likely the agent's own tool (a shell\ncommand), but possibly someone else.",
+          "type": "string"
+        },
+        {
+          "const": "write",
+          "description": "The session wrote the file: an ACP `fs/write_text_file`, or a\ncompleted tool call whose diff (or, for an edit, location) names it.",
+          "type": "string"
+        }
+      ]
+    },
+    "ChangedByParams": {
+      "description": "Params of `agents/changedBy`.",
+      "properties": {
+        "paths": {
+          "description": "`/`-separated paths, relative to the root.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root the paths are relative to."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root",
+        "paths"
+      ],
+      "type": "object"
+    },
+    "ChangedByResult": {
+      "description": "Result of `agents/changedBy`.",
+      "properties": {
+        "sessions": {
+          "description": "The sessions, most recent change first. A file counts for the\nsession that changed it last; files no session changed are left\nout.",
+          "items": {
+            "$ref": "#/$defs/SessionChange"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sessions"
+      ],
+      "type": "object"
+    },
     "ChangedFile": {
       "description": "A file that differs, in [`DiffFilesResult`].",
       "properties": {
@@ -6963,6 +7020,55 @@
       ],
       "type": "object"
     },
+    "SessionChange": {
+      "description": "One session that changed some of the files asked about.",
+      "properties": {
+        "at": {
+          "description": "When the latest of those changes was recorded, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "closed": {
+          "description": "Whether the session was closed.",
+          "type": "boolean"
+        },
+        "paths": {
+          "description": "The files asked about whose last change is this session's, sorted.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "provider": {
+          "description": "Its provider id.",
+          "type": "string"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The session."
+        },
+        "strength": {
+          "$ref": "#/$defs/ChangeStrength",
+          "description": "The strongest evidence among them."
+        },
+        "title": {
+          "description": "Its title, if it has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "session",
+        "provider",
+        "closed",
+        "paths",
+        "at",
+        "strength"
+      ],
+      "type": "object"
+    },
     "SessionConfigOption": {
       "description": "A setting the agent offers for the session (ACP session config\noptions): the model, the reasoning effort, a fast-mode toggle, the mode,\nan agent persona, …. The agent decides which there are and their order;\nthey can change at any time (a new model may offer other efforts), and\nevery [`SessionUpdate::ConfigOptions`] replaces the whole list.",
       "oneOf": [
@@ -11220,6 +11326,17 @@
   },
   "x-framing": "u32 big-endian payload length, then one JSON-RPC 2.0 message (JSON, or MessagePack if negotiated)",
   "x-methods": {
+    "agents/changedBy": {
+      "description": "Which agent sessions last changed files of a workspace, most recent first (with each one's title and provider).",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ChangedByParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ChangedByResult"
+      }
+    },
     "agents/deletePermissionRule": {
       "description": "Delete a permission rule. Result is true if it existed.",
       "direction": "client→server",

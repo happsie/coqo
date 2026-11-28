@@ -937,7 +937,7 @@ async fn acp_file_traffic_reaches_open_buffers_through_the_agent_fs_bridge() {
     use coqo_protocol::methods::agents::SessionId;
 
     let d = Daemon::new(&[("a.rs", "fn a() {}\n")]).await;
-    let bridge = crate::agents::BufferFs(Arc::clone(&d.buffers));
+    let bridge = crate::agents::BufferFs::new(Arc::clone(&d.buffers));
     let session = SessionId("s-1".into());
     let mut w = d.window("a.rs").await;
     w.edit(TextEdit::insert(0, "// mine\n")).await;

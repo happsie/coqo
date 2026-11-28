@@ -66,6 +66,7 @@ fn daemon(store: SessionStore, provider: &ScriptedProvider) -> Daemon {
     let busy = Arc::new(Busy::default());
     let options = ManagerOptions {
         keep_alive: Some(Arc::clone(&busy) as Arc<dyn KeepAlive>),
+        observer: None,
         mcp_servers: Some(Arc::new(|_: &SessionInfo| {
             vec![McpServer {
                 name: "coqo-editor".into(),

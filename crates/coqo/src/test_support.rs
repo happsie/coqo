@@ -282,8 +282,13 @@ impl AgentDaemon {
         );
         let db = data.global_db();
         let store = SessionStore::open(&db).unwrap();
-        let manager =
-            SessionManager::open(store, Arc::new(registry), ManagerOptions::default()).unwrap();
+        // Who changed which file (#286), from the sessions' tool calls.
+        let (signals, signal_rx) = coqod::provenance::channel();
+        let options = ManagerOptions {
+            observer: Some(signals.observer()),
+            ..ManagerOptions::default()
+        };
+        let manager = SessionManager::open(store, Arc::new(registry), options).unwrap();
         let workspaces = Arc::new(coqod::workspace::WorkspaceService::open(data.clone()).unwrap());
         let buffers = coqod::buffers::BufferService::new(
             Arc::clone(&workspaces),
@@ -321,6 +326,15 @@ impl AgentDaemon {
             git.clone(),
         )
         .unwrap();
+        let provenance = coqod::provenance::Provenance::open(
+            &db,
+            Arc::clone(&workspaces),
+            Some(Arc::clone(&buffers)),
+            manager.clone(),
+            &signals,
+            signal_rx,
+        )
+        .unwrap();
         let alerts = coqod::alerts::AlertService::open(&db, None).unwrap();
         coqod::alerts::agents::AgentSource::new(
             Arc::clone(&alerts),
@@ -344,6 +358,7 @@ impl AgentDaemon {
         };
         let router = coqod::workspace::register(router, workspaces);
         let router = coqo_agents::rpc::register(router, manager);
+        let router = coqod::provenance::register(router, provenance);
         let router = coqod::questions::register(router, questions);
         let router = coqod::walkthroughs::register(router, walkthroughs);
         let router = coqod::buffers::register(router, buffers);

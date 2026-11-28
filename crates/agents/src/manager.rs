@@ -80,6 +80,12 @@ const PAGE: usize = 256;
 /// Chooses the MCP servers injected into a session, such as `coqo-editor`.
 pub type McpServerSource = Arc<dyn Fn(&SessionInfo) -> Vec<McpServer> + Send + Sync>;
 
+/// Sees every update a session records, after it is stored, with the
+/// session's info: who changed which file (`coqod`'s provenance, #286).
+/// Called under the session's lock, so it must be quick (hand the update
+/// to a channel).
+pub type UpdateObserver = Arc<dyn Fn(&SessionInfo, &SessionUpdate) + Send + Sync>;
+
 /// Optional parts of a [`SessionManager`].
 #[derive(Clone, Default)]
 pub struct ManagerOptions {
@@ -87,6 +93,8 @@ pub struct ManagerOptions {
     pub keep_alive: Option<Arc<dyn KeepAlive>>,
     /// MCP servers to inject into each session.
     pub mcp_servers: Option<McpServerSource>,
+    /// Sees every recorded update.
+    pub observer: Option<UpdateObserver>,
 }
 
 impl fmt::Debug for ManagerOptions {
@@ -94,6 +102,7 @@ impl fmt::Debug for ManagerOptions {
         f.debug_struct("ManagerOptions")
             .field("keep_alive", &self.keep_alive.is_some())
             .field("mcp_servers", &self.mcp_servers.is_some())
+            .field("observer", &self.observer.is_some())
             .finish()
     }
 }
@@ -182,6 +191,9 @@ impl Inner {
         self.store.append(&s.id, seq, &update, now())?;
         st.head = seq;
         st.fold.apply(&update);
+        if let Some(observe) = &self.options.observer {
+            observe(st.info(), &update);
+        }
         let _ = s.updates.send(Sequenced { seq, event: update });
         Ok(seq)
     }
