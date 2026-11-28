@@ -256,6 +256,14 @@ jobs:
       - name: Install minisign (pinned, checksum-verified)
         run: scripts/release/install-minisign.sh "$HOME/.local/bin" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # The runtime libraries a Linux desktop needs (listed in docs/releasing.md).
+      - name: Install runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libxcb1 libx11-xcb1 \
+            libvulkan1 libfontconfig1 libfreetype6 libasound2 libzstd1
+
       - name: Run install.sh against the build
         run: |
           export HOME="$RUNNER_TEMP/home"
@@ -263,6 +271,9 @@ jobs:
           COQO_BASE_URL="file://$GITHUB_WORKSPACE/dist" \
           COQO_PUBKEY_FILE="$GITHUB_WORKSPACE/dist/release.pub" \
             sh scripts/install.sh
+          for b in coqo coqod; do
+            ! ldd "$HOME/.local/share/coqo/bin/$b" | grep "not found"
+          done
           "$HOME/.local/bin/coqod" --version
           "$HOME/.local/bin/coqo" --version
           file -L "$HOME/.local/bin/coqod" | grep -q "ELF 64-bit.*x86-64"
