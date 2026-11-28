@@ -55,8 +55,6 @@ impl Group {
 pub struct GitPane {
     dock: WeakEntity<Dock>,
     model: Entity<GitModel>,
-    /// The root shown; `None` follows the first repository.
-    selected: Option<RootId>,
     message: Entity<PromptInput>,
     new_branch: Entity<PromptInput>,
     picker_open: bool,
@@ -66,7 +64,6 @@ pub struct GitPane {
 impl std::fmt::Debug for GitPane {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GitPane")
-            .field("selected", &self.selected)
             .field("picker_open", &self.picker_open)
             .finish_non_exhaustive()
     }
@@ -128,7 +125,6 @@ impl GitPane {
         Self {
             dock,
             model,
-            selected: None,
             message,
             new_branch,
             picker_open: false,
@@ -146,15 +142,9 @@ impl GitPane {
         &self.message
     }
 
-    /// The root shown: the selected one, else the first repository, else
-    /// the first root.
+    /// The root shown ([`GitModel::shown_root`]).
     pub fn root(&self, cx: &App) -> Option<RootId> {
-        let model = self.model.read(cx);
-        let roots = model.roots();
-        self.selected
-            .filter(|s| roots.iter().any(|r| r.root == *s))
-            .or_else(|| roots.iter().find(|r| r.status.is_some()).map(|r| r.root))
-            .or_else(|| roots.first().map(|r| r.root))
+        self.model.read(cx).shown_root()
     }
 
     /// The rows of `group` in the shown root, top to bottom.
@@ -247,8 +237,7 @@ impl GitPane {
                         .cursor_pointer()
                         .child(name)
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.selected = Some(root);
-                            cx.notify();
+                            this.model.update(cx, |m, cx| m.select_root(root, cx));
                         }))
                 }))
                 .into_any_element(),
@@ -258,22 +247,8 @@ impl GitPane {
     fn render_branch(&self, repo: &RootGit, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.tokens();
         let (p, m) = (t.palette.clone(), t.metrics.clone());
-        let head = repo
-            .status
-            .as_ref()
-            .map(|s| s.head.clone())
-            .unwrap_or_default();
-        let name = head.branch.clone().unwrap_or_else(|| match &head.oid {
-            Some(oid) => format!("detached at {}", &oid[..oid.len().min(7)]),
-            None => "no commits".into(),
-        });
-        let mut track = Vec::new();
-        if head.ahead > 0 {
-            track.push(format!("↑{}", head.ahead));
-        }
-        if head.behind > 0 {
-            track.push(format!("↓{}", head.behind));
-        }
+        let name = repo.head_label().unwrap_or_default();
+        let track = repo.tracking_label();
         let button = raised(
             div()
                 .flex()
@@ -300,12 +275,12 @@ impl GitPane {
                 .text_color(p.text.hsla())
                 .child(name),
         )
-        .when(!track.is_empty(), |d| {
+        .when_some(track, |d, track| {
             d.child(
                 div()
                     .text_size(m.text_xs)
                     .text_color(p.text_subtle.hsla())
-                    .child(track.join(" ")),
+                    .child(track),
             )
         })
         .child(icon(

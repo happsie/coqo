@@ -15,7 +15,7 @@ use coqo_protocol::methods::{
         DiffLine, FileChange, FileDiff, FileSide, Head, Hunk, LineKind, RepoInfo, Stash,
         StatusEntry, StatusResult,
     },
-    workspace::{RootId, WorkspaceId, WorkspaceInfo, WorkspaceRoot},
+    workspace::{self as wsm, RootId, WorkspaceId, WorkspaceInfo, WorkspaceRoot},
 };
 use coqo_ui::{
     Appearance,
@@ -31,6 +31,7 @@ use coqo_ui::{
 };
 
 use super::{
+    chrome::{ChromePart, GitChrome, NO_REPOSITORY},
     diff::{self, DiffTab},
     model::{GitModel, RootGit},
     pane::{GitPane, Group},
@@ -47,7 +48,7 @@ struct Ui {
     cx: TestAppContext,
     window: AnyWindowHandle,
     shell: Entity<Shell>,
-    _daemon: TestDaemon,
+    daemon: TestDaemon,
     _tmp: tempfile::TempDir,
 }
 
@@ -80,7 +81,7 @@ fn open_ui(folder: PathBuf, tmp: tempfile::TempDir) -> Ui {
         cx,
         window,
         shell,
-        _daemon: daemon,
+        daemon,
         _tmp: tmp,
     }
 }
@@ -325,6 +326,142 @@ fn a_folder_that_is_not_a_repository() {
             .as_deref(),
         Some("Not a git repository")
     );
+    // The status bar says so, and the Git tab has no badge.
+    assert_eq!(ui.branch_text(), NO_REPOSITORY);
+    assert_eq!(ui.badge(), None);
+    assert!(ui.frame(|window, _| window.try_find("sidebar-git-badge").is_none()));
+}
+
+impl Ui {
+    fn chrome(&mut self, part: ChromePart) -> Entity<GitChrome> {
+        self.frame(|window, cx| GitChrome::for_window(part, window, cx))
+    }
+
+    /// The number on the sidebar's Git tab.
+    fn badge(&mut self) -> Option<usize> {
+        let view = self.chrome(ChromePart::Badge);
+        self.cx.read(|cx| view.read(cx).changed_files(cx))
+    }
+
+    /// The status bar's branch.
+    fn branch_text(&mut self) -> String {
+        let view = self.chrome(ChromePart::Branch);
+        self.cx.read(|cx| view.read(cx).branch_text(cx))
+    }
+}
+
+#[test]
+fn the_git_tab_counts_changes_and_the_status_bar_shows_the_branch() {
+    let (tmp, repo) = fixture_repo();
+    repo.git(&["branch", "topic"]);
+    // The Files pane is shown: the badge and the branch don't need the Git
+    // pane.
+    let mut ui = open_ui(repo.path().to_owned(), tmp);
+    ui.wait_for("the branch", |ui| ui.branch_text() == "main");
+    assert_eq!(ui.badge(), None, "a clean tree has no badge");
+    assert!(ui.frame(|window, _| window.find("status-branch").visible()));
+
+    // Edits outside Coqo raise the count, live.
+    repo.write("README.md", "# Demo\n\nEdited.\n");
+    ui.wait_for("one change", |ui| ui.badge() == Some(1));
+    assert!(ui.frame(|window, _| window.find("sidebar-git-badge").visible()));
+    repo.write("notes.txt", "new\n");
+    ui.wait_for("two changes", |ui| ui.badge() == Some(2));
+    // Staged files count too, once each.
+    repo.git(&["add", "README.md"]);
+    repo.write("README.md", "# Demo\n\nEdited twice.\n");
+    let model = {
+        let view = ui.chrome(ChromePart::Badge);
+        ui.cx.read(|cx| view.read(cx).model().clone())
+    };
+    ui.wait_for("README.md staged and edited", |ui| {
+        ui.cx.read(|cx| {
+            model.read(cx).roots()[0].status.as_ref().is_some_and(|s| {
+                s.entries
+                    .iter()
+                    .any(|e| e.staged.is_some() && e.unstaged.is_some())
+            })
+        })
+    });
+    assert_eq!(ui.badge(), Some(2));
+
+    // A switch outside Coqo moves the status bar.
+    repo.git(&["stash", "-q", "-u"]);
+    ui.wait_for("a clean tree again", |ui| ui.badge().is_none());
+    repo.git(&["switch", "-q", "topic"]);
+    ui.wait_for("the switch", |ui| ui.branch_text() == "topic");
+    // And one from the Git pane does too.
+    ui.click("sidebar-git");
+    ui.click("git-branch");
+    ui.click(("git-branch-item", 0usize));
+    ui.wait_for("the switch back", |ui| ui.branch_text() == "main");
+}
+
+#[test]
+fn a_root_added_later_is_watched() {
+    let (tmp, repo) = fixture_repo();
+    let other = Repo::init(&tmp.path().join("other-repo"));
+    other.write("lib.txt", "one\n");
+    other.commit_all("Initial commit");
+    let mut ui = open_ui(repo.path().to_owned(), tmp);
+    ui.click("sidebar-git");
+    let pane = ui.pane();
+    let model = ui.cx.read(|cx| pane.read(cx).model().clone());
+    ui.wait_for("the first root", |ui| {
+        ui.cx.read(|cx| {
+            model
+                .read(cx)
+                .roots()
+                .first()
+                .is_some_and(|r| r.status.is_some())
+        })
+    });
+
+    let workspace = ui
+        .cx
+        .read(|cx| model.read(cx).workspace().map(|w| w.id.clone()))
+        .expect("a workspace");
+    let path = other.path().to_str().unwrap().to_owned();
+    let info = ui.daemon.with_client(async move |client| {
+        client
+            .request::<wsm::AddRoot>(wsm::AddRootParams {
+                id: workspace,
+                path,
+                name: None,
+            })
+            .await
+            .unwrap()
+    });
+    let added = info
+        .roots
+        .iter()
+        .find(|r| r.name == "other-repo")
+        .unwrap()
+        .id;
+    let status = |ui: &mut Ui| {
+        ui.cx
+            .read(|cx| model.read(cx).root(added).and_then(|r| r.status.clone()))
+    };
+    ui.wait_for("the added root's status", |ui| status(ui).is_some());
+
+    // A change made outside Coqo in the new root shows up by itself.
+    other.write("lib.txt", "two\n");
+    ui.wait_for("the edit", |ui| {
+        status(ui).is_some_and(|s| s.entries.iter().any(|e| e.unstaged.is_some()))
+    });
+    other.git(&["add", "lib.txt"]);
+    ui.wait_for("the staged edit", |ui| {
+        status(ui).is_some_and(|s| s.entries.iter().any(|e| e.staged.is_some()))
+    });
+    // With two repositories the chips pick the root, and the badge and the
+    // status bar follow the pick.
+    ui.wait_for("the chips", |ui| {
+        ui.frame(|window, _| window.try_find(("git-root", added.0 as usize)).is_some())
+    });
+    ui.click(("git-root", added.0 as usize));
+    ui.wait_for("the badge of the added root", |ui| ui.badge() == Some(1));
+    other.git(&["switch", "-q", "-c", "elsewhere"]);
+    ui.wait_for("its branch", |ui| ui.branch_text() == "elsewhere");
 }
 
 #[test]

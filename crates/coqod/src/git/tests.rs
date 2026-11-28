@@ -373,6 +373,76 @@ async fn changes_topic_reports_edits_index_head_and_stash() {
 }
 
 #[tokio::test]
+async fn changes_topic_watches_roots_added_later() {
+    let (_tmp, f) = repo_fixture();
+    let (_tmp2, other) = repo_fixture();
+    let h = harness(true).await;
+    let ws = h.open(f.path()).await;
+    let mut sub = h
+        .client
+        .subscribe::<gm::Changes>(
+            gm::ChangesParams {
+                workspace: ws.id.clone(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    // The watch is up once it reports something for the first root.
+    f.write("a.txt", "edited\n");
+    until_kind(&mut sub, GitChangeKind::Worktree).await;
+
+    let info = h
+        .call::<wsm::AddRoot>(wsm::AddRootParams {
+            id: ws.id.clone(),
+            path: other.path().to_str().unwrap().to_owned(),
+            name: None,
+        })
+        .await;
+    let added = info
+        .roots
+        .iter()
+        .find(|r| r.id != ws.roots[0].id)
+        .unwrap()
+        .id;
+    // The new root's watch starts shortly after the event: `git add` (or
+    // undo it) outside Coqo until its index change is reported.
+    other.write("a.txt", "staged in the new root\n");
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    for round in 0.. {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no index change for the added root"
+        );
+        if round % 2 == 0 {
+            other.git(&["add", "a.txt"]);
+        } else {
+            other.git(&["reset", "-q", "a.txt"]);
+        }
+        let seen = tokio::time::timeout(Duration::from_millis(500), async {
+            loop {
+                let item = sub.next().await.expect("open").expect("event ok");
+                if item.event.root == added && item.event.kinds.contains(&GitChangeKind::Index) {
+                    return;
+                }
+            }
+        })
+        .await;
+        if seen.is_ok() {
+            break;
+        }
+    }
+    // A branch made in the added root is reported as a refs change.
+    other.git(&["branch", "later"]);
+    loop {
+        let ev = until_kind(&mut sub, GitChangeKind::Refs).await;
+        if ev.root == added {
+            break;
+        }
+    }
+}
+
+#[tokio::test]
 async fn not_a_repository_and_a_disabled_mod() {
     let plain = tempfile::tempdir().unwrap();
     let h = harness(true).await;

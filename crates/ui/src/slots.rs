@@ -108,6 +108,12 @@ impl Slots {
 /// Builds a sidebar pane's view for a window, given that window's dock.
 pub type PaneBuilder = Rc<dyn Fn(WeakEntity<Dock>, &mut Window, &mut App) -> AnyView>;
 
+/// Renders a sidebar tab's badge, right after its title ("Git 5"); the badge
+/// brings its own leading space. It runs each time the shell renders; return
+/// a view's element (an [`AnyView`] kept per window) for a badge that
+/// updates on its own. `None` shows no badge.
+pub type BadgeFn = Rc<dyn Fn(&mut Window, &mut App) -> Option<AnyElement>>;
+
 /// A pane of the sidebar panel, shown under its title in the sidebar's tab
 /// strip ("Files", "Git", …).
 #[derive(Clone)]
@@ -119,6 +125,9 @@ pub struct SidebarPane {
     /// Builds the pane's view the first time it is shown in a window. It gets
     /// that window's dock, to open tabs (a file tree opening files).
     pub build: PaneBuilder,
+    /// An optional badge after the title, such as the Git tab's count of
+    /// changed files.
+    pub badge: Option<BadgeFn>,
 }
 
 impl SidebarPane {
@@ -133,7 +142,18 @@ impl SidebarPane {
             title: title.into(),
             order,
             build: Rc::new(build),
+            badge: None,
         }
+    }
+
+    /// Show `badge` after the title (see [`BadgeFn`]).
+    #[must_use]
+    pub fn with_badge(
+        mut self,
+        badge: impl Fn(&mut Window, &mut App) -> Option<AnyElement> + 'static,
+    ) -> Self {
+        self.badge = Some(Rc::new(badge));
+        self
     }
 }
 
@@ -157,6 +177,7 @@ impl std::fmt::Debug for SidebarPane {
             .field("id", &self.id)
             .field("title", &self.title)
             .field("order", &self.order)
+            .field("badge", &self.badge.is_some())
             .finish_non_exhaustive()
     }
 }
