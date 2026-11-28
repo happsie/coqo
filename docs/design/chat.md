@@ -52,7 +52,7 @@ A `surface` field with an 18 px radius (`chat/tab/composer.rs`). **Enter** sends
 ![The settings chips with the model dropdown open, dark](screenshots/settings-dark.png)
 - **History.** Up in an empty composer recalls the last prompt you sent in this chat, with its mention chips; Up and Down step through earlier ones, and Down past the newest empties the field. Editing the recalled text ends the recall.
 
-Popovers and dropdowns share one card: `surface`, a `border_strong` hairline, a 14 px radius and the deep drop shadow of the bolt popover (`widgets::popover`). The selected row is `surface_selected` with a 10 px radius; a hint line in `text_subtle` 11 px closes the card.
+Popovers and dropdowns share one card: `surface`, a `border_strong` hairline, a 14 px radius and the deep drop shadow of the bolt popover (`widgets::popover`). The selected row is `surface_selected` with a 10 px radius; a hint line in `text_subtle` 11 px closes the card. A dropdown's list stops growing at 360 px and scrolls (Claude offers a dozen models), keeping the keyboard's choice in view.
 
 When the provider needs a login, a sand banner says how to sign in to the agent's own tool (for Claude Code: run `claude` in a terminal and use `/login`). Coqo never handles the login.
 

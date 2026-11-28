@@ -807,6 +807,7 @@ impl ChatTab {
                     let step = if key == PromptKey::Up { len - 1 } else { 1 };
                     p.set_selected((p.selected() + step) % len);
                 }
+                self.reveal_selected();
                 cx.notify();
             }
             PromptKey::Accept | PromptKey::Complete => {
@@ -1157,10 +1158,37 @@ impl ChatTab {
     fn toggle_menu(&mut self, menu: Popover, window: &mut Window, cx: &mut Context<Self>) {
         let same = self.popover.as_ref().is_some_and(|p| p.same_menu(&menu));
         self.popover = (!same).then_some(menu);
+        self.reveal_selected();
         self.sync_capture(cx);
         let focus = self.composer.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         cx.notify();
+    }
+
+    /// Scroll an open dropdown so its selected row shows.
+    fn reveal_selected(&self) {
+        let Some(menu) = self.popover.as_ref().filter(|p| p.is_menu()) else {
+            return;
+        };
+        let selected = menu.selected();
+        // A config option's group labels are rows of the list too.
+        let labels = match menu {
+            Popover::Config { id, .. } => {
+                let entries = config_entries(&self.transcript.config_options, id);
+                let mut group = None;
+                entries
+                    .iter()
+                    .take(selected + 1)
+                    .filter(|e| {
+                        let new = e.group.is_some() && e.group != group;
+                        group.clone_from(&e.group);
+                        new
+                    })
+                    .count()
+            }
+            _ => 0,
+        };
+        self.menu_scroll.scroll_to_item(selected + labels);
     }
 }
 
@@ -1403,7 +1431,15 @@ impl ChatTab {
                     this.close_popover(false, cx);
                 }),
             );
-        let mut list = div().flex().flex_col().px(px(6.));
+        // At most about seven rows with descriptions, then it scrolls.
+        let mut list = div()
+            .id("chat-menu-list")
+            .flex()
+            .flex_col()
+            .px(px(6.))
+            .max_h(px(360.))
+            .overflow_y_scroll()
+            .track_scroll(&self.menu_scroll);
         let row = |id: String,
                    ix: usize,
                    current: bool,

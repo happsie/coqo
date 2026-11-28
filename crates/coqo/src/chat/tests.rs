@@ -1509,6 +1509,12 @@ fn screenshot_config_options() -> Vec<SessionConfigOption> {
                 ("opus", "Opus", "Most capable for complex work"),
                 ("sonnet", "Sonnet", "Best for everyday tasks"),
                 ("haiku", "Haiku", "Fastest for quick answers"),
+                // As long as Claude's list: the card scrolls.
+                ("claude-sonnet-5", "Sonnet 5", ""),
+                ("claude-opus-5", "Opus 5", ""),
+                ("claude-opus-4-8", "Opus 4.8", ""),
+                ("claude-opus-4-7", "Opus 4.7", ""),
+                ("claude-sonnet-4-6", "Sonnet 4.6", ""),
             ],
         ),
         select(

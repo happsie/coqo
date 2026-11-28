@@ -89,6 +89,8 @@ pub struct ChatTab {
     dismissed: Option<usize>,
     /// Where the click that closed a dropdown was, so it doesn't reopen it.
     closed_by: Option<coqo_ui::gpui::Point<coqo_ui::gpui::Pixels>>,
+    /// Scrolls a long dropdown (Claude offers a dozen models).
+    menu_scroll: coqo_ui::gpui::ScrollHandle,
     /// The workspace's files, for @-mentions.
     files: composer::FileIndex,
     /// Mentioned files by URI, for embedding their contents.
@@ -167,6 +169,7 @@ impl ChatTab {
             popover: None,
             dismissed: None,
             closed_by: None,
+            menu_scroll: coqo_ui::gpui::ScrollHandle::new(),
             files: composer::FileIndex::default(),
             targets: HashMap::new(),
             history: None,
