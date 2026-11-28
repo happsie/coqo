@@ -579,6 +579,185 @@ fn send_the_review_and_the_agents_reply_lands_in_the_thread() {
     });
 }
 
+/// The chat tabs open in the window, by session.
+fn chat_tabs(
+    ui: &mut Ui,
+) -> Vec<(
+    coqo_ui::dock::TabId,
+    coqo_protocol::methods::agents::SessionId,
+)> {
+    let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
+    ui.cx.read(|cx| {
+        let dock = dock.read(cx);
+        dock.tree()
+            .tabs()
+            .into_iter()
+            .filter_map(|t| {
+                let chat = dock.tab(t.id)?.downcast::<crate::chat::tab::ChatTab>()?;
+                Some((t.id, chat.read(cx).session().clone()))
+            })
+            .collect()
+    })
+}
+
+/// #286: the daemon records which session made a change. The agent edits
+/// `src/lib.rs` (a completed tool call with its diff) in "Volume
+/// discount", whose chat tab is then closed; another, newer chat is open.
+/// The review's popover still defaults to "Volume discount" and says it
+/// made the change, and the diff header says "made by … in \"Volume
+/// discount\"".
+#[test]
+fn the_review_defaults_to_the_session_that_made_the_change_after_its_chat_closes() {
+    use coqo_agents::AgentUpdate;
+    use coqo_agents::testing::{ScriptedProvider, Step};
+    use coqo_protocol::methods::agents::{
+        self as agm, AgentState, ContentBlock, CreateSessionParams, PromptParams, StopReason,
+        ToolCall, ToolCallContent, ToolCallId, ToolCallStatus, ToolKind,
+    };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = Repo::init(&tmp.path().join("demo-repo"));
+    let lines: String = (1..=12).map(|i| format!("line {i}\n")).collect();
+    repo.write("src/lib.rs", &lines);
+    repo.commit_all("Twelve lines");
+    repo.write("src/lib.rs", &lines.replace("line 8\n", "eight\n"));
+    let folder = repo.path().canonicalize().unwrap();
+    // The agent's edit, as Claude Code reports its `Edit`.
+    let provider = ScriptedProvider::new().turn([
+        Step::Update(AgentUpdate::ToolCall(ToolCall {
+            id: ToolCallId("edit-1".into()),
+            title: "Edit src/lib.rs".into(),
+            name: Some("Edit".into()),
+            kind: ToolKind::Edit,
+            status: ToolCallStatus::Completed,
+            content: vec![ToolCallContent::Diff {
+                path: folder.join("src/lib.rs").to_string_lossy().into_owned(),
+                old_text: Some("line 8\n".into()),
+                new_text: "eight\n".into(),
+            }],
+            locations: Vec::new(),
+            raw_input: None,
+            raw_output: None,
+        })),
+        Step::Stop(StopReason::EndTurn),
+    ]);
+    let daemon = AgentDaemon::with_review(&tmp.path().join("d"), &provider);
+    let paths = daemon.paths.clone();
+    let mut ui = open_ui_on(folder.clone(), Backing::Agent(daemon), paths, tmp);
+    ui.wait_for("the workspace", |ui| {
+        ui.cx.read(|cx| {
+            crate::workspace::Workspaces::global(cx).is_some_and(|w| w.read(cx).current().is_some())
+        })
+    });
+    let ws = ui.cx.read(|cx| {
+        crate::workspace::Workspaces::global(cx)
+            .unwrap()
+            .read(cx)
+            .current()
+            .unwrap()
+            .id
+            .clone()
+    });
+    let create = |ui: &mut Ui, title: &str| {
+        let (cwd, ws_id, title) = (
+            folder.to_string_lossy().into_owned(),
+            ws.0.clone(),
+            title.to_owned(),
+        );
+        let session = ui.agent_daemon().with_client(async move |client| {
+            client
+                .request::<agm::Create>(CreateSessionParams {
+                    provider: "fake".into(),
+                    cwd,
+                    workspace: Some(ws_id),
+                    title: Some(title),
+                    mode: None,
+                    from: None,
+                })
+                .await
+                .unwrap()
+                .id
+        });
+        ui.wait_for("the chat listed", |ui| {
+            ui.cx.read(|cx| {
+                crate::chat::list::ChatList::global(cx)
+                    .is_some_and(|l| l.read(cx).info(&session).is_some())
+            })
+        });
+        let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
+        let open = session.clone();
+        ui.frame(|window, cx| crate::chat::open_session(dock.downgrade(), open, window, cx));
+        ui.wait_for("the chat tab", |ui| {
+            chat_tabs(ui).iter().any(|(_, s)| *s == session)
+        });
+        session
+    };
+
+    // "Volume discount" makes the change in its turn.
+    let maker = create(&mut ui, "Volume discount");
+    let prompted = maker.clone();
+    ui.agent_daemon().with_client(async move |client| {
+        client
+            .request::<agm::Prompt>(PromptParams {
+                session: prompted,
+                content: vec![ContentBlock::text("Add the volume discount")],
+            })
+            .await
+            .unwrap()
+    });
+    ui.wait_for("the turn's end", |ui| {
+        ui.cx.read(|cx| {
+            crate::chat::list::ChatList::global(cx)
+                .and_then(|l| l.read(cx).info(&maker).map(|i| i.state))
+                == Some(AgentState::Done)
+        })
+    });
+    // Its chat tab is closed; another, newer chat is open.
+    let (tab, _) = chat_tabs(&mut ui)
+        .into_iter()
+        .find(|(_, s)| *s == maker)
+        .unwrap();
+    let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
+    ui.cx
+        .update(|cx| dock.update(cx, |d, cx| d.close_tab(tab, cx)));
+    let other = create(&mut ui, "Something else");
+    assert!(chat_tabs(&mut ui).iter().all(|(_, s)| *s != maker));
+
+    // The diff names who made it.
+    let (_tab, review) = open_review(&mut ui, "src/lib.rs");
+    ui.wait_for("the provenance", |ui| {
+        ui.has(("diff-summary-extra", 0usize))
+    });
+    assert_eq!(
+        ui.cx.read(|cx| review.read(cx).made_by(cx)),
+        Some("made by Fake agent in \"Volume discount\"".to_owned())
+    );
+    let recorded = ui.cx.read(|cx| review.read(cx).changed_by().to_vec());
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert_eq!(recorded[0].session, maker);
+
+    // A pending comment: the popover defaults to the session that made the
+    // change, not the open chat.
+    let range = LineRange::lines("src/lib.rs", Side::New, 8, 8);
+    ui.frame(|window, cx| {
+        review.update(cx, |s, cx| s.open_composer(&range, window, cx));
+    });
+    ui.type_into(|s| s.composer_input().cloned(), &review, "Spell it **8**.");
+    ui.click("thread-composer-add");
+    ui.wait_for("the send button", |ui| ui.has("review-send"));
+    ui.click("review-send");
+    ui.wait_for("the popover", |ui| ui.has("review-send-popover"));
+    assert_eq!(
+        ui.cx.read(|cx| review.read(cx).send_target().cloned()),
+        Some(crate::questions::ask::AskTarget::Session(maker.clone()))
+    );
+    assert_eq!(
+        ui.cx.read(|cx| review.read(cx).send_origin().cloned()),
+        Some(maker.clone())
+    );
+    assert_ne!(maker, other);
+}
+
 /// The diff view's state the shortcuts change: the mode, the file shown and
 /// each file's viewed mark.
 fn diff_state(ui: &mut Ui, view: &Entity<DiffView>) -> (String, Option<String>, Vec<bool>) {
@@ -1378,6 +1557,21 @@ fn threads_screenshots() {
                 cx,
             );
             let review = ThreadsOverlay::attach_to(&view, store.clone(), window, cx);
+            // The daemon's record of who made the change (#286).
+            review.update(cx, |r, cx| {
+                r.set_changed_by(
+                    vec![coqo_protocol::methods::agents::SessionChange {
+                        session: session.clone(),
+                        provider: "claude-acp".into(),
+                        title: Some("Volume discount".into()),
+                        closed: false,
+                        paths: vec![k.into(), java.into()],
+                        at: 1,
+                        strength: coqo_protocol::methods::agents::ChangeStrength::Write,
+                    }],
+                    cx,
+                )
+            });
             match shot {
                 Shot::Pending => {}
                 Shot::Send => review.update(cx, |r, cx| {

@@ -31,7 +31,8 @@
 //!   roots only, the disk. Every `diff` in a tool call is announced with
 //!   [`AgentFs::expect_write`] before the agent writes, so the write shows
 //!   up in open buffers as the agent's change (Claude Code writes files
-//!   itself, ADR 0005).
+//!   itself, ADR 0005). A successful `fs/write_text_file` is reported with
+//!   [`AgentFs::wrote`], for the daemon's record of who changed a file.
 //! - **Terminals:** `terminal/*` run through [`AgentTerminals`] (the
 //!   daemon's PTYs, so the user can open, watch and kill them as terminal
 //!   tabs), in the session's workspace only, with ACP's output byte limit.

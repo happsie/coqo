@@ -48,6 +48,12 @@ pub trait AgentFs: Send + Sync + 'static {
         false
     }
 
+    /// `session` wrote `path` with `fs/write_text_file` (into its open
+    /// buffer or to disk): the daemon records who changed the file (#286).
+    fn wrote(&self, session: &SessionId, path: &Path) {
+        let _ = (session, path);
+    }
+
     /// Extra directories the workspace `workspace` may be read and written
     /// in, besides the session's working directory (multi-root workspaces).
     fn roots(&self, workspace: Option<&str>) -> Vec<PathBuf> {

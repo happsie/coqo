@@ -164,6 +164,12 @@ pub trait DiffOverlay: 'static {
 
     fn on_add(&self, _range: &LineRange, _window: &mut Window, _cx: &mut App) {}
 
+    /// A phrase at the end of the header's summary line, after the totals
+    /// ("made by Claude in \"Volume discount\"", #286).
+    fn summary(&self, _cx: &App) -> Option<SharedString> {
+        None
+    }
+
     /// Content at the right of the header card, after the layout toggle (a
     /// review's pending count and its send button).
     fn header(&self, _window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
@@ -725,6 +731,8 @@ impl DiffView {
             .iter()
             .filter_map(|o| o.header(window, cx))
             .collect();
+        let summaries: Vec<SharedString> =
+            self.overlays.iter().filter_map(|o| o.summary(cx)).collect();
         let t = cx.tokens();
         let (p, m) = (&t.palette, &t.metrics);
         let (adds, dels) = self
@@ -788,7 +796,15 @@ impl DiffView {
                                 if n == 1 { "file" } else { "files" }
                             ))
                             .child(div().text_color(p.green.hsla()).child(format!("+{adds}")))
-                            .child(div().text_color(p.rose.hsla()).child(format!("−{dels}"))),
+                            .child(div().text_color(p.rose.hsla()).child(format!("−{dels}")))
+                            .children(summaries.into_iter().enumerate().map(|(i, s)| {
+                                div()
+                                    .id(("diff-summary-extra", i))
+                                    .test_support()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(format!("· {s}"))
+                            })),
                     ),
             )
             .child(

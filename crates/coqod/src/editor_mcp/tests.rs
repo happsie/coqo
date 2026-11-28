@@ -109,6 +109,7 @@ impl Harness {
             ManagerOptions {
                 keep_alive: None,
                 mcp_servers: Some(source),
+                observer: None,
             },
         )
         .unwrap();

@@ -16,7 +16,7 @@ This page covers the review surface of board 4 ("Diff review"): a file list with
 The tab is padded 10 px, with 10 px between its parts, as the board's window is.
 
 - **Header card:** `panel_raised`, at the panel radius.
-  - **Left:** "Review changes" at 15 px semibold. Below it, at 12 px in `text_muted`: `<head> vs <base> · N files ·`, then the total `+a` in `green` and `−d` in `rose`.
+  - **Left:** "Review changes" at 15 px semibold. Below it, at 12 px in `text_muted`: `<head> vs <base> · N files ·`, then the total `+a` in `green` and `−d` in `rose`, then, when an agent session changed the files, `· made by Claude in "<chat>"` (the provider's display name and the chat's title, from the daemon's record, #286; cut with an ellipsis when too long).
   - **Right:** the layout toggle, a segmented control on `ground` (3 px padding, radius 12). It holds "Side by side" and "Unified"; the chosen one is raised in `text`, the other is flat in `text_muted`.
 - **Files card:** 280 px wide, `panel_raised`, with 12 px padding.
   - **Head row:** the `FILES` section label, and `n of m viewed` in `text_subtle` on the right.
@@ -82,7 +82,7 @@ Threads and the pending review come from #94, sending it to the agent from #95, 
   - Pending threads' lines are tinted `sand` at 10%.
 - **The pending review:**
   - **Header, after the layout toggle:** "N pending" in `sand` semibold, a flat **Discard**, and the primary **Send N comments to Claude ↑** (the default chat's agent; #95).
-  - **Send popover** (#95), under the button, as the ask popover (#229): a `MessageCircle` in `sage` and "Send N comments to the agent"; a "To" row of pills, one per chat ("Claude · <chat title>", the default first and selected in `blue`) and **New chat**; a muted note ("\"<chat>\" made this change. Each comment goes with its lines, the code and the thread so far; the replies land in these threads."); an error line in `rose` (a chat in a turn: "\"<chat>\" is in the middle of a turn. Wait for it to finish or pick another chat; your N comments stay pending."); raised **Cancel** and primary **Send** ("Sending…" while it goes). A click outside closes it.
+  - **Send popover** (#95), under the button, as the ask popover (#229): a `MessageCircle` in `sage` and "Send N comments to the agent"; a "To" row of pills, one per chat ("Claude · <chat title>", the default first and selected in `blue`) and **New chat**. The default is the chat whose agent last changed the commented files, as the daemon records it (#286), even when its tab is closed or after a restart; without a record, an open chat tab whose transcript edits them; then the shown chats; a muted note ("\"<chat>\" made this change. Each comment goes with its lines, the code and the thread so far; the replies land in these threads."); an error line in `rose` (a chat in a turn: "\"<chat>\" is in the middle of a turn. Wait for it to finish or pick another chat; your N comments stay pending."); raised **Cancel** and primary **Send** ("Sending…" while it goes). A click outside closes it.
   - **While the agent addresses the review:** a `lavender` pill at 14% in the header, a dot and "Claude is addressing N comments". Replies land in the cards live, with the agent's `lavender` avatar and name. A thread the agent resolves stays open until the turn ends, then folds; the folded row names the agent: `Resolved · "first" · Claude: last`.
   - **File rows:** "N pending" in `sand` before the stats.
   - **Note under the file list:** a `surface` card at 50% that explains the pending review (the board's text).

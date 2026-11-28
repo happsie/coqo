@@ -26,6 +26,7 @@ use crate::editor::{self, EditorService};
 use crate::git::{self, GitService};
 use crate::mcp_tools::{self, McpToolService};
 use crate::path_moves::{FollowsMoves, PathMoves};
+use crate::provenance::{self, Provenance};
 use crate::questions::{self, QuestionService};
 use crate::search::{self, SearchService};
 use crate::syntax::{self, SyntaxService};
@@ -53,7 +54,10 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     let editor_service = EditorService::new(Arc::clone(&workspaces));
     moves.follow(Arc::clone(&editor_service) as Arc<dyn FollowsMoves>);
     let router = editor::register(router, editor_service);
-    let sessions = agents::open(ctx)?;
+    // Who changed which file (#286): fed by the sessions and the agents'
+    // file writes, served once the buffers exist.
+    let (signals, signal_rx) = provenance::channel();
+    let sessions = agents::open(ctx, &signals)?;
     let router = agents::register(router, sessions.clone());
     let git_service = GitService::new(Arc::clone(&workspaces), ctx.mods.clone());
     let router = git::register(router, Arc::clone(&git_service));
@@ -62,8 +66,19 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
         ctx.data.clone(),
         BufferConfig::default(),
     );
-    ctx.agent_fs
-        .set(Arc::new(agents::BufferFs(Arc::clone(&buffers))));
+    ctx.agent_fs.set(Arc::new(
+        agents::BufferFs::new(Arc::clone(&buffers)).with_provenance(signals.clone()),
+    ));
+    let provenance = Provenance::open(
+        &ctx.data.global_db(),
+        Arc::clone(&workspaces),
+        Some(Arc::clone(&buffers)),
+        sessions.clone(),
+        &signals,
+        signal_rx,
+    )?;
+    moves.follow(Arc::clone(&provenance) as Arc<dyn FollowsMoves>);
+    let router = provenance::register(router, provenance);
     buffers::flush_on_shutdown(&buffers, ctx.shutdown.clone());
     let questions = QuestionService::open(
         &ctx.data.global_db(),

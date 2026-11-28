@@ -60,6 +60,7 @@ pub mod mcp_tools;
 pub mod methods;
 pub mod mods;
 pub mod path_moves;
+pub mod provenance;
 pub mod questions;
 pub mod routes;
 pub mod search;
