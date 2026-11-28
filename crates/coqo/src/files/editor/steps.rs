@@ -163,6 +163,7 @@ impl FileEditor {
 
     /// Open the popover of `mark`'s step at its lines.
     pub fn open_file_step(&mut self, mark: &FileStep, window: &mut Window, cx: &mut Context<Self>) {
+        self.drop_thread_card(cx);
         let popover = match &self.file_step {
             Some(open) => open.popover.clone(),
             None => {

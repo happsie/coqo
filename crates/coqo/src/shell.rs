@@ -96,6 +96,7 @@ pub fn init(cx: &mut App) {
     alerts::init(cx);
     crate::diff::init(cx);
     crate::walkthrough::init(cx);
+    crate::threads::init(cx);
     agents::init(cx);
 }
 

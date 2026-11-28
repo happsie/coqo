@@ -31,6 +31,9 @@
 //! - **Gutter.** A marker on each thread's first line (sand while it has
 //!   pending comments, sage once resolved, blue otherwise); pending threads'
 //!   lines are tinted sand.
+//! - **In a file tab** (#258, [`ThreadCard`]): the same card, drawn over the
+//!   code under the thread's lines, with **Open in diff** and **Close**
+//!   (`Esc`), over a [`ReviewState::standalone`].
 
 use std::{
     cell::RefCell,
@@ -51,10 +54,10 @@ use coqo_ui::{
     diff::{GutterMarker, LineRange, LineRef, LineTint, Side, Slot, SlotTarget},
     gpui::Focusable as _,
     gpui::{
-        AnyElement, App, AppContext as _, Context, ElementId, Entity, FontWeight,
-        InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-        StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, deferred, div,
-        px, relative,
+        AnyElement, App, AppContext as _, Context, ElementId, Entity, EventEmitter, FocusHandle,
+        FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+        StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window,
+        deferred, div, px, relative,
     },
     input::{PromptInput, PromptInputEvent},
     text::markdown,
@@ -112,6 +115,8 @@ pub struct ThreadsOverlay {
     state: Entity<ReviewState>,
     /// What each slot of the last render holds.
     slots: RefCell<HashMap<ElementId, SlotKind>>,
+    /// The file tab's card it draws for, instead of a diff (#258).
+    card: Option<WeakEntity<ThreadCard>>,
 }
 
 impl ThreadsOverlay {
@@ -139,6 +144,7 @@ impl ThreadsOverlay {
         let overlay = Rc::new(Self {
             state: state.clone(),
             slots: RefCell::default(),
+            card: None,
         });
         let observed = state.clone();
         view.update(cx, |v, cx| {
@@ -168,7 +174,8 @@ struct Placed {
 /// The overlay's state: the composer, the reply fields, what is open.
 pub struct ReviewState {
     store: Entity<WorkspaceThreads>,
-    source: Rc<dyn DiffSource>,
+    /// The diff; `None` for a file tab's card (#258).
+    source: Option<Rc<dyn DiffSource>>,
     composer: Option<Composer>,
     replies: HashMap<ThreadId, (Entity<PromptInput>, Subscription)>,
     editing: Option<(ThreadId, CommentId, Entity<PromptInput>, Subscription)>,
@@ -213,7 +220,7 @@ impl ReviewState {
         ];
         let mut this = Self {
             store,
-            source,
+            source: Some(source),
             composer: None,
             replies: HashMap::new(),
             editing: None,
@@ -231,6 +238,33 @@ impl ReviewState {
         this
     }
 
+    /// The state of a file tab's thread cards (#258): no diff, so no
+    /// composer, counts or sending.
+    pub fn standalone(
+        store: Entity<WorkspaceThreads>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let subscriptions = vec![cx.observe_in(&store, window, |this, _, window, cx| {
+            this.sync_inputs(window, cx);
+            cx.notify();
+        })];
+        let mut this = Self {
+            store,
+            source: None,
+            composer: None,
+            replies: HashMap::new(),
+            editing: None,
+            expanded: HashSet::new(),
+            error: None,
+            sending: false,
+            send: None,
+            _subscriptions: subscriptions,
+        };
+        this.sync_inputs(window, cx);
+        this
+    }
+
     // ---- sending (#95) ---------------------------------------------------------
 
     /// The chats to send this diff's review to, the default first, and the
@@ -239,7 +273,7 @@ impl ReviewState {
         let Some(v) = self.versions(cx) else {
             return (Vec::new(), None);
         };
-        let identity = self.source.identity();
+        let identity = self.identity();
         let root = Workspaces::global(cx).and_then(|w| {
             let ws = w.read(cx).current().filter(|ws| ws.id == v.workspace)?;
             ws.roots
@@ -389,7 +423,7 @@ impl ReviewState {
             return;
         };
         let new_chat = matches!(target, AskTarget::New).then(|| ask::start_chat(&v.workspace, cx));
-        let (store, diff) = (self.store.clone(), self.source.identity());
+        let (store, diff) = (self.store.clone(), self.identity());
         let task = cx.spawn(async move |this, cx| {
             let session = match (target, new_chat) {
                 (AskTarget::Session(id), _) => Ok(id),
@@ -428,7 +462,7 @@ impl ReviewState {
     /// The review of this diff whose turn runs: who, and how many comments.
     fn addressing(&self, cx: &App) -> Option<(String, u32)> {
         let store = self.store.read(cx);
-        let identity = self.source.identity();
+        let identity = self.identity();
         let sent = store.sent_for(Some(&identity))?;
         Some((store.agent_name(&sent.session, cx), sent.count))
     }
@@ -462,18 +496,26 @@ impl ReviewState {
     }
 
     fn versions(&self, cx: &App) -> Option<SourceVersions> {
-        self.source.versions(cx)
+        self.source.as_ref()?.versions(cx)
+    }
+
+    /// The diff source's identity; empty for a file tab's card.
+    fn identity(&self) -> String {
+        self.source
+            .as_ref()
+            .map(|s| s.identity())
+            .unwrap_or_default()
     }
 
     /// Pending comments of the threads started in this diff.
     pub fn pending_count(&self, cx: &App) -> usize {
-        let identity = self.source.identity();
+        let identity = self.identity();
         self.store.read(cx).pending_count(Some(&identity))
     }
 
     /// Pending comments of this diff's threads in the diff path `path`.
     fn pending_in(&self, path: &str, cx: &App) -> usize {
-        let (Some(v), identity) = (self.versions(cx), self.source.identity()) else {
+        let (Some(v), identity) = (self.versions(cx), self.identity()) else {
             return 0;
         };
         self.store
@@ -623,7 +665,7 @@ impl ReviewState {
             side,
             version,
             lines: Some(ThreadLines { start, end }),
-            diff: Some(self.source.identity()),
+            diff: Some(self.identity()),
             body,
             pending: true,
         })
@@ -775,7 +817,7 @@ impl ReviewState {
     /// Discard this diff's pending review: the user's pending comments,
     /// and the threads they leave empty.
     pub fn discard_review(&mut self, cx: &mut Context<Self>) {
-        let task = super::discard(&self.store, Some(self.source.identity()), cx);
+        let task = super::discard(&self.store, Some(self.identity()), cx);
         cx.spawn(async move |this, cx| {
             if let Err(e) = task.await {
                 this.update(cx, |this, cx| {
@@ -1065,8 +1107,9 @@ impl ThreadsOverlay {
         let resolved = t.status == ThreadStatus::Resolved;
         let store = state.store.read(cx);
         // A thread the agent is still addressing stays open, so its reply
-        // shows; it folds when the turn ends.
-        if resolved && !state.expanded.contains(&id) && !store.addressing(id) {
+        // shows; it folds when the turn ends. A file tab's card never folds.
+        if resolved && self.card.is_none() && !state.expanded.contains(&id) && !store.addressing(id)
+        {
             let first = t
                 .comments
                 .first()
@@ -1225,7 +1268,7 @@ impl ThreadsOverlay {
                         }),
                 )
             })
-            .when(resolved, |d| {
+            .when(resolved && self.card.is_none(), |d| {
                 d.child(
                     flat(("thread-hide", ix), "Hide", cx)
                         .test_support()
@@ -1233,16 +1276,42 @@ impl ThreadsOverlay {
                             hide.update(cx, |s, cx| s.toggle_expanded(id, cx)).ok();
                         }),
                 )
-            });
-        div()
+            })
+            .children(self.card.clone().map(|card| {
+                let close = card.clone();
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        raised_button("thread-open-diff", "Open in diff", cx)
+                            .test_support()
+                            .on_click(move |_, _, cx| {
+                                card.update(cx, |_, cx| cx.emit(CardEvent::OpenInDiff)).ok();
+                            }),
+                    )
+                    .child(
+                        flat("thread-card-close", "Close", cx)
+                            .test_support()
+                            .on_click(move |_, _, cx| {
+                                close.update(cx, |_, cx| cx.emit(CardEvent::Close)).ok();
+                            }),
+                    )
+            }));
+        let frame = match &self.card {
+            // Floating over the code: the popover's surface and shadow.
+            Some(_) => popover(cx).rounded(px(16.)),
+            None => div()
+                .mx(px(14.))
+                .my(px(8.))
+                .flex()
+                .flex_col()
+                .rounded(px(16.))
+                .bg(p.surface.hsla()),
+        };
+        frame
             .id(("thread", ix))
             .test_support()
-            .mx(px(14.))
-            .my(px(8.))
-            .flex()
-            .flex_col()
-            .rounded(px(16.))
-            .bg(p.surface.hsla())
             .border_1()
             .border_color(if has_pending {
                 p.sand.alpha(0.5)
@@ -1834,5 +1903,138 @@ impl DiffOverlay for ThreadsOverlay {
 
     fn hint(&self, _: &App) -> Option<SharedString> {
         Some("Press + beside a line, or after selecting lines, to comment".into())
+    }
+}
+
+// ---- in a file tab (#258) ------------------------------------------------------------
+
+use coqo_ui::gpui; // The action derive spells its paths `gpui::…`.
+
+coqo_ui::gpui::actions!(
+    thread_card,
+    [
+        /// Close a file tab's thread card (Esc).
+        CloseThreadCard,
+    ]
+);
+
+/// Where the keys of a file tab's thread card apply.
+const CARD_KEY_CONTEXT: &str = "ThreadCard";
+
+/// Bind the keys of a file tab's thread card.
+pub fn init(cx: &mut App) {
+    cx.bind_keys([coqo_ui::keys::binding(
+        "escape",
+        CloseThreadCard,
+        Some(CARD_KEY_CONTEXT),
+    )]);
+}
+
+/// What a file tab's thread card asks of its tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardEvent {
+    /// Show the thread in the root's unstaged diff.
+    OpenInDiff,
+    /// Close the card.
+    Close,
+}
+
+/// One thread's card in a file tab (#258): the diff's card, drawn over the
+/// code, with Open in diff and Close.
+pub struct ThreadCard {
+    overlay: ThreadsOverlay,
+    thread: ThreadId,
+    focus: FocusHandle,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl std::fmt::Debug for ThreadCard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThreadCard")
+            .field("thread", &self.thread)
+            .finish_non_exhaustive()
+    }
+}
+
+impl EventEmitter<CardEvent> for ThreadCard {}
+
+impl ThreadCard {
+    /// The card of thread `thread`, over `state` (a
+    /// [`ReviewState::standalone`]).
+    pub fn new(state: Entity<ReviewState>, thread: ThreadId, cx: &mut Context<Self>) -> Self {
+        let store = state.read(cx).store.clone();
+        let subscriptions = vec![
+            cx.observe(&state, |_, _, cx| cx.notify()),
+            cx.observe(&store, |_, _, cx| cx.notify()),
+        ];
+        Self {
+            overlay: ThreadsOverlay {
+                state,
+                slots: RefCell::default(),
+                card: Some(cx.entity().downgrade()),
+            },
+            thread,
+            focus: cx.focus_handle(),
+            _subscriptions: subscriptions,
+        }
+    }
+
+    /// The thread it shows.
+    pub fn thread(&self) -> ThreadId {
+        self.thread
+    }
+
+    /// Its state (the reply fields).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn state(&self) -> &Entity<ReviewState> {
+        &self.overlay.state
+    }
+
+    /// Where the keyboard goes when it opens: the reply field.
+    pub fn focus_target(&self, cx: &App) -> FocusHandle {
+        self.overlay
+            .state
+            .read(cx)
+            .reply_input(self.thread)
+            .map(|i| i.read(cx).focus_handle(cx))
+            .unwrap_or_else(|| self.focus.clone())
+    }
+
+    /// Whether the keyboard is in the card.
+    pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus.contains_focused(window, cx)
+            || self.focus_target(cx).contains_focused(window, cx)
+    }
+}
+
+impl Render for ThreadCard {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let thread = self
+            .overlay
+            .state
+            .read(cx)
+            .store
+            .read(cx)
+            .get(self.thread)
+            .cloned();
+        let card = thread.map(|t| {
+            let lines = t.anchor.lines;
+            self.overlay.render_thread(
+                &Placed {
+                    thread: t,
+                    side: Side::New,
+                    lines,
+                },
+                cx,
+            )
+        });
+        div()
+            .id("thread-card")
+            .test_support()
+            .key_context(CARD_KEY_CONTEXT)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|_, _: &CloseThreadCard, _, cx| cx.emit(CardEvent::Close)))
+            .w_full()
+            .children(card)
     }
 }
