@@ -234,7 +234,6 @@ pub async fn serve_with(
     lock.dir.check_still_at_path()?;
     let auth = lock.auth.clone();
     let activity = Activity::new();
-    let (idle_tx, idle_rx) = watch::channel(IdlePhase::Active);
     let shutdown = CancellationToken::new();
     let agent_fs = coqo_acp_host::FsHandle::new();
     let agent_terminals = coqo_acp_host::TerminalHandle::new();
@@ -245,7 +244,7 @@ pub async fn serve_with(
         paths: paths.clone(),
         data,
         activity: activity.clone(),
-        idle: idle_rx,
+        idle: activity.idle_phase(),
         idle_policy,
         shutdown: shutdown.clone(),
         started_at: SystemTime::now(),
@@ -265,7 +264,7 @@ pub async fn serve_with(
 
     let mut sigterm = signal(SignalKind::terminate()).context("cannot handle SIGTERM")?;
     let mut sigint = signal(SignalKind::interrupt()).context("cannot handle SIGINT")?;
-    let idle = idle_monitor(activity.clone(), idle_policy, idle_tx);
+    let idle = idle_monitor(activity.clone(), idle_policy);
     tokio::pin!(idle);
 
     tracing::info!(

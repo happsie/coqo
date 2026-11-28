@@ -29,7 +29,9 @@ pub fn status(ctx: &DaemonContext) -> DaemonStatus {
         connections: activity.connections,
         busy: activity.busy,
         idle: IdleStatus {
-            phase: *ctx.idle.borrow(),
+            // From the same snapshot as the counts, so an attached client
+            // never sees the daemon idle (#306).
+            phase: activity.phase,
             stop_services_after_secs: ctx.idle_policy.stop_services_after.map(|d| d.as_secs()),
             exit_after_secs: ctx.idle_policy.exit_after.map(|d| d.as_secs()),
         },
