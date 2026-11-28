@@ -2,9 +2,9 @@
 
 This page covers the player of board 3 ("Code walkthrough"): an agent's walkthrough of a change, replayed step by step at the code. It comes from PLAN §7.6, issue #100 and [ADR 0020](../adr/0020-walkthroughs.md) (the data), on the diff view of [ADR 0021](../adr/0021-diff-view.md).
 
-- **Code:** `crates/coqo/src/walkthrough/` (`player.rs` the tab, `popover.rs` the step popover, `diff.rs` the walkthrough's `DiffSource` and `DiffOverlay`). The step markers and the popover's place in a file use the editor hooks of the questions (#74): `StepMark` / `show_step` on `FileEditor`, and labelled `CodeMarker`s and `overlay_room` in `coqo_ui::editor`.
-- **Screenshots:** offscreen renders from `walkthrough_screenshots`:
-  `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored walkthrough_screenshots`, downscaled to 1440×900.
+- **Code:** `crates/coqo/src/walkthrough/` (`player.rs` the tab, `popover.rs` the step popover, `diff.rs` the walkthrough's `DiffSource` and `DiffOverlay`, `marks.rs` the steps in ordinary file tabs) and `crates/coqo/src/files/editor/steps.rs` (a file tab's side of #260). The step markers and the popover's place in a file use the editor hooks of the questions (#74): `StepMark` / `show_step` on `FileEditor`, and labelled `CodeMarker`s and `overlay_room` in `coqo_ui::editor`.
+- **Screenshots:** offscreen renders from `walkthrough_screenshots` and, for file tabs, `file_steps_screenshots`:
+  `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored walkthrough_screenshots file_steps_screenshots`, downscaled to 1440×900.
 
 ![Step 2 at its code, in the editor](screenshots/walkthrough-dark.png)
 
@@ -43,6 +43,43 @@ The tab is padded 10 px, with 10 px between its parts, as the board's window is.
 - **In the editor:** every step anchored in the file has a numbered badge in the gutter gap (16 px high, radius 5, 10 px bold `panel` text on `sage`), a 3 px `sage` strip and a 13% `sage` band over its lines. Steps other than the shown one are at half strength. A click on a badge goes to that step and anchor.
 - **In the diff:** the same badges in the diff's gutter lane on each step's first line (new side), a 13% `sage` tint over the shown step's lines, and the popover in a slot under its last line. The diff is the scope's base (the commit it resolved to when published) against the working tree, or against the head commit for `commits` and `pr` scopes, untracked files included. It opens unified so the popover has room beside the step list; `m` switches as anywhere.
 
+## In ordinary file tabs (#260)
+
+![Step 2 of the walkthrough in the file's own tab, under an agent's question stacked on step 1](screenshots/file-steps-dark.png)
+
+Light: [file tab](screenshots/file-steps-light.png).
+
+A file opened on its own (Files, Open file, a link) shows the steps too, so the walkthrough is at hand while the code is edited.
+
+- **Which walkthroughs:** the workspace's *active* ones (`WorkspaceWalkthroughs`, one per workspace):
+  - each publishing session's **newest walkthrough that is not fully understood** (an older one of the same session is likely superseded; a finished one has nothing left to read);
+  - every walkthrough **open in a player**, finished or not, while the player is open.
+  The list comes from `walkthroughs/list` and follows `walkthroughs/changes`; the active ones are loaded with `walkthroughs/get` (anchors resolved against the files and open buffers), again on each change and when a file tab opens its buffer.
+- **Markers:** the same numbered badges, strip and band as in the player, at **half strength**; the step whose popover is open is at full strength. Orphaned anchors have none. A tab the player opened for itself shows only the player's markers.
+- **Edits and live updates:** the badges follow edits like a question's, keep their place while the daemon's lines agree, and move when `walkthroughs/changes` brings a new resolution (another window's marks, a walkthrough published again). A walkthrough whose last step is marked understood stops being active and its markers go, unless a player shows it; closing that player takes them away.
+- **Click:** opens the step popover in place (below), with the keyboard in it.
+- **Popover in a file tab:** the player's popover with these differences:
+  - the header says "<walkthrough> · Step n of m" and shows the anchor without the ‹ › arrows;
+  - the buttons are **Open in player** (raised; the player at this step, see `OpenWalkthrough { step }`), a flat **Close**, the `u` key cap and the primary **Mark understood** / **✓ Understood**;
+  - there is no Previous / Next and no asking (the player's). **View as diff** and the **READ FIRST** links open the player at that step;
+  - `Esc` closes it and `u` marks the step understood (key context `StepPopover`).
+  Understood calls `walkthroughs/setStepState`: the player, the session panel and other windows follow through `walkthroughs/changes`.
+- **Toggle:** **Toggle walkthrough markers** in the command palette (Walkthrough category, no default key) hides or shows them in the current workspace's file tabs. Hidden is kept in the workspace's state (`ui.walkthrough.markers: false`).
+- **Renames:** a tab that follows its file to a new path asks for that path's steps; anchors themselves follow renames with #288.
+
+## Markers on one line
+
+Questions (#74), the user's threads (#229), walkthrough steps and review threads (#258) all use the gap between the line numbers and the code. When several start on the same line they **stack**: one glyph shows, with a 7 px dot in the colour of the next one at its top right. Which one shows is decided by priority (`files::editor::layer`), highest first:
+
+1. a question an agent is **waiting** on (50);
+2. an agent's **question or note** (40);
+3. a **review thread**, pending or open (30);
+4. a **walkthrough step** (20);
+5. a **thread the user started** by asking about code (10);
+6. a **resolved review thread** (5).
+
+What blocks the agent or needs the user comes first, then what others wrote for the user, then the user's own notes. Among equals (two walkthroughs with a step on one line), the one set first wins: the newer walkthrough. While a marker's popover is open its glyph is the one shown, and a click on it opens the **next** marker of the stack, so repeated clicks cycle through them. Bands and strips are drawn for all of them. Opening a question over a file tab's step popover closes the step popover.
+
 ## Step popover
 
 A `popover` card (radius 18, 20 × 18 px padding, 14 px gaps), under the step's lines with the caret pointing at them, like a question's (see [questions.md](questions.md)). Top to bottom:
@@ -79,4 +116,4 @@ Key context `WalkthroughPlayer`. A focused text field (the code, the question) g
 ## Not yet
 
 - **Attach to PR** (board 3's header button): M8.
-- Step markers show in the player's editor only, not in other file tabs of the same file.
+- Asking about a step and Previous / Next from a file tab's popover: the player has them (**Open in player**).

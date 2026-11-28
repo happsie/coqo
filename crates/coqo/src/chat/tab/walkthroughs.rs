@@ -80,6 +80,7 @@ fn opener(
     let action = OpenWalkthrough {
         workspace: w.workspace.0.clone(),
         id: w.id.0.clone(),
+        step: None,
     };
     move |_, window, cx| {
         window.focus(&focus, cx);

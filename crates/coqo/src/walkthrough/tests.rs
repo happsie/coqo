@@ -734,7 +734,7 @@ fn the_player_shows_the_coverage_banner_with_links_and_the_ask_button() {
 
     // In diff mode, it goes to the hunk in the walkthrough's diff.
     let open = id.clone();
-    ui.frame(|window, cx| super::open(&dock, ws.clone(), open, window, cx));
+    ui.frame(|window, cx| super::open(&dock, ws.clone(), open, None, window, cx));
     ui.cx
         .update_window(ui.window, |_, window, cx| {
             player.update(cx, |p, cx| p.set_mode(Mode::Diff, window, cx))
@@ -803,7 +803,7 @@ fn the_player_shows_the_coverage_banner_with_links_and_the_ask_button() {
         .with_client(async move |client| client.request::<wtm::Create>(params).await.unwrap());
     assert!(w.coverage.unwrap().is_complete());
     let open = id.clone();
-    ui.frame(|window, cx| super::open(&dock, ws.clone(), open, window, cx));
+    ui.frame(|window, cx| super::open(&dock, ws.clone(), open, None, window, cx));
     ui.wait_for("the banner gone", |ui| {
         ui.exists("walkthrough-header") && !ui.exists("walkthrough-coverage")
     });
@@ -900,7 +900,7 @@ fn diff_mode_shows_the_walkthroughs_change_with_step_markers() {
         .with_client(async move |client| client.request::<wtm::Create>(params).await.unwrap().id);
     let dock = ui.dock();
     let open = id.clone();
-    ui.frame(|window, cx| super::open(&dock, ws, open, window, cx));
+    ui.frame(|window, cx| super::open(&dock, ws, open, None, window, cx));
     ui.wait_for("the player", |ui| ui.player(&id).is_some());
     let player = ui.player(&id).unwrap();
     ui.wait_for("step 1", |ui| {
@@ -960,6 +960,281 @@ fn diff_mode_shows_the_walkthroughs_change_with_step_markers() {
             .read(|cx| view.read(cx).selected_file() == Some("src/tests.rs"))
     });
     assert_eq!(ui.cx.read(|cx| player.read(cx).current()), 2);
+    drop(ui);
+    drop(daemon);
+}
+
+// ---- in ordinary file tabs (#260) ---------------------------------------------------
+
+impl Ui {
+    /// Open `path` in a file tab of its own and wait for its editor.
+    fn open_file(&mut self, path: &str) -> Entity<FileEditor> {
+        let (ws, root) = self.place().unwrap();
+        let dock = self.dock();
+        let path = path.to_owned();
+        let tab = self
+            .frame(|window, cx| {
+                crate::questions::navigate::open_file(&dock, &ws, root, &path, window, cx)
+            })
+            .unwrap();
+        self.wait_for("the editor", |ui| {
+            ui.cx.read(|cx| tab.read(cx).editor().is_some())
+        });
+        tab
+    }
+
+    /// The file tab's walkthrough steps: (label, marker id).
+    fn file_steps(&mut self, tab: &Entity<FileEditor>) -> Vec<(String, u64)> {
+        self.cx.read(|cx| {
+            tab.read(cx)
+                .file_steps()
+                .iter()
+                .map(|m| (m.label.to_string(), m.id))
+                .collect()
+        })
+    }
+
+    /// The file tab's step popover's step and walkthrough title.
+    fn file_step(&mut self, tab: &Entity<FileEditor>) -> Option<(usize, String)> {
+        self.cx.read(|cx| {
+            let popover = tab.read(cx).file_step_popover()?;
+            let data = popover.read(cx).data()?;
+            Some((data.ix, data.walkthrough.clone()))
+        })
+    }
+
+    fn file_overlay(&mut self, tab: &Entity<FileEditor>) -> Option<OverlayAnchor> {
+        self.cx
+            .read(|cx| tab.read(cx).editor()?.read(cx).overlay_anchor())
+    }
+
+    fn file_markers(&mut self, tab: &Entity<FileEditor>) -> Vec<(u64, std::ops::Range<usize>)> {
+        self.cx.read(|cx| {
+            tab.read(cx)
+                .editor()
+                .map(|code| code.read(cx).marker_lines(cx))
+                .unwrap_or_default()
+        })
+    }
+}
+
+fn mark(daemon: &AgentDaemon, id: &WalkthroughId, step: &str, state: StepState) {
+    let mark = SetStepStateParams {
+        id: id.clone(),
+        step: step.into(),
+        state,
+    };
+    daemon.with_client(async move |client| {
+        client.request::<wtm::SetStepState>(mark).await.unwrap();
+    });
+}
+
+fn wait_state(daemon: &AgentDaemon, id: &WalkthroughId, step: &str, state: StepState) {
+    let deadline = Instant::now() + TIMEOUT;
+    while get(daemon, id).step_states.get(step) != Some(&state) {
+        assert!(Instant::now() < deadline, "{step} was marked {state:?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_file_tab_shows_the_steps_and_opens_the_popover_in_place() {
+    let provider = ScriptedProvider::new();
+    let (_tmp, project, daemon) = agent_fixture(&provider);
+    let mut ui = open_ui(&project, &daemon.paths, Appearance::Dark);
+    let (_, id) = published(&mut ui, &daemon, &project);
+
+    // No player: the file's own tab shows both steps anchored in it.
+    let tab = ui.open_file("src/discount.rs");
+    ui.wait_for("the step badges", |ui| ui.file_steps(&tab).len() == 2);
+    let steps = ui.file_steps(&tab);
+    assert_eq!(
+        steps.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(),
+        ["1", "2"]
+    );
+    let (first, second) = (steps[0].1, steps[1].1);
+    assert_eq!(
+        ui.file_markers(&tab),
+        vec![(first, 0..4), (second, 5..11)],
+        "at the anchored lines"
+    );
+    assert!(ui.exists(ElementId::NamedInteger("code-marker".into(), first)));
+
+    // A click opens step 1's popover there, with the keyboard in it.
+    ui.click(ElementId::NamedInteger("code-marker".into(), first));
+    ui.wait_for("step 1's popover", |ui| {
+        ui.file_overlay(&tab) == Some(OverlayAnchor::Marker(first))
+    });
+    assert_eq!(ui.file_step(&tab), Some((0, "Volume discount".to_owned())));
+    for id in ["step-popover", "step-what", "step-why", "step-open-player"] {
+        assert!(ui.exists(id), "{id} is drawn");
+    }
+    assert!(!ui.exists("step-next"), "Next is the player's");
+    let popover = ui
+        .cx
+        .read(|cx| tab.read(cx).file_step_popover().cloned())
+        .unwrap();
+    assert!(ui.frame(|window, cx| popover.read(cx).contains_focus(window, cx)));
+
+    // Understood: the daemon keeps it, and the popover says so.
+    ui.click("step-understood");
+    wait_state(&daemon, &id, "entry", StepState::Understood);
+    ui.wait_for("the popover's state", |ui| {
+        ui.cx.read(|cx| {
+            popover
+                .read(cx)
+                .data()
+                .is_some_and(|d| d.state == StepState::Understood)
+        })
+    });
+
+    // Esc closes it; the badges stay.
+    ui.press("escape");
+    ui.wait_for("the popover closed", |ui| ui.file_overlay(&tab).is_none());
+    assert_eq!(ui.file_steps(&tab).len(), 2);
+
+    // A mark made elsewhere shows live in the popover.
+    mark(&daemon, &id, "rule", StepState::Understood);
+    ui.click(ElementId::NamedInteger("code-marker".into(), second));
+    ui.wait_for("step 2's popover, understood", |ui| {
+        ui.file_step(&tab).is_some_and(|(ix, _)| ix == 1)
+            && ui.cx.read(|cx| {
+                popover
+                    .read(cx)
+                    .data()
+                    .is_some_and(|d| d.state == StepState::Understood)
+            })
+    });
+
+    // Typing above step 2 moves its badge with the code.
+    let code = ui.cx.read(|cx| tab.read(cx).editor().cloned()).unwrap();
+    ui.frame(|window, cx| {
+        code.update(cx, |code, cx| {
+            code.focus(window, cx);
+            code.set_selections(std::slice::from_ref(&(0..0)), cx);
+            code.type_text("// a note\n", window, cx);
+        })
+    });
+    ui.wait_for("the badges moved", |ui| {
+        ui.file_markers(&tab) == vec![(first, 1..5), (second, 6..12)]
+    });
+
+    // Open in player: the player at that step, and the popover closes.
+    ui.click(ElementId::NamedInteger("code-marker".into(), second));
+    ui.wait_for("step 2's popover", |ui| {
+        ui.file_overlay(&tab) == Some(OverlayAnchor::Marker(second))
+    });
+    ui.click("step-open-player");
+    ui.wait_for("the player at step 2", |ui| {
+        ui.player(&id)
+            .is_some_and(|p| ui.cx.read(|cx| p.read(cx).current()) == 1)
+    });
+    assert!(ui.file_overlay(&tab).is_none());
+
+    // The last step understood: done, but the player still shows it.
+    mark(&daemon, &id, "tests", StepState::Understood);
+    let ws = ui.place().unwrap().0;
+    let store = ui.cx.update(|cx| marks::walkthroughs_for(&ws, cx)).unwrap();
+    ui.wait_for("the summary", |ui| {
+        ui.cx.read(|cx| {
+            store
+                .read(cx)
+                .walkthrough(&id)
+                .is_some_and(|w| understood_count(w) == 3)
+        })
+    });
+    assert_eq!(ui.file_steps(&tab).len(), 2, "held by the player");
+    // Closed, a finished walkthrough's markers go.
+    let dock = ui.dock();
+    let player_tab = ui
+        .cx
+        .read(|cx| dock.read(cx).find_tab(player::KIND, &player::key(&id), cx))
+        .unwrap();
+    ui.frame(|_, cx| dock.update(cx, |dock, cx| dock.close_tab(player_tab, cx)));
+    ui.wait_for("the markers gone", |ui| ui.file_steps(&tab).is_empty());
+    drop(ui);
+    drop(daemon);
+}
+
+#[test]
+fn the_toggle_hides_the_markers_and_stacked_markers_cycle() {
+    use coqo_protocol::methods::{
+        editor::LineRange,
+        questions::{self as qm, NewAnchor, QuestionKind},
+    };
+
+    let provider = ScriptedProvider::new();
+    let (_tmp, project, daemon) = agent_fixture(&provider);
+    let mut ui = open_ui(&project, &daemon.paths, Appearance::Dark);
+    let (session, _) = published(&mut ui, &daemon, &project);
+    let tab = ui.open_file("src/discount.rs");
+    ui.wait_for("the step badges", |ui| ui.file_steps(&tab).len() == 2);
+    let step = ui.file_steps(&tab)[0].1;
+
+    // An agent's question on step 1's first line: it shows over the step.
+    let (ws, root) = ui.place().unwrap();
+    let params = qm::CreateParams {
+        workspace: ws.clone(),
+        session: session.0.clone(),
+        kind: QuestionKind::Clarification,
+        body: "Should the discount round?".into(),
+        options: Vec::new(),
+        severity: None,
+        anchors: vec![NewAnchor {
+            root,
+            path: "src/discount.rs".into(),
+            lines: LineRange { start: 0, end: 1 },
+        }],
+    };
+    let q =
+        daemon.with_client(async move |client| client.request::<qm::Create>(params).await.unwrap());
+    let question = q.id.0 * 16;
+    ui.wait_for("the stack", |ui| {
+        ui.cx.read(|cx| {
+            tab.read(cx).editor().is_some_and(|code| {
+                code.read(cx).marker_stacks(cx).first() == Some(&vec![question, step])
+            })
+        })
+    });
+    assert!(ui.exists(ElementId::NamedInteger("code-marker".into(), question)));
+    assert!(!ui.exists(ElementId::NamedInteger("code-marker".into(), step)));
+    assert!(ui.exists(ElementId::NamedInteger("code-marker-more".into(), question)));
+    // A click opens the question; another, the step under it; a third, the
+    // question again.
+    ui.click(ElementId::NamedInteger("code-marker".into(), question));
+    ui.wait_for("the question", |ui| {
+        ui.file_overlay(&tab) == Some(OverlayAnchor::Marker(question))
+    });
+    ui.click(ElementId::NamedInteger("code-marker".into(), question));
+    ui.wait_for("the step", |ui| {
+        ui.file_overlay(&tab) == Some(OverlayAnchor::Marker(step)) && ui.file_step(&tab).is_some()
+    });
+    ui.click(ElementId::NamedInteger("code-marker".into(), step));
+    ui.wait_for("the question again", |ui| {
+        ui.file_overlay(&tab) == Some(OverlayAnchor::Marker(question))
+    });
+    ui.press("escape");
+    ui.wait_for("closed", |ui| ui.file_overlay(&tab).is_none());
+
+    // The palette's "Toggle walkthrough markers" hides them, and shows them
+    // again.
+    let toggle = |ui: &mut Ui| {
+        ui.frame(|window, cx| window.dispatch_action(Box::new(ToggleWalkthroughMarkers), cx))
+    };
+    let registered = ui.cx.update(|cx| {
+        crate::commands::registry::registry(cx)
+            .get("walkthrough.toggle_markers")
+            .map(|c| c.title.to_string())
+    });
+    assert_eq!(registered.as_deref(), Some("Toggle walkthrough markers"));
+    toggle(&mut ui);
+    ui.wait_for("hidden", |ui| ui.file_steps(&tab).is_empty());
+    let saved = ui.cx.read(|cx| {
+        Workspaces::global(cx).and_then(|w| w.read(cx).state(marks::SHOWN_KEY).cloned())
+    });
+    assert_eq!(saved, Some(Value::Bool(false)), "kept with the workspace");
+    toggle(&mut ui);
+    ui.wait_for("shown", |ui| ui.file_steps(&tab).len() == 2);
     drop(ui);
     drop(daemon);
 }
@@ -1073,7 +1348,7 @@ fn walkthrough_screenshots() {
         let dock = cx.update(|cx| shell.read(cx).dock().clone());
         let open = wid.clone();
         cx.update_window(handle, |_, window, cx| {
-            super::open(&dock, ws.clone(), open, window, cx);
+            super::open(&dock, ws.clone(), open, None, window, cx);
         })
         .unwrap();
         let player = |cx: &App| {
@@ -1111,5 +1386,163 @@ fn walkthrough_screenshots() {
                 .is_some_and(|(v, _)| v.read(cx).file_diff("src/discount.rs").is_some())
         });
         shoot(&mut cx, format!("coqo-walkthrough-diff-{name}.png"));
+    }
+}
+
+/// Offscreen screenshots of a walkthrough's steps in an ordinary file tab
+/// (#260): `src/discount.rs` with step 2's popover open and an agent's
+/// question stacked over step 1, as `coqo-file-steps-{dark,light}.png` in
+/// `$COQO_SHOT_DIR` (default: the system temp dir).
+#[test]
+#[ignore = "needs a GPU; run manually"]
+fn file_steps_screenshots() {
+    use std::sync::Arc;
+
+    use coqo_protocol::methods::{
+        editor::LineRange,
+        questions::{self as qm, NewAnchor, QuestionKind},
+    };
+    use coqo_ui::{
+        CoqoAssets,
+        gpui::{HeadlessAppContext, platform},
+    };
+
+    let dir = std::env::var_os("COQO_SHOT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("shop");
+    write(&project, "src/discount.rs", DISCOUNT);
+    write(&project, "src/tests.rs", TESTS);
+    let project = project.canonicalize().unwrap();
+    let daemon = TestDaemon::start(tmp.path().join("run"), tmp.path().join("data"));
+    let mut made = false;
+    for (name, appearance) in [("dark", Appearance::Dark), ("light", Appearance::Light)] {
+        let mut cx = HeadlessAppContext::with_platform(
+            platform::current_platform(true).text_system(),
+            Arc::new(CoqoAssets),
+            platform::current_headless_renderer,
+        );
+        cx.allow_parking();
+        let (paths, folder) = (daemon.paths.clone(), project.clone());
+        let (handle, shell) = cx
+            .update(|cx| {
+                coqo_ui::init(appearance, cx);
+                let mut config = DaemonConfig::at(paths);
+                config.spawn = false;
+                daemon::init(config, cx);
+                workspace::init(Some(folder), cx);
+                crate::shell::init(cx);
+                coqo_ui::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds {
+                            origin: Point::default(),
+                            size: size(px(1440.), px(900.)),
+                        })),
+                        focus: false,
+                        show: false,
+                        ..Default::default()
+                    },
+                    cx,
+                    |window, cx| {
+                        let store = Rc::new(MemoryLayoutStore::default());
+                        cx.new(|cx| Shell::new(store, DEFAULT_WORKSPACE, window, cx))
+                    },
+                )
+            })
+            .expect("open window");
+        let settle = |cx: &mut HeadlessAppContext, done: &dyn Fn(&App) -> bool| {
+            let deadline = Instant::now() + TIMEOUT;
+            loop {
+                cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+                    .unwrap();
+                cx.run_until_parked();
+                if cx.update(|cx| done(cx)) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "timed out");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let place = |cx: &App| {
+            let current = Workspaces::global(cx)?.read(cx).current()?.clone();
+            Some((current.id.clone(), current.roots[0].id))
+        };
+        settle(&mut cx, &|cx| place(cx).is_some());
+        let (ws, root) = cx.update(|cx| place(cx)).unwrap();
+        if !made {
+            made = true;
+            let params = CreateParams {
+                workspace: ws.clone(),
+                session: "s-shot".into(),
+                walkthrough: draft(),
+            };
+            let created = daemon.with_client(async move |client| {
+                client.request::<wtm::Create>(params).await.unwrap().id
+            });
+            let mark = SetStepStateParams {
+                id: created,
+                step: "entry".into(),
+                state: StepState::Understood,
+            };
+            daemon.with_client(async move |client| {
+                client.request::<wtm::SetStepState>(mark).await.unwrap();
+            });
+            let ask = qm::CreateParams {
+                workspace: ws.clone(),
+                session: "s-shot".into(),
+                kind: QuestionKind::Clarification,
+                body: "Should checkout round the discount?".into(),
+                options: Vec::new(),
+                severity: None,
+                anchors: vec![NewAnchor {
+                    root,
+                    path: "src/discount.rs".into(),
+                    lines: LineRange { start: 0, end: 0 },
+                }],
+            };
+            daemon.with_client(async move |client| {
+                client.request::<qm::Create>(ask).await.unwrap();
+            });
+        }
+        let dock = cx.update(|cx| shell.read(cx).dock().clone());
+        let tab = cx
+            .update_window(handle, |_, window, cx| {
+                crate::questions::navigate::open_file(
+                    &dock,
+                    &ws,
+                    root,
+                    "src/discount.rs",
+                    window,
+                    cx,
+                )
+            })
+            .unwrap()
+            .unwrap();
+        settle(&mut cx, &|cx| {
+            let tab = tab.read(cx);
+            tab.file_steps().len() == 2
+                && tab
+                    .editor()
+                    .is_some_and(|code| code.read(cx).markers().len() == 3)
+        });
+        let step = cx.update(|cx| tab.read(cx).file_steps()[1].clone());
+        cx.update_window(handle, |_, window, cx| {
+            tab.update(cx, |tab, cx| tab.open_file_step(&step, window, cx))
+        })
+        .unwrap();
+        settle(&mut cx, &|cx| {
+            tab.read(cx).editor().is_some_and(|code| {
+                code.read(cx).overlay_anchor() == Some(OverlayAnchor::Marker(step.id))
+            })
+        });
+        for _ in 0..20 {
+            settle(&mut cx, &|_| true);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let image = cx.capture_screenshot(handle).expect("screenshot");
+        let path = dir.join(format!("coqo-file-steps-{name}.png"));
+        image.save(&path).expect("save png");
+        println!("wrote {}", path.display());
     }
 }

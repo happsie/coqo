@@ -33,9 +33,17 @@
 //! Keys in the player: `n` / `→` next step, `p` / `←` previous, `u`
 //! understood, `d` editor or diff. A text field (the code, the question)
 //! gets its characters first.
+//!
+//! **In ordinary file tabs** (#260, [`marks`]): the steps of the
+//! workspace's active walkthroughs (each session's newest one not fully
+//! understood, and any open in a player) are numbered badges in the gutter
+//! of every file tab of their files. A click opens the step popover there,
+//! with **Open in player** and **Mark understood**. "Toggle walkthrough
+//! markers" in the command palette hides or shows them.
 
 pub mod coverage;
 pub mod diff;
+pub mod marks;
 pub mod player;
 pub mod popover;
 
@@ -69,16 +77,19 @@ coqo_ui::gpui::actions!(
         ToggleUnderstood,
         /// Show the step in the editor or in the diff (d).
         ToggleDiff,
+        /// Show or hide walkthrough step markers in file tabs.
+        ToggleWalkthroughMarkers,
     ]
 );
 
-/// Open walkthrough `id` in its player, at the first unread step with its
-/// popover shown.
+/// Open walkthrough `id` in its player, at `step` (by id; the first unread
+/// step without one) with its popover shown.
 #[derive(Clone, Debug, PartialEq, Eq, Action)]
 #[action(namespace = walkthrough, no_json)]
 pub struct OpenWalkthrough {
     pub workspace: String,
     pub id: String,
+    pub step: Option<String>,
 }
 
 /// Where the player's keys apply.
@@ -115,19 +126,29 @@ pub fn init(cx: &mut App) {
                 Box::new(ToggleDiff),
             )
             .key("d"),
+            Command::new(
+                "walkthrough.toggle_markers",
+                "Toggle walkthrough markers",
+                "Walkthrough",
+                ToggleWalkthroughMarkers,
+            ),
         ],
     );
+    cx.on_action(|_: &ToggleWalkthroughMarkers, cx| marks::toggle_current(cx));
+    popover::init(cx);
     register_tab_kind(cx, player::KIND, |state, window, cx| {
         player::restore(state, window, cx)
     });
 }
 
-/// Open (or show) walkthrough `id`'s player in `dock` and go to the first
-/// unread step, with its popover shown and the keyboard in it.
+/// Open (or show) walkthrough `id`'s player in `dock` and go to `step` (by
+/// id; the first unread step without one), with its popover shown and the
+/// keyboard in it.
 pub fn open(
     dock: &Entity<Dock>,
     workspace: WorkspaceId,
     id: WalkthroughId,
+    step: Option<String>,
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Entity<player::WalkthroughPlayer>> {
@@ -149,7 +170,7 @@ pub fn open(
         }
     };
     if let Some(tab) = &tab {
-        tab.update(cx, |tab, cx| tab.start(window, cx));
+        tab.update(cx, |tab, cx| tab.start_at(step, window, cx));
     }
     tab
 }
@@ -173,6 +194,7 @@ pub fn open_action(
             dock,
             workspace,
             WalkthroughId(action.id.clone()),
+            action.step.clone(),
             window,
             cx,
         );
@@ -180,6 +202,24 @@ pub fn open_action(
 }
 
 // ---- helpers ----------------------------------------------------------------
+
+/// Who wrote `w`: the provider's name ("Claude"), from the workspace's
+/// `questions` store when it knows the session.
+pub fn agent_name(
+    w: &Walkthrough,
+    questions: Option<&Entity<crate::questions::WorkspaceQuestions>>,
+    cx: &App,
+) -> String {
+    // "Claude · Volume discount": the provider's name.
+    let asker = questions
+        .map(|store| store.read(cx).asker(&w.created_by.session, cx))
+        .and_then(|a| a.split(" · ").next().map(str::to_owned))
+        .filter(|a| a != "Agent");
+    asker.unwrap_or_else(|| match w.created_by.agent.as_str() {
+        "claude-code" | "claude" => "Claude".to_owned(),
+        _ => "the agent".to_owned(),
+    })
+}
 
 /// The reader's state of `step`.
 pub fn step_state(w: &Walkthrough, step: &Step) -> StepState {

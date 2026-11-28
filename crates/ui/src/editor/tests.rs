@@ -380,8 +380,7 @@ fn beta_marker(text: &str) -> CodeMarker {
         id: 7,
         range: start..at(text, "    let gamma"),
         color: gpui_kit::red(),
-        pulse: false,
-        label: None,
+        ..Default::default()
     }
 }
 
@@ -444,6 +443,70 @@ fn clicking_a_marker_reports_it() {
     })
     .unwrap();
     assert_eq!(*clicked.borrow(), vec![7]);
+}
+
+#[test]
+fn markers_on_one_line_stack_and_a_click_cycles_through_them() {
+    let mut h = open(TEXT);
+    let clicked: Rc<RefCell<Vec<u64>>> = Rc::default();
+    let sink = clicked.clone();
+    let editor = h.editor.clone();
+    let _sub = h.cx.update(|cx| {
+        cx.subscribe(&editor, move |_, event: &MarkerClicked, _| {
+            sink.borrow_mut().push(event.0)
+        })
+    });
+    let low = CodeMarker {
+        id: 8,
+        priority: 10,
+        label: Some("2".into()),
+        ..beta_marker(TEXT)
+    };
+    let high = CodeMarker {
+        id: 7,
+        priority: 30,
+        ..beta_marker(TEXT)
+    };
+    h.with(move |editor, _, cx| editor.set_markers(vec![low, high], cx));
+    h.frame();
+    assert_eq!(
+        h.cx.read(|cx| h.editor.read(cx).marker_stacks(cx)),
+        vec![vec![7, 8]],
+        "the higher priority first"
+    );
+    // One glyph: the face, with the dot of the one under it.
+    assert!(h.marker(7).is_some());
+    assert!(h.marker(8).is_none());
+    assert!(
+        h.find(gpui_kit::ElementId::NamedInteger(
+            "code-marker-more".into(),
+            7
+        ))
+        .is_some()
+    );
+    let click = |h: &mut Harness, id: u64| {
+        h.cx.update_window(h.window, |_, window, cx| {
+            window.click(
+                gpui_kit::ElementId::NamedInteger("code-marker".into(), id),
+                cx,
+            )
+        })
+        .unwrap();
+    };
+    click(&mut h, 7);
+    assert_eq!(*clicked.borrow(), vec![7]);
+    // With 7's overlay open, the click goes to 8, which then shows.
+    let card = h.cx.update(|cx| cx.new(|_| Card(60.)));
+    h.with(move |editor, _, cx| editor.set_overlay(OverlayAnchor::Marker(7), card.into(), cx));
+    h.frame();
+    click(&mut h, 7);
+    assert_eq!(*clicked.borrow(), vec![7, 8]);
+    let card = h.cx.update(|cx| cx.new(|_| Card(60.)));
+    h.with(move |editor, _, cx| editor.set_overlay(OverlayAnchor::Marker(8), card.into(), cx));
+    h.frame();
+    assert!(h.marker(8).is_some() && h.marker(7).is_none());
+    click(&mut h, 8);
+    assert_eq!(*clicked.borrow(), vec![7, 8, 7], "and around");
 }
 
 #[test]

@@ -45,7 +45,7 @@ use coqo_ui::{
 use super::{
     NextStep, PreviousStep, ToggleDiff, ToggleUnderstood, coverage,
     diff::{DiffMark, StepOverlay, WalkthroughDiffSource},
-    popover::{CriterionRef, StepData, StepEvent, StepPopover},
+    popover::{StepData, StepEvent, StepPopover},
 };
 use crate::{
     chat::{AskAgent, OpenLocation},
@@ -174,6 +174,14 @@ impl WalkthroughPlayer {
                 }),
             );
         }
+        // File tabs show its steps while it is open (#260).
+        if let Some(store) = super::marks::walkthroughs_for(&workspace, cx) {
+            store.update(cx, |store, cx| store.player_opened(&id, cx));
+            let held = id.clone();
+            subscriptions.push(cx.on_release(move |_, cx| {
+                store.update(cx, |store, cx| store.player_closed(&held, cx));
+            }));
+        }
         let mut this = Self {
             workspace,
             id,
@@ -202,13 +210,10 @@ impl WalkthroughPlayer {
         this
     }
 
-    /// Go to the first unread step with the keyboard in its popover (what
-    /// opening a walkthrough from the chat does).
-    pub fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.pending = Some(Pending {
-            step: None,
-            focus: true,
-        });
+    /// Go to `step` (by id; the first unread one if `None`) with the
+    /// keyboard in its popover (what opening a walkthrough does).
+    pub fn start_at(&mut self, step: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending = Some(Pending { step, focus: true });
         if self.walkthrough.is_some() {
             self.take_pending(window, cx);
         }
@@ -450,6 +455,8 @@ impl WalkthroughPlayer {
             StepEvent::Anchor(forward) => self.cycle_anchor(*forward, window, cx),
             StepEvent::Ask(text) => self.ask(text.clone(), window, cx),
             StepEvent::ViewDiff => self.set_mode(Mode::Diff, window, cx),
+            // A file tab's (#260).
+            StepEvent::OpenInPlayer | StepEvent::Close => {}
         }
     }
 
@@ -471,56 +478,20 @@ impl WalkthroughPlayer {
     /// What the popover shows for the current step.
     fn step_data(&self, cx: &App) -> Option<StepData> {
         let w = self.walkthrough.as_ref()?;
-        let step = w.steps.get(self.current)?;
-        let criteria = step
-            .criteria_refs
-            .iter()
-            .map(|id| {
-                let known = w.acceptance_criteria.iter().find(|c| &c.id == id);
-                CriterionRef {
-                    id: id.clone(),
-                    text: known.map(|c| c.text.clone()).unwrap_or_default(),
-                    status: known.and_then(|c| c.status),
-                }
-            })
-            .collect();
-        let depends = step
-            .depends_on
-            .iter()
-            .filter_map(|id| {
-                let ix = w.steps.iter().position(|s| &s.id == id)?;
-                Some((ix, w.steps[ix].title.clone()))
-            })
-            .collect();
-        Some(StepData {
-            ix: self.current,
-            total: w.steps.len(),
-            step: step.clone(),
-            state: super::step_state(w, step),
-            anchor: self.anchor,
-            criteria,
-            depends,
-            agent: self.agent_name(cx),
-            asked: self.asked.get(&step.id).copied(),
-        })
+        let asked = w
+            .steps
+            .get(self.current)
+            .and_then(|s| self.asked.get(&s.id).copied());
+        let agent = super::agent_name(w, self.questions.as_ref(), cx);
+        super::popover::step_data(w, self.current, self.anchor, agent, asked)
     }
 
     /// Who wrote the walkthrough: "Claude".
     fn agent_name(&self, cx: &App) -> String {
-        let Some(w) = &self.walkthrough else {
-            return "the agent".to_owned();
-        };
-        // "Claude · Volume discount": the provider's name.
-        let asker = self
-            .questions
-            .as_ref()
-            .map(|store| store.read(cx).asker(&w.created_by.session, cx))
-            .and_then(|a| a.split(" · ").next().map(str::to_owned))
-            .filter(|a| a != "Agent");
-        asker.unwrap_or_else(|| match w.created_by.agent.as_str() {
-            "claude-code" | "claude" => "Claude".to_owned(),
-            _ => "the agent".to_owned(),
-        })
+        match &self.walkthrough {
+            Some(w) => super::agent_name(w, self.questions.as_ref(), cx),
+            None => "the agent".to_owned(),
+        }
     }
 
     /// The step markers of `root`/`path`.
@@ -641,7 +612,11 @@ impl WalkthroughPlayer {
         }
         let workspace = self.workspace.clone();
         let owned = path.to_owned();
-        let editor = cx.new(|cx| FileEditor::new(workspace, root, owned, window, cx));
+        let editor = cx.new(|cx| {
+            let mut editor = FileEditor::new(workspace, root, owned, window, cx);
+            editor.set_walkthrough_host(cx);
+            editor
+        });
         let clicks = cx.subscribe_in(
             &editor,
             window,
