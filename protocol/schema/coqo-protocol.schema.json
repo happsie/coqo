@@ -1257,7 +1257,7 @@
         },
         {
           "const": "updated",
-          "description": "A step's state changed.",
+          "description": "It changed: a step's state, its coverage, or all of it (the agent\npublished it again).",
           "type": "string"
         },
         {
@@ -9565,7 +9565,7 @@
           "description": "How much of the scope's diff the steps cover. Computed when\npublished, and again by `get` for a worktree scope (the work tree\nchanges); absent from walkthroughs published before it existed."
         },
         "createdAt": {
-          "description": "Published, Unix milliseconds.",
+          "description": "Published (last published again), Unix milliseconds.",
           "format": "int64",
           "type": "integer"
         },
@@ -9576,6 +9576,12 @@
         "id": {
           "$ref": "#/$defs/WalkthroughId",
           "description": "Id."
+        },
+        "revision": {
+          "description": "How many times it was published again, replacing itself in place:\n0 the first time.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         },
         "scope": {
           "$ref": "#/$defs/WalkthroughScope",
@@ -9769,6 +9775,13 @@
           },
           "type": [
             "array",
+            "null"
+          ]
+        },
+        "replaces": {
+          "description": "The id of this session's walkthrough this one replaces (publishing\nit again after a fix). Default: the session's latest walkthrough with\nthe same title and scope is replaced, if there is one; otherwise this\nis a new walkthrough.",
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -9996,7 +10009,7 @@
           "description": "How much of the diff the steps cover, with at most\n[`SUMMARY_UNCOVERED`] of the uncovered hunks listed."
         },
         "createdAt": {
-          "description": "Published, Unix milliseconds.",
+          "description": "Published (last published again), Unix milliseconds.",
           "format": "int64",
           "type": "integer"
         },
@@ -10007,6 +10020,12 @@
         "questions": {
           "default": 0,
           "description": "How many are marked with a question.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "revision": {
+          "description": "How many times it was published again: 0 the first time.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"

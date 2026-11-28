@@ -872,3 +872,210 @@ async fn only_the_scope_root_counts() {
     assert!(why.contains("is not a git repository"), "{why}");
     daemon.stop().await;
 }
+
+// ---- publishing again (#253) ------------------------------------------------------
+
+/// The `walkthrough` updates in `session`'s transcript, in order.
+async fn recorded(ui: &Client, session: &str) -> Vec<wtm::WalkthroughSummary> {
+    let id = agm::SessionId(session.to_owned());
+    let snap = ui
+        .request::<agm::Get>(SessionParams {
+            session: id.clone(),
+        })
+        .await
+        .unwrap();
+    let mut updates = ui
+        .subscribe::<agm::Updates>(SessionParams { session: id }, Some(0))
+        .await
+        .unwrap();
+    let mut out = Vec::new();
+    for _ in 0..snap.head {
+        let u = tokio::time::timeout(TIMEOUT, updates.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        if let SessionUpdate::Walkthrough(s) = u.event {
+            out.push(*s);
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn publishing_again_replaces_the_walkthrough_in_place() {
+    let data = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(data.path()).await;
+    let ui = daemon.ui().await;
+    let (dir, ws) = project(&ui, true).await;
+    let session = session(&ui, &dir, &ws).await;
+    ui.request::<wsm::SetState>(SetStateParams {
+        id: ws.id.clone(),
+        key: wtm::STORAGE_STATE_KEY.into(),
+        value: json!("committed"),
+    })
+    .await
+    .unwrap();
+    let agent = daemon.agent(&ws, &session).await;
+    let root = dir.path();
+    // A function added at the end (lines 8-11), which the first draft
+    // leaves out.
+    write(root, "src/discount.rs", format!("{DISCOUNT_RS}{EXTRA_FN}"));
+
+    let first = agent
+        .request::<wtm::Create>(params(&ws, &session, draft()))
+        .await
+        .unwrap();
+    assert_eq!(first.revision, 0);
+    assert_eq!(first.coverage.as_ref().unwrap().uncovered_count(), 1);
+    for (step, state) in [
+        ("rule", StepState::Understood),
+        ("tests", StepState::Question),
+    ] {
+        ui.request::<wtm::SetStepState>(SetStepStateParams {
+            id: first.id.clone(),
+            step: step.into(),
+            state,
+        })
+        .await
+        .unwrap();
+    }
+    let mut changes = ui
+        .subscribe::<wtm::Changes>(ChangesParams::default(), None)
+        .await
+        .unwrap();
+
+    // The agent explains the hunk and publishes it again with the same
+    // title and scope; it renames the test step.
+    let mut again = draft();
+    again["steps"][1]["title"] = json!("The tests");
+    again["steps"].as_array_mut().unwrap().push(json!({
+        "id": "cap",
+        "title": "The cap",
+        "kind": "edge_case",
+        "anchors": [{ "path": "src/discount.rs", "start_line": 9, "end_line": 11 }],
+        "what": "Caps the units.",
+        "why": "Huge orders.",
+    }));
+    let w = agent
+        .request::<wtm::Create>(params(&ws, &session, again))
+        .await
+        .unwrap();
+    assert_eq!(w.id, first.id);
+    assert_eq!(w.revision, 1);
+    assert_eq!(w.steps.len(), 3);
+    assert!(
+        w.coverage.as_ref().unwrap().is_complete(),
+        "{:?}",
+        w.coverage
+    );
+    // The unchanged step keeps its state; the renamed one and the new one
+    // start unread.
+    assert_eq!(
+        w.step_states,
+        [("rule".to_owned(), StepState::Understood)].into()
+    );
+    let change = tokio::time::timeout(TIMEOUT, changes.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .event;
+    assert_eq!((change.kind, &change.id), (ChangeKind::Updated, &w.id));
+    let summary = change.summary.unwrap();
+    assert_eq!(
+        (summary.steps, summary.understood, summary.revision),
+        (3, 1, 1)
+    );
+
+    // One walkthrough in the list, the latest.
+    let list = ui
+        .request::<wtm::List>(ListParams {
+            workspace: ws.id.clone(),
+            session: Some(agm::SessionId(session.clone())),
+        })
+        .await
+        .unwrap();
+    assert_eq!(list.walkthroughs.len(), 1);
+    assert_eq!(list.walkthroughs[0].steps, 3);
+    // Its committed file is rewritten in place.
+    let committed: Vec<_> = std::fs::read_dir(root.join(".coqo/walkthroughs"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(committed.len(), 1, "{committed:?}");
+    let written: Walkthrough = serde_json::from_str(
+        &std::fs::read_to_string(root.join(w.storage.path.as_deref().unwrap())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!((written.steps.len(), written.revision), (3, 1));
+    // The transcript has both publications under the one id.
+    let rec = recorded(&ui, &session).await;
+    assert_eq!(rec.len(), 2);
+    assert!(rec.iter().all(|s| s.id == w.id));
+    assert_eq!(rec[1].revision, 1);
+
+    // `replaces` names it whatever the title.
+    let mut renamed = draft();
+    renamed["title"] = json!("Volume discount, capped");
+    renamed["replaces"] = json!(w.id.0);
+    let w2 = agent
+        .request::<wtm::Create>(params(&ws, &session, renamed.clone()))
+        .await
+        .unwrap();
+    assert_eq!((&w2.id, w2.revision), (&w.id, 2));
+    assert_eq!(w2.title, "Volume discount, capped");
+
+    // Another title without `replaces`: a new walkthrough.
+    let mut other = draft();
+    other["title"] = json!("Rounding");
+    let w3 = agent
+        .request::<wtm::Create>(params(&ws, &session, other))
+        .await
+        .unwrap();
+    assert_ne!(w3.id, w.id);
+    assert_eq!(w3.revision, 0);
+
+    // Only this session's walkthroughs, and only ones that exist.
+    let mut unknown = renamed.clone();
+    unknown["replaces"] = json!("nope-00000000");
+    assert_eq!(
+        problems(
+            agent
+                .request::<wtm::Create>(params(&ws, &session, unknown))
+                .await
+        ),
+        [
+            "replaces: there is no walkthrough `nope-00000000`; use the id publish_walkthrough returned, or leave out replaces to publish a new one"
+        ],
+    );
+    let stranger = self::session(&ui, &dir, &ws).await;
+    let other_agent = daemon.agent(&ws, &stranger).await;
+    let got = problems(
+        other_agent
+            .request::<wtm::Create>(params(&ws, &stranger, renamed))
+            .await,
+    );
+    assert_eq!(
+        got,
+        [format!(
+            "replaces: `{}` was published by another session; only this session's walkthroughs can be replaced (leave out replaces to publish a new one)",
+            w.id
+        )],
+    );
+    // The same title in another session is its own walkthrough.
+    let theirs = other_agent
+        .request::<wtm::Create>(params(&ws, &stranger, draft()))
+        .await
+        .unwrap();
+    assert_ne!(theirs.id, w.id);
+    let list = ui
+        .request::<wtm::List>(ListParams {
+            workspace: ws.id.clone(),
+            session: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(list.walkthroughs.len(), 3);
+    daemon.stop().await;
+}

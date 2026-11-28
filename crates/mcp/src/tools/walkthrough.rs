@@ -14,7 +14,9 @@
 //! must be in a step's anchors or in `trivial_hunks`. A published
 //! walkthrough that leaves hunks uncovered says so first thing in the
 //! result, with each hunk, so the agent can explain them and publish again
-//! (`require_coverage` refuses it instead).
+//! (`require_coverage` refuses it instead). Publishing again with the same
+//! title and scope (or `replaces` naming it) replaces the walkthrough in
+//! place (#253), so the reader sees one, the latest.
 
 use coqo_protocol::ProtocolError;
 use coqo_protocol::methods::codes;
@@ -47,8 +49,9 @@ fn schema() -> Value {
 /// Most uncovered hunks spelled out in the result.
 const RESULT_UNCOVERED: usize = 30;
 
-/// The coverage, for the agent: the uncovered hunks first and in full.
-fn coverage_text(c: &WalkthroughCoverage) -> String {
+/// The coverage, for the agent: the uncovered hunks first and in full,
+/// and how to publish `id` again.
+fn coverage_text(c: &WalkthroughCoverage, id: &str) -> String {
     if let Some(why) = &c.unavailable {
         return format!("Coverage was not checked: {why}.");
     }
@@ -80,9 +83,9 @@ fn coverage_text(c: &WalkthroughCoverage) -> String {
     if (n as usize) > listed {
         text.push_str(&format!("\n- … and {} more", n as usize - listed));
     }
-    text.push_str(
-        "\nAdd each to a step's anchors (a new step, or an existing step's anchors) or to trivial_hunks with a reason, and call publish_walkthrough again.",
-    );
+    text.push_str(&format!(
+        "\nAdd each to a step's anchors (a new step, or an existing step's anchors) or to trivial_hunks with a reason, and call publish_walkthrough again with the same title and scope (or with `\"replaces\": \"{id}\"`): it replaces this walkthrough in place, so the user sees one, and keeps their progress on the steps you leave unchanged."
+    ));
     text
 }
 
@@ -95,16 +98,25 @@ fn published(w: &Walkthrough) -> String {
     let mut text = String::new();
     if let Some(c) = incomplete {
         // First, so it is not missed.
-        text.push_str(&coverage_text(c));
+        text.push_str(&coverage_text(c, &w.id.0));
         text.push_str("\n\n");
     }
-    text.push_str(&format!(
-        "Published walkthrough `{}` \"{}\": {} step{}. The user can replay it in Coqo; the chat shows a card for it.",
-        w.id,
-        w.title,
+    let steps = format!(
+        "{} step{}",
         w.steps.len(),
-        if w.steps.len() == 1 { "" } else { "s" },
-    ));
+        if w.steps.len() == 1 { "" } else { "s" }
+    );
+    if w.revision > 0 {
+        text.push_str(&format!(
+            "Updated walkthrough `{}` \"{}\" in place: {steps}. It replaces the one you published before (the user's progress is kept on unchanged steps); the chat says it was updated.",
+            w.id, w.title,
+        ));
+    } else {
+        text.push_str(&format!(
+            "Published walkthrough `{}` \"{}\": {steps}. The user can replay it in Coqo; the chat shows a card for it.",
+            w.id, w.title,
+        ));
+    }
     match (&w.storage.mode, &w.storage.path, &w.storage.error) {
         (StorageMode::Committed, _, Some(e)) => text.push_str(&format!(
             " This workspace commits walkthroughs, but the file could not be written ({e}); it is kept in Coqo only."
@@ -116,7 +128,7 @@ fn published(w: &Walkthrough) -> String {
     }
     if let Some(c) = w.coverage.as_ref().filter(|_| incomplete.is_none()) {
         text.push(' ');
-        text.push_str(&coverage_text(c));
+        text.push_str(&coverage_text(c, &w.id.0));
     }
     text
 }
@@ -126,6 +138,7 @@ fn structured(w: &Walkthrough) -> Value {
         "id": w.id.0,
         "title": w.title,
         "steps": w.steps.len(),
+        "revision": w.revision,
         "storage": w.storage.mode,
         "path": w.storage.path,
         "baseCommit": w.scope.base_commit,
@@ -152,8 +165,9 @@ impl Tool for PublishWalkthroughTool {
                  with its JSON path, so fix them all and call it again. Coqo also diffs the scope \
                  and checks that every changed hunk is in a step's anchors or in `trivial_hunks`; \
                  the result lists any hunk that is not (set `require_coverage` to refuse the \
-                 walkthrough instead), so explain those and publish again. The schema is also the \
-                 resource {SCHEMA_URI}."
+                 walkthrough instead), so explain those and publish again: a walkthrough with the \
+                 same title and scope as one this session published (or `replaces` naming its id) \
+                 replaces it in place. The schema is also the resource {SCHEMA_URI}."
             ),
         )
         .with_title("Publish walkthrough")
@@ -254,7 +268,7 @@ mod tests {
             text.contains("\n- old.rs (file deleted)\n    -fn old() {}"),
             "{text}"
         );
-        assert!(text.contains("call publish_walkthrough again"), "{text}");
+        assert!(text.contains("call publish_walkthrough again with the same title and scope (or with `\"replaces\": \"circle-area-0a1b2c3d\"`): it replaces this walkthrough in place"), "{text}");
         assert!(
             text.contains("\n\nPublished walkthrough `circle-area-0a1b2c3d`"),
             "{text}"
@@ -266,8 +280,15 @@ mod tests {
             trivial: 1,
             ..Default::default()
         };
-        let text = published(&walkthrough(Some(full)));
+        let text = published(&walkthrough(Some(full.clone())));
         assert!(text.starts_with("Published walkthrough"), "{text}");
+        let mut again = walkthrough(Some(full));
+        again.revision = 1;
+        assert!(
+            published(&again).starts_with("Updated walkthrough `circle-area-0a1b2c3d` \"Circle area\" in place: 0 steps. It replaces the one you published before"),
+            "{}",
+            published(&again)
+        );
         assert!(text.ends_with("Coverage: 2 of 2 changed hunks covered (1 by steps, 1 trivial): every changed hunk is explained."), "{text}");
         let text = published(&walkthrough(Some(WalkthroughCoverage::unavailable(
             "root 0 is not a git repository",

@@ -119,7 +119,12 @@ impl<'a> Obj<'a> {
                 continue;
             }
             let at = key(path, name);
-            if filled.contains(&name.as_str()) {
+            if path.is_empty() && name == "id" {
+                pr.add(
+                    at,
+                    "is filled in by Coqo; leave it out (to replace a walkthrough you published, name it in `replaces`)",
+                );
+            } else if filled.contains(&name.as_str()) {
                 pr.add(at, "is filled in by Coqo; leave it out");
             } else if let Some(meant) = allowed.iter().find(|a| loose(a) == loose(name)) {
                 pr.add(at, format!("unknown field; did you mean `{meant}`?"));
@@ -342,6 +347,7 @@ pub(crate) fn parse(v: &Value, pr: &mut Problems) -> WalkthroughDraft {
         steps: Vec::new(),
         trivial_hunks: Vec::new(),
         require_coverage: false,
+        replaces: None,
     };
     let Some(top) = Obj::new(
         v,
@@ -355,6 +361,7 @@ pub(crate) fn parse(v: &Value, pr: &mut Problems) -> WalkthroughDraft {
             "steps",
             "trivial_hunks",
             "require_coverage",
+            "replaces",
         ],
         FILLED,
         pr,
@@ -428,6 +435,15 @@ pub(crate) fn parse(v: &Value, pr: &mut Problems) -> WalkthroughDraft {
             .collect();
     }
     draft.require_coverage = top.boolean("require_coverage", pr).unwrap_or(false);
+    draft.replaces = top
+        .string("replaces", false, pr)
+        .map(|id| id.trim().to_owned());
+    if draft.replaces.as_deref() == Some("") {
+        pr.add(
+            "replaces",
+            "is empty; name the id of the walkthrough to replace, or leave it out",
+        );
+    }
     draft
 }
 
@@ -1099,6 +1115,7 @@ mod tests {
     fn a_good_draft_parses_as_serde_reads_it() {
         let mut v = draft();
         v["require_coverage"] = json!(true);
+        v["replaces"] = json!("volume-discount-0a1b2c3d");
         let mut pr = Problems::default();
         let d = parse(&v, &mut pr);
         let criteria = check(&d, &[criterion("AC1")], &mut pr);
@@ -1127,7 +1144,7 @@ mod tests {
         v["require_coverage"] = json!("yes");
         let got = problems(&v, &[criterion("AC1")]);
         let want = [
-            "id: is filled in by Coqo; leave it out",
+            "id: is filled in by Coqo; leave it out (to replace a walkthrough you published, name it in `replaces`)",
             "coverage: is filled in by Coqo; leave it out",
             "require_coverage: must be true or false, not a string",
             "title: is empty",

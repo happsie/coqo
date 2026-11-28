@@ -1199,6 +1199,8 @@ async fn publish_walkthrough_end_to_end() {
 
 #[tokio::test]
 async fn publish_walkthrough_lists_uncovered_hunks() {
+    use coqo_protocol::methods::walkthroughs as wtm;
+
     let h = Harness::start();
     h.ctx.mods.start().await;
     let ui = h.ui().await;
@@ -1295,6 +1297,48 @@ async fn publish_walkthrough_lists_uncovered_hunks() {
     assert!(
         e.contains("\n- require_coverage: src/main.rs:10-13 (+4, `+fn perimeter(r: f64) -> f64 {`) is not explained by any step"),
         "{e}"
+    );
+
+    // Published again with the hunk explained (#253): the same walkthrough,
+    // replaced in place, so the list and the session panel have one.
+    let id = r["structuredContent"]["id"].as_str().unwrap().to_owned();
+    assert!(
+        t.contains(&format!("(or with `\"replaces\": \"{id}\"`)")),
+        "{t}"
+    );
+    let mut fixed = walkthrough(false);
+    fixed["steps"].as_array_mut().unwrap().push(json!({
+        "id": "perimeter",
+        "title": "The perimeter",
+        "kind": "logic",
+        "anchors": [{ "path": "src/main.rs", "start_line": 11, "end_line": 13 }],
+        "what": "2 pi r.",
+        "why": "Geometry.",
+    }));
+    let r = agent.ok("publish_walkthrough", fixed).await;
+    let t = text(&r);
+    assert!(
+        t.starts_with(&format!(
+            "Updated walkthrough `{id}` \"Perimeter\" in place: 2 steps."
+        )),
+        "{t}"
+    );
+    assert_eq!(r["structuredContent"]["id"], json!(id), "{r}");
+    assert_eq!(r["structuredContent"]["revision"], 1, "{r}");
+    let list = ui
+        .request::<wtm::List>(wtm::ListParams {
+            workspace: a.id.clone(),
+            session: Some(session.clone()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(list.walkthroughs.len(), 1, "{list:?}");
+    assert!(
+        list.walkthroughs[0]
+            .coverage
+            .as_ref()
+            .unwrap()
+            .is_complete()
     );
     drop(dir);
 }

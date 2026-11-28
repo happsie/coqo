@@ -322,6 +322,9 @@ impl WalkthroughPlayer {
             self.current = ix;
         }
         self.current = self.current.min(w.steps.len().saturating_sub(1));
+        // Published again (#253), the step may have fewer anchors.
+        let anchors = w.steps.get(self.current).map_or(1, |s| s.anchors.len());
+        self.anchor = self.anchor.min(anchors.saturating_sub(1));
         self.walkthrough = Some(w);
         if self.pending.is_some() {
             self.take_pending(window, cx);

@@ -2138,6 +2138,7 @@ fn walkthrough_summary(
         storage: StorageMode::Local,
         coverage: None,
         created_at: 1,
+        revision: 0,
     }
 }
 
