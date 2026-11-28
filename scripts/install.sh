@@ -112,6 +112,27 @@ case "$target" in
     mv "$share/bin.new" "$share/bin"
     ln -sf "$share/bin/coqo" "$HOME/.local/bin/coqo"
     ln -sf "$share/bin/coqod" "$HOME/.local/bin/coqod"
-    say "installed to $share/bin (symlinked from ~/.local/bin)"
+    # Desktop entry (and an icon if the archive ships one) so launchers find Coqo.
+    apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    mkdir -p "$apps"
+    icon=coqo
+    if [ -f "$tmp/x/coqo/share/coqo.png" ]; then
+      icons="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/512x512/apps"
+      mkdir -p "$icons"
+      cp "$tmp/x/coqo/share/coqo.png" "$icons/coqo.png"
+    fi
+    cat > "$apps/coqo.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Coqo
+Comment=Agent-first code editor
+Exec=$share/bin/coqo %F
+Icon=$icon
+Terminal=false
+Categories=Development;TextEditor;
+StartupWMClass=coqo
+DESKTOP
+    say "installed to $share/bin (symlinked from ~/.local/bin, desktop entry in $apps)"
+    case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) say "note: add ~/.local/bin to your PATH" ;; esac
     ;;
 esac
