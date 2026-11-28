@@ -16,6 +16,8 @@
 //! - [`id`]: validated ids for mods, services and contributions.
 //! - [`alerts`]: `coqo.alerts@1`, the service mods' alert sources raise
 //!   alerts through.
+//! - [`workspace`]: conventions shared with the kernel, such as which
+//!   folders below a root [stand apart](workspace::stands_apart).
 //! - [`ModHost`]: the object-safe interface hosts implement (the kernel for
 //!   core mods; the WASM and process hosts forward to their guests), and
 //!   [`testing::TestHost`], an in-memory one for tests.
@@ -62,6 +64,7 @@ mod module;
 pub mod points;
 mod service;
 pub mod testing;
+pub mod workspace;
 
 pub use erased::{AnyArc, BoxFuture};
 pub use error::ModError;

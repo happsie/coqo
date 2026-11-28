@@ -411,14 +411,32 @@ async fn replace_one_match_with_capture_groups() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn dropping_the_subscription_cancels_the_walk() {
-    let files: Vec<(String, String)> = (0..3000)
-        .map(|i| (format!("d{}/f{i}.txt", i % 30), "needle\n".to_owned()))
+    let files: Vec<(String, String)> = (0..200)
+        .map(|i| (format!("d{}/f{i}.txt", i % 10), "needle\n".to_owned()))
         .collect();
     let refs: Vec<(&str, &str)> = files
         .iter()
         .map(|(a, b)| (a.as_str(), b.as_str()))
         .collect();
     let h = Harness::new(&refs).await;
+    // Each walk waits after every file it finds until it is cancelled, so it
+    // can't finish before the unsubscribe arrives, however fast it is.
+    h.search
+        .hold_until_cancelled
+        .store(true, std::sync::atomic::Ordering::Release);
+    let ended = |n: usize| {
+        let search = Arc::clone(&h.search);
+        async move {
+            let deadline = Instant::now() + TIMEOUT;
+            loop {
+                if let Some(s) = search.walks.lock().unwrap().get(n).copied() {
+                    break s;
+                }
+                assert!(Instant::now() < deadline, "the walk ends");
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+    };
     let mut sub = h
         .client
         .subscribe::<sm::Run>(h.params(h.query("needle")), None)
@@ -427,29 +445,17 @@ async fn dropping_the_subscription_cancels_the_walk() {
     // The first file comes at once, before the walk is done.
     let first = sub.next().await.unwrap().unwrap();
     assert!(matches!(first.event, SearchEvent::Files { .. }));
+    assert!(h.search.walks.lock().unwrap().is_empty(), "still walking");
     assert!(sub.unsubscribe().await.unwrap());
-    let deadline = Instant::now() + TIMEOUT;
-    let summary = loop {
-        if let Some(s) = h.search.walks.lock().unwrap().first().copied() {
-            break s;
-        }
-        assert!(Instant::now() < deadline, "the walk ends");
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    };
+    let summary = ended(0).await;
     assert!(summary.cancelled, "{summary:?}");
-    assert!(summary.files < 3000, "{summary:?}");
+    // At most one file per walker thread got through before the cancel.
+    assert!(summary.files < 200, "{summary:?}");
 
     // A feed dropped before anything is read stops the walk too.
     let feed = h.search.run(h.params(h.query("needle"))).await.unwrap();
     drop(feed);
-    let deadline = Instant::now() + TIMEOUT;
-    let summary = loop {
-        if let Some(s) = h.search.walks.lock().unwrap().get(1).copied() {
-            break s;
-        }
-        assert!(Instant::now() < deadline, "the walk ends");
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    };
+    let summary = ended(1).await;
     assert!(summary.cancelled, "{summary:?}");
 }
 

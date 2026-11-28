@@ -59,6 +59,11 @@ use crate::{
 
 /// How long after the last keystroke the search starts.
 pub const DEBOUNCE: Duration = Duration::from_millis(150);
+
+/// After a replace, how long the search waits at most for the tabs that took
+/// its edits to send them to the daemon before it runs again.
+const SYNC_WAIT: Duration = Duration::from_secs(5);
+
 const ROW_HEIGHT: f32 = 24.;
 const MATCH_INDENT: f32 = 26.;
 
@@ -131,6 +136,8 @@ pub struct SearchPane {
     scroll: UniformListScrollHandle,
     _debounce: Option<Task<()>>,
     _run: Option<Task<()>>,
+    /// While a search waits for tabs to send a replace's edits.
+    _sync: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -217,6 +224,7 @@ impl SearchPane {
             scroll: UniformListScrollHandle::new(),
             _debounce: None,
             _run: None,
+            _sync: Vec::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -349,6 +357,7 @@ impl SearchPane {
     pub fn run(&mut self, cx: &mut Context<Self>) {
         self._debounce = None;
         self._run = None;
+        self._sync.clear();
         self.confirm = None;
         self.results.clear();
         self.rows.clear();
@@ -703,6 +712,9 @@ impl SearchPane {
             if applied {
                 tally.files += 1;
                 tally.matches += file.replaced as usize;
+                if let Some(tab) = file.buffer.and_then(|b| tabs.get(&b)) {
+                    tally.tabs.push(tab.clone());
+                }
             } else {
                 retry.push(asked.clone());
             }
@@ -717,8 +729,9 @@ impl SearchPane {
         Some((again, tally))
     }
 
-    fn finish_replace(&mut self, tally: Tally, cx: &mut Context<Self>) {
+    fn finish_replace(&mut self, mut tally: Tally, cx: &mut Context<Self>) {
         self.replacing = false;
+        let tabs = std::mem::take(&mut tally.tabs);
         let mut note = match (tally.matches, tally.files) {
             (0, _) => "Nothing was replaced".to_owned(),
             (1, _) => "Replaced 1 match".to_owned(),
@@ -728,9 +741,48 @@ impl SearchPane {
         if let Some(first) = tally.errors.first() {
             note.push_str(&format!(" · {} failed: {first}", tally.errors.len()));
         }
-        self.run(cx);
+        self.run_once_synced(tabs, cx);
         self.note = Some(note);
         cx.notify();
+    }
+
+    /// Search again once `tabs`, which just took a replace's edits, have
+    /// sent them all to the daemon (or after [`SYNC_WAIT`]). The edits and
+    /// the search are separate messages that the daemon may handle in either
+    /// order, so searching sooner could find what was just replaced.
+    fn run_once_synced(&mut self, tabs: Vec<Entity<FileEditor>>, cx: &mut Context<Self>) {
+        fn pending(tabs: &[Entity<FileEditor>], cx: &App) -> bool {
+            tabs.iter().any(|t| t.read(cx).has_edits_in_flight())
+        }
+        if !pending(&tabs, cx) {
+            self.run(cx);
+            return;
+        }
+        self._debounce = None;
+        self.confirm = None;
+        self.status = Status::Running;
+        // A tab notifies when the daemon confirms its edits. `run` empties
+        // `_sync`, so the search runs once.
+        self._sync = tabs
+            .iter()
+            .map(|tab| {
+                let tabs = tabs.clone();
+                cx.observe(tab, move |this, _, cx| {
+                    if !this._sync.is_empty() && !pending(&tabs, cx) {
+                        this.run(cx);
+                    }
+                })
+            })
+            .collect();
+        self._run = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SYNC_WAIT).await;
+            this.update(cx, |this, cx| {
+                if !this._sync.is_empty() {
+                    this.run(cx);
+                }
+            })
+            .ok();
+        }));
     }
 }
 
@@ -740,6 +792,8 @@ struct Tally {
     files: usize,
     matches: usize,
     errors: Vec<String>,
+    /// The tabs that took edits, which the search waits for.
+    tabs: Vec<Entity<FileEditor>>,
 }
 
 impl Tally {

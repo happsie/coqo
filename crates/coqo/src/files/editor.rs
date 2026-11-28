@@ -493,6 +493,13 @@ impl FileEditor {
         self.session.as_ref().is_some_and(|s| s.replica.is_synced())
     }
 
+    /// Whether the tab is open with edits the daemon hasn't confirmed yet.
+    pub fn has_edits_in_flight(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|s| !s.replica.is_synced())
+    }
+
     /// The bar above the editor, if any.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn notice(&self) -> Option<&Notice> {

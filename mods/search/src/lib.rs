@@ -12,7 +12,10 @@
 //!   [`Matcher`].
 //! - [`Matcher::search`] walks folders in parallel with ripgrep's crates:
 //!   `.gitignore`, `.ignore` and git's excludes are respected (in and out of
-//!   a repository), `.git` is skipped, hidden files are searched, binary
+//!   a repository), `.git` is skipped, and so are folders below a root that
+//!   stand apart (nested repositories and worktrees, `CACHEDIR.TAG` caches,
+//!   `node_modules`: `coqo_mod_api::workspace::stands_apart`, the rule the
+//!   file tree and the watcher use). Hidden files are searched, binary
 //!   files are not. Files whose text the caller already has (open buffers
 //!   with unsaved edits) are searched in that text instead of on disk.
 //!   Results go to a sink one file at a time, as soon as each file is done.

@@ -12,7 +12,8 @@
 //! with `CACHEDIR.TAG` (Cargo's `target/`, for one) is build output, and so
 //! is `node_modules`. The tree shows them dimmed; the watcher puts no OS
 //! watches inside them (ADR 0027), and the file index (`fs/find`) leaves
-//! them out.
+//! them out. The rule itself is `coqo_mod_api::workspace::stands_apart`,
+//! which the search mod uses too.
 //!
 //! Matchers are cached per directory and revalidated against the
 //! `.gitignore` file's size and mtime on each use, so edits are picked up
@@ -65,19 +66,11 @@ impl IgnoreChain {
     }
 }
 
-/// Whether the folder `dir` (below a root) is a world of its own: a nested
-/// git repository or worktree (a `.git` file or folder in it), a cache
-/// folder tagged with `CACHEDIR.TAG` (<https://bford.info/cachedir/>), or a
-/// `node_modules` folder. Costs up to two `stat`s; callers ask only about
-/// folders the ignore files keep.
-pub(crate) fn stands_apart(dir: &Path) -> bool {
-    dir.file_name().is_some_and(|n| n == "node_modules")
-        || dir.join(".git").symlink_metadata().is_ok()
-        || dir
-            .join("CACHEDIR.TAG")
-            .symlink_metadata()
-            .is_ok_and(|m| m.is_file())
-}
+// Whether a folder below a root is a world of its own: a nested repository
+// or worktree, a `CACHEDIR.TAG` cache or `node_modules`. The rule lives in
+// `coqo-mod-api` so mods that walk a root (search) share the one copy (ADR
+// 0027); callers ask only about folders the ignore files keep.
+pub(crate) use coqo_mod_api::workspace::stands_apart;
 
 fn eval(matchers: &[Arc<Gitignore>], path: &Path, is_dir: bool) -> bool {
     for m in matchers.iter().rev() {

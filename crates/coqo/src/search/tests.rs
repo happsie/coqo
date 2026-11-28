@@ -288,8 +288,10 @@ fn search_open_a_match_and_replace_all() {
         std::fs::read_to_string(ui.folder.join("src/main.rs")).unwrap(),
         "fn main() {\n    greet(\"world\");\n}\n"
     );
-    // The search ran again: nothing left.
-    assert!(ui.results().is_empty());
+    // The search ran again, once the tabs had sent the edits: nothing left.
+    ui.wait_for("the search again", |ui| {
+        ui.done() && ui.results().is_empty()
+    });
 }
 
 #[test]

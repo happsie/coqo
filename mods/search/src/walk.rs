@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use coqo_mod_api::workspace::stands_apart;
 use ignore::overrides::{Override, OverrideBuilder};
 use ignore::{WalkBuilder, WalkState};
 
@@ -107,6 +108,8 @@ impl Matcher {
     ///
     /// Respects `.gitignore`, `.ignore`, `.git/info/exclude` and the user's
     /// global excludes, in and out of a git repository; skips `.git`,
+    /// folders below a root that [stand apart](stands_apart) (nested
+    /// repositories and worktrees, `CACHEDIR.TAG` caches, `node_modules`),
     /// symlinks, binary files and files over [`MAX_FILE_BYTES`]. Hidden
     /// files are searched. Unreadable files are skipped.
     pub fn search(
@@ -144,7 +147,16 @@ impl Matcher {
                 .follow_links(false)
                 .max_filesize(Some(MAX_FILE_BYTES))
                 .overrides(overrides)
-                .filter_entry(|e| e.file_name() != ".git")
+                // `.git`, and folders below the root that stand apart
+                // (nested repositories and worktrees, `CACHEDIR.TAG` caches,
+                // `node_modules`), as the file tree and the watcher skip
+                // them. The root itself never does.
+                .filter_entry(|e| {
+                    e.file_name() != ".git"
+                        && (e.depth() == 0
+                            || !e.file_type().is_some_and(|t| t.is_dir())
+                            || !stands_apart(e.path()))
+                })
                 .build_parallel();
             walker.run(|| {
                 let mut on_disk = Matcher::file_searcher();
