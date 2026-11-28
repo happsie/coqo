@@ -75,6 +75,12 @@ impl Env {
         connect(&self.paths(), config()).await.unwrap().0
     }
 
+    /// What spawned (`--detached`) daemons logged, for failure messages.
+    fn detached_log(&self) -> String {
+        std::fs::read_to_string(self.data.join("logs/coqod.log"))
+            .unwrap_or_else(|e| format!("(no log: {e})"))
+    }
+
     fn connect_options(&self, idle_exit: &str) -> ConnectOptions {
         let mut options = ConnectOptions::new(config());
         let mut spawn = SpawnOptions::new(COQOD);
@@ -363,7 +369,11 @@ async fn concurrent_spawns_share_one_daemon() {
         .collect();
     let mut conns = Vec::new();
     for task in tasks {
-        conns.push(task.await.unwrap().unwrap());
+        // If a daemon fails, say why: its log is all there is.
+        let conn = task.await.unwrap().unwrap_or_else(|e| {
+            panic!("connect_or_spawn: {e}\ncoqod log:\n{}", env.detached_log())
+        });
+        conns.push(conn);
     }
     let mut pids = Vec::new();
     for conn in &conns {

@@ -390,12 +390,32 @@ pub fn open_in_memory_with(migrations: &[Migration]) -> Result<Connection> {
 
 fn configure(conn: &Connection) -> Result<()> {
     conn.busy_timeout(BUSY_TIMEOUT)?;
-    // `journal_mode` returns the resulting mode ("wal", or "memory" for
-    // in-memory databases), so read it rather than using `pragma_update`.
-    let _mode: String = conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))?;
+    set_wal(conn)?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", true)?;
     Ok(())
+}
+
+/// Switch to WAL (a setting stored in the file, so only its first opener
+/// changes anything). SQLite does not call the busy handler for this: while
+/// another connection is switching a fresh file, it fails at once with
+/// "database is locked". Wait that out here, within [`BUSY_TIMEOUT`].
+fn set_wal(conn: &Connection) -> Result<()> {
+    let deadline = std::time::Instant::now() + BUSY_TIMEOUT;
+    loop {
+        // `journal_mode` returns the resulting mode ("wal", or "memory" for
+        // in-memory databases), so read it rather than using `pragma_update`.
+        match conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get::<_, String>(0)) {
+            Ok(_mode) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 /// The global database, `coqo.db`: workspaces (tables `workspaces`,
@@ -589,6 +609,40 @@ mod tests {
                     "upgrade from version {start}"
                 );
             }
+        }
+    }
+
+    /// Several connections opening (and migrating) one fresh file at once,
+    /// as the daemon's services do for a new workspace, all succeed: they
+    /// wait for each other instead of failing with "database is locked" or
+    /// applying a migration twice.
+    #[test]
+    fn concurrent_opens_of_a_fresh_database_all_succeed() {
+        for round in 0..20 {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("ws/workspace.db");
+            let barrier = std::sync::Barrier::new(8);
+            std::thread::scope(|s| {
+                let opens: Vec<_> = (0..8)
+                    .map(|_| {
+                        let (path, barrier) = (&path, &barrier);
+                        s.spawn(move || {
+                            barrier.wait();
+                            let conn = open_with(path, GLOBAL_MIGRATIONS)?;
+                            // A write right away, as the stores do.
+                            conn.execute_batch(
+                                "CREATE TABLE IF NOT EXISTS t (x); INSERT INTO t VALUES (1);",
+                            )?;
+                            Ok::<_, crate::StorageError>(())
+                        })
+                    })
+                    .collect();
+                for (i, open) in opens.into_iter().enumerate() {
+                    if let Err(e) = open.join().unwrap() {
+                        panic!("round {round}, connection {i}: {e}");
+                    }
+                }
+            });
         }
     }
 

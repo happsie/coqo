@@ -306,7 +306,7 @@ fn ask(
 ) -> Question {
     let (ws, root) = ui.place().unwrap();
     let params = CreateParams {
-        workspace: ws,
+        workspace: ws.clone(),
         session: "s-test".into(),
         kind,
         body: body.into(),
@@ -328,11 +328,20 @@ fn ask(
         }],
     };
     let agent = ui.agent.clone();
-    fixture
+    let q = fixture
         .daemon
         .runtime
         .block_on(async move { agent.request::<qm::Create>(params).await })
-        .unwrap()
+        .unwrap();
+    // The window's question store hears of it on its own subscription:
+    // wait for that, so what the test does next (opening it from a card,
+    // say) finds it.
+    ui.wait_for("the question in the window's store", |ui| {
+        ui.cx.update(|cx| {
+            questions_for(&ws, cx).is_some_and(|store| store.read(cx).get(q.id).is_some())
+        })
+    });
+    q
 }
 
 /// The daemon's state of question `id`.
