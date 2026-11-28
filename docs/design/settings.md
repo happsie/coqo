@@ -50,8 +50,32 @@ Every change applies at once (the theme switches live) and is written to the fil
 
 ## Pages of their own
 
-`settings::page::register_page(cx, CustomPage::new(id, title, order, build))` adds a page to the section list. `build` makes its view once per tab, and the same id replaces a page. The page fills the main column; there is no scope bar on it. The keyboard shortcuts page (`KEYBOARD_PAGE`) is a placeholder card until #354 registers its editor under that id. The card names `keybindings.toml` and its path.
+`settings::page::register_page(cx, CustomPage::new(id, title, order, build))` adds a page to the section list. `build` makes its view once per tab, and the same id replaces a page. The page fills the main column; there is no scope bar on it. The keyboard shortcuts page (`KEYBOARD_PAGE`) is registered this way by `settings/keybindings.rs`.
+
+## Keyboard shortcuts page
+
+Opened from the section list, by "Open keyboard shortcuts" in the palette (Preferences), or by `OpenSettingsAt { section: "keyboard" }`. The command has no default keys: `Ctrl/Cmd+K Ctrl/Cmd+S` is not free, because `Ctrl/Cmd+K` is bound on its own (the palette's search). A user can bind it on this page.
+
+One `panel` card, 18 px padding, from the top:
+
+1. **Header.** "Keyboard shortcuts" (16 px semibold) with a muted line under it, and **Reset all** (a raised button) on the right while the file overrides anything. It asks first, in a rose bar: "Reset every shortcut to its default? Your own are removed." with **Reset all** (primary) and **Cancel**.
+2. **Problem banner**, as on the other pages (rose on `surface`): a failed write ("Couldn't save: …", for instance when the file is not valid TOML, which is then left untouched) and what the registry reports (bad keys, unknown ids, keys bound twice in one context).
+3. **Search** on a `ground` field: "Search commands or keys". It matches the title, the category, the id and the keys as shown (`ctrl k`).
+4. **The list**, every command of the registry (palette-hidden ones too), grouped by category under a `section_label`, then by title. A row has 12 × 8 px padding, radius 12:
+   - the title and, under it in mono `text_xs` `text_subtle`, the command id;
+   - its keys, one `kbd` cap per key sequence (a chord shows as `Ctrl K Ctrl S`), or "Unbound";
+   - where they come from: a **DEFAULT** tag (`surface_strong`) or a **YOURS** tag (sage at 25 % on `surface`);
+   - **Reset** (`text_xs`, `text_subtle`) when the file sets the command, and **Change**.
+5. The file's path, in mono `text_sm` `text_subtle`.
+
+**Recording.** **Change** turns the row into a `panel_raised` card with a sage hairline, with the state label "Recording…" in sage and the keystrokes so far as caps. While it lasts, every keystroke is taken by the page before any binding or text field sees it (a GPUI keystroke interceptor), so nothing fires, chords included; a modifier alone is ignored. `Escape` on its own cancels. **Save** writes the keys; **Cancel** drops them. Change replaces all of the command's keys with the recorded sequence.
+
+**Conflicts.** If another command in the same key context has the recorded keys, a rose bar in the row says "Ctrl K is already used by Search" with **Replace** (primary) and **Cancel**. Replace removes those keys from the other command (it keeps its other keys) and gives them to this one. Nothing is written before that choice. The same keys in different contexts are no conflict.
+
+**The file.** `keybindings.toml` in `$COQO_CONFIG_DIR` is edited with `toml_edit`: only the entries changed are touched, and the file's comments, order and other entries stay. Keys are written in the file's syntax (`mod+k mod+s`, `mod` being `cmd` on macOS and `ctrl` elsewhere), a single sequence as a string and several as a list. Reset removes the command's entry; Reset all removes every entry. After each write the registry reads the file again (`registry::load_user_keys`), so the bindings apply at once.
 
 ## Screenshots
 
 Offscreen, from `settings::tests::settings_screenshots` (`#[ignore]`, needs a GPU), in dark and light, for Appearance and Claude Code: [`settings-dark.png`](screenshots/settings-dark.png), [`settings-light.png`](screenshots/settings-light.png), [`settings-claude-dark.png`](screenshots/settings-claude-dark.png), [`settings-claude-light.png`](screenshots/settings-claude-light.png).
+
+Keyboard shortcuts, with a recording row that has a conflict and a command with the user's own keys: [`keyboard-dark.png`](screenshots/keyboard-dark.png), [`keyboard-light.png`](screenshots/keyboard-light.png), from `settings::keybindings::tests::keybindings_screenshots` (`#[ignore]`, needs a GPU).

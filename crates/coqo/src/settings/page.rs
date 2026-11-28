@@ -12,8 +12,8 @@
 //! **Pages of their own** (the keyboard shortcuts editor, #354) join the
 //! section list through [`register_page`]: an id, a title, an order and a
 //! function that builds the page's view. Registering the same id again
-//! replaces it, so the placeholder "Keyboard shortcuts" page
-//! ([`KEYBOARD_PAGE`]) is swapped out by its editor with one call:
+//! replaces it. The "Keyboard shortcuts" page ([`KEYBOARD_PAGE`]) is
+//! registered like this by `settings::keybindings`:
 //!
 //! ```ignore
 //! settings::page::register_page(cx, CustomPage::new(
@@ -79,8 +79,8 @@ const OPEN_KEY: &str = "cmd-,";
 #[cfg(not(target_os = "macos"))]
 const OPEN_KEY: &str = "ctrl-,";
 
-/// Register the tab kind, the command and its key, and the placeholder
-/// keyboard shortcuts page. Called by `shell::init`.
+/// Register the tab kind, the command and its key, and the keyboard
+/// shortcuts page. Called by `shell::init`.
 pub fn init(cx: &mut App) {
     crate::commands::register(
         cx,
@@ -93,17 +93,7 @@ pub fn init(cx: &mut App) {
         .key(OPEN_KEY)],
     );
     register_tab_kind(cx, KIND, |_, window, cx| Some(new(window, cx)));
-    if !cx
-        .try_global::<CustomPages>()
-        .is_some_and(|p| p.0.iter().any(|p| p.id.as_ref() == KEYBOARD_PAGE))
-    {
-        register_page(
-            cx,
-            CustomPage::new(KEYBOARD_PAGE, "Keyboard shortcuts", 900, |_, cx| {
-                cx.new(|_| KeyboardPlaceholder).into()
-            }),
-        );
-    }
+    super::keybindings::register(cx);
 }
 
 /// A new Settings tab.
@@ -1055,41 +1045,6 @@ impl Render for SettingsPage {
                     .flex_col()
                     .gap(px(10.))
                     .children(main),
-            )
-    }
-}
-
-/// The keyboard shortcuts page until its editor lands (#354).
-struct KeyboardPlaceholder;
-
-impl Render for KeyboardPlaceholder {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.tokens();
-        let p = &t.palette;
-        let path = crate::commands::keyfile::path().display().to_string();
-        panel(p.panel, cx)
-            .id("settings-keyboard")
-            .test_support()
-            .px(px(18.))
-            .py(px(18.))
-            .gap(px(8.))
-            .child(
-                div()
-                    .text_size(px(16.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Keyboard shortcuts"),
-            )
-            .child(
-                div()
-                    .text_color(p.text_muted.hsla())
-                    .child("Change a command's keys in keybindings.toml, by command id, then run “Reload keybindings” from the palette. An editor for them is on its way."),
-            )
-            .child(
-                div()
-                    .text_size(t.metrics.text_sm)
-                    .font_family(t.metrics.font_mono.clone())
-                    .text_color(p.text_subtle.hsla())
-                    .child(path),
             )
     }
 }

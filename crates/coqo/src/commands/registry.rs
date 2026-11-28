@@ -194,6 +194,12 @@ pub struct Bound {
 }
 
 impl CommandRegistry {
+    /// The registry, if any command was registered.
+    #[cfg(test)]
+    pub fn try_get(cx: &App) -> Option<&Self> {
+        cx.try_global::<Self>()
+    }
+
     /// Add `command`, replacing the one with its id.
     pub fn add(&mut self, command: Command) {
         match self.commands.iter_mut().find(|c| c.id == command.id) {
@@ -233,6 +239,22 @@ impl CommandRegistry {
             Some(keys) => keys.iter().map(|k| k.clone().into()).collect(),
             None => self.get(id).map(|c| c.keys.clone()).unwrap_or_default(),
         }
+    }
+
+    /// Whether the user's file sets keys for command `id`.
+    pub fn is_overridden(&self, id: &str) -> bool {
+        self.user.overrides.contains_key(id)
+    }
+
+    /// Whether the user's file overrides any command.
+    pub fn has_overrides(&self) -> bool {
+        !self.user.overrides.is_empty()
+    }
+
+    /// The user's keybindings file: where it was loaded from, or the
+    /// default place.
+    pub fn keys_path(&self) -> PathBuf {
+        self.user_path.clone().unwrap_or_else(keyfile::path)
     }
 
     /// Every binding the commands have now. The user's come after the

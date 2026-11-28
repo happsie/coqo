@@ -82,7 +82,7 @@ The maintainer wants this for the first release (2026-11-30). It must have a the
   - text, number and list: a text field, saved when the typing pauses
 - A User / Workspace switch picks the file the page writes. Problems show as a banner (file-level and unknown keys) or under their row.
 - "Open settings" in the palette and `Ctrl/Cmd+,` open the tab.
-- **Pages of their own** join the section list with `settings::page::register_page(cx, CustomPage::new(id, title, order, build))`. The same id replaces a page. "Keyboard shortcuts" (`KEYBOARD_PAGE`, order 900) is a placeholder that #354 replaces with its editor.
+- **Pages of their own** join the section list with `settings::page::register_page(cx, CustomPage::new(id, title, order, build))`. The same id replaces a page. "Keyboard shortcuts" (`KEYBOARD_PAGE`, order 900) is the shortcuts editor (#354, `settings/keybindings.rs`).
 
 ## Consequences
 

@@ -211,6 +211,101 @@ pub fn display(keys: &str, mac: bool) -> String {
         .join(" ")
 }
 
+/// GPUI keys (`ctrl-k ctrl-s`) in the file's own syntax (`mod+k mod+s`):
+/// `mod` stands for the platform's main modifier (`cmd` on macOS, `ctrl`
+/// elsewhere), so a file travels between machines.
+pub fn to_file_syntax(keys: &str, mac: bool) -> String {
+    keys.split_whitespace()
+        .map(|chord| {
+            let parts = if chord.len() > 1 {
+                split_chord(chord, '-')
+            } else {
+                vec![chord.to_owned()]
+            };
+            let Some((key, modifiers)) = parts.split_last() else {
+                return chord.to_owned();
+            };
+            let main = if mac { "cmd" } else { "ctrl" };
+            let mut out: Vec<String> = modifiers
+                .iter()
+                .map(|m| {
+                    if m == main {
+                        "mod".to_owned()
+                    } else {
+                        m.clone()
+                    }
+                })
+                .collect();
+            out.push(key.clone());
+            out.join("+")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Set command `id`'s keys in the file at `path` (`Some`: one entry, a
+/// string for one key sequence and a list for several, an empty list
+/// unbinds) or remove its entry (`None`: back to the defaults). The rest of
+/// the file, comments included, is kept as it is. `keys` are in the file's
+/// syntax ([`to_file_syntax`]).
+pub fn write_entry(path: &Path, id: &str, keys: Option<&[String]>) -> Result<(), String> {
+    edit(path, |doc| match keys {
+        None => {
+            doc.remove(id);
+        }
+        Some(keys) => {
+            let mut new = match keys {
+                [one] => toml_edit::value(one.as_str()),
+                many => toml_edit::value(
+                    many.iter()
+                        .map(String::as_str)
+                        .collect::<toml_edit::Array>(),
+                ),
+            };
+            // The old value's spacing and trailing comment stay.
+            if let (Some(old), Some(value)) =
+                (doc.get(id).and_then(|i| i.as_value()), new.as_value_mut())
+            {
+                *value.decor_mut() = old.decor().clone();
+            }
+            doc[id] = new;
+        }
+    })
+}
+
+/// Remove every entry of the file at `path`, keeping its comments.
+pub fn remove_all(path: &Path) -> Result<(), String> {
+    edit(path, |doc| {
+        let ids: Vec<String> = doc.iter().map(|(k, _)| k.to_owned()).collect();
+        for id in ids {
+            doc.remove(&id);
+        }
+    })
+}
+
+fn edit(path: &Path, change: impl FnOnce(&mut toml_edit::DocumentMut)) -> Result<(), String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| {
+        format!(
+            "{FILE_NAME} is not valid TOML, fix it by hand first: {}",
+            e.message()
+        )
+    })?;
+    change(&mut doc);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, doc.to_string())
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
 fn key_name(key: &str) -> String {
     match key {
         "enter" => "Enter".into(),
@@ -325,5 +420,72 @@ mod tests {
         std::fs::write(dir.path().join(FILE_NAME), "\"a.b\" = \"mod+b\"").unwrap();
         let keys = read(&dir.path().join(FILE_NAME), true);
         assert_eq!(keys.overrides["a.b"], vec!["cmd-b".to_owned()]);
+    }
+
+    #[test]
+    fn keys_are_written_in_the_files_syntax() {
+        assert_eq!(to_file_syntax("ctrl-shift-p", false), "mod+shift+p");
+        assert_eq!(to_file_syntax("cmd-k cmd-s", true), "mod+k mod+s");
+        assert_eq!(to_file_syntax("ctrl-k", true), "ctrl+k");
+        assert_eq!(to_file_syntax("ctrl--", false), "mod+-");
+        assert_eq!(to_file_syntax("ctrl-+", false), "mod++");
+        assert_eq!(to_file_syntax("j", false), "j");
+        for keys in [
+            "ctrl-shift-p",
+            "ctrl-k ctrl-s",
+            "ctrl--",
+            "ctrl-+",
+            "alt-j",
+            "shift-f8",
+            "-",
+            "+",
+        ] {
+            assert_eq!(to_gpui(&to_file_syntax(keys, false), false).unwrap(), keys);
+        }
+    }
+
+    #[test]
+    fn an_entry_is_written_and_removed_keeping_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        std::fs::write(
+            &path,
+            "# my keys\n\"a.b\" = \"mod+b\"  # keep\n\n# more\n\"c.d\" = [\"j\", \"down\"]\n\n# the end\n",
+        )
+        .unwrap();
+        write_entry(&path, "a.b", Some(&["mod+x".into()])).unwrap();
+        write_entry(&path, "e.f", Some(&["mod+k mod+s".into(), "f1".into()])).unwrap();
+        write_entry(&path, "g.h", Some(&[])).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("# my keys") && text.contains("# keep") && text.contains("# more"),
+            "{text}"
+        );
+        let keys = parse(&text, false);
+        assert_eq!(keys.overrides["a.b"], vec!["ctrl-x".to_owned()]);
+        assert_eq!(
+            keys.overrides["c.d"],
+            vec!["j".to_owned(), "down".to_owned()]
+        );
+        assert_eq!(
+            keys.overrides["e.f"],
+            vec!["ctrl-k ctrl-s".to_owned(), "f1".to_owned()]
+        );
+        assert!(keys.overrides["g.h"].is_empty());
+        write_entry(&path, "c.d", None).unwrap();
+        assert!(
+            !parse(&std::fs::read_to_string(&path).unwrap(), false)
+                .overrides
+                .contains_key("c.d")
+        );
+        remove_all(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            parse(&text, false).overrides.is_empty() && text.contains("# the end"),
+            "{text}"
+        );
+        std::fs::write(&path, "not [toml").unwrap();
+        assert!(write_entry(&path, "a.b", None).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not [toml");
     }
 }

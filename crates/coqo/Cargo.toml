@@ -29,6 +29,9 @@ similar = "2"
 serde_json = "1"
 # The user's keybindings file.
 toml = "1"
+# `keybindings.toml`: the shortcuts editor writes one entry keeping the
+# user's comments (as the daemon does for `settings.toml`).
+toml_edit = "0.25"
 # Findings written as text: `file:line` references in a chat message (#345).
 regex = "1"
 # The daemon connection runs on its own tokio runtime; GPUI is not tokio.
