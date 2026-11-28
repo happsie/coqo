@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! `git status`: the branch and every changed path, from gix.
+//! `git status`: the branch and every changed path, from gix, with renames
+//! paired on each side as `git status` pairs them ([`crate::rename`]).
 
 use std::collections::BTreeMap;
 
 use gix::bstr::ByteSlice as _;
 use gix::status::plumbing::index_as_worktree::{self as iw, EntryStatus};
 
+use crate::diff::{self, Side};
 use crate::{GitError, Repo, Result};
 
 /// How a path changed on one side (staged: `HEAD` → index; unstaged:
@@ -23,6 +25,10 @@ pub enum Change {
     TypeChanged,
     /// Not tracked (unstaged only).
     Untracked,
+    /// Moved here from another path, contents at least 50% the same
+    /// (`git status` and `git diff -M` with default settings). The entry's
+    /// `orig_path` says from where.
+    Renamed,
 }
 
 impl Change {
@@ -34,6 +40,7 @@ impl Change {
             Change::Deleted => 'D',
             Change::TypeChanged => 'T',
             Change::Untracked => '?',
+            Change::Renamed => 'R',
         }
     }
 }
@@ -84,6 +91,10 @@ pub struct StatusEntry {
     pub unstaged: Option<Change>,
     /// Set for an unmerged path; `staged` and `unstaged` are `None` then.
     pub conflict: Option<Conflict>,
+    /// Where a [`Change::Renamed`] came from: the path in `HEAD` for a
+    /// staged rename, in the index for an unstaged one (an
+    /// intent-to-add file).
+    pub orig_path: Option<String>,
 }
 
 /// Where `HEAD` is.
@@ -136,7 +147,77 @@ fn at<'a>(entries: &'a mut BTreeMap<String, StatusEntry>, path: &[u8]) -> &'a mu
         staged: None,
         unstaged: None,
         conflict: None,
+        orig_path: None,
     })
+}
+
+/// Which side of the status a rename is on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pairing {
+    /// `HEAD` → index: deleted from `HEAD`, added to the index.
+    Staged,
+    /// Index → work tree: deleted from the work tree, added with
+    /// `--intent-to-add`.
+    Unstaged,
+}
+
+impl Repo {
+    /// Pair deletions and additions on one side of `entries` into renames,
+    /// as `git status` does.
+    fn pair_renames(
+        &self,
+        entries: &mut BTreeMap<String, StatusEntry>,
+        side: Pairing,
+    ) -> Result<()> {
+        let change = |e: &StatusEntry| match side {
+            Pairing::Staged => e.staged,
+            Pairing::Unstaged => e.unstaged,
+        };
+        let with = |c: Change| -> Vec<String> {
+            entries
+                .values()
+                .filter(|e| e.conflict.is_none() && change(e) == Some(c))
+                .map(|e| e.path.clone())
+                .collect()
+        };
+        let (gone, new) = (with(Change::Deleted), with(Change::Added));
+        if gone.is_empty() || new.is_empty() {
+            return Ok(());
+        }
+        let (old_side, new_side) = match side {
+            Pairing::Staged => (Side::Rev("HEAD".into()), Side::Index),
+            Pairing::Unstaged => (Side::Index, Side::Worktree),
+        };
+        let mut reader = self.reader();
+        let mut read = |side: &Side, paths: Vec<String>| -> Result<Vec<_>> {
+            let mut out = Vec::new();
+            for p in paths {
+                if let Some(blob) = reader.read(side, &p)? {
+                    out.push((p, blob));
+                }
+            }
+            Ok(out)
+        };
+        let deleted = read(&old_side, gone)?;
+        let added = read(&new_side, new)?;
+        for pair in diff::renames(&mut reader, &deleted, &added)? {
+            let (from, to) = (&deleted[pair.source].0, &added[pair.dest].0);
+            if let Some(src) = entries.get_mut(from) {
+                match side {
+                    Pairing::Staged => src.staged = None,
+                    Pairing::Unstaged => src.unstaged = None,
+                }
+            }
+            if let Some(dst) = entries.get_mut(to) {
+                match side {
+                    Pairing::Staged => dst.staged = Some(Change::Renamed),
+                    Pairing::Unstaged => dst.unstaged = Some(Change::Renamed),
+                }
+                dst.orig_path = Some(from.clone());
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Repo {
@@ -182,7 +263,8 @@ impl Repo {
                             location,
                             ..
                         } => {
-                            // Rename tracking is off; be safe anyway.
+                            // gix's rename tracking is off (renames are
+                            // paired below, as git pairs them); be safe.
                             at(&mut entries, &source_location).staged = Some(Change::Deleted);
                             at(&mut entries, &location).staged = Some(Change::Added);
                         }
@@ -227,6 +309,8 @@ impl Repo {
                 }
             }
         }
+        self.pair_renames(&mut entries, Pairing::Staged)?;
+        self.pair_renames(&mut entries, Pairing::Unstaged)?;
         let entries = entries
             .into_values()
             .map(|mut e| {

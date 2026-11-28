@@ -4,9 +4,13 @@ This page covers the Git sidebar pane (board 1's "Git" tab) and the `git-diff` t
 
 - **Code:** `crates/coqo/src/git/`. It moves into the git mod once the mod API carries UI contributions (#147).
 - **Data:** the daemon's `git/*` methods and `git/changes` (ADR 0018).
-- **Screenshots:** offscreen renders from `git_screenshots`.
+- **Screenshots:** offscreen renders from `git_screenshots` and `git_discard_screenshots` (#226).
 
 ![The Git pane with a staged diff open](screenshots/git-dark.png)
+
+![Discard all, asked, and the note of an earlier discard](screenshots/git-discard-dark.png)
+
+Light: [pane](screenshots/git-light.png), [discard](screenshots/git-discard-light.png).
 
 ## The pane
 
@@ -28,12 +32,29 @@ From top to bottom:
       - With nothing staged, no agent available, or coqod down, it is in `text_subtle` and does nothing; the tooltip says why.
       - A failed draft shows under the buttons in `rose`. A click dismisses it.
       - The command palette's "Draft commit message" (Git) shows the pane and starts a draft.
-- **Groups:** an upper-case section label with the count (`STAGED · 3`, `CHANGES · 3`, and `CONFLICTS · n` only when there are conflicts), plus a "Stage all" or "Unstage all" link in `text_subtle` on the right.
+- **Groups:** an upper-case section label with the count (`STAGED · 3`, `CHANGES · 3`, and `CONFLICTS · n` only when there are conflicts), plus a "Stage all" or "Unstage all" link in `text_subtle` on the right. "Changes" also has "Discard all" before it, which turns `rose` on hover.
 - **File rows:**
   - Sizing: 26 px tall, `text_sm`, radius 9, with a `surface` hover.
-  - Status letter: mono semibold, 14 px wide. `M` is `sand`, `A` is `green`, `D` and `U` are `rose`, `T` is `lavender`, and `?` is `text_subtle`.
+  - Status letter: mono semibold, 14 px wide. `M` is `sand`, `A` is `green`, `D` and `U` are `rose`, `T` is `lavender`, `R` (renamed, #226) is `blue`, and `?` is `text_subtle`.
   - After the letter comes the file name in `text`, then its folder in `text_subtle` at `text_xs`, then a 20 px `+` (stage) or `−` (unstage) button.
+  - A rename reads `old → new`: the old name if the file stayed in its folder, else its old path. Staging or unstaging a rename moves both paths together.
+  - An unstaged row that can be discarded has a 20 px discard button (`undo-2`, `text_muted`) before `+`. Intent-to-add files, unstaged renames, conflicts and nested repositories have none.
   - Clicking a row opens its diff tab.
+- **Discard confirmation:** discarding always asks first, in a card under the "Changes" label. It uses the file tree's delete-card language: `surface`, a `border_strong` hairline, the field radius and 12 px padding.
+  - **Title:** "Discard the changes to “a.rs”?", or "Move “new.txt” to the trash?" when only untracked files are discarded. The icon is in `rose`.
+  - **Files:** one mono `text_xs` line per file, up to six, then "and n more". Each line has the path, then, on the right in `text_subtle`, what the file loses:
+    - `+a −d` (index → work tree);
+    - "untracked";
+    - "brings it back", for a deleted file;
+    - "binary change".
+  - **Detail**, in `text_muted`:
+    - tracked files go back to their staged version (or the last commit's), and this can't be undone;
+    - untracked files move to the trash, and Undo brings them back.
+  - **Unsaved edits:** open tabs with unsaved edits to these files are named, with a `sand` alert icon.
+  - **Buttons:** Cancel is raised. **Discard** (or **Move to Trash**) is `rose` at 18% with a 45% `rose` border.
+- **Discard note:** after a discard, a `surface` band at the top of the pane shows a `green` check and says what happened, for example "Discarded the changes to “a.rs”" or "Moved “new.txt” to the trash".
+  - While the trashed files are still the newest entries in the window's file history, a `sage` **Undo** link restores them. The file tree's undo does the same.
+  - An `x` closes the band.
 - **Stashes:** `STASHES · n`, a "Stash changes" link (untracked files included), and one row per stash with Apply, Pop and Drop links.
 - **Errors:** a failed write shows git's message on a `rose` 12% band above everything else. Clicking the band dismisses it.
 
@@ -53,4 +74,6 @@ The `git-diff` tab kind shows a root's changes in the review surface of board 4 
 - **Opening:** clicking a file row in the pane opens its side's tab, or switches to it, and shows that file.
 - **Label:** the `git-branch` icon, "Changes" or "Staged changes", and `viewed/total` in `text_subtle`.
 - **Staging:** hunk buttons and line selections stage (in "Changes") or unstage (in "Staged changes") through `git/stage` / `git/unstage`.
+- **Discarding lines:** in "Changes", a line selection also offers **Discard n lines…** ([diff.md](diff.md)).
+- **Renames:** a rename is listed under its new path, and the header reads `old → new`. The diff compares the old path's content with the new path's.
 - **Updates:** the tab reloads when `git/changes` reports the sides it shows.

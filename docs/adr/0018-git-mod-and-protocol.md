@@ -31,8 +31,8 @@ PLAN §7.7 wants a git mod: status, hunk and line staging, commit, branches, sta
 
 **Fidelity, checked against the CLI.** Fixture repositories in temporary folders compare every read with `git status --porcelain=v2`, `git diff`, `git diff --numstat`, `git log` and `git blame --porcelain`. The deliberate differences are documented in the mod:
 - Untracked files are listed one by one (`-uall`).
-- Renames are not detected; a rename shows as a delete plus an add.
-- Contents are raw, with no `.gitattributes` filters or textconv.
+- Renames use git's default detection (#226) whatever `status.renames` or `diff.renames` say.
+- `.gitattributes` apply as in `git diff`, except textconv (#226).
 - Blame covers committed history only.
 - Diffs are Myers with the indent heuristic, and use git's default funcname section headings.
 
@@ -44,6 +44,30 @@ PLAN §7.7 wants a git mod: status, hunk and line staging, commit, branches, sta
   - Staging turns unchosen `-` lines into context and drops unchosen `+` lines.
   - Unstaging does the reverse.
 - A selection that no longer matches the diff fails with `STALE_SELECTION` (1602). Binary files fail with `UNSUPPORTED`.
+
+**Renames (#226).**
+- `git/status` pairs a deleted and an added path on the same side (`HEAD` → index for staged, index → work tree for unstaged) as git does: exact matches first (same blob; a basename match wins), then a unique basename at 75% or more, then git's similarity matrix. That matrix uses spans of up to 64 bytes or one line, a CR before an LF is skipped in text, the top 4 candidates are kept per destination, and the minimum score is 50% with a 1000 × 1000 limit.
+- The entry gets `renamed` on that side and `origPath`, and the old path has no entry. As in git, a staged delete is not paired with an unstaged add.
+- `git/diffFiles` pairs the same way, like `git diff -M`. `git/diff` takes an optional `origPath`: the old side is read from it, and the result echoes it.
+- Line unstaging of a staged rename diffs against `HEAD:<origPath>`, so the rename stays staged.
+- The fixtures compare `--porcelain=v2 --renames` and `diff -M --numstat` path by path.
+
+**Attributes (#226).**
+- Work-tree contents go through `gix`'s filter pipeline before they are compared: eol/`text`, `ident`, `filter.<driver>.clean` and `working-tree-encoding`, as `git add` would.
+- `binary`, `-diff`, `diff` (forced text) and `diff.<driver>.binary` decide what counts as binary. Binary files have no hunks and no line counts, as in `git diff --numstat`'s `-`.
+- `textconv` is not run, because it would execute arbitrary commands from the repository's config for a read.
+
+**`git/discard` (#226)** throws away unstaged changes.
+- `{ paths }` restores tracked files from the index (`git restore --worktree`).
+- Untracked files go to the trash through the workspace's `fs/delete` path (#161). The result lists them, each with an `fs/restore` token, or why it can't be restored.
+- `{ paths: [one], lines }` reverses just those lines in the work tree (`git apply --reverse`, numbered as in index → work tree). `git apply` runs the smudge and clean filters, so CRLF files keep their line ends.
+- It refuses before changing anything:
+  - conflicts;
+  - intent-to-add files and unstaged renames (there is no index version to go back to);
+  - untracked folders git didn't look into (nested repositories);
+  - paths outside the root;
+  - lines of binary, untracked or deleted files.
+- Untracked files are trashed first. If a trash move fails, tracked files are left alone and the error names what was already moved.
 
 **`git/changes`** sends `{ root, kinds }` per workspace, where `kinds` ⊆ `worktree | index | head | refs | stash`. It merges two sources:
 - the workspace's `fs/changes` feed, which is already debounced and ignore-aware, as `worktree`;
@@ -57,11 +81,14 @@ Writes made through `git/*` publish their event at once. The watch starts with t
 
 **UI.** Until the mod API carries UI contributions (#147), the Git sidebar pane and a minimal `git-diff` tab live in the app crate (`crates/coqo/src/git`), the same way Files does.
 - A per-window `GitModel` holds each root's status, branches and stashes, refreshed from `git/changes`.
-- `GitModel::letter(root, path)` gives the per-path letter for the file tree (#163).
+- `GitModel::letter(root, path)` gives the per-path letter for the file tree (#163). A rename is `R`, in `blue`.
+- Discard always asks first. The card lists each file with what it loses: `+a −d` from `git/diffFiles` index → work tree, or "untracked". It says whether the change can be undone, and it names open tabs with unsaved edits to those files.
+- Trashed untracked files go into the window's file history (#291, now one per window and shared by the file tree and the Git pane). The note after a discard offers Undo, and so does the file tree's undo.
+- Discarded changes to tracked files can't be undone. Coqo keeps no copy of them, as with `git restore` or VS Code's Discard, and the card says so.
 
 ## Consequences
 
 - #93 builds its diff component on `git/diff` (any two sides: work tree, index or a revision) and on line staging. The `git-diff` tab is the place it plugs in.
-- Rename detection, attribute filters, discarding changes, and the blame and log views are follow-ups. The protocol has room for all of them. The agent-drafted commit message is ADR 0024.
+- Rename detection, attribute filters and discarding changes landed in #226. The blame and log views are follow-ups, and the protocol has room for them. The agent-drafted commit message is ADR 0024.
 - Every call reopens the repository. That is cheap with `gix`, and it keeps the daemon stateless about repositories. A cache can come later if profiling asks for it.
 - The git-directory watch follows the workspace's `workspace/events`. A root added after the subscription started has its git and common directories watched as soon as its `changed` event lands, and a removed root's directories stop being watched unless another root shares them (#227).

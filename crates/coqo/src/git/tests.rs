@@ -12,8 +12,8 @@ use std::{
 use coqo_mod_git::testing::Fixture as Repo;
 use coqo_protocol::methods::{
     git::{
-        Branch, DiffLine, FileChange, FileDiff, FileSide, Head, Hunk, LineKind, RepoInfo, Stash,
-        StatusEntry, StatusResult,
+        Branch, ChangedFile, DiffLine, FileChange, FileDiff, FileSide, Head, Hunk, LineKind,
+        RepoInfo, Stash, StatusEntry, StatusResult,
     },
     workspace::{self as wsm, RootId, WorkspaceId, WorkspaceInfo, WorkspaceRoot},
 };
@@ -33,12 +33,13 @@ use coqo_ui::{
 use super::{
     chrome::{ChromePart, GitChrome, NO_REPOSITORY},
     diff::{self, DiffTab},
-    model::{GitModel, RootGit},
+    model::{DiscardNotice, GitModel, RootGit},
     pane::{GitPane, Group},
 };
 use crate::{
     daemon::{self, DaemonConfig},
     diff::{DiffView, Status, source::StaticSource, viewed},
+    files::history::History,
     shell::{DEFAULT_WORKSPACE, Shell},
     test_support::{TIMEOUT, TestDaemon},
     workspace::{self, Workspaces},
@@ -705,6 +706,7 @@ fn a_saved_diff_tab_restores_as_its_sides_tab() {
 fn sample_status() -> StatusResult {
     let entry = |path: &str, staged, unstaged| StatusEntry {
         path: path.into(),
+        orig_path: None,
         staged,
         unstaged,
         conflict: None,
@@ -728,6 +730,10 @@ fn sample_status() -> StatusResult {
                 None,
             ),
             entry("mods/git/src/lib.rs", Some(FileChange::Added), None),
+            StatusEntry {
+                orig_path: Some("mods/git/src/read.rs".into()),
+                ..entry("mods/git/src/reader.rs", Some(FileChange::Renamed), None)
+            },
             entry(
                 "crates/coqod/src/workspace/mod.rs",
                 None,
@@ -753,6 +759,7 @@ fn sample_diff() -> FileDiff {
     };
     use LineKind::{Added as A, Context as C, Removed as R};
     FileDiff {
+        orig_path: None,
         path: "crates/coqod/src/routes.rs".into(),
         old: Some(FileSide {
             mode: 0o100644,
@@ -918,4 +925,276 @@ fn git_screenshots() {
         image.save(&path).expect("save png");
         println!("wrote {}", path.display());
     }
+}
+
+/// The Git pane alone, on its panel, for the discard screenshots.
+struct PaneShot(Entity<GitPane>);
+
+impl coqo_ui::gpui::Render for PaneShot {
+    fn render(
+        &mut self,
+        _: &mut Window,
+        cx: &mut coqo_ui::gpui::Context<Self>,
+    ) -> impl coqo_ui::gpui::IntoElement {
+        use coqo_ui::{
+            ActiveTokens as _,
+            gpui::{ParentElement as _, Styled as _, div},
+        };
+        let p = cx.tokens().palette.clone();
+        div().size_full().bg(p.ground.hsla()).p(px(12.)).child(
+            div()
+                .size_full()
+                .p(px(12.))
+                .rounded(px(18.))
+                .bg(p.panel.hsla())
+                .child(self.0.clone()),
+        )
+    }
+}
+
+/// Renders the Git pane asking before "Discard all", with the note of an
+/// earlier discard (#226). Needs a GPU:
+/// `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored git_discard_screenshots`.
+#[test]
+#[ignore = "needs a GPU; run manually"]
+fn git_discard_screenshots() {
+    use coqo_ui::{dock::Dock, test::render_offscreen};
+
+    let dir = std::env::var_os("COQO_SHOT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    for (name, appearance) in [("dark", Appearance::Dark), ("light", Appearance::Light)] {
+        let image = render_offscreen(appearance, size(380., 900.), |window, cx| {
+            let workspace = WorkspaceInfo {
+                id: WorkspaceId("ws".into()),
+                name: "coqo".into(),
+                roots: vec![WorkspaceRoot {
+                    id: RootId(0),
+                    path: "/home/you/code/coqo".into(),
+                    name: "coqo".into(),
+                }],
+                created_at: 0,
+                last_opened_at: 0,
+                open: true,
+            };
+            let model = GitModel::for_window(window, cx);
+            model.update(cx, |m, cx| {
+                let mut root = RootGit::new(RootId(0));
+                root.name = "coqo".into();
+                root.status = Some(sample_status());
+                m.set_for_tests(workspace, vec![root], cx);
+                m.set_notice_for_tests(
+                    DiscardNotice {
+                        root: RootId(0),
+                        text: "Moved “draft.md” to the trash".into(),
+                        ops: Vec::new(),
+                    },
+                    cx,
+                );
+            });
+            let dock = cx.new(Dock::new);
+            let pane = cx.new(|cx| GitPane::new(dock.downgrade(), window, cx));
+            pane.update(cx, |pane, cx| {
+                let entries = pane.rows(Group::Unstaged, cx);
+                pane.request_discard(entries, cx);
+                if let Some(p) = pane.pending_discard_mut() {
+                    let stat = |path: &str, additions, deletions| ChangedFile {
+                        path: path.into(),
+                        change: FileChange::Modified,
+                        orig_path: None,
+                        additions,
+                        deletions,
+                        binary: false,
+                    };
+                    p.stats = Some(vec![
+                        stat("crates/coqod/src/workspace/mod.rs", 12, 3),
+                        stat("docs/PLAN.md", 4, 1),
+                    ]);
+                }
+            });
+            std::mem::forget(model);
+            std::mem::forget(dock);
+            cx.new(|_| PaneShot(pane))
+        })
+        .expect("offscreen render");
+        let path = dir.join(format!("coqo-git-discard-{name}.png"));
+        image.save(&path).expect("save png");
+        println!("wrote {}", path.display());
+    }
+}
+
+impl Ui {
+    fn model(&mut self) -> Entity<GitModel> {
+        let pane = self.pane();
+        self.cx.read(|cx| pane.read(cx).model().clone())
+    }
+
+    fn shows(&mut self, id: &'static str) -> bool {
+        self.frame(|window, _| window.try_find(id).is_some())
+    }
+
+    fn history(&mut self) -> Entity<History> {
+        self.frame(History::for_window)
+    }
+}
+
+/// Every path under `dir`.
+fn walk(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk(&path));
+        }
+        out.push(path);
+    }
+    out
+}
+
+#[test]
+fn discard_files_and_untracked_ones_from_the_git_pane() {
+    let (tmp, repo) = fixture_repo();
+    repo.write("README.md", "# Demo\n\nMore words.\n");
+    repo.write("notes.txt", "todo\n");
+    repo.git(&["mv", "src/lib.rs", "src/core.rs"]);
+    let mut ui = open_ui(repo.path().to_owned(), tmp);
+    ui.click("sidebar-git");
+    ui.wait_for("the changes", |ui| ui.rows(Group::Unstaged).len() == 2);
+    // The rename is one row, with where it came from.
+    let pane = ui.pane();
+    let staged = ui.cx.read(|cx| pane.read(cx).rows(Group::Staged, cx));
+    assert_eq!(staged.len(), 1);
+    assert_eq!(staged[0].path, "src/core.rs");
+    assert_eq!(staged[0].staged, Some(FileChange::Renamed));
+    assert_eq!(staged[0].orig_path.as_deref(), Some("src/lib.rs"));
+    let model = ui.model();
+    let root = ui.cx.read(|cx| model.read(cx).roots()[0].root);
+    assert_eq!(
+        ui.cx.read(|cx| model.read(cx).letter(root, "src/core.rs")),
+        Some('R')
+    );
+
+    // Discard asks first, and says what goes; Cancel leaves it.
+    ui.click(("git-discard", 0usize));
+    assert!(ui.shows("git-discard-confirm"));
+    ui.wait_for("the line counts", |ui| {
+        let pane = ui.pane();
+        ui.cx.read(|cx| {
+            pane.read(cx)
+                .pending_discard()
+                .is_some_and(|p| p.stats.is_some())
+        })
+    });
+    let stats = ui.cx.read(|cx| {
+        pane.read(cx)
+            .pending_discard()
+            .and_then(|p| p.stats.clone())
+            .unwrap()
+    });
+    let readme = stats.iter().find(|f| f.path == "README.md").unwrap();
+    assert_eq!((readme.additions, readme.deletions), (2, 0));
+    ui.click("git-discard-cancel");
+    assert!(!ui.shows("git-discard-confirm"));
+    assert_eq!(repo.read("README.md"), "# Demo\n\nMore words.\n");
+
+    // Yes: back to the index version, and the rename is untouched.
+    ui.click(("git-discard", 0usize));
+    ui.click("git-discard-ok");
+    ui.wait_for("README.md discarded", |ui| {
+        ui.rows(Group::Unstaged).len() == 1
+    });
+    assert_eq!(repo.read("README.md"), "# Demo\n");
+    assert_eq!(ui.rows(Group::Staged).len(), 1);
+    let notice = ui.cx.read(|cx| model.read(cx).notice().cloned()).unwrap();
+    assert_eq!(notice.text, "Discarded the changes to “README.md”");
+    assert!(notice.ops.is_empty());
+    assert!(!ui.shows("git-discard-undo"), "nothing to bring back");
+
+    // An untracked file goes to the (test) trash, and Undo brings it back.
+    ui.click(("git-discard", 0usize));
+    ui.click("git-discard-ok");
+    ui.wait_for("notes.txt trashed", |ui| {
+        ui.rows(Group::Unstaged).is_empty()
+    });
+    assert!(!repo.path().join("notes.txt").exists());
+    let trash = ui.daemon.trash();
+    assert!(
+        walk(&trash).iter().any(|p| p.ends_with("notes.txt")),
+        "in the trash folder"
+    );
+    let history = ui.history();
+    let op = ui
+        .cx
+        .read(|cx| history.read(cx).next_undo().cloned())
+        .unwrap();
+    assert_eq!(op.describe(), "delete of “notes.txt”");
+    assert!(op.cannot_undo().is_none());
+    assert!(ui.shows("git-discard-undo"));
+    ui.click("git-discard-undo");
+    ui.wait_for("notes.txt back", |ui| ui.rows(Group::Unstaged).len() == 1);
+    assert_eq!(repo.read("notes.txt"), "todo\n");
+    assert!(ui.cx.read(|cx| history.read(cx).next_undo().is_none()));
+    assert!(ui.cx.read(|cx| history.read(cx).next_redo().is_some()));
+    assert!(ui.cx.read(|cx| model.read(cx).error().is_none()));
+}
+
+#[test]
+fn discard_a_hunk_and_a_line_from_the_review() {
+    let (tmp, repo) = fixture_repo();
+    repo.write("src/lib.rs", &numbered(40));
+    repo.commit_all("Forty lines");
+    let changed = numbered(40)
+        .replace("line 5\n", "five\n")
+        .replace("line 30\n", "thirty\nthirty b\n");
+    repo.write("src/lib.rs", &changed);
+    let mut ui = open_ui(repo.path().to_owned(), tmp);
+    ui.click("sidebar-git");
+    ui.wait_for("the change", |ui| ui.rows(Group::Unstaged).len() == 1);
+    ui.click(("git-unstaged-row", 0usize));
+    ui.wait_for("the review", |ui| {
+        ui.diff_tabs().len() == 1 && {
+            let view = ui.review();
+            ui.cx.read(|cx| view.read(cx).hunks().len() == 2)
+        }
+    });
+    let view = ui.review();
+    let path = "src/lib.rs";
+
+    // A hunk: asked first, then gone from the work tree only.
+    view.update(&mut ui.cx, |v, cx| v.request_discard_hunk(0, cx));
+    assert!(ui.shows("diff-discard-confirm"));
+    ui.click("diff-discard-cancel");
+    assert!(ui.cx.read(|cx| view.read(cx).pending_discard().is_none()));
+    view.update(&mut ui.cx, |v, cx| v.request_discard_hunk(0, cx));
+    ui.click("diff-discard-ok");
+    ui.wait_for("the hunk discarded", |ui| {
+        let v = ui.review();
+        ui.cx
+            .read(|cx| v.read(cx).hunks().len() == 1 && !v.read(cx).is_staging())
+    });
+    assert_eq!(
+        repo.read(path),
+        numbered(40).replace("line 30\n", "thirty\nthirty b\n")
+    );
+    assert_eq!(repo.git(&["diff", "--cached"]), "");
+
+    // One added line, chosen by selection: the header offers it.
+    let range = coqo_ui::diff::LineRange::lines(path, coqo_ui::diff::Side::New, 31, 31);
+    view.update(&mut ui.cx, |v, cx| v.select_lines(Some(&range), cx));
+    ui.click("diff-discard-lines");
+    assert!(ui.shows("diff-discard-confirm"));
+    ui.click("diff-discard-ok");
+    ui.wait_for("the line discarded", |_| {
+        !repo.read(path).contains("thirty b")
+    });
+    assert_eq!(
+        repo.read(path),
+        numbered(40).replace("line 30\n", "thirty\n")
+    );
+    assert!(ui.cx.read(|cx| view.read(cx).error().is_none()));
+
+    // A source that can't discard offers nothing.
+    assert!(!crate::diff::DiffSource::can_discard(
+        &StaticSource::default()
+    ));
 }

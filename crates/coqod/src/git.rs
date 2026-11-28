@@ -17,6 +17,10 @@
 //! workspace closes (the feeds end then). It follows `workspace/events`, so
 //! a root added later has its git directory watched too.
 //!
+//! **`git/discard`** sends untracked files to the OS trash through the
+//! workspace's `fs/delete` path (#161), so they can be restored; tracked
+//! files go back to their index version through the mod.
+//!
 //! **Access:** every route needs the daemon token. Agents have their own
 //! git; the editor's MCP tools stay to what harnesses lack, so no git tools
 //! are offered to them.
@@ -29,7 +33,9 @@ use std::time::Duration;
 use coqo_mod_api::Service as _;
 use coqo_mod_git::{self as mg, Git, GitError, Repo};
 use coqo_protocol::methods::codes;
-use coqo_protocol::methods::fs::ChangesParams as FsChangesParams;
+use coqo_protocol::methods::fs::{
+    ChangesParams as FsChangesParams, DeleteParams as FsDeleteParams,
+};
 use coqo_protocol::methods::git::{self as gm, GitChangeKind, GitChanges};
 use coqo_protocol::methods::workspace::{EventsParams, RootId, WorkspaceEvent, WorkspaceId};
 use coqo_protocol::{Access, ErrorObject, EventFeed, Router, SeqLog};
@@ -183,8 +189,10 @@ impl GitService {
         let context = p.context.unwrap_or(DEFAULT_CONTEXT).min(MAX_CONTEXT);
         let (base, head) = (side(p.base), side(p.head));
         let path = p.path;
+        let orig = p.orig_path.unwrap_or_else(|| path.clone());
         self.with_repo(&p.workspace, p.root, move |repo| {
-            repo.diff(&path, &base, &head, context).map(file_diff)
+            repo.diff_paths(&orig, &path, &base, &head, context)
+                .map(file_diff)
         })
         .await
     }
@@ -227,6 +235,7 @@ impl GitService {
                     .map(|f| gm::ChangedFile {
                         path: f.path,
                         change: change(f.change),
+                        orig_path: f.orig_path,
                         additions: f.additions,
                         deletions: f.deletions,
                         binary: f.binary,
@@ -375,6 +384,118 @@ impl GitService {
     /// `git/unstage`.
     pub async fn unstage(&self, p: gm::StageParams) -> Result<(), ErrorObject> {
         self.stage_or_unstage(p, false).await
+    }
+
+    /// `git/discard`: chosen lines, or whole files back to the index
+    /// version and untracked files to the trash. Everything is checked
+    /// before anything changes; untracked files go first, so a trash that
+    /// fails leaves the tracked files alone.
+    pub async fn discard(&self, p: gm::DiscardParams) -> Result<gm::DiscardResult, ErrorObject> {
+        if p.paths.is_empty() {
+            return Err(ErrorObject::invalid_params("no paths given"));
+        }
+        if let Some(l) = p.lines {
+            let [path] = <[String; 1]>::try_from(p.paths).map_err(|_| {
+                ErrorObject::invalid_params("a line selection is for exactly one path")
+            })?;
+            let sel = mg::LineSelection {
+                removed: l.removed,
+                added: l.added,
+            };
+            self.with_repo(&p.workspace, p.root, move |repo| {
+                repo.discard_lines(&path, &sel)
+            })
+            .await?;
+            self.changed(&p.workspace, p.root, &[GitChangeKind::Worktree]);
+            return Ok(gm::DiscardResult::default());
+        }
+        let paths = p.paths;
+        // Which are untracked (to the trash), and that the rest can go back
+        // to the index.
+        let (prefix, untracked, tracked) = self
+            .with_repo(&p.workspace, p.root, move |repo| {
+                for path in &paths {
+                    mg::check_path(path.trim_end_matches('/'))?;
+                }
+                let status = repo.status()?;
+                let (mut untracked, mut tracked) = (Vec::new(), Vec::new());
+                for path in paths {
+                    let is_untracked = status.entries.iter().any(|e| {
+                        e.path == path
+                            && e.conflict.is_none()
+                            && e.unstaged == Some(mg::Change::Untracked)
+                    });
+                    match (is_untracked, path.ends_with('/')) {
+                        (true, true) => {
+                            return Err(GitError {
+                                kind: mg::ErrorKind::Unsupported,
+                                message: format!(
+                                    "{path} is a folder git does not look into (a nested repository): delete it yourself"
+                                ),
+                            });
+                        }
+                        (true, false) => untracked.push(path),
+                        (false, _) => tracked.push(path),
+                    }
+                }
+                repo.check_discard(&tracked)?;
+                Ok((repo.prefix().to_owned(), untracked, tracked))
+            })
+            .await?;
+        let mut moves = Vec::with_capacity(untracked.len());
+        for path in untracked {
+            let rel = root_relative(&prefix, &path).ok_or_else(|| {
+                ErrorObject::new(
+                    codes::UNSUPPORTED,
+                    format!("{path} is outside this workspace root: delete it yourself"),
+                )
+            })?;
+            moves.push((path, rel));
+        }
+        let mut trashed = Vec::with_capacity(moves.len());
+        for (path, rel) in moves {
+            let deleted = self
+                .workspaces
+                .delete_entry(FsDeleteParams {
+                    workspace: p.workspace.clone(),
+                    root: p.root,
+                    path: rel.clone(),
+                    permanent: false,
+                })
+                .await;
+            let deleted = match deleted {
+                Ok(d) => d,
+                Err(mut e) => {
+                    // The tracked files are left alone; say which untracked
+                    // ones went already (they are in the OS trash).
+                    if !trashed.is_empty() {
+                        let gone: Vec<&str> = trashed
+                            .iter()
+                            .map(|t: &gm::TrashedFile| t.path.as_str())
+                            .collect();
+                        e.message = format!(
+                            "{}. Already moved to the trash: {}",
+                            e.message,
+                            gone.join(", ")
+                        );
+                        self.changed(&p.workspace, p.root, &[GitChangeKind::Worktree]);
+                    }
+                    return Err(e);
+                }
+            };
+            trashed.push(gm::TrashedFile {
+                path,
+                root_path: rel,
+                restore: deleted.restore,
+                no_restore: deleted.no_restore,
+            });
+        }
+        if !tracked.is_empty() {
+            self.with_repo(&p.workspace, p.root, move |repo| repo.discard(&tracked))
+                .await?;
+        }
+        self.changed(&p.workspace, p.root, &[GitChangeKind::Worktree]);
+        Ok(gm::DiscardResult { trashed })
     }
 
     /// `git/commit`.
@@ -828,6 +949,18 @@ impl GitWatch {
 
 // ---- conversions ------------------------------------------------------------
 
+/// The root-relative path of the repository path `path`, if it is in the
+/// root (`prefix` is the root's folder in the work tree).
+fn root_relative(prefix: &str, path: &str) -> Option<String> {
+    if prefix.is_empty() {
+        return Some(path.to_owned());
+    }
+    path.strip_prefix(prefix)
+        .and_then(|p| p.strip_prefix('/'))
+        .filter(|p| !p.is_empty())
+        .map(str::to_owned)
+}
+
 fn side(s: gm::DiffSide) -> mg::Side {
     match s {
         gm::DiffSide::Worktree => mg::Side::Worktree,
@@ -843,6 +976,7 @@ fn change(c: mg::Change) -> gm::FileChange {
         mg::Change::Deleted => gm::FileChange::Deleted,
         mg::Change::TypeChanged => gm::FileChange::TypeChanged,
         mg::Change::Untracked => gm::FileChange::Untracked,
+        mg::Change::Renamed => gm::FileChange::Renamed,
     }
 }
 
@@ -864,6 +998,7 @@ fn status_entry(e: mg::StatusEntry) -> gm::StatusEntry {
         staged: e.staged.map(change),
         unstaged: e.unstaged.map(change),
         conflict: e.conflict.map(conflict),
+        orig_path: e.orig_path,
     }
 }
 
@@ -884,6 +1019,7 @@ fn file_diff(d: mg::FileDiff) -> gm::FileDiff {
     };
     gm::FileDiff {
         path: d.path,
+        orig_path: d.orig_path,
         old: d.old.map(side),
         new: d.new.map(side),
         binary: d.binary,
@@ -967,6 +1103,7 @@ pub fn register(router: Router, svc: Arc<GitService>) -> Router {
     let router = route!(router, svc, gm::DiffFiles, |s, p| s.diff_files(p));
     let router = route!(router, svc, gm::Stage, |s, p| s.stage(p));
     let router = route!(router, svc, gm::Unstage, |s, p| s.unstage(p));
+    let router = route!(router, svc, gm::Discard, |s, p| s.discard(p));
     let router = route!(router, svc, gm::Commit, |s, p| s.commit(p));
     let router = route!(router, svc, gm::Branches, |s, p| s.branches(p));
     let router = route!(router, svc, gm::SwitchBranch, |s, p| s.switch_branch(p));

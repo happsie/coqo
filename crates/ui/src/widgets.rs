@@ -57,6 +57,8 @@ pub enum Icon {
     LayoutGrid,
     /// A clock with a return arrow: "while you were away".
     History,
+    /// An arrow turning back: discard changes.
+    Undo,
     /// A filled diamond: a question marker in the gutter.
     MarkerDiamond,
     /// A filled triangle pointing up: a popover's caret.
@@ -67,7 +69,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every variant, for tests that check the bundle.
-    pub const ALL: [Icon; 43] = [
+    pub const ALL: [Icon; 44] = [
         Icon::Search,
         Icon::Zap,
         Icon::Bell,
@@ -108,6 +110,7 @@ impl Icon {
         Icon::ArrowUp,
         Icon::LayoutGrid,
         Icon::History,
+        Icon::Undo,
         Icon::MarkerDiamond,
         Icon::CaretUp,
         Icon::CaretDown,
@@ -155,6 +158,7 @@ impl Icon {
             Icon::ArrowUp => "icons/arrow-up.svg",
             Icon::LayoutGrid => "icons/layout-grid.svg",
             Icon::History => "icons/history.svg",
+            Icon::Undo => "icons/undo-2.svg",
             Icon::MarkerDiamond => "icons/marker-diamond.svg",
             Icon::CaretUp => "icons/caret-up.svg",
             Icon::CaretDown => "icons/caret-down.svg",

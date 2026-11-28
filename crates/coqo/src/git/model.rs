@@ -6,11 +6,16 @@
 //! One model per window ([`GitModel::for_window`]), shared by the Git pane,
 //! the diff tabs and anything else that wants per-path status (the file
 //! tree's letters, #163: [`GitModel::letter`]).
+//!
+//! [`GitModel::discard`] (#226) records the untracked files it moves to
+//! the trash in the window's file history, so they come back with the
+//! note's Undo or the file tree's.
 
 use std::collections::HashSet;
 
 use coqo_protocol::methods::{
     codes,
+    fs::{self, EntryKind, RestoreParams},
     git::{self as gm, Branch, GitChangeKind, GitChanges, Stash, StatusEntry, StatusResult},
     workspace::{RootId, WorkspaceId, WorkspaceInfo},
 };
@@ -21,6 +26,7 @@ use coqo_ui::gpui::{
 
 use crate::{
     daemon::{Daemon, DaemonError, DaemonEvent},
+    files::history::{FileOp, History},
     workspace::{Workspaces, WorkspacesEvent},
 };
 
@@ -136,6 +142,43 @@ pub enum StashAction {
     Drop,
 }
 
+/// What the last discard did, for the pane's note (with Undo when it moved
+/// untracked files to the trash).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscardNotice {
+    pub root: RootId,
+    /// "Discarded the changes to “a.rs”", "Moved “new.txt” to the trash".
+    pub text: String,
+    /// The trash moves, as recorded in the window's file history: undo
+    /// restores them.
+    pub ops: Vec<FileOp>,
+}
+
+/// The note's text for a discard of `tracked` files and `trashed` ones.
+pub fn discard_text(tracked: &[String], trashed: &[String]) -> String {
+    let name = |p: &str| {
+        p.trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(p)
+            .to_owned()
+    };
+    let files = |n: usize| if n == 1 { "file" } else { "files" };
+    match (tracked, trashed) {
+        ([one], []) => format!("Discarded the changes to “{}”", name(one)),
+        (t, []) => format!("Discarded the changes to {} {}", t.len(), files(t.len())),
+        ([], [one]) => format!("Moved “{}” to the trash", name(one)),
+        ([], t) => format!("Moved {} untracked files to the trash", t.len()),
+        (t, u) => format!(
+            "Discarded the changes to {} {} and moved {} untracked {} to the trash",
+            t.len(),
+            files(t.len()),
+            u.len(),
+            files(u.len())
+        ),
+    }
+}
+
 /// The git state of one window's workspace.
 pub struct GitModel {
     workspace: Option<WorkspaceInfo>,
@@ -147,6 +190,11 @@ pub struct GitModel {
     stale: HashSet<(RootId, Part)>,
     /// The last write that failed, for the pane to show.
     error: Option<String>,
+    /// What the last discard did.
+    notice: Option<DiscardNotice>,
+    /// The window's file history: trash moves of a discard go in it, so
+    /// the file tree's undo brings them back too (#291).
+    history: Option<Entity<History>>,
     /// Writes in flight.
     busy: usize,
     _changes: Option<Task<()>>,
@@ -187,14 +235,19 @@ impl GitModel {
             return model;
         }
         let workspaces = Workspaces::for_window(window, cx);
-        let model = cx.new(|cx| GitModel::new(workspaces, cx));
+        let history = History::for_window(window, cx);
+        let model = cx.new(|cx| GitModel::new(workspaces, Some(history), cx));
         cx.default_global::<GitModels>()
             .0
             .push((handle, model.downgrade()));
         model
     }
 
-    fn new(workspaces: Option<Entity<Workspaces>>, cx: &mut Context<Self>) -> Self {
+    fn new(
+        workspaces: Option<Entity<Workspaces>>,
+        history: Option<Entity<History>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut subscriptions = Vec::new();
         if let Some(workspaces) = &workspaces {
             subscriptions.push(cx.subscribe(workspaces, |this, workspaces, event, cx| {
@@ -228,6 +281,8 @@ impl GitModel {
             in_flight: HashSet::new(),
             stale: HashSet::new(),
             error: None,
+            notice: None,
+            history,
             busy: 0,
             _changes: None,
             _subscriptions: subscriptions,
@@ -317,6 +372,7 @@ impl GitModel {
             self.roots.clear();
             self.selected = None;
             self.error = None;
+            self.notice = None;
         }
         self.in_flight.clear();
         self.stale.clear();
@@ -565,6 +621,158 @@ impl GitModel {
         }
     }
 
+    /// Discard the unstaged changes of whole files (`git/discard`): tracked
+    /// ones go back to their index version, untracked ones to the trash.
+    /// The trash moves go in the window's file history, so they can be
+    /// undone ([`undo_discard`](Self::undo_discard), or undo in the file
+    /// tree). The pane asks first.
+    pub fn discard(&mut self, root: RootId, paths: Vec<String>, cx: &mut Context<Self>) {
+        let Some(workspace) = self.workspace.as_ref().map(|w| w.id.clone()) else {
+            return;
+        };
+        if paths.is_empty() {
+            return;
+        }
+        self.notice = None;
+        let params = gm::DiscardParams {
+            workspace,
+            root,
+            paths: paths.clone(),
+            lines: None,
+        };
+        self.write::<gm::Discard>(
+            root,
+            params,
+            &[Part::Status],
+            move |this, result, cx| {
+                let trashed: Vec<String> = result.trashed.iter().map(|t| t.path.clone()).collect();
+                let tracked: Vec<String> = paths
+                    .iter()
+                    .filter(|p| !trashed.contains(p))
+                    .cloned()
+                    .collect();
+                let ops: Vec<FileOp> = result
+                    .trashed
+                    .into_iter()
+                    .map(|t| {
+                        let name = t.root_path.rsplit('/').next().unwrap_or(&t.root_path);
+                        let why = format!("“{name}” can't be restored.");
+                        FileOp::Delete {
+                            root,
+                            restore: t.restore.ok_or_else(|| t.no_restore.unwrap_or(why)),
+                            path: t.root_path,
+                            kind: EntryKind::File,
+                        }
+                    })
+                    .collect();
+                if let Some(history) = &this.history {
+                    history.update(cx, |h, _| {
+                        for op in &ops {
+                            h.record(op.clone());
+                        }
+                    });
+                }
+                this.notice = Some(DiscardNotice {
+                    root,
+                    text: discard_text(&tracked, &trashed),
+                    ops,
+                });
+            },
+            cx,
+        );
+    }
+
+    /// What the last discard did, until dismissed.
+    pub fn notice(&self) -> Option<&DiscardNotice> {
+        self.notice.as_ref()
+    }
+
+    pub fn dismiss_notice(&mut self, cx: &mut Context<Self>) {
+        self.notice = None;
+        cx.notify();
+    }
+
+    /// Whether the last discard's trash moves can be undone: they are still
+    /// the newest operations in the window's file history.
+    pub fn can_undo_discard(&self, cx: &App) -> bool {
+        match (&self.notice, &self.history) {
+            (Some(n), Some(h)) => {
+                n.ops.iter().all(|op| op.cannot_undo().is_none()) && h.read(cx).ends_with(&n.ops)
+            }
+            _ => false,
+        }
+    }
+
+    /// Bring back what the last discard moved to the trash (`fs/restore`),
+    /// taking it off the file history as an undo there would.
+    pub fn undo_discard(&mut self, cx: &mut Context<Self>) {
+        if !self.can_undo_discard(cx) {
+            return;
+        }
+        let (Some(notice), Some(history), Some(daemon), Some(workspace)) = (
+            self.notice.take(),
+            self.history.clone(),
+            Daemon::global(cx),
+            self.workspace.as_ref().map(|w| w.id.clone()),
+        ) else {
+            return;
+        };
+        let ops = history.update(cx, |h, _| {
+            let mut taken: Vec<FileOp> = (0..notice.ops.len())
+                .filter_map(|_| h.take_undo())
+                .collect();
+            taken.reverse();
+            taken
+        });
+        let calls: Vec<_> = ops
+            .iter()
+            .filter_map(|op| match op {
+                FileOp::Delete {
+                    root,
+                    path,
+                    restore: Ok(token),
+                    ..
+                } => Some(daemon.read(cx).request::<fs::Restore>(RestoreParams {
+                    workspace: workspace.clone(),
+                    root: *root,
+                    path: path.clone(),
+                    restore: token.clone(),
+                })),
+                _ => None,
+            })
+            .collect();
+        self.busy += 1;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let mut results = Vec::new();
+            for call in calls {
+                results.push(call.await);
+            }
+            this.update(cx, |this, cx| {
+                this.busy = this.busy.saturating_sub(1);
+                let mut failed = None;
+                history.update(cx, |h, _| {
+                    for (op, result) in ops.into_iter().zip(results) {
+                        match result {
+                            Ok(_) => h.undone(op),
+                            Err(err) => {
+                                failed.get_or_insert(err.to_string());
+                                h.put_back(op, true);
+                            }
+                        }
+                    }
+                });
+                if let Some(err) = failed {
+                    this.error = Some(format!("Couldn't restore from the trash: {err}"));
+                }
+                this.load(notice.root, Part::Status, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Commit what's staged.
     pub fn commit(&mut self, root: RootId, message: String, cx: &mut Context<Self>) {
         let Some(workspace) = self.workspace.as_ref().map(|w| w.id.clone()) else {
@@ -688,6 +896,13 @@ impl GitModel {
         self.roots = roots;
         cx.notify();
     }
+
+    /// Show `notice` as the last discard's (screenshots).
+    #[cfg(test)]
+    pub fn set_notice_for_tests(&mut self, notice: DiscardNotice, cx: &mut Context<Self>) {
+        self.notice = Some(notice);
+        cx.notify();
+    }
 }
 
 /// Why a root has no status, in words.
@@ -695,5 +910,31 @@ fn unavailable(err: &DaemonError) -> String {
     match err.code() {
         Some(codes::NOT_A_REPOSITORY) => "Not a git repository".into(),
         _ => err.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::discard_text;
+
+    #[test]
+    fn discard_notes() {
+        let s = |v: &[&str]| v.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            discard_text(&s(&["src/a.rs"]), &[]),
+            "Discarded the changes to “a.rs”"
+        );
+        assert_eq!(
+            discard_text(&s(&["a", "b"]), &[]),
+            "Discarded the changes to 2 files"
+        );
+        assert_eq!(
+            discard_text(&[], &s(&["n/new.txt"])),
+            "Moved “new.txt” to the trash"
+        );
+        assert_eq!(
+            discard_text(&s(&["a"]), &s(&["b", "c"])),
+            "Discarded the changes to 1 file and moved 2 untracked files to the trash"
+        );
     }
 }

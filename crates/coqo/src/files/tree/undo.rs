@@ -55,7 +55,7 @@ fn capitalised(s: &str) -> String {
 impl FileTree {
     /// The window's history.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn history(&self) -> &History {
+    pub fn history(&self) -> &Entity<History> {
         &self.history
     }
 
@@ -67,8 +67,8 @@ impl FileTree {
 
     /// Record `op` as if the tree did it.
     #[cfg(test)]
-    pub fn record_for_tests(&mut self, op: FileOp) {
-        self.history.record(op);
+    pub fn record_for_tests(&mut self, op: FileOp, cx: &mut Context<Self>) {
+        self.history.update(cx, |h, _| h.record(op));
     }
 
     pub(super) fn undo(&mut self, _: &UndoFileOp, window: &mut Window, cx: &mut Context<Self>) {
@@ -100,7 +100,7 @@ impl FileTree {
     /// redone.
     pub(super) fn undone(&mut self, op: FileOp, cx: &mut Context<Self>) {
         let text = format!("Undid {}", op.describe());
-        self.history.undone(op);
+        self.history.update(cx, |h, _| h.undone(op));
         self.show_toast(text, cx);
     }
 
@@ -114,9 +114,9 @@ impl FileTree {
             return;
         };
         let taken = if undo {
-            self.history.take_undo()
+            self.history.update(cx, |h, _| h.take_undo())
         } else {
-            self.history.take_redo()
+            self.history.update(cx, |h, _| h.take_redo())
         };
         let Some(op) = taken else {
             return;
@@ -268,12 +268,12 @@ impl FileTree {
                     FileOp::Create { path, .. } | FileOp::Delete { path, .. } => base_name(path),
                 }
                 .to_owned();
-                self.history.put_back(op, undo);
                 let verb = if undo { "undo" } else { "redo" };
                 self.op_error = Some(format!(
                     "Couldn't {verb} the {what}. {}",
                     op_message(&e, &name)
                 ));
+                self.history.update(cx, |h, _| h.put_back(op, undo));
                 cx.notify();
                 return;
             }
@@ -375,7 +375,7 @@ impl FileTree {
             self.undone(done, cx);
         } else {
             let text = format!("Redid {what}");
-            self.history.redone(done);
+            self.history.update(cx, |h, _| h.redone(done));
             self.show_toast(text, cx);
         }
     }
@@ -430,7 +430,11 @@ impl FileTree {
                     }))
             };
         let mut rows = Vec::new();
-        if let Some(op) = self.history.next_undo() {
+        let (next_undo, next_redo) = {
+            let h = self.history.read(cx);
+            (h.next_undo().cloned(), h.next_redo().cloned())
+        };
+        if let Some(op) = next_undo {
             let why = op.cannot_undo();
             let label = format!("Undo {}", op.describe());
             let el = row(
@@ -446,7 +450,7 @@ impl FileTree {
                 el.into_any_element()
             });
         }
-        if let Some(op) = self.history.next_redo() {
+        if let Some(op) = next_redo {
             let label = format!("Redo {}", op.describe());
             rows.push(
                 row(

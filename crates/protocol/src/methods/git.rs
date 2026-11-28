@@ -14,8 +14,13 @@
 //!   (paged, with graph lanes), [`Branches`], [`StashList`].
 //! - Writes, through the user's `git`: [`Stage`] and [`Unstage`] (whole
 //!   files, or chosen lines of one file via `git apply --cached`),
-//!   [`Commit`], [`SwitchBranch`], [`CreateBranch`], [`StashPush`],
+//!   [`Discard`] (back to the index version; untracked files to the
+//!   trash), [`Commit`], [`SwitchBranch`], [`CreateBranch`], [`StashPush`],
 //!   [`StashPop`], [`StashApply`], [`StashDrop`].
+//! - Renames are paired as `git status` and `git diff -M` pair them with
+//!   default settings ([`FileChange::Renamed`] with an `origPath`), and
+//!   work-tree files are read through `.gitattributes` (eol, filters;
+//!   `binary` and `-diff` make a diff binary).
 //! - [`Changes`]: what may have changed (work tree, index, `HEAD`, refs,
 //!   stash), from the workspace watcher and a watch on the git directory.
 //!   Events carry no data: fetch again what the view shows.
@@ -70,10 +75,16 @@ pub enum FileChange {
     TypeChanged,
     /// Not tracked (unstaged only).
     Untracked,
+    /// Moved from another path (`origPath`), with contents at least 50%
+    /// the same: `git status` and `git diff -M` with git's default
+    /// settings. Staged: deleted from `HEAD` and added to the index;
+    /// unstaged: deleted from the work tree and added with
+    /// `--intent-to-add`.
+    Renamed,
 }
 
 impl FileChange {
-    /// The `git status --short` letter: `A`, `M`, `D`, `T` or `?`.
+    /// The `git status --short` letter: `A`, `M`, `D`, `T`, `?` or `R`.
     pub fn letter(self) -> char {
         match self {
             FileChange::Added => 'A',
@@ -81,6 +92,7 @@ impl FileChange {
             FileChange::Deleted => 'D',
             FileChange::TypeChanged => 'T',
             FileChange::Untracked => '?',
+            FileChange::Renamed => 'R',
         }
     }
 }
@@ -109,6 +121,7 @@ pub enum Conflict {
 /// One changed path of [`Status`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct StatusEntry {
     /// Repository-relative. An untracked folder git does not look into (a
     /// nested repository) ends in `/`.
@@ -122,6 +135,10 @@ pub struct StatusEntry {
     /// Set for an unmerged path (then `staged` and `unstaged` are absent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict: Option<Conflict>,
+    /// Where a `renamed` path came from: its path in `HEAD` (staged) or in
+    /// the index (unstaged). The old path has no entry of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orig_path: Option<String>,
 }
 
 impl StatusEntry {
@@ -191,13 +208,18 @@ impl DiffSide {
 /// Params of [`Diff`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct DiffParams {
     /// The workspace.
     pub workspace: WorkspaceId,
     /// The root.
     pub root: RootId,
-    /// The file, repository-relative.
+    /// The file, repository-relative: its path on the new side.
     pub path: String,
+    /// Its path on the old side, for a rename ([`ChangedFile::orig_path`],
+    /// [`StatusEntry::orig_path`]). Default: `path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orig_path: Option<String>,
     /// The old side. Unstaged changes: `index` → `worktree`; staged ones:
     /// `{"rev": "HEAD"}` → `index`.
     pub base: DiffSide,
@@ -276,9 +298,13 @@ pub struct Hunk {
 /// Result of [`Diff`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct FileDiff {
-    /// The file, repository-relative.
+    /// The file, repository-relative (the new side's path).
     pub path: String,
+    /// The old side's path, when it differs (a rename).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orig_path: Option<String>,
     /// The old side's file; absent for an added file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub old: Option<FileSide>,
@@ -312,11 +338,15 @@ pub struct DiffFilesParams {
 /// A file that differs, in [`DiffFilesResult`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct ChangedFile {
-    /// Repository-relative.
+    /// Repository-relative (the new side's path).
     pub path: String,
-    /// `added`, `modified`, `deleted` or `typeChanged`.
+    /// `added`, `modified`, `deleted`, `typeChanged` or `renamed`.
     pub change: FileChange,
+    /// Where a `renamed` file was on the old side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orig_path: Option<String>,
     /// Added lines (0 for binary files).
     pub additions: u32,
     /// Removed lines (0 for binary files).
@@ -364,6 +394,51 @@ pub struct StageParams {
     /// [`STALE_SELECTION`](super::codes::STALE_SELECTION).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lines: Option<LineSelection>,
+}
+
+/// Params of [`Discard`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct DiscardParams {
+    /// The workspace.
+    pub workspace: WorkspaceId,
+    /// The root.
+    pub root: RootId,
+    /// Repository-relative paths with unstaged changes. With `lines`,
+    /// exactly one.
+    pub paths: Vec<String>,
+    /// Only these lines of the file's unstaged diff (`index` → `worktree`,
+    /// 3 lines of context). Lines that are not in the current diff fail
+    /// with [`STALE_SELECTION`](super::codes::STALE_SELECTION).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<LineSelection>,
+}
+
+/// An untracked file [`Discard`] moved to the trash.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct TrashedFile {
+    /// Repository-relative, as given.
+    pub path: String,
+    /// Root-relative: what `fs/restore` takes as `path`.
+    pub root_path: String,
+    /// What `fs/restore` takes to bring it back (undo), while this daemon
+    /// runs; absent when it can't be, and `noRestore` says why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<String>,
+    /// Why it can't be restored, for the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_restore: Option<String>,
+}
+
+/// Result of [`Discard`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct DiscardResult {
+    /// The untracked files, moved to the OS trash.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trashed: Vec<TrashedFile>,
 }
 
 /// Params of [`Commit`].
@@ -744,6 +819,22 @@ impl Method for Unstage {
     const NAME: &'static str = "git/unstage";
     type Params = StageParams;
     type Result = ();
+}
+
+/// `git/discard`: throw away unstaged changes. Tracked files (whole, or
+/// chosen lines of one) go back to their index version: what the work tree
+/// had is gone for good, so ask the user first. Untracked files go to the
+/// OS trash, as `fs/delete` sends them, and can be restored with
+/// `fs/restore`. Refused (`UNSUPPORTED`, before anything changes): an
+/// unmerged path, an intent-to-add file, an untracked folder (a nested
+/// repository), lines of a binary, untracked or deleted file. A file the
+/// trash can't take fails with `TRASH_FAILED`.
+#[derive(Debug)]
+pub enum Discard {}
+impl Method for Discard {
+    const NAME: &'static str = "git/discard";
+    type Params = DiscardParams;
+    type Result = DiscardResult;
 }
 
 /// `git/commit`: commit what is staged (hooks run), or amend.

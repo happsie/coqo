@@ -57,6 +57,7 @@ icons!(
     "arrow-up",
     "layout-grid",
     "history",
+    "undo-2",
     // Coqo's own filled shapes (not Lucide): the question marker in the
     // gutter and the caret of a popover anchored to code.
     "marker-diamond",

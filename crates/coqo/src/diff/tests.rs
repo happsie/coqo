@@ -71,6 +71,7 @@ pub fn file_diff(path: &str, n: u32, changes: &[(u32, &[&str])], context: u32) -
     let deletions = all.iter().filter(|l| l.kind == LineKind::Removed).count() as u32;
     FileDiff {
         path: path.into(),
+        orig_path: None,
         old: Some(FileSide {
             mode: 0o100644,
             oid: None,
@@ -599,6 +600,7 @@ pub(crate) mod view {
             })
         };
         FileDiff {
+            orig_path: None,
             path: path.into(),
             old: side(old),
             new: side(new),

@@ -4,10 +4,13 @@
 //! tree did, newest last, bounded to [`LIMIT`], and those undone, for redo.
 //!
 //! Only what the tree did itself is recorded, never changes on disk from
-//! elsewhere. A new operation clears what was undone, as in an editor. The
-//! history is the window's and starts empty with each workspace.
+//! elsewhere, plus the untracked files the Git pane's Discard moved to the
+//! trash (#226), which undo brings back like a delete. A new operation
+//! clears what was undone, as in an editor. The history is the window's
+//! ([`History::for_window`]) and starts empty with each workspace.
 
 use coqo_protocol::methods::{fs::EntryKind, workspace::RootId};
+use coqo_ui::gpui::{AnyWindowHandle, App, AppContext as _, Entity, Global, WeakEntity, Window};
 
 /// Operations kept at most; the oldest are forgotten.
 pub const LIMIT: usize = 100;
@@ -95,7 +98,40 @@ pub struct History {
     undone: Vec<FileOp>,
 }
 
+/// The histories, by window.
+#[derive(Default)]
+struct Histories(Vec<(AnyWindowHandle, WeakEntity<History>)>);
+
+impl Global for Histories {}
+
 impl History {
+    /// `window`'s history, made on first use. The views that hold it (the
+    /// file tree, the Git pane) keep it alive.
+    pub fn for_window(window: &mut Window, cx: &mut App) -> Entity<History> {
+        let handle = window.window_handle();
+        let all = cx.default_global::<Histories>();
+        all.0.retain(|(_, h)| h.upgrade().is_some());
+        if let Some(history) = all
+            .0
+            .iter()
+            .find(|(w, _)| *w == handle)
+            .and_then(|(_, h)| h.upgrade())
+        {
+            return history;
+        }
+        let history = cx.new(|_| History::default());
+        cx.default_global::<Histories>()
+            .0
+            .push((handle, history.downgrade()));
+        history
+    }
+
+    /// Whether `ops` are the newest operations, in order (the last of them
+    /// on top): what one undo of them all would undo.
+    pub fn ends_with(&self, ops: &[FileOp]) -> bool {
+        !ops.is_empty() && self.done.ends_with(ops)
+    }
+
     /// The tree did `op`: it can be undone, and nothing undone can be redone.
     pub fn record(&mut self, op: FileOp) {
         self.undone.clear();

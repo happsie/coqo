@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Writes, through the user's `git`: staging whole files, commits,
-//! branches and the stash. (Line staging is in `patch.rs`.)
+//! Writes, through the user's `git`: staging and discarding whole files,
+//! commits, branches and the stash. (Lines are in `patch.rs`.)
 
 use std::ffi::OsStr;
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
+use crate::status::Change;
 use crate::{ErrorKind, GitError, Repo, Result, check_path};
 
 /// Environment that would point `git` somewhere else than the work tree it
@@ -116,6 +117,50 @@ impl Repo {
         } else {
             vec!["--literal-pathspecs", "restore", "--staged", "--"]
         };
+        args.extend(paths.iter().map(String::as_str));
+        self.git(args, None).map(drop)
+    }
+
+    /// Check that `paths` can be [discarded](Self::discard): each has an
+    /// unstaged change to a tracked file (modified, deleted or a type
+    /// change). Untracked files have no version to go back to (the daemon
+    /// moves them to the trash instead), and an unmerged path, an
+    /// intent-to-add file or an unstaged rename is left to the user. A path
+    /// without unstaged changes is fine (there is nothing to discard).
+    pub fn check_discard(&self, paths: &[String]) -> Result<()> {
+        for p in paths {
+            check_path(p)?;
+        }
+        let status = self.status()?;
+        for p in paths {
+            let Some(e) = status.entries.iter().find(|e| &e.path == p) else {
+                continue;
+            };
+            let why = match (e.conflict, e.unstaged) {
+                (Some(_), _) => "is unmerged: resolve the conflict first",
+                (None, Some(Change::Untracked)) => {
+                    "is not tracked: there is no version to go back to; delete it instead"
+                }
+                (None, Some(Change::Added | Change::Renamed)) => {
+                    "was added with --intent-to-add: unstage it first"
+                }
+                _ => continue,
+            };
+            return Err(GitError::new(ErrorKind::Unsupported, format!("{p} {why}")));
+        }
+        Ok(())
+    }
+
+    /// Discard the unstaged changes of whole files: each goes back to its
+    /// index version (`git restore --worktree`), a deleted file comes back.
+    /// What the work tree had is gone for good. See
+    /// [`check_discard`](Self::check_discard) for what is refused.
+    pub fn discard(&self, paths: &[String]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        self.check_discard(paths)?;
+        let mut args = vec!["--literal-pathspecs", "restore", "--worktree", "--"];
         args.extend(paths.iter().map(String::as_str));
         self.git(args, None).map(drop)
     }

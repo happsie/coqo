@@ -6,9 +6,10 @@
 //!
 //! A changed file's row ends in its letter: `M` in `sand`, `A` in `green`,
 //! `D` in `rose`, `?` in `text_subtle`, `T` (type change) in `lavender` and
-//! `U` (conflict) in `rose` ([`StatusEntry::letter`]; renames are a `D` and
-//! an `A`). A folder with changes inside has its name tinted in the colour
-//! of the strongest one: a conflict, then a modification, a deletion, a
+//! `U` (conflict) in `rose`, and `R` (renamed here, #226) in `blue`
+//! ([`StatusEntry::letter`]; the old path of a rename has no entry). A
+//! folder with changes inside has its name tinted in the colour of the
+//! strongest one: a conflict, then a modification, a deletion, a rename, a
 //! type change, and new files (added or untracked) in `green`. A deleted
 //! file has no row, so its folder's tint is what shows it.
 
@@ -38,6 +39,7 @@ pub fn tone(letter: char) -> Tone {
         'A' => Tone::Green,
         'D' | 'U' => Tone::Rose,
         'T' => Tone::Lavender,
+        'R' => Tone::Blue,
         _ => Tone::Subtle,
     }
 }
@@ -45,9 +47,10 @@ pub fn tone(letter: char) -> Tone {
 /// How strongly a letter tints its folders, and in what.
 fn folder_tint(letter: char) -> (u8, Tone) {
     match letter {
-        'U' => (5, Tone::Rose),
-        'M' => (4, Tone::Sand),
-        'D' => (3, Tone::Rose),
+        'U' => (6, Tone::Rose),
+        'M' => (5, Tone::Sand),
+        'D' => (4, Tone::Rose),
+        'R' => (3, Tone::Blue),
         'T' => (2, Tone::Lavender),
         _ => (1, Tone::Green),
     }
@@ -145,6 +148,7 @@ mod tests {
     fn entry(path: &str, staged: Option<FileChange>, unstaged: Option<FileChange>) -> StatusEntry {
         StatusEntry {
             path: path.into(),
+            orig_path: None,
             staged,
             unstaged,
             conflict: None,
@@ -220,6 +224,18 @@ mod tests {
         assert_eq!(d.tints.get("tests"), Some(&Tone::Green));
         assert_eq!(d.tints.get("docs"), Some(&Tone::Rose));
         assert_eq!(d.tints.get(""), Some(&Tone::Rose));
+    }
+
+    #[test]
+    fn a_rename_is_blue_and_its_old_path_has_no_letter() {
+        use FileChange::*;
+        let mut renamed = entry("lib/new.rs", Some(Renamed), None);
+        renamed.orig_path = Some("src/old.rs".into());
+        let d = root_decorations(&status("", vec![renamed]));
+        assert_eq!(letter(&d, "lib/new.rs"), Some('R'));
+        assert_eq!(d.badges["lib/new.rs"].tone, Tone::Blue);
+        assert_eq!(letter(&d, "src/old.rs"), None);
+        assert_eq!(d.tints.get("lib"), Some(&Tone::Blue));
     }
 
     #[test]

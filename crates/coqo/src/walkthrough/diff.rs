@@ -165,6 +165,7 @@ impl DiffSource for WalkthroughDiffSource {
                 .map(|f| SourceFile {
                     path: f.path,
                     change: f.change,
+                    orig_path: f.orig_path,
                     additions: f.additions,
                     deletions: f.deletions,
                     binary: f.binary,
@@ -175,6 +176,7 @@ impl DiffSource for WalkthroughDiffSource {
                     files.push(SourceFile {
                         path,
                         change: FileChange::Untracked,
+                        orig_path: None,
                         additions: 0,
                         deletions: 0,
                         binary: false,
@@ -186,14 +188,19 @@ impl DiffSource for WalkthroughDiffSource {
         })
     }
 
-    fn file(&self, path: &str, cx: &mut App) -> BoxFuture<'static, Result<FileDiff, SourceError>> {
+    fn file(
+        &self,
+        file: &SourceFile,
+        cx: &mut App,
+    ) -> BoxFuture<'static, Result<FileDiff, SourceError>> {
         let Some(daemon) = Daemon::global(cx) else {
             return Box::pin(async { Err(message(DaemonError::NotConnected)) });
         };
         let call = daemon.read(cx).request::<gm::Diff>(gm::DiffParams {
             workspace: self.workspace.clone(),
             root: self.root,
-            path: path.to_owned(),
+            path: file.path.clone(),
+            orig_path: file.orig_path.clone(),
             base: self.base.clone(),
             head: self.head.clone(),
             context: Some(FULL_CONTEXT),

@@ -1498,7 +1498,7 @@ impl Ui {
     fn next_undo(&mut self) -> Option<super::history::FileOp> {
         let tree = self.tree();
         self.cx
-            .read(|cx| tree.read(cx).history().next_undo().cloned())
+            .read(|cx| tree.read(cx).history().read(cx).next_undo().cloned())
     }
 
     /// Put the keyboard in the tree with `path` selected: click `src`
@@ -1708,13 +1708,16 @@ fn undoes_and_redoes_file_operations_in_the_tree() {
     // with why; the key says so and drops it.
     let root = ui.rows()[0].root;
     ui.cx.update(|cx| {
-        tree.update(cx, |tree, _| {
-            tree.record_for_tests(FileOp::Delete {
-                root,
-                path: "gone.txt".into(),
-                kind: EntryKind::File,
-                restore: Err("“gone.txt” was deleted permanently.".into()),
-            })
+        tree.update(cx, |tree, cx| {
+            tree.record_for_tests(
+                FileOp::Delete {
+                    root,
+                    path: "gone.txt".into(),
+                    kind: EntryKind::File,
+                    restore: Err("“gone.txt” was deleted permanently.".into()),
+                },
+                cx,
+            )
         })
     });
     ui.right_click_row("README.md");

@@ -869,3 +869,6 @@ fn log_matches_git_log() {
         .count();
     assert_eq!(outs, 2);
 }
+
+mod discard;
+mod renames;

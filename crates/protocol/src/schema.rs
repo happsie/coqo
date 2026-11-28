@@ -483,6 +483,11 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "Unstage whole files, or chosen lines of one file.",
         ),
+        request::<git::Discard>(
+            g,
+            "client→server",
+            "Throw away unstaged changes: files or lines back to the index version, untracked files to the trash.",
+        ),
         request::<git::Commit>(g, "client→server", "Commit what is staged, or amend."),
         request::<git::Branches>(g, "client→server", "Local and remote branches."),
         request::<git::SwitchBranch>(g, "client→server", "Switch to a branch."),
@@ -1156,10 +1161,50 @@ fn git_wire_shapes() {
         staged: Some(git::FileChange::Added),
         unstaged: Some(git::FileChange::Modified),
         conflict: None,
+        orig_path: None,
     };
     assert_eq!(
         serde_json::to_value(&entry).unwrap(),
         json!({"path": "a", "staged": "added", "unstaged": "modified"})
     );
     assert_eq!(entry.letter(), Some('M'));
+
+    // Renames (#226): additive, an `origPath` beside the new path.
+    let renamed = git::StatusEntry {
+        path: "b.rs".into(),
+        staged: Some(git::FileChange::Renamed),
+        unstaged: None,
+        conflict: None,
+        orig_path: Some("a.rs".into()),
+    };
+    assert_eq!(
+        serde_json::to_value(&renamed).unwrap(),
+        json!({"path": "b.rs", "staged": "renamed", "origPath": "a.rs"})
+    );
+    assert_eq!(renamed.letter(), Some('R'));
+    let d: DiffParams = serde_json::from_value(json!({
+        "workspace": "ws-1", "root": 1, "path": "b.rs", "origPath": "a.rs",
+        "base": {"rev": "HEAD"}, "head": "index"
+    }))
+    .unwrap();
+    assert_eq!(d.orig_path.as_deref(), Some("a.rs"));
+
+    // Discard (#226).
+    let p: git::DiscardParams = serde_json::from_value(json!({
+        "workspace": "ws-1", "root": 1, "paths": ["a"], "lines": {"removed": [2]}
+    }))
+    .unwrap();
+    assert_eq!(p.lines.unwrap().removed, vec![2]);
+    assert_eq!(
+        serde_json::to_value(git::DiscardResult {
+            trashed: vec![git::TrashedFile {
+                path: "sub/new.txt".into(),
+                root_path: "new.txt".into(),
+                restore: Some("t1".into()),
+                no_restore: None,
+            }],
+        })
+        .unwrap(),
+        json!({"trashed": [{"path": "sub/new.txt", "rootPath": "new.txt", "restore": "t1"}]})
+    );
 }

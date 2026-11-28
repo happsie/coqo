@@ -24,13 +24,14 @@ use tempfile::TempDir;
 
 use super::{GitService, classify, register};
 use crate::mods::Mods;
-use crate::workspace::{self, WatchConfig, WorkspaceService};
+use crate::workspace::{self, Trash, WatchConfig, WorkspaceService};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Harness {
     _data: TempDir,
     client: Client,
+    workspaces: Arc<WorkspaceService>,
 }
 
 async fn harness(with_git: bool) -> Harness {
@@ -39,8 +40,13 @@ async fn harness(with_git: bool) -> Harness {
         debounce: Duration::from_millis(50),
         ..WatchConfig::default()
     };
-    let workspaces =
-        Arc::new(WorkspaceService::open_with(DataDirs::at(data.path()), config).unwrap());
+    // Never the user's trash.
+    let workspaces = Arc::new(
+        WorkspaceService::open_with(DataDirs::at(data.path()), config)
+            .unwrap()
+            .with_trash(Trash::Folder(data.path().join("bin"))),
+    );
+    let ws_handle = Arc::clone(&workspaces);
     let mut builtins = BuiltinMods::new();
     if with_git {
         builtins = builtins.with(coqo_mod_git::MANIFEST, coqo_mod_git::GitMod::default());
@@ -59,6 +65,7 @@ async fn harness(with_git: bool) -> Harness {
     Harness {
         _data: data,
         client,
+        workspaces: ws_handle,
     }
 }
 
@@ -135,6 +142,7 @@ async fn status_stage_and_commit_over_the_protocol() {
             workspace: ws.id.clone(),
             root: ws.roots[0].id,
             path: "a.txt".into(),
+            orig_path: None,
             base: DiffSide::Index,
             head: DiffSide::Worktree,
             context: None,
@@ -213,6 +221,169 @@ async fn status_stage_and_commit_over_the_protocol() {
     assert_eq!(err.code, coqo_protocol::codes::INVALID_PARAMS);
 }
 
+fn discard(ws: &WorkspaceInfo, paths: &[&str], lines: Option<LineSelection>) -> gm::DiscardParams {
+    gm::DiscardParams {
+        workspace: ws.id.clone(),
+        root: ws.roots[0].id,
+        paths: paths.iter().map(|p| (*p).to_owned()).collect(),
+        lines,
+    }
+}
+
+#[tokio::test]
+async fn discard_restores_files_and_trashes_untracked_ones() {
+    let (_tmp, f) = repo_fixture();
+    f.write(
+        "big.txt",
+        &(1..=30).map(|i| format!("{i}\n")).collect::<String>(),
+    );
+    f.commit_all("more");
+    let h = harness(true).await;
+    let ws = h.open(f.path()).await;
+    let mut changes = h
+        .client
+        .subscribe::<gm::Changes>(
+            gm::ChangesParams {
+                workspace: ws.id.clone(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    // A hunk of one file: the other hunk stays.
+    let edited: String = (1..=30)
+        .map(|i| match i {
+            2 => "two\n".to_owned(),
+            28 => "twenty-eight\n".to_owned(),
+            i => format!("{i}\n"),
+        })
+        .collect();
+    f.write("big.txt", &edited);
+    let diff = h
+        .call::<gm::Diff>(gm::DiffParams {
+            workspace: ws.id.clone(),
+            root: ws.roots[0].id,
+            path: "big.txt".into(),
+            orig_path: None,
+            base: DiffSide::Index,
+            head: DiffSide::Worktree,
+            context: None,
+        })
+        .await;
+    assert_eq!(diff.hunks.len(), 2);
+    let first = LineSelection {
+        removed: diff.hunks[0]
+            .lines
+            .iter()
+            .filter_map(|l| (l.kind == LineKind::Removed).then_some(l.old_line?))
+            .collect(),
+        added: diff.hunks[0]
+            .lines
+            .iter()
+            .filter_map(|l| (l.kind == LineKind::Added).then_some(l.new_line?))
+            .collect(),
+    };
+    let none = h
+        .call::<gm::Discard>(discard(&ws, &["big.txt"], Some(first.clone())))
+        .await;
+    assert!(none.trashed.is_empty());
+    assert_eq!(f.read("big.txt"), edited.replace("two\n", "2\n"));
+    until_kind(&mut changes, GitChangeKind::Worktree).await;
+    // The same lines again are stale.
+    let stale = h
+        .fail::<gm::Discard>(discard(&ws, &["big.txt"], Some(first)))
+        .await;
+    assert_eq!(stale.code, codes::STALE_SELECTION);
+
+    // A whole file and an untracked one: back to the index, and to the
+    // trash (restorable).
+    f.write("a.txt", "a changed\n");
+    f.write("src/new.rs", "fn new() {}\n");
+    let done = h
+        .call::<gm::Discard>(discard(&ws, &["a.txt", "src/new.rs"], None))
+        .await;
+    assert_eq!(f.read("a.txt"), "a\n");
+    assert!(!f.path().join("src/new.rs").exists());
+    assert_eq!(done.trashed.len(), 1);
+    let trashed = &done.trashed[0];
+    assert_eq!(
+        (trashed.path.as_str(), trashed.root_path.as_str()),
+        ("src/new.rs", "src/new.rs")
+    );
+    let token = trashed.restore.clone().expect("restorable");
+    h.workspaces
+        .restore_entry(coqo_protocol::methods::fs::RestoreParams {
+            workspace: ws.id.clone(),
+            root: ws.roots[0].id,
+            path: trashed.root_path.clone(),
+            restore: token,
+        })
+        .await
+        .unwrap();
+    assert_eq!(f.read("src/new.rs"), "fn new() {}\n");
+
+    // Refused before anything changes: an untracked file with a tracked
+    // one that can't be discarded, and line selections over two paths.
+    f.write("a.txt", "a again\n");
+    f.git(&["add", "-N", "src/new.rs"]);
+    let err = h
+        .fail::<gm::Discard>(discard(&ws, &["a.txt", "src/new.rs"], None))
+        .await;
+    assert_eq!(err.code, codes::UNSUPPORTED);
+    assert_eq!(f.read("a.txt"), "a again\n");
+    assert!(f.path().join("src/new.rs").exists());
+    let err = h
+        .fail::<gm::Discard>(discard(
+            &ws,
+            &["a.txt", "big.txt"],
+            Some(LineSelection::default()),
+        ))
+        .await;
+    assert_eq!(err.code, ErrorObject::invalid_params("").code);
+}
+
+#[tokio::test]
+async fn renames_over_the_protocol() {
+    let (_tmp, f) = repo_fixture();
+    let h = harness(true).await;
+    let ws = h.open(f.path()).await;
+    f.git(&["mv", "src/lib.rs", "src/core.rs"]);
+    let status = h.call::<gm::Status>(repo(&ws)).await;
+    let entry = status
+        .entries
+        .iter()
+        .find(|e| e.path == "src/core.rs")
+        .unwrap();
+    assert_eq!(entry.staged, Some(FileChange::Renamed));
+    assert_eq!(entry.orig_path.as_deref(), Some("src/lib.rs"));
+    assert!(!status.entries.iter().any(|e| e.path == "src/lib.rs"));
+    let files = h
+        .call::<gm::DiffFiles>(gm::DiffFilesParams {
+            workspace: ws.id.clone(),
+            root: ws.roots[0].id,
+            base: DiffSide::head(),
+            head: DiffSide::Index,
+        })
+        .await;
+    assert_eq!(files.files.len(), 1);
+    assert_eq!(files.files[0].change, FileChange::Renamed);
+    assert_eq!(files.files[0].orig_path.as_deref(), Some("src/lib.rs"));
+    let diff = h
+        .call::<gm::Diff>(gm::DiffParams {
+            workspace: ws.id.clone(),
+            root: ws.roots[0].id,
+            path: "src/core.rs".into(),
+            orig_path: Some("src/lib.rs".into()),
+            base: DiffSide::head(),
+            head: DiffSide::Index,
+            context: None,
+        })
+        .await;
+    assert!(diff.hunks.is_empty(), "an exact rename has no line changes");
+    assert_eq!(diff.orig_path.as_deref(), Some("src/lib.rs"));
+}
+
 #[tokio::test]
 async fn line_staging_over_the_protocol() {
     let (_tmp, f) = repo_fixture();
@@ -224,6 +395,7 @@ async fn line_staging_over_the_protocol() {
             workspace: ws.id.clone(),
             root: ws.roots[0].id,
             path: "a.txt".into(),
+            orig_path: None,
             base: DiffSide::Index,
             head: DiffSide::Worktree,
             context: None,

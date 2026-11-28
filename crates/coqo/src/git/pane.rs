@@ -8,9 +8,14 @@
 //! index → work tree). With several roots that are repositories, chips at
 //! the top pick which one the pane shows. "Draft" beside Commit asks an
 //! agent for the message ([`super::draft`]).
+//!
+//! A renamed file shows as `R old → new` (#226). Discard (the arrow on an
+//! unstaged row, or "Discard all") asks first, in a card that says what
+//! each file loses: tracked files go back to their index version, and
+//! untracked ones go to the trash, which the note after it can undo.
 
 use coqo_protocol::methods::{
-    git::{Branch, FileChange, StatusEntry},
+    git::{self as gm, Branch, ChangedFile, FileChange, StatusEntry},
     workspace::RootId,
 };
 use coqo_ui::{
@@ -19,7 +24,8 @@ use coqo_ui::{
     gpui::{
         AnyElement, AnyView, App, AppContext as _, Context, Entity, FontWeight,
         InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-        StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div, px,
+        StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
+        px,
     },
     input::{PromptInput, PromptInputEvent},
     widgets::{
@@ -27,6 +33,8 @@ use coqo_ui::{
         section_label,
     },
 };
+
+use crate::{daemon::Daemon, files::editor::FileEditor};
 
 use super::{
     diff::{self, DiffTab},
@@ -54,6 +62,62 @@ impl Group {
     }
 }
 
+/// A discard waiting for the user's yes (#226): what it would throw away.
+#[derive(Debug)]
+pub struct PendingDiscard {
+    pub root: RootId,
+    /// The rows to discard, as they were when asked.
+    pub entries: Vec<StatusEntry>,
+    /// Each tracked file's unstaged line counts (`git/diffFiles` index →
+    /// work tree), once in.
+    pub stats: Option<Vec<ChangedFile>>,
+    /// Names of open tabs with unsaved edits to these files.
+    pub dirty: Vec<String>,
+    _load: Option<Task<()>>,
+}
+
+impl PendingDiscard {
+    fn tracked(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| e.unstaged != Some(FileChange::Untracked))
+            .count()
+    }
+
+    fn untracked(&self) -> usize {
+        self.entries.len() - self.tracked()
+    }
+}
+
+/// Whether the pane offers to discard `entry`'s unstaged change: a tracked
+/// file's change, or an untracked file. An intent-to-add file, an unstaged
+/// rename, a conflict or a nested repository is left to the user.
+pub fn discardable(entry: &StatusEntry) -> bool {
+    entry.conflict.is_none()
+        && !entry.path.ends_with('/')
+        && matches!(
+            entry.unstaged,
+            Some(
+                FileChange::Modified
+                    | FileChange::Deleted
+                    | FileChange::TypeChanged
+                    | FileChange::Untracked
+            )
+        )
+}
+
+/// The paths a whole-file stage or unstage of `entry` takes: a rename's
+/// old path goes with it, so the pair moves together.
+fn row_paths(entry: &StatusEntry, change: Option<FileChange>) -> Vec<String> {
+    let mut paths = vec![entry.path.clone()];
+    if change == Some(FileChange::Renamed)
+        && let Some(orig) = &entry.orig_path
+    {
+        paths.push(orig.clone());
+    }
+    paths
+}
+
 /// The Git pane's view.
 pub struct GitPane {
     dock: WeakEntity<Dock>,
@@ -63,6 +127,7 @@ pub struct GitPane {
     drafter: Entity<CommitDrafter>,
     new_branch: Entity<PromptInput>,
     picker_open: bool,
+    pending_discard: Option<PendingDiscard>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -137,8 +202,129 @@ impl GitPane {
             drafter,
             new_branch,
             picker_open: false,
+            pending_discard: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// The discard waiting for a yes, if any.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn pending_discard(&self) -> Option<&PendingDiscard> {
+        self.pending_discard.as_ref()
+    }
+
+    /// The discard waiting for a yes, to fill in (screenshots).
+    #[cfg(test)]
+    pub fn pending_discard_mut(&mut self) -> Option<&mut PendingDiscard> {
+        self.pending_discard.as_mut()
+    }
+
+    /// Ask before discarding `entries` of the shown root: the card says what
+    /// each loses, from the unstaged line counts.
+    pub fn request_discard(&mut self, entries: Vec<StatusEntry>, cx: &mut Context<Self>) {
+        let Some(root) = self.root(cx) else {
+            return;
+        };
+        let entries: Vec<StatusEntry> = entries.into_iter().filter(discardable).collect();
+        if entries.is_empty() {
+            return;
+        }
+        let model = self.model.read(cx);
+        let load = model
+            .workspace()
+            .map(|w| w.id.clone())
+            .zip(Daemon::global(cx))
+            .map(|(workspace, daemon)| {
+                daemon
+                    .read(cx)
+                    .request::<gm::DiffFiles>(gm::DiffFilesParams {
+                        workspace,
+                        root,
+                        base: gm::DiffSide::Index,
+                        head: gm::DiffSide::Worktree,
+                    })
+            });
+        let dirty = self.dirty_tabs(root, &entries, cx);
+        let load = load.map(|call| {
+            cx.spawn(async move |this, cx| {
+                let result = call.await;
+                this.update(cx, |this, cx| {
+                    if let (Some(p), Ok(r)) = (this.pending_discard.as_mut(), result) {
+                        p.stats = Some(r.files);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+        });
+        self.pending_discard = Some(PendingDiscard {
+            root,
+            entries,
+            stats: None,
+            dirty,
+            _load: load,
+        });
+        cx.notify();
+    }
+
+    /// The user said yes: discard what the card lists.
+    pub fn confirm_discard(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.pending_discard.take() else {
+            return;
+        };
+        let paths = p.entries.into_iter().map(|e| e.path).collect();
+        self.model.update(cx, |m, cx| m.discard(p.root, paths, cx));
+        cx.notify();
+    }
+
+    pub fn cancel_discard(&mut self, cx: &mut Context<Self>) {
+        self.pending_discard = None;
+        cx.notify();
+    }
+
+    /// Names of this window's file tabs with unsaved edits to `entries`.
+    fn dirty_tabs(&self, root: RootId, entries: &[StatusEntry], cx: &App) -> Vec<String> {
+        let (Some(dock), Some(model)) = (self.dock.upgrade(), Some(self.model.read(cx))) else {
+            return Vec::new();
+        };
+        let (Some(workspace), Some(status)) = (
+            model.workspace().map(|w| w.id.clone()),
+            model.root(root).and_then(|r| r.status.as_ref()),
+        ) else {
+            return Vec::new();
+        };
+        let prefix = status.repo.prefix.clone();
+        let git_path = |rel: &str| {
+            if prefix.is_empty() {
+                rel.to_owned()
+            } else {
+                format!("{prefix}/{rel}")
+            }
+        };
+        let dock = dock.read(cx);
+        let mut names: Vec<String> = dock
+            .tree()
+            .tabs()
+            .into_iter()
+            .filter_map(|t| dock.tab(t.id)?.downcast::<FileEditor>())
+            .filter_map(|tab| {
+                let tab = tab.read(cx);
+                let path = git_path(tab.path());
+                (tab.workspace() == &workspace
+                    && tab.root() == root
+                    && tab.is_dirty()
+                    && entries.iter().any(|e| e.path == path))
+                .then(|| {
+                    tab.path()
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(tab.path())
+                        .to_owned()
+                })
+            })
+            .collect();
+        names.dedup();
+        names
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -586,7 +772,38 @@ impl GitPane {
             Group::Unstaged => "Changes",
             Group::Conflicts => "Conflicts",
         };
-        let paths: Vec<String> = entries.iter().map(|e| e.path.clone()).collect();
+        let paths: Vec<String> = entries
+            .iter()
+            .flat_map(|e| {
+                row_paths(
+                    e,
+                    if group == Group::Staged {
+                        e.staged
+                    } else {
+                        e.unstaged
+                    },
+                )
+            })
+            .collect();
+        let discardable: Vec<StatusEntry> = entries
+            .iter()
+            .filter(|e| group == Group::Unstaged && discardable(e))
+            .cloned()
+            .collect();
+        let discard_all = (!discardable.is_empty()).then(|| {
+            div()
+                .id("git-discard-all")
+                .test_support()
+                .px_2()
+                .text_size(m.text_xs)
+                .text_color(p.text_subtle.hsla())
+                .cursor_pointer()
+                .hover(|s| s.text_color(p.rose.hsla()))
+                .child("Discard all")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.request_discard(discardable.clone(), cx);
+                }))
+        });
         let all = (!entries.is_empty()).then(|| {
             let (id, text, stage) = match group {
                 Group::Staged => ("git-unstage-all", "Unstage all", false),
@@ -617,7 +834,13 @@ impl GitPane {
             .items_center()
             .child(section_label(format!("{title} · {}", entries.len()), cx))
             .child(div().flex_1())
+            .children(discard_all)
             .children(all);
+        let confirm = self
+            .pending_discard
+            .as_ref()
+            .filter(|p| group == Group::Unstaged && p.root == root)
+            .map(|pending| self.render_discard(pending, cx));
         let rows = entries
             .into_iter()
             .enumerate()
@@ -638,6 +861,7 @@ impl GitPane {
                 .flex()
                 .flex_col()
                 .child(header)
+                .children(confirm)
                 .when(rows.is_empty(), |d| d.children(empty))
                 .children(rows)
                 .into_any_element(),
@@ -672,13 +896,47 @@ impl GitPane {
         } else {
             name
         };
+        // `old → new`: the old name if it stayed in its folder, else the
+        // old path.
+        let name = match (&entry.orig_path, change) {
+            (Some(orig), Some(FileChange::Renamed)) => {
+                let (orig_dir, orig_name) = orig.rsplit_once('/').unwrap_or(("", orig));
+                let from = if Some(orig_dir) == dir.as_deref().or(Some("")) {
+                    orig_name
+                } else {
+                    orig
+                };
+                format!("{from} → {name}")
+            }
+            _ => name,
+        };
         let staged = group == Group::Staged;
         let root = self.root(cx);
         let (button_id, button_icon_text) = match group {
             Group::Staged => ("git-unstage", "−"),
             _ => ("git-stage", "+"),
         };
-        let path = entry.path.clone();
+        let paths = row_paths(&entry, change);
+        let discard = (group == Group::Unstaged && discardable(&entry)).then(|| {
+            let entry = entry.clone();
+            div()
+                .id(("git-discard", ix))
+                .test_support()
+                .size(px(20.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.))
+                .cursor_pointer()
+                .hover(|s| s.bg(p.surface_strong.hsla()))
+                .tooltip(|_, cx| tooltip("Discard changes…".into(), cx))
+                .child(icon(Icon::Undo, px(13.), p.text_muted.hsla()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.request_discard(vec![entry.clone()], cx);
+                }))
+        });
         let action = div()
             .id((button_id, ix))
             .test_support()
@@ -697,7 +955,7 @@ impl GitPane {
             .on_click(cx.listener(move |this, _, _, cx| {
                 cx.stop_propagation();
                 let Some(root) = root else { return };
-                let paths = vec![path.clone()];
+                let paths = paths.clone();
                 this.model.update(cx, |m, cx| {
                     if staged {
                         m.unstage(root, paths, cx);
@@ -750,6 +1008,7 @@ impl GitPane {
                             .child(d)
                     })),
             )
+            .children(discard)
             .child(action)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.open_diff(&entry, staged, window, cx);
@@ -864,6 +1123,262 @@ impl GitPane {
             .into_any_element()
     }
 
+    /// The card asking before a discard: each file and what it loses.
+    fn render_discard(&self, pending: &PendingDiscard, cx: &mut Context<Self>) -> AnyElement {
+        const SHOWN: usize = 6;
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let base = |path: &str| {
+            let path = path.trim_end_matches('/');
+            path.rsplit('/').next().unwrap_or(path).to_owned()
+        };
+        let (tracked, untracked) = (pending.tracked(), pending.untracked());
+        let title = match (pending.entries.as_slice(), tracked, untracked) {
+            ([one], 0, _) => format!("Move “{}” to the trash?", base(&one.path)),
+            ([one], _, _) => format!("Discard the changes to “{}”?", base(&one.path)),
+            (_, 0, n) => format!("Move {n} untracked files to the trash?"),
+            (all, _, _) => format!("Discard the changes to {} files?", all.len()),
+        };
+        let mut detail = Vec::new();
+        if tracked > 0 {
+            detail.push(if tracked == 1 {
+                "The file goes back to its staged version (or the last commit's). This can't be undone."
+            } else {
+                "Tracked files go back to their staged version (or the last commit's). This can't be undone."
+            });
+        }
+        if untracked > 0 {
+            detail.push(if untracked == 1 && tracked == 0 {
+                "It isn't tracked: it moves to the trash, and Undo brings it back."
+            } else {
+                "Untracked files move to the trash, and Undo brings them back."
+            });
+        }
+        let lost = |e: &StatusEntry| -> String {
+            match e.unstaged {
+                Some(FileChange::Untracked) => "untracked".into(),
+                Some(FileChange::Deleted) => "brings it back".into(),
+                _ => match pending
+                    .stats
+                    .as_ref()
+                    .and_then(|s| s.iter().find(|f| f.path == e.path))
+                {
+                    Some(f) if f.binary => "binary change".into(),
+                    Some(f) => format!("+{} −{}", f.additions, f.deletions),
+                    None if pending.stats.is_some() => "changed".into(),
+                    None => "…".into(),
+                },
+            }
+        };
+        let files: Vec<AnyElement> = pending
+            .entries
+            .iter()
+            .take(SHOWN)
+            .enumerate()
+            .map(|(ix, e)| {
+                div()
+                    .id(("git-discard-file", ix))
+                    .test_support()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .text_size(m.text_xs)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .font_family(m.font_mono.clone())
+                            .text_color(p.text.hsla())
+                            .child(e.path.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(m.font_mono.clone())
+                            .text_color(p.text_subtle.hsla())
+                            .child(lost(e)),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        let more = pending.entries.len().saturating_sub(SHOWN);
+        let unsaved = (!pending.dirty.is_empty()).then(|| {
+            format!(
+                "Unsaved edits in {} stay in the open tab; saving writes them again.",
+                pending.dirty.join(", ")
+            )
+        });
+        let button = |id: &'static str, label: &'static str, fill: Option<Rgb>, cx: &App| {
+            let el = div()
+                .px(px(12.))
+                .py(px(5.))
+                .rounded(m.radius_control)
+                .text_size(m.text_sm)
+                .font_weight(FontWeight::SEMIBOLD);
+            let el = match fill {
+                Some(fill) => el
+                    .bg(fill.alpha(0.18))
+                    .border_1()
+                    .border_color(fill.alpha(0.45))
+                    .text_color(fill.hsla()),
+                None => raised(el, cx).text_color(p.text.hsla()),
+            };
+            el.id(id).test_support().cursor_pointer().child(label)
+        };
+        let confirm = if tracked == 0 {
+            "Move to Trash"
+        } else {
+            "Discard"
+        };
+        let busy = self.model.read(cx).is_busy();
+        div()
+            .id("git-discard-confirm")
+            .test_support()
+            .occlude()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .mx(px(2.))
+            .my(px(4.))
+            .p(px(12.))
+            .rounded(m.radius_field)
+            .bg(p.surface.hsla())
+            .border_1()
+            .border_color(p.border_strong.hsla())
+            .text_size(m.text_sm)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(icon(
+                        if tracked == 0 {
+                            Icon::Trash
+                        } else {
+                            Icon::Undo
+                        },
+                        px(14.),
+                        p.rose.hsla(),
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.text.hsla())
+                            .child(title),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .children(files)
+                    .when(more > 0, |d| {
+                        d.child(
+                            div()
+                                .text_size(m.text_xs)
+                                .text_color(p.text_subtle.hsla())
+                                .child(format!("and {more} more")),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .id("git-discard-detail")
+                    .test_support()
+                    .text_size(m.text_xs)
+                    .text_color(p.text_muted.hsla())
+                    .child(detail.join(" ")),
+            )
+            .children(unsaved.map(|text| {
+                div()
+                    .id("git-discard-unsaved")
+                    .test_support()
+                    .flex()
+                    .items_start()
+                    .gap(px(6.))
+                    .text_size(m.text_xs)
+                    .text_color(p.text_muted.hsla())
+                    .child(icon(Icon::CircleAlert, px(12.), p.sand.hsla()))
+                    .child(div().flex_1().min_w_0().child(text))
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(6.))
+                    .child(
+                        button("git-discard-cancel", "Cancel", None, cx)
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel_discard(cx))),
+                    )
+                    .child(
+                        button("git-discard-ok", confirm, Some(p.rose), cx)
+                            .when(busy, |b| b.opacity(0.6))
+                            .on_click(cx.listener(|this, _, _, cx| this.confirm_discard(cx))),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// What the last discard did, with Undo while its trash moves can be
+    /// undone.
+    fn render_notice(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let model = self.model.read(cx);
+        let notice = model.notice()?.clone();
+        let undo = model.can_undo_discard(cx);
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        Some(
+            div()
+                .id("git-discard-notice")
+                .test_support()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .mx_2()
+                .px(px(10.))
+                .py(px(6.))
+                .rounded(m.radius_field)
+                .bg(p.surface.hsla())
+                .text_size(m.text_xs)
+                .text_color(p.text.hsla())
+                .child(icon(Icon::Check, px(13.), p.green.hsla()))
+                .child(div().flex_1().min_w_0().child(notice.text))
+                .when(undo, |d| {
+                    d.child(
+                        div()
+                            .id("git-discard-undo")
+                            .test_support()
+                            .px_1()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.sage.hsla())
+                            .cursor_pointer()
+                            .child("Undo")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.model.update(cx, |m, cx| m.undo_discard(cx));
+                            })),
+                    )
+                })
+                .child(
+                    div()
+                        .id("git-discard-notice-close")
+                        .test_support()
+                        .cursor_pointer()
+                        .child(icon(Icon::X, px(12.), p.text_subtle.hsla()))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.model.update(cx, |m, cx| m.dismiss_notice(cx));
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn note(text: impl Into<SharedString>, cx: &App) -> AnyElement {
         let t = cx.tokens();
         div()
@@ -963,6 +1478,9 @@ impl Render for GitPane {
                         this.model.update(cx, |m, cx| m.dismiss_error(cx));
                     })),
             );
+        }
+        if let Some(notice) = self.render_notice(cx) {
+            pane = pane.child(notice);
         }
         pane.children(body)
     }

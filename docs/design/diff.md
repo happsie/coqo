@@ -29,10 +29,17 @@ The tab is padded 10 px, with 10 px between its parts, as the board's window is.
   - **Clicks:** clicking a row shows that file. Clicking its checkbox only marks it.
   - **Key hints:** at the bottom, a `surface` card at 50%, with key caps: `J K` file, `j k` hunk, `v` viewed, `m` layout.
 - **Diff card:** `panel`, at the panel radius.
-  - **File header:** the glyph, the path in semibold, `+a −d`, then, on the right, `base → head` in `text_subtle` and `text_muted`. With lines selected in a stageable diff, a raised **Stage n lines** (or **Unstage n lines**) button sits before the sides.
+  - **File header:** the glyph, the path in semibold, `+a −d`, then, on the right, `base → head` in `text_subtle` and `text_muted`. With lines selected in a stageable diff, a raised **Stage n lines** (or **Unstage n lines**) button sits before the sides. A rename's path reads `old → new`.
+  - **Discard (#226):** in a diff whose source can discard (the unstaged git diff), a selection also shows a raised **Discard n lines…** in `rose` before the stage button. It never discards at once. A confirmation band opens under the header, in `surface` with a `border_strong` hairline and radius 10:
+    - the `undo-2` icon in `rose`;
+    - "Discard n changed lines in “a.rs”?" in semibold;
+    - which lines go and come back, and that this can't be undone, in `text_muted`;
+    - a raised Cancel, and **Discard n lines** in `rose` at 18%.
+
+    A hunk is discarded the same way (`DiffView::request_discard_hunk`). Showing another file drops the question.
   - **Error band:** a failed stage shows git's message on a `rose` 12% band under the header. Clicking the band dismisses it.
   - **Body:** in a card inset 12 px, with radius 14 and a `border` hairline.
-  - **Footer:** in a stageable diff, a centred hint between two hairlines: "Drag line numbers to select lines, or use a hunk's button, to stage".
+  - **Footer:** in a stageable diff, a centred hint between two hairlines: "Drag line numbers to select lines, or use a hunk's button, to stage" ("…to select lines to stage or discard, or use a hunk's button to stage" where discarding is possible).
 
 ## The body
 
