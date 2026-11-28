@@ -27,7 +27,8 @@ use anyhow::{Context as _, Result, bail};
 use coqo_client::{DATA_DIR_ENV, DaemonPaths, RUNTIME_DIR_ENV, connect};
 use coqo_protocol::methods::agents::{
     self as agm, ContentBlock, CreateSessionParams, PermissionOptionKind, PermissionOutcome,
-    PermissionRequest, RespondPermissionParams, SessionId, SessionParams, SessionUpdate, ToolKind,
+    PermissionRequest, QuestionAnswer, RespondPermissionParams, SessionId, SessionParams,
+    SessionUpdate, ToolKind,
 };
 use coqo_protocol::methods::editor::{
     self as edm, EditorTab, Position, PublishContextParams, Range, RevealsParams, Selection,
@@ -479,6 +480,33 @@ async fn run(
     let turn = async {
         while let Some(item) = updates.next().await {
             match item?.event {
+                // The agent's own question tool (`AskUserQuestion`, #339):
+                // pick the first option of each question, once.
+                SessionUpdate::PermissionRequested(request) if request.is_question() => {
+                    outcome.forms += 1;
+                    let answers = request
+                        .questions
+                        .iter()
+                        .map(|q| QuestionAnswer {
+                            id: q.id.clone(),
+                            picks: q
+                                .options
+                                .first()
+                                .map(|o| o.value.clone())
+                                .into_iter()
+                                .collect(),
+                            text: q.options.is_empty().then(|| scenario.answer.to_owned()),
+                        })
+                        .collect();
+                    client
+                        .request::<agm::RespondPermission>(RespondPermissionParams {
+                            session: session.clone(),
+                            request_id: request.id,
+                            outcome: PermissionOutcome::Answered { answers },
+                            remember: false,
+                        })
+                        .await?;
+                }
                 SessionUpdate::PermissionRequested(request) => {
                     client
                         .request::<agm::RespondPermission>(RespondPermissionParams {

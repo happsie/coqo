@@ -31,6 +31,7 @@ Claude Code saves its own transcripts of these sessions, as of any session, unde
 |---|---|---|---|
 | `explain-selection` | "Explain the selected function" | `pricing.py`, `apply_discount` selected | `editor_context` called |
 | `ambiguous-default` | "Turn on free shipping in the config. I haven't decided on the threshold yet, and that's my call, not yours." (nothing in the code hints at a value) | `config.py`, `pricing.py` open | `ask_question` anchored to `config.py` lines 6–10 |
+| `skill-asks` | a skill's instructions say to ask decisions with `AskUserQuestion`; free shipping, threshold undecided (#346) | `config.py` open | a question form asked (`AskUserQuestion`) and no `ask_question` |
 | `three-steps` | sales tax "in three phases": a `TAX_RATE` setting, applying it in `total()`, then tests and a README line | none | `set_status` at least twice and `set_acceptance_criteria` |
 | `show-where` | "Show me where refunds are handled" | `README.md` open | `editor_reveal` of `orders.py` |
 | `plain-question` | list vs tuple, no code | none | no Coqo tool at all (no over-use) |
@@ -64,3 +65,5 @@ Over-use to watch: for what becomes a one-line edit, `ambiguous-default` also go
 `address-review` (#95, guide v4, 2026-11-28, one run): pass with `reply_to_review`×2 (both threads resolved, each reply saying what changed and why), plus `set_acceptance_criteria`×2 and `set_status`, 37.8k context tokens.
 
 Earlier, #216 (guide v1): `explain-selection`, `show-where` and `plain-question` passed with and without the guide; `ambiguous-default` failed both ways (Claude picked 50.0 itself); `three-steps` got `set_acceptance_criteria` and `editor_reveal` but no `set_status` with the guide, and no Coqo tool without it. The guide costs about 0.2–0.5k context tokens per turn.
+
+Guide v5 (#346, 2026-11-28, one run of six scenarios, guide on): 6/6 pass. `skill-asks` used `AskUserQuestion` and no `ask_question` (29.5k tokens); `ambiguous-default` still used `ask_question` anchored to `config.py` (32.3k); `explain-selection` 27.9k, `three-steps` 42.3k (`set_acceptance_criteria`×2, `set_status`×4), `walkthrough` 40.8k, `address-review` 36.4k (`reply_to_review`×2). `show-where` and `plain-question` were not re-run (unchanged by the guide's edit).

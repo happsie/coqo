@@ -295,7 +295,9 @@ impl Tool for AskQuestionTool {
              here, whether this behaviour is intended, whether you may change this API). Give \
              `options` for a decision. It blocks until the user answers (with progress) \
              and returns the answer, unless `wait: false`: then it returns an id at once, so \
-             you can go on and collect the answer later with await_answer. Lines are 1-based.",
+             you can go on and collect the answer later with await_answer. Lines are 1-based. \
+             When a skill or the user says how to ask (AskUserQuestion, or a question in the \
+             chat), ask that way instead.",
         )
         .with_title("Ask a question about code")
         .with_schema(json!({

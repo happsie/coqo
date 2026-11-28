@@ -54,6 +54,8 @@ pub struct Outcome {
     pub tool_use: Vec<ToolUse>,
     /// Questions it asked: anchor path (relative) and first line (1-based).
     pub questions: Vec<(String, u32)>,
+    /// Question forms it asked with its own tool (`AskUserQuestion`).
+    pub forms: u32,
     /// Paths it revealed (relative).
     pub reveals: Vec<String>,
     /// Context tokens in use at the end (the last usage update).
@@ -315,6 +317,26 @@ pub const SCENARIOS: &[Scenario] = &[
         },
     },
     Scenario {
+        name: "skill-asks",
+        fixture: "shop",
+        change: None,
+        tabs: &[Tab {
+            path: CONFIG,
+            selection: None,
+        }],
+        review: &[],
+        // What a skill's instructions look like (#346, ADR 0030): the skill
+        // says how to ask, so Claude must not use Coqo's own tool.
+        prompt: "You are following a skill whose instructions say: \"When you need a decision \
+                 from the user, ask it with your AskUserQuestion tool, with two or three \
+                 options.\" The task: turn on free shipping in the config. I haven't decided on \
+                 the threshold yet, and that's my call, not yours. Don't edit anything until I \
+                 answer.",
+        answer: "50.0 EUR.",
+        expects: "AskUserQuestion, no ask_question",
+        check: |o| o.forms >= 1 && o.calls("ask_question") == 0,
+    },
+    Scenario {
         name: "three-steps",
         fixture: "shop",
         change: None,
@@ -472,6 +494,15 @@ mod tests {
         assert!((scenario("ambiguous-default").check)(&o));
         assert_eq!(o.coqo_summary(), "editor_context, ask_question");
         assert_eq!((o.coqo_calls(), o.agent_calls()), (2, 3));
+
+        let mut skill = Outcome::default();
+        assert!(!(scenario("skill-asks").check)(&skill), "asked nothing");
+        skill.forms = 1;
+        assert!((scenario("skill-asks").check)(&skill));
+        skill
+            .tool_use
+            .push(tool("ask_question", ToolGroup::Coqo, 1));
+        assert!(!(scenario("skill-asks").check)(&skill), "used Coqo's tool");
 
         let plain = Outcome {
             tool_use: vec![tool("Read", ToolGroup::Agent, 1)],

@@ -27,8 +27,10 @@ pub(crate) const INSTRUCTIONS: &str = "Coqo is the desktop editor the user works
      call set_acceptance_criteria to say what done means, then set_status at the start of each \
      step and with state \"done\" at the end (\"blocked\" when you need the user). When a choice \
      is the user's (a product value, anything they call their decision or are unsure about), \
-     do not decide it and do not ask in chat: call ask_question anchored to the lines it \
-     affects (it blocks until answered, or use wait:false and await_answer later). Also: \
+     do not decide it: call ask_question anchored to the lines it affects (it blocks until \
+     answered, or use wait:false and await_answer later). But when a skill or the user says \
+     how to ask (AskUserQuestion, or a question in the chat), ask that way; Coqo pins it to \
+     code itself. Also: \
      editor_context first when the user says \"this\", \"here\", \"the selection\" or \"the \
      open file\"; editor_reveal to show the user code you are talking about or just changed; \
      ask_question for any other question about specific code; annotate to pin a non-blocking \

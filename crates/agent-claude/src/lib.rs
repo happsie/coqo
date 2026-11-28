@@ -195,7 +195,11 @@ mod tests {
             assert!(rules.contains(tool), "{tool} is not in the rules: {rules}");
         }
         assert!(rules.contains("several steps"), "{rules}");
-        assert!(rules.contains("do not ask in chat"), "{rules}");
+        // v5 (#346): a skill's or the user's own way of asking wins.
+        assert!(guide_version() >= 5, "{GUIDE_SOURCE}");
+        assert!(rules.contains("do not decide it"), "{rules}");
+        assert!(rules.contains("AskUserQuestion"), "{rules}");
+        assert!(!rules.contains("do not ask in chat"), "{rules}");
         assert!(rules.contains("mcp__coqo-editor__"), "{rules}");
     }
 }
