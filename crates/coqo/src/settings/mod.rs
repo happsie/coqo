@@ -20,6 +20,7 @@
 //! The settings page is [`page`]; the theme follows `appearance.theme`
 //! ([`init`]).
 
+pub mod keybindings;
 pub mod page;
 
 #[cfg(test)]

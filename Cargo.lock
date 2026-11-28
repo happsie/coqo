@@ -1199,6 +1199,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml 1.2.3+spec-1.1.0",
+ "toml_edit 0.25.21+spec-1.1.0",
 ]
 
 [[package]]
