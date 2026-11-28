@@ -34,6 +34,7 @@
 //! own workspace and agent session only.
 
 pub(crate) mod anchoring;
+mod moves;
 pub(crate) mod store;
 
 #[cfg(test)]

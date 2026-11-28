@@ -14,6 +14,14 @@
 //! Batches go to an in-memory [`SeqLog`], so subscribers get the usual
 //! sequence numbers, and a slow subscriber gets `RESUME_GAP` instead of
 //! making the daemon buffer without bound.
+//!
+//! Renames the platform reports as one (inotify pairs a rename's two
+//! halves into a `Both` event; a `From` directly followed by its `To` is
+//! paired here) are also sent, in order and root-relative, as
+//! [`PathMove`]s, so anchored items follow renames made outside Coqo
+//! (issue #288). macOS's FSEvents reports each half on its own, unpaired:
+//! those renames are not detected, and the items stay findable on the old
+//! path as orphaned.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -21,13 +29,21 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use coqo_protocol::methods::fs::FsChanges;
-use coqo_protocol::methods::workspace::RootId;
+use coqo_protocol::methods::workspace::{RootId, WorkspaceId};
 use coqo_protocol::{ErrorObject, EventFeed, SeqLog};
 use futures_util::StreamExt;
+use notify::event::{ModifyKind, RenameMode};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use tokio::sync::{Notify, watch};
+use tokio::sync::{Notify, broadcast, watch};
 
 use super::ignores::IgnoreCache;
+use crate::path_moves::PathMove;
+
+/// Renames collected per window at most (more are dropped).
+const MAX_RENAMES: usize = 1024;
+
+/// Where renames the watcher sees go: the workspace and the sender.
+pub(crate) type RenameSink = (WorkspaceId, broadcast::Sender<PathMove>);
 
 /// Watcher tuning.
 #[derive(Clone, Debug)]
@@ -54,6 +70,47 @@ impl Default for WatchConfig {
 struct Pending {
     paths: HashSet<PathBuf>,
     overflow: bool,
+    /// Renames seen, `(from, to)`, in order.
+    renames: Vec<(PathBuf, PathBuf)>,
+    /// The `From` half of a rename, waiting for its `To`.
+    rename_from: Option<PathBuf>,
+}
+
+impl Pending {
+    fn renamed(&mut self, from: PathBuf, to: PathBuf) {
+        // inotify reports a rename three times: `From`, `To`, then `Both`.
+        if self
+            .renames
+            .last()
+            .is_some_and(|(f, t)| *f == from && *t == to)
+        {
+            return;
+        }
+        if self.renames.len() < MAX_RENAMES {
+            self.renames.push((from, to));
+        }
+    }
+
+    /// Note the rename halves of `ev`.
+    fn rename_event(&mut self, ev: &notify::Event) {
+        let EventKind::Modify(ModifyKind::Name(mode)) = ev.kind else {
+            self.rename_from = None;
+            return;
+        };
+        match (mode, ev.paths.as_slice()) {
+            (RenameMode::Both, [from, to]) => {
+                self.rename_from = None;
+                self.renamed(from.clone(), to.clone());
+            }
+            (RenameMode::From, [from]) => self.rename_from = Some(from.clone()),
+            (RenameMode::To, [to]) => {
+                if let Some(from) = self.rename_from.take() {
+                    self.renamed(from, to.clone());
+                }
+            }
+            _ => self.rename_from = None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -74,6 +131,7 @@ impl Shared {
                 if ev.need_rescan() {
                     p.overflow = true;
                 }
+                p.rename_event(&ev);
                 for path in ev.paths {
                     if p.paths.len() >= self.max_paths {
                         p.overflow = true;
@@ -92,7 +150,13 @@ impl Shared {
     }
 
     fn take(&self) -> Pending {
-        std::mem::take(&mut *self.pending.lock().unwrap_or_else(|e| e.into_inner()))
+        let mut p = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let rename_from = p.rename_from.take();
+        let mut taken = std::mem::take(&mut *p);
+        // A rename's `To` may come in the next window.
+        p.rename_from = rename_from;
+        taken.rename_from = None;
+        taken
     }
 }
 
@@ -122,6 +186,7 @@ impl WorkspaceWatcher {
         roots: Vec<(RootId, PathBuf)>,
         ignores: Arc<IgnoreCache>,
         config: &WatchConfig,
+        renames: RenameSink,
     ) -> notify::Result<Self> {
         let shared = Arc::new(Shared {
             pending: Mutex::default(),
@@ -141,6 +206,7 @@ impl WorkspaceWatcher {
             ignores,
             Arc::clone(&log),
             config.debounce,
+            renames,
         ));
         Ok(Self {
             log,
@@ -193,28 +259,71 @@ async fn debounce(
     ignores: Arc<IgnoreCache>,
     log: Arc<SeqLog<FsChanges>>,
     window: Duration,
+    (workspace, renames): RenameSink,
 ) {
     loop {
         shared.wake.notified().await;
         tokio::time::sleep(window).await;
         let pending = shared.take();
-        if pending.paths.is_empty() && !pending.overflow {
+        if pending.paths.is_empty() && !pending.overflow && pending.renames.is_empty() {
             continue;
         }
         let roots = roots.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let ignores = Arc::clone(&ignores);
-        let batches =
-            match tokio::task::spawn_blocking(move || batch(&pending, &roots, &ignores)).await {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::error!(error = %e, "fs change batching failed");
-                    continue;
-                }
-            };
+        let batched = tokio::task::spawn_blocking(move || {
+            let moved = moves(&pending.renames, &roots);
+            (batch(&pending, &roots, &ignores), moved)
+        })
+        .await;
+        let (batches, moved) = match batched {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!(error = %e, "fs change batching failed");
+                continue;
+            }
+        };
+        for (root, from, to) in moved {
+            let _ = renames.send(PathMove {
+                workspace: workspace.clone(),
+                root,
+                from,
+                to,
+            });
+        }
         for b in batches {
             log.publish(b);
         }
     }
+}
+
+/// The deepest root that holds `path`, and `path` relative to it.
+fn in_root<'a>(
+    path: &Path,
+    roots: &'a [(RootId, PathBuf)],
+) -> Option<(RootId, &'a Path, Vec<String>)> {
+    let (id, root) = roots
+        .iter()
+        .filter(|(_, r)| path.starts_with(r))
+        .max_by_key(|(_, r)| r.as_os_str().len())?;
+    let comps = relative(path, root)?;
+    Some((*id, root.as_path(), comps))
+}
+
+/// `renames` as root-relative moves within one root, outside `.git`.
+fn moves(
+    renames: &[(PathBuf, PathBuf)],
+    roots: &[(RootId, PathBuf)],
+) -> Vec<(RootId, String, String)> {
+    renames
+        .iter()
+        .filter_map(|(from, to)| {
+            let (root, _, from) = in_root(from, roots)?;
+            let (to_root, _, to) = in_root(to, roots)?;
+            let git = |c: &[String]| c.iter().any(|c| c == ".git");
+            (root == to_root && !from.is_empty() && !to.is_empty() && !git(&from) && !git(&to))
+                .then(|| (root, from.join("/"), to.join("/")))
+        })
+        .collect()
 }
 
 /// Root-relative `/`-separated components, if `path` is under `root`.
@@ -242,14 +351,7 @@ fn batch(pending: &Pending, roots: &[(RootId, PathBuf)], ignores: &IgnoreCache) 
     let mut by_root: BTreeMap<RootId, BTreeSet<String>> = BTreeMap::new();
     for path in &pending.paths {
         // Nested roots: the deepest root that contains the path wins.
-        let Some((id, root)) = roots
-            .iter()
-            .filter(|(_, r)| path.starts_with(r))
-            .max_by_key(|(_, r)| r.as_os_str().len())
-        else {
-            continue;
-        };
-        let Some(comps) = relative(path, root) else {
+        let Some((id, root, comps)) = in_root(path, roots) else {
             continue;
         };
         if comps.is_empty() || comps.iter().any(|c| c == ".git") {
@@ -258,7 +360,7 @@ fn batch(pending: &Pending, roots: &[(RootId, PathBuf)], ignores: &IgnoreCache) 
         if ignores.parent_ignored(root, &comps) {
             continue;
         }
-        by_root.entry(*id).or_default().insert(comps.join("/"));
+        by_root.entry(id).or_default().insert(comps.join("/"));
     }
     by_root
         .into_iter()
@@ -296,6 +398,7 @@ mod tests {
             .into_iter()
             .collect(),
             overflow: false,
+            ..Pending::default()
         };
         let out = batch(&pending, &roots, &IgnoreCache::default());
         assert_eq!(
@@ -324,6 +427,7 @@ mod tests {
         let pending = Pending {
             paths: HashSet::new(),
             overflow: true,
+            ..Pending::default()
         };
         let out = batch(&pending, &roots, &IgnoreCache::default());
         assert!(out.iter().all(|c| c.rescan && c.paths.is_empty()));
@@ -346,5 +450,51 @@ mod tests {
         assert_eq!(p.paths.len(), 3);
         assert!(p.overflow);
         assert!(!shared.take().overflow, "take resets");
+    }
+
+    fn rename(mode: RenameMode, paths: &[&str]) -> notify::Result<notify::Event> {
+        let mut ev = notify::Event::new(EventKind::Modify(ModifyKind::Name(mode)));
+        for p in paths {
+            ev = ev.add_path(PathBuf::from(p));
+        }
+        Ok(ev)
+    }
+
+    #[test]
+    fn renames_are_paired_once_and_made_root_relative() {
+        let shared = Shared {
+            pending: Mutex::default(),
+            wake: Notify::new(),
+            max_paths: 100,
+        };
+        // inotify: both halves, then the pair.
+        shared.record(rename(RenameMode::From, &["/r/a.rs"]));
+        shared.record(rename(RenameMode::To, &["/r/b.rs"]));
+        shared.record(rename(RenameMode::Both, &["/r/a.rs", "/r/b.rs"]));
+        // A `From` whose `To` comes in the next window.
+        shared.record(rename(RenameMode::From, &["/r/src"]));
+        let p = shared.take();
+        assert_eq!(p.renames, [("/r/a.rs".into(), "/r/b.rs".into())]);
+        shared.record(rename(RenameMode::To, &["/r/lib"]));
+        // Unpaired halves (FSEvents) are not renames.
+        shared.record(rename(RenameMode::Any, &["/r/x"]));
+        shared.record(rename(RenameMode::To, &["/r/y"]));
+        let q = shared.take();
+        assert_eq!(q.renames, [("/r/src".into(), "/r/lib".into())]);
+        let roots = vec![
+            (RootId(1), PathBuf::from("/r")),
+            (RootId(2), PathBuf::from("/s")),
+        ];
+        let renames = vec![
+            (PathBuf::from("/r/src"), PathBuf::from("/r/lib")),
+            (PathBuf::from("/r/a"), PathBuf::from("/s/a")),
+            (PathBuf::from("/r/.git/x"), PathBuf::from("/r/.git/y")),
+            (PathBuf::from("/elsewhere/a"), PathBuf::from("/r/a")),
+        ];
+        assert_eq!(
+            moves(&renames, &roots),
+            [(RootId(1), "src".to_owned(), "lib".to_owned())],
+            "within one root, outside the repository folder"
+        );
     }
 }

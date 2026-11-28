@@ -170,6 +170,28 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// Every walkthrough of a workspace (for re-keying after a rename).
+    pub fn all_of(&self, workspace: &WorkspaceId) -> Result<Vec<Walkthrough>> {
+        let conn = self.db.connection();
+        let mut stmt = conn.prepare_cached(
+            "SELECT document, step_states FROM walkthroughs WHERE workspace = ?1",
+        )?;
+        let rows = stmt.query_map(params![workspace.0], row)?;
+        rows.map(|r| decode(r?)).collect()
+    }
+
+    /// Replace a walkthrough's document (not its step states). Returns
+    /// whether it exists.
+    pub fn replace_document(&self, w: &Walkthrough) -> Result<bool> {
+        let mut doc = w.clone();
+        doc.step_states.clear();
+        let n = self.db.connection().execute(
+            "UPDATE walkthroughs SET document = ?2 WHERE id = ?1",
+            params![w.id.0, serde_json::to_string(&doc)?],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Forget a walkthrough. Returns whether it existed.
     pub fn delete(&self, id: &WalkthroughId) -> Result<bool> {
         let n = self

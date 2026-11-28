@@ -296,6 +296,17 @@ impl Store {
         Ok(out)
     }
 
+    /// Every question of a workspace, open or closed, oldest first (for
+    /// re-keying after a rename).
+    pub fn all_of(&self, workspace: &WorkspaceId) -> Result<Vec<Record>> {
+        Ok(self
+            .db
+            .connection()
+            .prepare_cached(&format!("{SELECT} WHERE workspace = ?1 ORDER BY id"))?
+            .query_map([&workspace.0], record_row)?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Questions changed after `seq`, oldest change first, at most `limit`.
     pub fn changed_since(
         &self,

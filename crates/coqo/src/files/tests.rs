@@ -1422,6 +1422,67 @@ fn creates_renames_moves_and_deletes_from_the_tree() {
     assert_eq!(ui.selected_path().as_deref(), Some("src/docs/guides"));
 }
 
+/// An agent's question on a file stays on it when the tree renames the
+/// file (issue #288): the daemon moves the question, and the renamed tab
+/// shows its marker on the same line.
+#[test]
+fn a_question_follows_its_file_through_a_rename() {
+    use coqo_protocol::methods::questions::{self as qm, CreateParams, NewAnchor, QuestionKind};
+
+    let fixture = Fixture::new();
+    let (mut ui, main) = open_main(&fixture);
+    let (ws, root) = ui.workspace_id();
+    let agent = OtherWindow::connect(&fixture).client;
+    let params = CreateParams {
+        workspace: ws.clone(),
+        session: "s-test".into(),
+        kind: QuestionKind::Clarification,
+        body: "Why print?".into(),
+        options: Vec::new(),
+        severity: None,
+        anchors: vec![NewAnchor {
+            root,
+            path: "src/main.rs".into(),
+            lines: edm::LineRange { start: 1, end: 1 },
+        }],
+    };
+    let q = fixture
+        .daemon
+        .runtime
+        .block_on(async move { agent.request::<qm::Create>(params).await })
+        .unwrap();
+    let markers = |ui: &mut Ui, tab: &Entity<FileEditor>| {
+        let code = ui.code(tab).unwrap();
+        ui.cx.read(|cx| code.read(cx).marker_lines(cx))
+    };
+    ui.wait_for("the marker on main.rs", |ui| {
+        markers(ui, &main).iter().any(|(_, lines)| *lines == (1..2))
+    });
+
+    // Rename it in the tree: the tab follows, and so does the question.
+    ui.click_row("src");
+    ui.press("right");
+    ui.press("right");
+    ui.press("down");
+    assert_eq!(ui.selected_path().as_deref(), Some("src/main.rs"));
+    ui.press("f2");
+    ui.enter_name("app.rs");
+    ui.wait_for("the tab and the question on app.rs", |ui| {
+        ui.cx.read(|cx| main.read(cx).path() == "src/app.rs")
+            && ui.cx.update(|cx| {
+                crate::questions::questions_for(&ws, cx).is_some_and(|store| {
+                    store
+                        .read(cx)
+                        .get(q.id)
+                        .is_some_and(|q| q.anchors[0].anchor.path == "src/app.rs")
+                })
+            })
+    });
+    ui.wait_for("the marker on app.rs", |ui| {
+        markers(ui, &main).iter().any(|(_, lines)| *lines == (1..2))
+    });
+}
+
 /// Renders the workbench with this repository open, `crates/coqo/src/files`
 /// expanded and a file tab open, offscreen to PNGs. Needs a GPU:
 /// `cargo test -p coqo -- --ignored files_screenshots`. Writes to

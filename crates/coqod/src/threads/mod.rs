@@ -30,6 +30,7 @@
 //! a session token may reply as its own session in its own workspace.
 
 pub(crate) mod backend;
+mod moves;
 pub(crate) mod review;
 pub(crate) mod store;
 

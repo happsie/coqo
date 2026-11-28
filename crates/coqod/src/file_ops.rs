@@ -9,7 +9,8 @@
 //! files it moves ([`BufferService::move_files`]), so an editor tab keeps
 //! its buffer, text and unsaved edits under the new name. A delete leaves
 //! open buffers alone: they keep their text (unsaved edits included), and
-//! saving writes the file again.
+//! saving writes the file again. After a rename, everything else anchored
+//! to the moved paths follows it too ([`PathMoves`], issue #288).
 //!
 //! All three take the daemon token only. Agents edit files through their
 //! own tools and `buffer/*`; creating, moving and deleting whole entries is
@@ -21,6 +22,7 @@ use coqo_protocol::methods::fs as fsm;
 use coqo_protocol::{Access, Router};
 
 use crate::buffers::BufferService;
+use crate::path_moves::{PathMove, PathMoves};
 use crate::workspace::WorkspaceService;
 
 /// Register `fs/create`, `fs/rename` and `fs/delete` on `router`.
@@ -28,6 +30,7 @@ pub fn register(
     router: Router,
     workspaces: Arc<WorkspaceService>,
     buffers: Arc<BufferService>,
+    moves: Arc<PathMoves>,
 ) -> Router {
     let ws = Arc::clone(&workspaces);
     let router = router.method_with::<fsm::Create, _, _>(Access::daemon(), move |_ctx, p| {
@@ -36,15 +39,24 @@ pub fn register(
     });
     let ws = Arc::clone(&workspaces);
     let router = router.method_with::<fsm::Rename, _, _>(Access::daemon(), move |_ctx, p| {
-        let (ws, buffers) = (Arc::clone(&ws), Arc::clone(&buffers));
+        let (ws, buffers, moves) = (Arc::clone(&ws), Arc::clone(&buffers), Arc::clone(&moves));
         async move {
-            let from = ws
+            let (from, old) = ws
                 .entry_path(p.workspace.clone(), p.root, p.from.clone())
                 .await?;
             let workspace = p.workspace.clone();
+            let root = p.root;
             let renamed = buffers
                 .move_files(&workspace, &from, ws.rename_entry(p))
                 .await?;
+            moves
+                .moved(PathMove {
+                    workspace,
+                    root,
+                    from: old,
+                    to: renamed.rel.clone(),
+                })
+                .await;
             Ok(fsm::EntryResult { path: renamed.rel })
         }
     });

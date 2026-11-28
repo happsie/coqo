@@ -34,6 +34,7 @@
 
 mod coverage;
 mod git;
+mod moves;
 pub(crate) mod store;
 pub(crate) mod validate;
 
