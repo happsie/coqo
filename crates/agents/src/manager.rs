@@ -57,7 +57,7 @@ use crate::feed::{Page, feed};
 use crate::fold::Fold;
 use crate::provider::{
     AgentUpdate, EventSink, KeepAlive, McpServer, PermissionAsk, ProviderError, ProviderSession,
-    ResumeRequest, SessionContext, SessionEvents,
+    ResumeRequest, SessionContext, SessionEvents, TURN_BUSY_PREFIX,
 };
 use crate::registry::ProviderRegistry;
 use crate::rules::{self, Subject};
@@ -254,7 +254,7 @@ impl Inner {
         } else if st.busy.is_none()
             && let Some(keep_alive) = &self.options.keep_alive
         {
-            st.busy = Some(keep_alive.hold(format!("agent session {}", s.id)));
+            st.busy = Some(keep_alive.hold(format!("{TURN_BUSY_PREFIX}{}", s.id)));
         }
     }
 

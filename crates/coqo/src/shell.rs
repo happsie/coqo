@@ -100,6 +100,7 @@ pub fn init(cx: &mut App) {
     worktrees::init(cx);
     crate::search::init(cx);
     alerts::init(cx);
+    crate::update::init(cx);
     crate::diff::init(cx);
     crate::walkthrough::init(cx);
     crate::threads::init(cx);

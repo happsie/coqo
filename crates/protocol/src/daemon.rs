@@ -7,6 +7,9 @@
 //!   use.
 //! - [`Shutdown`] (`daemon/shutdown`): ask the daemon to exit. It refuses
 //!   while work is busy unless `force` is set.
+//! - [`RestartWhenIdle`] (`daemon/restartWhenIdle`): exit once no agent
+//!   turn is running (or now), so the next client starts the daemon again,
+//!   from the binary that is installed now (an update, ADR 0031).
 
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +32,36 @@ impl Method for Shutdown {
     const NAME: &'static str = "daemon/shutdown";
     type Params = ShutdownParams;
     type Result = ShutdownResult;
+}
+
+/// `daemon/restartWhenIdle`: exit cleanly once no agent turn is running,
+/// or right away with `now`. Sessions resume in the next daemon (ADR
+/// 0026). Calling it again only reports (or, with `now`, restarts at once).
+#[derive(Debug)]
+pub enum RestartWhenIdle {}
+impl Method for RestartWhenIdle {
+    const NAME: &'static str = "daemon/restartWhenIdle";
+    type Params = RestartParams;
+    type Result = RestartResult;
+}
+
+/// Params of `daemon/restartWhenIdle`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct RestartParams {
+    /// Restart now, stopping running agent turns (the UI warns first).
+    #[serde(default)]
+    pub now: bool,
+}
+
+/// Result of `daemon/restartWhenIdle`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct RestartResult {
+    /// Agent turns running now. The daemon restarts when this reaches 0.
+    pub running: u32,
+    /// Whether it is exiting now.
+    pub restarting: bool,
 }
 
 /// Result of `daemon/status`.

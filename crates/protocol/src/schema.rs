@@ -25,7 +25,7 @@ use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
 use crate::methods::{
     self, agents, alerts, buffer, commands, editor, fs, git, mcp, questions, search, syntax,
-    terminal, threads, walkthroughs, workspace,
+    terminal, threads, update, walkthroughs, workspace,
 };
 use crate::subscription::ResumeGap;
 
@@ -120,6 +120,22 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             g,
             "client→server",
             "Stop the daemon. Refused while work is busy unless `force` is set.",
+        ),
+        request::<daemon::RestartWhenIdle>(
+            g,
+            "client→server",
+            "Exit once no agent turn runs (or now), so the next client starts the installed daemon.",
+        ),
+        request::<update::Status>(g, "client→server", "Where the in-app updater is."),
+        request::<update::Check>(
+            g,
+            "client→server",
+            "Check GitHub Releases now; download and verify a newer release.",
+        ),
+        request::<update::Install>(
+            g,
+            "client→server",
+            "Swap the verified release in and restart the daemon once agents are idle.",
         ),
         request::<workspace::Open>(
             g,
@@ -1028,6 +1044,10 @@ fn schema_covers_every_builtin_method() {
         builtin::SubscriptionEnded::NAME,
         daemon::Status::NAME,
         daemon::Shutdown::NAME,
+        daemon::RestartWhenIdle::NAME,
+        update::Status::NAME,
+        update::Check::NAME,
+        update::Install::NAME,
         agents::Providers::NAME,
         agents::RunAction::NAME,
         agents::Create::NAME,

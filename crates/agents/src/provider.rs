@@ -370,6 +370,11 @@ impl SessionEvents {
     }
 }
 
+/// How every [`KeepAlive`] reason of a session's running work starts
+/// (`agent session <id>`): the daemon counts these to restart only once no
+/// agent turn runs (ADR 0031).
+pub const TURN_BUSY_PREFIX: &str = "agent session ";
+
 /// Keeps the daemon from idle-exiting while agent work runs. `coqod`
 /// implements it with its busy guards.
 pub trait KeepAlive: Send + Sync + 'static {

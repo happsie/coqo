@@ -73,6 +73,15 @@ impl State {
     }
 }
 
+fn count_turns(s: &State) -> u32 {
+    let n = s
+        .busy
+        .values()
+        .filter(|r| r.starts_with(coqo_agents::TURN_BUSY_PREFIX))
+        .count();
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
 /// A snapshot of the [`Activity`], taken at one instant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActivitySnapshot {
@@ -156,6 +165,20 @@ impl Activity {
             busy: s.busy.values().cloned().collect(),
             phase: *self.phase.borrow(),
         }
+    }
+
+    /// Agent turns running now: the busy guards whose reason starts with
+    /// [`coqo_agents::TURN_BUSY_PREFIX`]. Terminals and other busy work do
+    /// not count.
+    pub fn running_turns(&self) -> u32 {
+        count_turns(&self.state.borrow())
+    }
+
+    /// Wait until no agent turn is running ([`Self::running_turns`] is 0).
+    pub async fn until_no_turns(&self) {
+        let mut rx = self.subscribe();
+        // The sender lives as long as `self`, so this only ends with 0.
+        let _ = rx.wait_for(|s| count_turns(s) == 0).await;
     }
 
     /// The idle phase, for services that release resources when the

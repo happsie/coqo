@@ -76,7 +76,7 @@ pub use error::AgentError;
 pub use manager::{ManagerOptions, McpServerSource, SessionManager, UpdateObserver};
 pub use provider::{
     AgentProvider, AgentUpdate, KeepAlive, McpServer, PermissionAsk, ProviderError,
-    ProviderSession, ResumeRequest, SessionContext, SessionEvents,
+    ProviderSession, ResumeRequest, SessionContext, SessionEvents, TURN_BUSY_PREFIX,
 };
 pub use registry::{
     AgentProviderImpls, ProviderRegistry, StaticProviders, provider_info, register_provider,

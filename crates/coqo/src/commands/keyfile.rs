@@ -31,17 +31,7 @@ pub const FILE_NAME: &str = "keybindings.toml";
 /// `$XDG_CONFIG_HOME/coqo` on Linux and `~/Library/Application Support/Coqo`
 /// on macOS.
 pub fn config_dir() -> PathBuf {
-    std::env::var_os("COQO_CONFIG_DIR")
-        .map(PathBuf::from)
-        .or_else(|| {
-            let name = if cfg!(target_os = "macos") {
-                "Coqo"
-            } else {
-                "coqo"
-            };
-            dirs::config_dir().map(|d| d.join(name))
-        })
-        .unwrap_or_else(|| std::env::temp_dir().join("coqo-config"))
+    coqo_client::config_dir()
 }
 
 /// Where the user's keybindings file is.

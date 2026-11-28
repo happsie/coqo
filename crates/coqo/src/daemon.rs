@@ -388,8 +388,27 @@ impl Daemon {
         }));
         self._connecting = Some(cx.spawn(async move |this, cx| {
             let result = match attempt.await {
-                Ok(result) => result.map_err(|e| e.to_string()),
-                Err(e) => Err(format!("connecting failed: {e}")),
+                Ok(result) => result.map_err(|e| {
+                    let failure = crate::update::ConnectFailure {
+                        daemon_exited: match &e {
+                            ConnectError::DaemonExited { reason, status, .. } => Some(
+                                reason
+                                    .clone()
+                                    .unwrap_or_else(|| format!("coqod exited ({status})")),
+                            ),
+                            _ => None,
+                        },
+                        incompatible: matches!(
+                            e,
+                            ConnectError::Protocol(ProtocolError::IncompatibleVersion { .. })
+                        ),
+                    };
+                    (e.to_string(), failure)
+                }),
+                Err(e) => Err((
+                    format!("connecting failed: {e}"),
+                    crate::update::ConnectFailure::default(),
+                )),
             };
             this.update(cx, |this, cx| this.connected(generation, result, cx))
                 .ok();
@@ -399,7 +418,7 @@ impl Daemon {
     fn connected(
         &mut self,
         generation: u64,
-        result: Result<(Client, bool), String>,
+        result: Result<(Client, bool), (String, crate::update::ConnectFailure)>,
         cx: &mut Context<Self>,
     ) {
         if generation != self.generation {
@@ -434,10 +453,27 @@ impl Daemon {
                 self.auto_reconnect = true;
                 cx.emit(DaemonEvent::Connected);
             }
-            Err(error) => {
+            Err((error, failure)) => {
                 eprintln!("coqo: cannot reach coqod: {error}");
                 self.state = ConnectionState::Disconnected { error };
                 cx.emit(DaemonEvent::Disconnected);
+                // An update's daemon that did not start rolls back (once);
+                // an older daemon of another protocol that waits for its
+                // agents is tried again shortly (ADR 0031).
+                if crate::update::after_connect_failure(&failure, cx)
+                    == crate::update::AfterFailure::RetrySoon
+                {
+                    let delay = cx.background_executor().timer(Duration::from_secs(5));
+                    self._connecting = Some(cx.spawn(async move |this, cx| {
+                        delay.await;
+                        this.update(cx, |this, cx| {
+                            if generation == this.generation {
+                                this.retry(cx);
+                            }
+                        })
+                        .ok();
+                    }));
+                }
             }
         }
         cx.notify();

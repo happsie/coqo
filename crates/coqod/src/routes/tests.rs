@@ -127,6 +127,9 @@ pub(crate) fn context_with(dir: &Path, agent: ScriptedProvider) -> DaemonContext
         agent_fs: coqo_acp_host::FsHandle::new(),
         agent_terminals: coqo_acp_host::TerminalHandle::new(),
         trash: crate::workspace::Trash::Folder(dir.join("trash")),
+        updates: crate::updates::UpdatesConfig::Off(
+            coqo_protocol::methods::update::OffReason::DevBuild,
+        ),
     }
 }
 

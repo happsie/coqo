@@ -1,12 +1,49 @@
 [package]
 name = "coqo-updater"
-description = "The in-app updater (#349). For now this only holds the release public key, release.pub, shared with the release workflow (#348)."
+description = "Coqo's in-app updater: GitHub Releases check, minisign verification, install swap and rollback (ADR 0031)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+
+[dependencies]
+bytes = "1"
+# The per-user config directory (`settings.toml`) and data directory.
+dirs = "6"
+# Unpacks the release archive (`.tar.gz`).
+flate2 = "1"
+# HTTPS GETs of the release and its assets: the hyper stack the workspace
+# already builds (through gpui-kit), with the OS's root certificates.
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "native-tokio", "ring", "tls12"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "http1", "tokio"] }
+# Release signatures (MIT, no dependencies).
+minisign-verify = "0.2"
+nix = { version = "0.30", default-features = false, features = ["fs"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+# No `xattr`: an archive never sets extended attributes on what it unpacks.
+tar = { version = "0.4", default-features = false }
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "time"] }
+toml = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+base64 = "0.22"
+# The test release server signs with a key made per test run: Ed25519 from
+# ring, prehashed with BLAKE2b-512 as minisign does.
+blake2 = "0.10"
+ring = "0.17"
+tempfile = "3"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true

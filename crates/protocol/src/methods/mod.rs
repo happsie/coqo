@@ -35,6 +35,7 @@
 //!   command palette and keybindings.
 //! - [`search`]: `search/*`, project search and replace (the `coqo.search`
 //!   mod).
+//! - [`update`]: `update/*`, the in-app updater (ADR 0031).
 
 pub mod agents;
 pub mod alerts;
@@ -49,6 +50,7 @@ pub mod search;
 pub mod syntax;
 pub mod terminal;
 pub mod threads;
+pub mod update;
 pub mod walkthroughs;
 pub mod workspace;
 
@@ -174,4 +176,8 @@ pub mod codes {
     pub const INVALID_QUERY: i64 = 2001;
     /// Search is not available: the `coqo.search` mod is not active.
     pub const SEARCH_UNAVAILABLE: i64 = 2002;
+
+    /// The update could not be installed: none is ready, the install is not
+    /// the caller's, or the swap failed. The message says why.
+    pub const UPDATE_FAILED: i64 = 2101;
 }
