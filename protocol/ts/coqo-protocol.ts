@@ -1186,6 +1186,40 @@ export type FileTooLarge = {
   size: number;
 };
 
+/** One file [`Find`] matched. */
+export type FindMatch = {
+  /** `/`-separated path relative to the root. */
+  path: string;
+  /** Byte offsets in `path` of the characters the query matched. */
+  positions: Array<number>;
+  /** The root the path is relative to. */
+  root: RootId;
+  /** How well it matched: higher is better. Only comparable within one result. */
+  score: number;
+};
+
+/** Params of [`Find`]. */
+export type FindParams = {
+  /** How many matches to return, best first. Default [`DEFAULT_FIND_LIMIT`], at most [`MAX_FIND_LIMIT`]. */
+  limit?: number | null;
+  /** What to look for: a fuzzy pattern over the root-relative path, such as `srcmain` or `tree.rs`. Whitespace is ignored. Smart case: an upper-case letter makes the match case-sensitive. Empty lists the files nearest the roots first. */
+  query?: string;
+  /** The workspace. It must be open. */
+  workspace: WorkspaceId;
+};
+
+/** Result of [`Find`]. */
+export type FindResult = {
+  /** How many files the index holds. */
+  files: number;
+  /** The index is still being built: ask again for complete results. */
+  indexing?: boolean;
+  /** The best matches, best first (ties: shorter paths, then by path). */
+  matches: Array<FindMatch>;
+  /** How many indexed files matched in all. */
+  total: number;
+};
+
 /** What a fold holds (LSP's `FoldingRangeKind`). */
 export type FoldKind = "region" | "comment" | "imports";
 
@@ -3626,6 +3660,8 @@ export interface Requests {
   "fs/delete": { params: DeleteParams; result: DeleteResult };
   /** Bring back an entry fs/delete deleted, from the OS trash or Coqo's copy (daemon token only). (client→server) */
   "fs/restore": { params: RestoreParams; result: EntryResult };
+  /** Fuzzy-find files in an open workspace from the daemon's file index (daemon token only). (client→server) */
+  "fs/find": { params: FindParams; result: FindResult };
   /** Every agent provider, with whether it is available. (client→server) */
   "agents/providers": { params: null; result: Array<ProviderInfo> };
   /** Run a provider's setup action (such as installing its adapter) at the user's request. (client→server) */

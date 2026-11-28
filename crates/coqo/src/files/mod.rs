@@ -15,10 +15,11 @@
 //! last of those, `Ctrl Shift Z` / `Cmd Shift Z` (also `Ctrl Y` off macOS)
 //! redoes it, while the tree itself has focus ([`history`]). In a file tab: `Ctrl S`
 //! (`Cmd S`) saves, `Ctrl F` finds, `Ctrl Z` / `Ctrl Y` undo and redo this
-//! tab's own edits.
+//! tab's own edits. `Ctrl P` (`Cmd P`) finds a file by name ([`finder`]).
 
 pub mod context;
 pub mod editor;
+pub mod finder;
 pub mod glyph;
 pub mod history;
 pub mod ops;
@@ -111,6 +112,7 @@ pub fn init(cx: &mut App) {
     crate::commands::register(cx, [undo.context(UNDO_CONTEXT), redo.context(UNDO_CONTEXT)]);
     ops::FileEvents::init(cx);
     editor::init(cx);
+    finder::init(cx);
     register_tab_kind(cx, editor::KIND, |state, window, cx| {
         editor::restore(state, window, cx)
     });
@@ -122,5 +124,7 @@ pub fn init(cx: &mut App) {
     );
 }
 
+#[cfg(test)]
+mod finder_tests;
 #[cfg(test)]
 mod tests;

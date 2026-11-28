@@ -10,14 +10,14 @@ The Files sidebar pane and the `file` tab kind (design board 1, PLAN §6 `files`
 - **Rows:** 26 px, `text_sm`, `text_muted`, 8 px left padding plus 13 px per level, rounded 9 px. The selected row is `surface_selected` with `text`; a hovered row is `surface`.
 - **Folders:** a 12 px Lucide chevron (`chevron-right` / `chevron-down`) in `text_subtle`, then the name. Folders come first, then files, each sorted by name (the daemon's order).
 - **Files:** a 16 px glyph slot, then the name. Source files get a coloured language letter as on the board: `K` Kotlin in `lavender`, `J` Java and `R` Rust in `peach`, `TS`/`Py`/`Go`/`C` in `blue`, `JS` in `sand`, and so on (`files/glyph.rs`). Other files get a muted Lucide icon: `file-text` for docs and config, `image` for images, `file-code` for other code, `file` otherwise.
-- **Ignored entries** (`.gitignore`, `.git/info/exclude`, global excludes, `.git`) are listed but dimmed: `text_subtle` at 75% opacity.
+- **Ignored entries** (`.gitignore`, `.git/info/exclude`, global excludes, `.git`, and below a root any nested repository or worktree and any `CACHEDIR.TAG` build cache) are listed but dimmed: `text_subtle` at 75% opacity.
 - **No folder:** "No folder open" and a raised **Open Folder…** button with its shortcut.
 
 The tree is virtualised (`uniform_list`): only the rows on screen are laid out, so a folder with tens of thousands of entries scrolls like a small one. Folders are listed with `fs/list` the first time they're expanded. `fs/changes` re-lists the loaded folders it touches (all of them on `rescan`), and the tree re-lists everything it shows after a daemon reconnect.
 
 ## Keyboard
 
-With the tree focused (click a folder, or move with the arrows; opening a file puts the keyboard in its tab): `Up`/`Down` select, `Right` expands a folder or steps into it, `Left` collapses a folder or selects its parent, `Enter` opens a file or toggles a folder. `F2` renames the selected entry in place, `Delete` (also `Cmd Backspace` on macOS) asks to delete it, and `Escape` closes a menu, a confirmation or an error. These are plain keys only in the tree (`coqo_ui::keys::binding`), so they never fire while a name is being typed. `Ctrl O` (`Cmd O` on macOS) opens a folder from anywhere in the window.
+With the tree focused (click a folder, or move with the arrows; opening a file puts the keyboard in its tab): `Up`/`Down` select, `Right` expands a folder or steps into it, `Left` collapses a folder or selects its parent, `Enter` opens a file or toggles a folder. `F2` renames the selected entry in place, `Delete` (also `Cmd Backspace` on macOS) asks to delete it, and `Escape` closes a menu, a confirmation or an error. These are plain keys only in the tree (`coqo_ui::keys::binding`), so they never fire while a name is being typed. `Ctrl O` (`Cmd O` on macOS) opens a folder from anywhere in the window, and `Ctrl P` (`Cmd P`) finds a file by name ([the file finder](palette.md#the-file-finder)).
 
 ## File operations
 

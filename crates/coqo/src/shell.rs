@@ -978,6 +978,11 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &commands::OpenSearch, window, cx| {
                 this.toggle_palette("", window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &files::finder::FindFile, window, cx| {
+                    this.toggle_palette("", window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &chat::NewChat, window, cx| {
                 chat::new_chat(this.dock.downgrade(), window, cx)
             }))

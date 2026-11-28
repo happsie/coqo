@@ -31,6 +31,10 @@ use gpui_kit::{
 
 use crate::ActiveTokens as _;
 
+/// The fields' `Enter` action (`secondary` is `Ctrl/Cmd+Enter`), for a view
+/// that handles it before a field does, with `capture_action`.
+pub use gpui_kit::component::input::Enter as InputEnter;
+
 /// Emitted by a [`PromptInput`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptInputEvent {

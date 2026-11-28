@@ -14,8 +14,12 @@
 //! rules), the tree's file operations (`fs/create`, `fs/rename`,
 //! `fs/delete`, registered with the buffers in [`crate::file_ops`]), and
 //! debounced change events (`fs/changes`) from a watcher that starts with
-//! the first subscriber of an open workspace and stops when the workspace
-//! closes.
+//! the first subscriber of an open workspace (or its file index) and stops
+//! when the workspace closes.
+//!
+//! Each open workspace has a file index ([`index`]): built in the background
+//! when the workspace opens, kept current from the watcher, and searched by
+//! `fs/find` with the fuzzy matcher in [`find`].
 //!
 //! The method and event types are in [`coqo_protocol::methods`]; this module
 //! implements them. Wire it into the daemon's router with [`register`]:
@@ -32,8 +36,10 @@
 
 mod error;
 mod events;
+mod find;
 mod fs;
 mod ignores;
+mod index;
 mod ops;
 mod paths;
 mod restore;
@@ -46,7 +52,9 @@ mod tests;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use futures_util::StreamExt as _;
 
 use coqo_protocol::methods::fs as fsm;
 use coqo_protocol::methods::workspace::{
@@ -57,6 +65,7 @@ use coqo_protocol::{Access, ErrorObject, EventFeed, Router, Scope};
 use coqo_storage::{DataDirs, GlobalDb, StorageError};
 
 use self::ignores::IgnoreCache;
+use self::index::FileIndex;
 pub(crate) use self::ops::Renamed;
 pub use self::ops::Trash;
 pub use self::restore::COPY_LIMIT as UNDO_COPY_LIMIT;
@@ -71,6 +80,9 @@ const MAX_STATE_KEY: usize = 128;
 const RENAMES_SEEN: usize = 256;
 /// Largest accepted state value, serialized.
 const MAX_STATE_VALUE: usize = 1024 * 1024;
+/// How long `fs/find` waits for an index that is still being built before
+/// it answers with what there is (and `indexing`).
+const FIND_WAIT: Duration = Duration::from_secs(2);
 
 /// A file in a workspace, resolved by [`WorkspaceService::resolve_file`].
 #[derive(Clone, Debug)]
@@ -91,6 +103,8 @@ pub struct WorkspaceService {
     /// Event-log head after the last workspace change.
     head: tokio::sync::watch::Sender<u64>,
     watchers: Mutex<HashMap<WorkspaceId, Arc<WorkspaceWatcher>>>,
+    /// The file index of each open workspace (`fs/find`).
+    indexes: Mutex<HashMap<WorkspaceId, Arc<FileIndex>>>,
     ignores: Arc<IgnoreCache>,
     watch_config: WatchConfig,
     trash: Trash,
@@ -159,6 +173,7 @@ impl WorkspaceService {
             db: Mutex::new(db),
             head: tokio::sync::watch::channel(head).0,
             watchers: Mutex::default(),
+            indexes: Mutex::default(),
             ignores: Arc::default(),
             watch_config,
             trash: Trash::default(),
@@ -190,8 +205,9 @@ impl WorkspaceService {
     }
 
     /// The renames the file watchers see from now on (in the order seen),
-    /// Coqo's own `fs/rename`s included. Only workspaces someone follows
-    /// `fs/changes` of are watched.
+    /// Coqo's own `fs/rename`s included. Open workspaces are watched (their
+    /// file index follows the watcher), and so is any workspace someone
+    /// follows `fs/changes` of.
     pub fn renames_seen(&self) -> tokio::sync::broadcast::Receiver<PathMove> {
         self.renames.subscribe()
     }
@@ -273,9 +289,103 @@ impl WorkspaceService {
         }
     }
 
+    /// Stop watching and indexing a workspace (it closed, or was removed).
     fn stop_watcher(&self, id: &WorkspaceId) {
         let removed = self.watchers().remove(id);
         drop(removed);
+        let index = self.indexes().remove(id);
+        if let Some(index) = index {
+            index.stop();
+        }
+    }
+
+    fn indexes(&self) -> MutexGuard<'_, HashMap<WorkspaceId, Arc<FileIndex>>> {
+        self.indexes.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Start indexing `info`'s files in the background, unless an index of
+    /// the same roots runs already. Must run inside a Tokio runtime.
+    fn start_index(self: &Arc<Self>, info: &WorkspaceInfo) -> Arc<FileIndex> {
+        let roots: Vec<(RootId, PathBuf)> = info
+            .roots
+            .iter()
+            .map(|r| (r.id, PathBuf::from(&r.path)))
+            .collect();
+        let index = {
+            let mut indexes = self.indexes();
+            if let Some(existing) = indexes.get(&info.id)
+                && existing.roots() == roots
+            {
+                return Arc::clone(existing);
+            }
+            let index = Arc::new(FileIndex::new(roots));
+            if let Some(old) = indexes.insert(info.id.clone(), Arc::clone(&index)) {
+                old.stop();
+            }
+            index
+        };
+        // The task holds the service only while it subscribes, so it never
+        // keeps a dropped service alive.
+        let service = Arc::downgrade(self);
+        let (id, ignores, built) = (
+            info.id.clone(),
+            Arc::clone(&self.ignores),
+            Arc::clone(&index),
+        );
+        let task = tokio::spawn(async move {
+            loop {
+                // Subscribe before walking, so nothing that changes during the
+                // walk is missed: the batches wait in the watcher's log.
+                let feed = match service.upgrade() {
+                    Some(svc) => svc.watcher(&id).await.and_then(|w| w.subscribe(None)),
+                    None => return,
+                };
+                let mut events = match feed {
+                    Ok(feed) => Some(feed.events),
+                    Err(e) => {
+                        tracing::warn!(workspace = %id, error = %e.message, "file index can't follow changes");
+                        None
+                    }
+                };
+                let (index, ig) = (Arc::clone(&built), Arc::clone(&ignores));
+                if tokio::task::spawn_blocking(move || index.rebuild(&ig))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                let Some(events) = events.as_mut() else {
+                    return;
+                };
+                // Follow the watcher until it stops (the workspace closed) or
+                // the index falls behind it (then walk again).
+                loop {
+                    match events.next().await {
+                        None => return,
+                        Some(Ok(batch)) => {
+                            let (index, ig) = (Arc::clone(&built), Arc::clone(&ignores));
+                            let applied = tokio::task::spawn_blocking(move || {
+                                index.apply(&batch.event, &ig);
+                            });
+                            if applied.await.is_err() {
+                                return;
+                            }
+                        }
+                        Some(Err(_)) => break,
+                    }
+                }
+            }
+        });
+        index.set_task(task.abort_handle());
+        index
+    }
+
+    /// Re-index a workspace whose roots changed, if it is indexed.
+    fn refresh_index(self: &Arc<Self>, info: &WorkspaceInfo) {
+        let indexed = self.indexes().contains_key(&info.id);
+        if indexed {
+            self.start_index(info);
+        }
     }
 
     // ---- workspace/* --------------------------------------------------------
@@ -286,7 +396,7 @@ impl WorkspaceService {
         p: OpenParams,
     ) -> Result<WorkspaceInfo, ErrorObject> {
         let name = p.name.as_deref().map(clean_name).transpose()?;
-        match (p.path, p.id) {
+        let info = match (p.path, p.id) {
             (Some(path), None) => {
                 self.blocking(move |s| {
                     let root = paths::canonical_dir(&path)?;
@@ -343,7 +453,10 @@ impl WorkspaceService {
             _ => Err(ErrorObject::invalid_params(
                 "workspace/open takes exactly one of `path` and `id`",
             )),
-        }
+        }?;
+        // `fs/find` should have the files by the time the user asks.
+        self.start_index(&info);
+        Ok(info)
     }
 
     /// `workspace/list`.
@@ -447,6 +560,7 @@ impl WorkspaceService {
             })
             .await?;
         self.refresh_watcher(&info);
+        self.refresh_index(&info);
         Ok(info)
     }
 
@@ -477,6 +591,7 @@ impl WorkspaceService {
             })
             .await?;
         self.refresh_watcher(&info);
+        self.refresh_index(&info);
         Ok(info)
     }
 
@@ -745,13 +860,61 @@ impl WorkspaceService {
         self.blocking(move |s| s.roots_of(&workspace)).await
     }
 
+    /// `fs/find`: the best matches in the workspace's file index (started
+    /// if it isn't running, and waited for a little while it is built).
+    pub async fn find(
+        self: &Arc<Self>,
+        p: fsm::FindParams,
+    ) -> Result<fsm::FindResult, ErrorObject> {
+        let limit = p.limit.unwrap_or(fsm::DEFAULT_FIND_LIMIT);
+        if limit > fsm::MAX_FIND_LIMIT {
+            return Err(ErrorObject::invalid_params(format!(
+                "limit {limit} is above the maximum of {}",
+                fsm::MAX_FIND_LIMIT
+            )));
+        }
+        let info = {
+            let id = p.workspace.clone();
+            self.blocking(move |s| Self::load(s.db().connection(), &id))
+                .await?
+        };
+        if !info.open {
+            return Err(error::closed(&info.id));
+        }
+        let existing = self.indexes().get(&info.id).cloned();
+        let index = existing.unwrap_or_else(|| self.start_index(&info));
+        let ready = index.is_ready() || index.wait_ready(FIND_WAIT).await;
+        let pattern = find::Pattern::new(&p.query);
+        tokio::task::spawn_blocking(move || {
+            let snapshot = index.snapshot();
+            let files = snapshot.iter().map(|(_, f)| f.len() as u64).sum();
+            let (matches, total) = find::find(&snapshot, &pattern, limit as usize);
+            fsm::FindResult {
+                matches,
+                total,
+                files,
+                indexing: !ready,
+            }
+        })
+        .await
+        .map_err(error::join)
+    }
+
     /// The `fs/changes` topic. Starts the workspace's watcher if needed.
     pub async fn fs_changes(
         self: &Arc<Self>,
         p: fsm::ChangesParams,
         since: Option<u64>,
     ) -> Result<EventFeed<fsm::FsChanges>, ErrorObject> {
-        let id = p.workspace;
+        self.watcher(&p.workspace).await?.subscribe(since)
+    }
+
+    /// An open workspace's watcher, started if needed.
+    async fn watcher(
+        self: &Arc<Self>,
+        id: &WorkspaceId,
+    ) -> Result<Arc<WorkspaceWatcher>, ErrorObject> {
+        let id = id.clone();
         let info = {
             let id = id.clone();
             self.blocking(move |s| Self::load(s.db().connection(), &id))
@@ -803,7 +966,7 @@ impl WorkspaceService {
             self.stop_watcher(&id);
             return Err(error::closed(&id));
         }
-        watcher.subscribe(since)
+        Ok(watcher)
     }
 }
 
@@ -877,6 +1040,8 @@ pub fn register(router: Router, svc: Arc<WorkspaceService>) -> Router {
         Access::workspace(|p| &p.workspace.0),
         |s, p| s.read_file(p)
     );
+    // Agents have their own ways to look for files; the finder is the user's.
+    let router = route!(router, svc, fsm::Find, Access::daemon(), |s, p| s.find(p));
     let events = Arc::clone(&svc);
     // Without a workspace filter the feed covers every workspace.
     let one_workspace = Access::check(|scope: &Scope, p: &wsm::EventsParams| match &p.workspace {

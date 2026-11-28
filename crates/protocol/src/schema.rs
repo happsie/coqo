@@ -194,6 +194,11 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "Bring back an entry fs/delete deleted, from the OS trash or Coqo's copy (daemon token only).",
         ),
+        request::<fs::Find>(
+            g,
+            "client→server",
+            "Fuzzy-find files in an open workspace from the daemon's file index (daemon token only).",
+        ),
         topic::<fs::Changes>(
             g,
             "Debounced file-system changes in an open workspace (live only).",
@@ -1032,6 +1037,7 @@ fn schema_covers_the_application_methods() {
         fs::Rename::NAME,
         fs::Delete::NAME,
         fs::Restore::NAME,
+        fs::Find::NAME,
     ] {
         assert_eq!(methods[name]["kind"], "request", "{name}");
     }
@@ -1075,6 +1081,27 @@ fn application_wire_shapes() {
     assert_eq!(
         serde_json::to_value(&delete).unwrap(),
         json!({"workspace": "ws-1", "root": 1, "path": "a"})
+    );
+    let find: fs::FindParams = serde_json::from_value(json!({"workspace": "ws-1"})).unwrap();
+    assert_eq!((find.query.as_str(), find.limit), ("", None));
+    let found = fs::FindResult {
+        matches: vec![fs::FindMatch {
+            root: workspace::RootId(1),
+            path: "src/main.rs".into(),
+            score: 42,
+            positions: vec![4, 5],
+        }],
+        total: 1,
+        files: 10,
+        indexing: false,
+    };
+    assert_eq!(
+        serde_json::to_value(&found).unwrap(),
+        json!({
+            "matches": [{"root": 1, "path": "src/main.rs", "score": 42, "positions": [4, 5]}],
+            "total": 1,
+            "files": 10
+        })
     );
 }
 

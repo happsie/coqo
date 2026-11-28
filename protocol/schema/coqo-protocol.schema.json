@@ -3386,6 +3386,101 @@
       ],
       "type": "object"
     },
+    "FindMatch": {
+      "description": "One file [`Find`] matched.",
+      "properties": {
+        "path": {
+          "description": "`/`-separated path relative to the root.",
+          "type": "string"
+        },
+        "positions": {
+          "description": "Byte offsets in `path` of the characters the query matched.",
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root the path is relative to."
+        },
+        "score": {
+          "description": "How well it matched: higher is better. Only comparable within one\nresult.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "root",
+        "path",
+        "score",
+        "positions"
+      ],
+      "type": "object"
+    },
+    "FindParams": {
+      "description": "Params of [`Find`].",
+      "properties": {
+        "limit": {
+          "description": "How many matches to return, best first. Default\n[`DEFAULT_FIND_LIMIT`], at most [`MAX_FIND_LIMIT`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "query": {
+          "default": "",
+          "description": "What to look for: a fuzzy pattern over the root-relative path, such\nas `srcmain` or `tree.rs`. Whitespace is ignored. Smart case: an\nupper-case letter makes the match case-sensitive. Empty lists the\nfiles nearest the roots first.",
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace. It must be open."
+        }
+      },
+      "required": [
+        "workspace"
+      ],
+      "type": "object"
+    },
+    "FindResult": {
+      "description": "Result of [`Find`].",
+      "properties": {
+        "files": {
+          "description": "How many files the index holds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "indexing": {
+          "description": "The index is still being built: ask again for complete results.",
+          "type": "boolean"
+        },
+        "matches": {
+          "description": "The best matches, best first (ties: shorter paths, then by path).",
+          "items": {
+            "$ref": "#/$defs/FindMatch"
+          },
+          "type": "array"
+        },
+        "total": {
+          "description": "How many indexed files matched in all.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "matches",
+        "total",
+        "files"
+      ],
+      "type": "object"
+    },
     "FoldKind": {
       "description": "What a fold holds (LSP's `FoldingRangeKind`).",
       "oneOf": [
@@ -11382,6 +11477,17 @@
       },
       "result": {
         "$ref": "#/$defs/DeleteResult"
+      }
+    },
+    "fs/find": {
+      "description": "Fuzzy-find files in an open workspace from the daemon's file index (daemon token only).",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/FindParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FindResult"
       }
     },
     "fs/list": {
