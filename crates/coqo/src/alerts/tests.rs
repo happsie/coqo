@@ -438,6 +438,7 @@ fn alert_screenshots() {
         created_at: ix,
         last_opened_at: ix,
         open: true,
+        project: None,
     };
     let now = super::now_ms();
     let alert = |id: u64, ws: i64, kind, title: &str, body: &str, mins: i64, read: bool| Alert {

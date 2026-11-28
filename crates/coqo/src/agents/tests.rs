@@ -824,6 +824,7 @@ fn agents_screenshots() {
         created_at: ix,
         last_opened_at: ix,
         open: true,
+        project: None,
     };
     let now = now_ms();
     let session = |id: &str, ws: i64, provider: &str, title: &str, state, mins: i64| SessionInfo {

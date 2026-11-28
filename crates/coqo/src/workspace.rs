@@ -11,7 +11,9 @@
 //!   forwards `fs/changes` for it as [`WorkspacesEvent::FsChanged`], so the
 //!   window's views share one subscription. A workspace is shown in at most
 //!   one window: opening one that another window shows focuses that window.
-//! - The rail (`shell::rail`) lists [`KnownWorkspaces::in_rail_order`];
+//! - The rail (`shell::rail`) lists [`KnownWorkspaces::projects`]: one
+//!   [`RailProject`] per repository, holding the workspaces of all its
+//!   worktrees (ADR 0028), and one per workspace outside any repository.
 //!   `Ctrl/Cmd+1..9` ([`SwitchToWorkspace`]) switch the window to one of
 //!   them, and [`rename`] and [`remove`] change the list for every window.
 
@@ -24,8 +26,8 @@ use std::{
 use coqo_protocol::methods::{
     fs::{self, ChangesParams, FsChanges},
     workspace::{
-        self, EventsParams, ListResult, OpenParams, RenameParams, SetStateParams, WorkspaceEvent,
-        WorkspaceId, WorkspaceInfo, WorkspaceParams,
+        self, EventsParams, ListResult, OpenParams, ProjectInfo, RenameParams, SetStateParams,
+        WorkspaceEvent, WorkspaceId, WorkspaceInfo, WorkspaceParams,
     },
 };
 use coqo_ui::{
@@ -100,6 +102,102 @@ pub enum WorkspacesEvent {
         /// What changed.
         changes: FsChanges,
     },
+}
+
+// ---------------------------------------------------------------------------
+// Projects (ADR 0028)
+
+/// One rail button: a repository with the workspaces of its worktrees, or
+/// one workspace in no repository.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RailProject {
+    /// The project, or `None` for a workspace in no repository.
+    pub project: Option<ProjectInfo>,
+    /// Its name on the rail: the main worktree's workspace's name if there
+    /// is one, else the repository's; the workspace's own without one.
+    pub name: String,
+    /// Its workspaces, most recently opened first. Never empty.
+    pub workspaces: Vec<WorkspaceInfo>,
+}
+
+impl RailProject {
+    /// What groups workspaces: the project's id, or the workspace's own.
+    pub fn key_of(info: &WorkspaceInfo) -> String {
+        match &info.project {
+            Some(p) => format!("project:{}", p.id),
+            None => format!("workspace:{}", info.id),
+        }
+    }
+
+    /// Group `list` (most recently opened first) into projects, in the
+    /// order they were first added, so the buttons and their
+    /// `Ctrl/Cmd+1..9` stay put while switching.
+    pub fn group(list: &[WorkspaceInfo]) -> Vec<RailProject> {
+        let mut groups: Vec<(String, RailProject)> = Vec::new();
+        for info in list {
+            let key = Self::key_of(info);
+            match groups.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, group)) => group.workspaces.push(info.clone()),
+                None => groups.push((
+                    key,
+                    RailProject {
+                        project: info.project.clone(),
+                        name: String::new(),
+                        workspaces: vec![info.clone()],
+                    },
+                )),
+            }
+        }
+        let mut groups: Vec<RailProject> = groups.into_iter().map(|(_, g)| g).collect();
+        for group in &mut groups {
+            group.name = match (&group.project, group.main()) {
+                (_, Some(main)) => main.name.clone(),
+                (Some(project), None) => project.name.clone(),
+                (None, None) => group.workspaces[0].name.clone(),
+            };
+        }
+        groups.sort_by_cached_key(|g| {
+            g.workspaces
+                .iter()
+                .map(|w| (w.created_at, w.id.0.clone()))
+                .min()
+        });
+        groups
+    }
+
+    /// The workspace the button switches to: the most recently opened.
+    pub fn latest(&self) -> &WorkspaceInfo {
+        &self.workspaces[0]
+    }
+
+    /// The workspace on the main worktree, or the only workspace of one in
+    /// no repository.
+    pub fn main(&self) -> Option<&WorkspaceInfo> {
+        match &self.project {
+            Some(project) => {
+                let main = project.main_worktree.as_deref()?;
+                self.workspaces
+                    .iter()
+                    .find(|w| w.roots.first().map(|r| r.path.as_str()) == Some(main))
+            }
+            None => self.workspaces.first(),
+        }
+    }
+
+    /// Whether workspace `id` is one of its worktrees'.
+    pub fn contains(&self, id: &WorkspaceId) -> bool {
+        self.workspaces.iter().any(|w| &w.id == id)
+    }
+
+    /// The folder to reveal: the main worktree, else the latest workspace's
+    /// first root.
+    pub fn folder(&self) -> Option<PathBuf> {
+        self.project
+            .as_ref()
+            .and_then(|p| p.main_worktree.clone())
+            .or_else(|| self.latest().roots.first().map(|r| r.path.clone()))
+            .map(PathBuf::from)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -205,12 +303,11 @@ impl KnownWorkspaces {
         &self.list
     }
 
-    /// Every known workspace in the rail's order: the order they were added,
-    /// so the buttons and their `Ctrl/Cmd+1..9` stay put while switching.
-    pub fn in_rail_order(&self) -> Vec<WorkspaceInfo> {
-        let mut list = self.list.clone();
-        list.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
-        list
+    /// The workspace whose first root is the folder `path`.
+    pub fn on_folder(&self, path: &str) -> Option<&WorkspaceInfo> {
+        self.list
+            .iter()
+            .find(|w| w.roots.first().map(|r| r.path.as_str()) == Some(path))
     }
 
     /// Replace the list, for screenshots without a daemon.
@@ -814,7 +911,59 @@ pub fn initials(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::initials;
+    use coqo_protocol::methods::workspace::{
+        ProjectInfo, RootId, WorkspaceId, WorkspaceInfo, WorkspaceRoot,
+    };
+
+    use super::{RailProject, initials};
+
+    fn ws(id: &str, folder: &str, created: i64, opened: i64, git: Option<&str>) -> WorkspaceInfo {
+        WorkspaceInfo {
+            id: WorkspaceId(id.into()),
+            name: folder.rsplit('/').next().unwrap().into(),
+            roots: vec![WorkspaceRoot {
+                id: RootId(1),
+                path: folder.into(),
+                name: folder.into(),
+            }],
+            created_at: created,
+            last_opened_at: opened,
+            open: true,
+            project: git.map(ProjectInfo::from_common_dir),
+        }
+    }
+
+    #[test]
+    fn worktrees_of_a_repository_share_one_rail_button() {
+        let shop = Some("/code/shop/.git");
+        // Most recently opened first, as the daemon lists them.
+        let list = vec![
+            ws("ws-hotfix", "/code/shop-hotfix", 4, 40, shop),
+            ws("ws-notes", "/code/notes", 2, 30, None),
+            ws("ws-main", "/code/shop", 1, 20, shop),
+            ws("ws-feature", "/code/shop-worktrees/feature", 3, 10, shop),
+            ws("ws-api", "/code/api", 5, 5, Some("/code/api.git")),
+        ];
+        let groups = RailProject::group(&list);
+        let names: Vec<_> = groups.iter().map(|g| g.name.as_str()).collect();
+        // In the order first added; the main worktree names the project.
+        assert_eq!(names, ["shop", "notes", "api"]);
+        let shop = &groups[0];
+        let ids: Vec<_> = shop.workspaces.iter().map(|w| w.id.0.as_str()).collect();
+        assert_eq!(ids, ["ws-hotfix", "ws-main", "ws-feature"]);
+        assert_eq!(shop.latest().id.0, "ws-hotfix");
+        assert_eq!(shop.main().unwrap().id.0, "ws-main");
+        assert_eq!(shop.folder().unwrap().to_str(), Some("/code/shop"));
+        assert!(shop.contains(&WorkspaceId("ws-feature".into())));
+        // A bare repository's project is named without `.git`, and has no
+        // main worktree to rename.
+        assert!(groups[2].main().is_none());
+        assert_eq!(groups[2].name, "api");
+        // Without the main worktree, the repository names it.
+        let groups = RailProject::group(&list[..1]);
+        assert_eq!(groups[0].name, "shop");
+        assert!(groups[0].main().is_none());
+    }
 
     #[test]
     fn initials_from_names() {

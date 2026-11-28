@@ -647,3 +647,113 @@ fn git_directory_changes_are_classified() {
     assert_eq!(c("objects/ab/cdef", true), None);
     assert_eq!(c("COMMIT_EDITMSG", true), None);
 }
+
+// ---- worktrees (#92) ----------------------------------------------------------
+
+#[tokio::test]
+async fn worktrees_are_workspaces_of_one_project() {
+    let (tmp, f) = repo_fixture();
+    let h = harness(true).await;
+    let main = h.open(f.path()).await;
+    let project = main.project.clone().expect("a repository has a project");
+    assert_eq!(project.name, "repo");
+    assert_eq!(
+        project.main_worktree.as_deref(),
+        Some(f.path().to_str().unwrap())
+    );
+    // A folder in no repository has none (unless the temporary folder is
+    // in one).
+    let plain = tmp.path().join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    if crate::workspace::project_of(&plain).is_none() {
+        assert_eq!(h.open(&plain).await.project, None);
+    }
+
+    // Adding one opens a workspace on it, in the same project.
+    let added = h
+        .call::<gm::AddWorktree>(gm::AddWorktreeParams {
+            workspace: main.id.clone(),
+            root: main.roots[0].id,
+            branch: "feature/x".into(),
+            base: Some("main".into()),
+            path: None,
+        })
+        .await;
+    let dir = tmp.path().canonicalize().unwrap().join("repo-worktrees");
+    assert_eq!(added.worktree.path, dir.join("feature-x").to_str().unwrap());
+    assert_eq!(added.worktree.branch.as_deref(), Some("feature/x"));
+    assert_eq!(added.workspace.roots[0].path, added.worktree.path);
+    assert_eq!(added.workspace.project.as_ref(), Some(&project));
+    assert!(added.workspace.open);
+
+    // One made outside Coqo is listed, and joins the project once opened.
+    let outside = tmp.path().join("by-hand");
+    f.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "by-hand",
+        outside.to_str().unwrap(),
+    ]);
+    std::fs::write(outside.join("a.txt"), "edited by hand\n").unwrap();
+    let list = h.call::<gm::Worktrees>(repo(&added.workspace)).await;
+    assert_eq!(list.worktrees_dir, dir.to_str().unwrap());
+    let summary: Vec<_> = list
+        .worktrees
+        .iter()
+        .map(|w| (w.branch.as_deref(), w.main, w.changes))
+        .collect();
+    // The main one first, then as git orders them (by folder).
+    assert_eq!(
+        summary,
+        [
+            (Some("main"), true, Some(0)),
+            (Some("by-hand"), false, Some(1)),
+            (Some("feature/x"), false, Some(0)),
+        ]
+    );
+    let by_hand = h.open(&outside).await;
+    assert_eq!(by_hand.project.as_ref(), Some(&project));
+
+    // Removing: never the main worktree, never a dirty one.
+    let remove = |path: &str, confirm: bool| gm::RemoveWorktreeParams {
+        workspace: main.id.clone(),
+        root: main.roots[0].id,
+        path: path.to_owned(),
+        confirm,
+    };
+    let err = h
+        .fail::<gm::RemoveWorktree>(remove(f.path().to_str().unwrap(), true))
+        .await;
+    assert_eq!(err.code, coqo_protocol::codes::INVALID_PARAMS);
+    let outside_path = list.worktrees[1].path.clone();
+    let refused = h
+        .call::<gm::RemoveWorktree>(remove(&outside_path, true))
+        .await;
+    assert!(!refused.removed);
+    assert_eq!((refused.changes, refused.unpushed), (1, 0));
+    assert!(outside.join("a.txt").exists());
+
+    // A clean one goes, and so does the workspace on it.
+    let removed = h
+        .call::<gm::RemoveWorktree>(remove(&added.worktree.path, false))
+        .await;
+    assert!(removed.removed);
+    assert_eq!(removed.forgotten, std::slice::from_ref(&added.workspace.id));
+    assert!(!Path::new(&added.worktree.path).exists());
+    let known: Vec<_> = h
+        .call::<wsm::List>(())
+        .await
+        .workspaces
+        .into_iter()
+        .map(|w| w.id)
+        .collect();
+    assert!(!known.contains(&added.workspace.id));
+    assert!(known.contains(&by_hand.id) && known.contains(&main.id));
+    // Its branch stays.
+    assert!(
+        f.git(&["branch", "--list", "feature/x"])
+            .contains("feature/x")
+    );
+}

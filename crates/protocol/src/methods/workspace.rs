@@ -84,6 +84,55 @@ pub struct WorkspaceInfo {
     pub last_opened_at: i64,
     /// Whether the workspace is open (watched, shown in the rail).
     pub open: bool,
+    /// The project (repository) its first root belongs to; absent when the
+    /// first root is in no git repository. Every worktree of a repository
+    /// has the same project, so the rail shows them as one (ADR 0028).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectInfo>,
+}
+
+/// The repository a workspace's first root is in, shared by all of its
+/// worktrees (ADR 0028).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectInfo {
+    /// The repository's git common directory, absolute and canonical (what
+    /// `git rev-parse --git-common-dir` names): the project's identity.
+    pub id: String,
+    /// Display name: the main worktree's folder name (`coqo` for
+    /// `~/code/coqo/.git`), or a bare repository's minus `.git`.
+    pub name: String,
+    /// The main worktree's folder, absolute and canonical; absent for a
+    /// bare repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_worktree: Option<String>,
+}
+
+impl ProjectInfo {
+    /// The project whose git common directory is `common_dir` (canonical).
+    pub fn from_common_dir(common_dir: &str) -> Self {
+        let path = std::path::Path::new(common_dir);
+        let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let main = (file == ".git")
+            .then(|| path.parent())
+            .flatten()
+            .and_then(|p| p.to_str())
+            .map(str::to_owned);
+        let name = match &main {
+            Some(main) => std::path::Path::new(main)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(main)
+                .to_owned(),
+            None => file.strip_suffix(".git").unwrap_or(file).to_owned(),
+        };
+        Self {
+            id: common_dir.to_owned(),
+            name,
+            main_worktree: main,
+        }
+    }
 }
 
 /// Params of [`Open`]. Give exactly one of `path` and `id`.

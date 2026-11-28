@@ -886,6 +886,7 @@ fn git_screenshots() {
                 created_at: 0,
                 last_opened_at: 0,
                 open: true,
+                project: None,
             };
             let model = GitModel::for_window(window, cx);
             model.update(cx, |m, cx| {
@@ -976,6 +977,7 @@ fn git_discard_screenshots() {
                 created_at: 0,
                 last_opened_at: 0,
                 open: true,
+                project: None,
             };
             let model = GitModel::for_window(window, cx);
             model.update(cx, |m, cx| {

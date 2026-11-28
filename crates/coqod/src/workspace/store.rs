@@ -8,7 +8,9 @@
 
 use std::collections::BTreeMap;
 
-use coqo_protocol::methods::workspace::{RootId, WorkspaceId, WorkspaceInfo, WorkspaceRoot};
+use coqo_protocol::methods::workspace::{
+    ProjectInfo, RootId, WorkspaceId, WorkspaceInfo, WorkspaceRoot,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
@@ -38,10 +40,14 @@ fn info_row(conn: &Connection, row: &rusqlite::Row<'_>) -> Result<WorkspaceInfo>
         created_at: row.get(2)?,
         last_opened_at: row.get(3)?,
         open: row.get(4)?,
+        project: row
+            .get::<_, Option<String>>(5)?
+            .filter(|p| !p.is_empty())
+            .map(|p| ProjectInfo::from_common_dir(&p)),
     })
 }
 
-const SELECT: &str = "SELECT id, name, created_at, last_opened_at, open FROM workspaces";
+const SELECT: &str = "SELECT id, name, created_at, last_opened_at, open, project FROM workspaces";
 
 pub(crate) fn get(conn: &Connection, id: &WorkspaceId) -> Result<Option<WorkspaceInfo>> {
     let mut stmt = conn.prepare_cached(&format!("{SELECT} WHERE id = ?1"))?;
@@ -133,6 +139,27 @@ pub(crate) fn set_open(conn: &Connection, id: &str, open: bool, now: Option<i64>
         )?,
     };
     Ok(())
+}
+
+/// Set the project (a git common directory, `""` for none; global
+/// migration 15).
+pub(crate) fn set_project(conn: &Connection, id: &str, project: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE workspaces SET project = ?2 WHERE id = ?1",
+        params![id, project],
+    )?;
+    Ok(())
+}
+
+/// Every workspace's id and first root.
+pub(crate) fn first_roots(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT r.workspace, r.path FROM workspace_roots r
+         WHERE r.position =
+             (SELECT min(position) FROM workspace_roots WHERE workspace = r.workspace)",
+    )?;
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect()
 }
 
 pub(crate) fn rename(conn: &Connection, id: &str, name: &str) -> Result<()> {

@@ -97,6 +97,28 @@ export type AddRootParams = {
   path: string;
 };
 
+/** Params of [`AddWorktree`]. */
+export type AddWorktreeParams = {
+  /** What a new branch starts from (default: `HEAD` of the root). */
+  base?: string | null;
+  /** The branch to check out. One that does not exist is created from `base`; an existing one is checked out as it is. */
+  branch: string;
+  /** Where the worktree goes, absolute (default: [`WorktreesResult::worktrees_dir`]`/<branch>`, `/` in the branch as `-`). It must not exist. */
+  path?: string | null;
+  /** The root whose repository gets the worktree. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Result of [`AddWorktree`]. */
+export type AddWorktreeResult = {
+  /** The workspace opened on it (`workspace/open` of its folder). */
+  workspace: WorkspaceInfo;
+  /** The new worktree. */
+  worktree: Worktree;
+};
+
 /** Params of [`AgentReply`]. */
 export type AgentReplyParams = {
   /** The reply, in markdown. */
@@ -1830,6 +1852,16 @@ export type Position = {
   line: number;
 };
 
+/** The repository a workspace's first root is in, shared by all of its worktrees (ADR 0028). */
+export type ProjectInfo = {
+  /** The repository's git common directory, absolute and canonical (what `git rev-parse --git-common-dir` names): the project's identity. */
+  id: string;
+  /** The main worktree's folder, absolute and canonical; absent for a bare repository. */
+  mainWorktree?: string | null;
+  /** Display name: the main worktree's folder name (`coqo` for `~/code/coqo/.git`), or a bare repository's minus `.git`. */
+  name: string;
+};
+
 /** Params of `sessions/prompt`. */
 export type PromptParams = {
   /** The prompt: text, `@`-mentions as resource links, embedded selections. */
@@ -2056,6 +2088,30 @@ export type RemoveRootParams = {
   id: WorkspaceId;
   /** The root to remove. The last root cannot be removed. */
   root: RootId;
+};
+
+/** Params of [`RemoveWorktree`]. */
+export type RemoveWorktreeParams = {
+  /** Remove it although it has commits no other branch, remote-tracking branch or tag has. Uncommitted changes stop removal regardless: Coqo never forces it. */
+  confirm?: boolean;
+  /** The worktree's folder, as [`Worktree::path`]. */
+  path: string;
+  /** A root in the worktree's repository (any of its worktrees). */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Result of [`RemoveWorktree`]. */
+export type RemoveWorktreeResult = {
+  /** Its changed files, staged or not, untracked included. */
+  changes: number;
+  /** The workspaces on it, forgotten with it (`workspace/remove`). */
+  forgotten?: Array<WorkspaceId>;
+  /** Whether it was removed (its branch stays). `false`: it has work, counted below; commit or stash the changes, or confirm the commits. */
+  removed: boolean;
+  /** Commits only its `HEAD` has. */
+  unpushed: number;
 };
 
 /** Params of [`Rename`]. */
@@ -3716,6 +3772,8 @@ export type WorkspaceInfo = {
   name: string;
   /** Whether the workspace is open (watched, shown in the rail). */
   open: boolean;
+  /** The project (repository) its first root belongs to; absent when the first root is in no git repository. Every worktree of a repository has the same project, so the rail shows them as one (ADR 0028). */
+  project?: ProjectInfo | null;
   /** Folder roots, in display order. Never empty. */
   roots: Array<WorkspaceRoot>;
 };
@@ -3748,6 +3806,32 @@ export type WorkspaceState = {
   entries: Record<string, unknown>;
   /** The event-log `seq` this snapshot reflects (see [`ListResult::seq`]). */
   seq: number;
+};
+
+/** One worktree of a root's repository ([`Worktrees`]). */
+export type Worktree = {
+  /** The branch checked out (short name); absent when `HEAD` is detached. */
+  branch?: string | null;
+  /** Changed files, staged or not, untracked included; absent when its status could not be read (its folder is gone). */
+  changes?: number | null;
+  /** The commit checked out; absent on a branch with no commits yet. */
+  head?: string | null;
+  /** Locked (`git worktree lock`): git refuses to remove it. */
+  locked: boolean;
+  /** The main worktree, which is never removed. */
+  main: boolean;
+  /** Its top folder, absolute (canonical when it exists). A workspace whose first root is this folder shows it. */
+  path: string;
+  /** Its folder is gone; removing it only forgets it. */
+  prunable: boolean;
+};
+
+/** Result of [`Worktrees`]. */
+export type WorktreesResult = {
+  /** Every worktree, the main one first (as `git worktree list`; a bare repository's own entry is left out). */
+  worktrees: Array<Worktree>;
+  /** Where [`AddWorktree`] puts new ones: `<parent>/<repo>-worktrees` beside the main worktree. */
+  worktreesDir: string;
 };
 
 /** Requests: method name → params and result. */
@@ -3926,6 +4010,12 @@ export interface Requests {
   "git/blame": { params: BlameParams; result: BlameResult };
   /** Commits newest first, a page at a time, with graph lanes. (client→server) */
   "git/log": { params: LogParams; result: LogResult };
+  /** Every worktree of a root's repository, with its branch and change count. (client→server) */
+  "git/worktrees": { params: RepoParams; result: WorktreesResult };
+  /** Check a branch out in a new worktree and open a workspace on it. (client→server) */
+  "git/addWorktree": { params: AddWorktreeParams; result: AddWorktreeResult };
+  /** Remove a worktree (never forced, never the main one) and forget its workspaces. (client→server) */
+  "git/removeWorktree": { params: RemoveWorktreeParams; result: RemoveWorktreeResult };
   /** The alerts not dismissed, newest first, with the changes seq. (client→server) */
   "alerts/list": { params: ListParams2; result: AlertList };
   /** Mark alerts (or an agent session's) read. (client→server) */

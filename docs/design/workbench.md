@@ -7,7 +7,8 @@ How the workbench window (design board 1) is arranged and how code adds to it. T
 ## Regions
 
 - **Top bar:** the brand ring and the current workspace's name ("Coqo · No workspace open" without one), then the `TopBarStart` slot, the command search (a click or `Ctrl K` opens the command palette under it, see [palette.md](palette.md)), and the `TopBarEnd` slot (the bolt and the `coqod` pill: a grey dot while connecting, a sage dot with a halo when connected, a rose dot with **Retry** when not connected).
-- **Workspace rail:** 52 px. One 42 px button per known workspace with its initials (the window's own lit in sage), then the dashed **+** that opens a folder. See [Workspace rail](#workspace-rail) below.
+- **Workspace rail:** 52 px. One 42 px button per project (a repository with all its worktrees, or a folder in no repository) with its initials (the window's own lit in sage), then the dashed **+** that opens a folder. See [Workspace rail](#workspace-rail) below.
+- **Worktree switcher:** at the top of the sidebar, above the pane tabs, when the workspace is in a git repository. See [Worktree switcher](#worktree-switcher) below.
 - **Sidebar panel:** `panel_raised`, 250 px by default, 180 to 520 px by dragging the gap to its right. A tab strip switches between registered panes; the CHATS list of the workspace's agent sessions stays at the bottom ([chat.md](chat.md)).
 - **Main tab area (the dock):** tab groups in splits. Each group is its own floating `panel` with a tab strip and a split button; groups are 10 px (`gap`) apart.
 - **Status bar:** the `StatusBarStart` and `StatusBarEnd` slots.
@@ -34,16 +35,28 @@ The UI attaches to `coqod` on start (`crates/coqo/src/daemon.rs`), spawning it i
 
 Boards 1 and 6; `crates/coqo/src/shell/rail.rs`.
 
-![The rail with four workspaces: one waiting for an answer, one working, one done, one failed](screenshots/rail-dark.png)
+![The rail with four projects: checkout-service (three worktrees, two waiting and one working), one working, one done, one failed](screenshots/rail-dark.png)
 
-- **Order:** every workspace the daemon knows, in the order they were added, so a button and its `Ctrl/Cmd+1..9` stay put while you switch (most-recently-opened order would reshuffle the rail on every switch). A new workspace goes at the bottom, next to **+**.
-- **Button:** the initials of the name (`checkout-service` → `CS`), bold 13 px, in a 42 px button with a 14 px radius. The window's own workspace has the sage-tinted gradient (`ground` mixed 28 % → 20 % towards `sage`, a 42 % hairline); the others have the `surface_selected` → `surface` gradient. Hovering shows the name and its key, then up to five of the workspace's busy sessions (not idle; waiting ones first, then failed, working and done), each with its status dot, title and the agent's status line (or why it waits) in `text_muted`.
-- **Badges** come from every agent session in the workspace (`sessions/list` + `sessions/changes` across all workspaces, `crates/coqo/src/activity.rs`), so background workspaces stay live. Top right: a `sand` count of sessions waiting for you (a question, a permission request, or blocked), else a `rose` **!** when one failed. Bottom right: a pulsing `blue` dot while an agent works, else a `sage` dot when one finished its turn.
-- **Switch:** a click or `Ctrl/Cmd+1..9` shows that workspace in this window: the layout of the one you leave is saved and the other's comes back (see Restore above). Agents keep running in the daemon. A workspace another window shows focuses that window instead.
+- **Projects ([ADR 0028](../adr/0028-worktrees-and-projects.md)):** one button per repository, however many worktrees of it have a workspace; worktrees are grouped by the repository's git common directory (`WorkspaceInfo.project`), so ones made outside Coqo join too. A folder in no repository is a project of its own. The button is named after the main worktree's workspace (so renaming it renames the button), else the repository's folder.
+- **Order:** every project, in the order its first workspace was added, so a button and its `Ctrl/Cmd+1..9` stay put while you switch (most-recently-opened order would reshuffle the rail on every switch). A new project goes at the bottom, next to **+**.
+- **Button:** the initials of the name (`checkout-service` → `CS`), bold 13 px, in a 42 px button with a 14 px radius. The window's own workspace has the sage-tinted gradient (`ground` mixed 28 % → 20 % towards `sage`, a 42 % hairline); the others have the `surface_selected` → `surface` gradient. Hovering shows the name and its key, then up to five of the project's busy sessions, across all its worktrees (not idle; waiting ones first, then failed, working and done), each with its status dot, title and the agent's status line (or why it waits) in `text_muted`.
+- **Badges** add up every agent session in every worktree of the project (`sessions/list` + `sessions/changes` across all workspaces, `crates/coqo/src/activity.rs`), so background workspaces stay live. Top right: a `sand` count of sessions waiting for you (a question, a permission request, or blocked), else a `rose` **!** when one failed. Bottom right: a pulsing `blue` dot while an agent works, else a `sage` dot when one finished its turn.
+- **Switch:** a click or `Ctrl/Cmd+1..9` shows the project's most recently opened worktree in this window (a click on the window's own project does nothing; switch worktrees in the sidebar): the layout of the one you leave is saved and the other's comes back (see Restore above). Agents keep running in the daemon. A workspace another window shows focuses that window instead.
 - **Bell** (bottom of the rail, above settings): the alert center, with an unread count in the colour of the most urgent unread alert. See [alerts.md](alerts.md).
-- **Context menu** (right-click): **Open in new window** (disabled while a window shows it), **Rename…** (Enter renames for every client, Esc cancels), **Reveal folder** (the first root, in the platform's file manager), and **Remove from list** (`workspace/remove`: the daemon forgets the workspace and its daemon-side data, such as its layout, but never touches the folder; a window showing it is left with no workspace).
+- **Context menu** (right-click): **Open in new window** (the most recent worktree; disabled while a window shows it), **Rename…** (the main worktree's workspace, or the folder's; Enter renames for every client, Esc cancels), **Reveal folder** (the main worktree, else the first root, in the platform's file manager), and **Remove from list** (`workspace/remove` for every workspace of the project: the daemon forgets them and their daemon-side data, such as their layouts, but never touches a folder; a window showing one is left with no workspace).
 
 ![The rail's context menu](screenshots/rail-menu-dark.png)
+
+## Worktree switcher
+
+Boards 1 and 6's visual language (the boards predate it); `crates/coqo/src/worktrees.rs`, [ADR 0028](../adr/0028-worktrees-and-projects.md). Each worktree of a repository is its own workspace (files, chats, terminals, git state); the switcher moves the window between them, and agents in the others keep running.
+
+![The worktree switcher open on checkout-service's three worktrees](screenshots/worktrees-dark.png)
+
+- **Header:** the project's name as a `text_label` caption (`CHECKOUT-SERVICE`), and under it a raised button with the branch icon, the window's branch (semibold) and, when the folder says something else, the folder (`text_subtle`), and a chevron.
+- **List** (a click on the button, or **Switch worktree** in the palette): `git/worktrees`, so worktrees made with `git worktree add` outside Coqo are there. Each row: a sage check on the window's own, the folder (and `main worktree` on the main one), the branch (or `detached at …`), what the worktree's agents do (a `sand` dot for waiting, `rose` failed, `blue` working, `sage` done, as the rail), the changed-file count in a `sand` pill, and a trash button (not on the main worktree, nor a locked one). A click switches the window to that worktree's workspace, opening one on its folder the first time.
+- **New worktree…** (or **New worktree** in the palette): a branch name and a base (the current branch, filled in); `Enter` or **Create** runs `git/addWorktree` (`git worktree add`, in `<repo>-worktrees/<branch>` beside the repository; an existing branch is checked out as it is) and switches the window to the new workspace. git's refusals (a branch checked out elsewhere) show under the list in `rose`.
+- **Remove** (the trash): `git/removeWorktree`, never with `--force`. Uncommitted changes stop it with a `sand` warning that says to commit or stash first (and no way round it); commits no other branch has ask for **Remove anyway** (the branch stays, so they are kept). Removing the window's own worktree shows the main one. The workspaces on a removed worktree are forgotten.
 
 ## Adding to the workbench
 

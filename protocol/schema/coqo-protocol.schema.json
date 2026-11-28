@@ -67,6 +67,61 @@
       ],
       "type": "object"
     },
+    "AddWorktreeParams": {
+      "description": "Params of [`AddWorktree`].",
+      "properties": {
+        "base": {
+          "description": "What a new branch starts from (default: `HEAD` of the root).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "description": "The branch to check out. One that does not exist is created from\n`base`; an existing one is checked out as it is.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Where the worktree goes, absolute (default:\n[`WorktreesResult::worktrees_dir`]`/<branch>`, `/` in the branch as\n`-`). It must not exist.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root whose repository gets the worktree."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root",
+        "branch"
+      ],
+      "type": "object"
+    },
+    "AddWorktreeResult": {
+      "description": "Result of [`AddWorktree`].",
+      "properties": {
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceInfo",
+          "description": "The workspace opened on it (`workspace/open` of its folder)."
+        },
+        "worktree": {
+          "$ref": "#/$defs/Worktree",
+          "description": "The new worktree."
+        }
+      },
+      "required": [
+        "worktree",
+        "workspace"
+      ],
+      "type": "object"
+    },
     "AgentReplyParams": {
       "description": "Params of [`AgentReply`].",
       "properties": {
@@ -5339,6 +5394,31 @@
       ],
       "type": "object"
     },
+    "ProjectInfo": {
+      "description": "The repository a workspace's first root is in, shared by all of its\nworktrees (ADR 0028).",
+      "properties": {
+        "id": {
+          "description": "The repository's git common directory, absolute and canonical (what\n`git rev-parse --git-common-dir` names): the project's identity.",
+          "type": "string"
+        },
+        "mainWorktree": {
+          "description": "The main worktree's folder, absolute and canonical; absent for a\nbare repository.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Display name: the main worktree's folder name (`coqo` for\n`~/code/coqo/.git`), or a bare repository's minus `.git`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
     "PromptParams": {
       "description": "Params of `sessions/prompt`.",
       "properties": {
@@ -6021,6 +6101,68 @@
       "required": [
         "id",
         "root"
+      ],
+      "type": "object"
+    },
+    "RemoveWorktreeParams": {
+      "description": "Params of [`RemoveWorktree`].",
+      "properties": {
+        "confirm": {
+          "default": false,
+          "description": "Remove it although it has commits no other branch, remote-tracking\nbranch or tag has. Uncommitted changes stop removal regardless:\nCoqo never forces it.",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "The worktree's folder, as [`Worktree::path`].",
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "A root in the worktree's repository (any of its worktrees)."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root",
+        "path"
+      ],
+      "type": "object"
+    },
+    "RemoveWorktreeResult": {
+      "description": "Result of [`RemoveWorktree`].",
+      "properties": {
+        "changes": {
+          "description": "Its changed files, staged or not, untracked included.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "forgotten": {
+          "description": "The workspaces on it, forgotten with it (`workspace/remove`).",
+          "items": {
+            "$ref": "#/$defs/WorkspaceId"
+          },
+          "type": "array"
+        },
+        "removed": {
+          "description": "Whether it was removed (its branch stays). `false`: it has work,\ncounted below; commit or stash the changes, or confirm the commits.",
+          "type": "boolean"
+        },
+        "unpushed": {
+          "description": "Commits only its `HEAD` has.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "removed",
+        "changes",
+        "unpushed"
       ],
       "type": "object"
     },
@@ -11393,6 +11535,17 @@
           "description": "Whether the workspace is open (watched, shown in the rail).",
           "type": "boolean"
         },
+        "project": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The project (repository) its first root belongs to; absent when the\nfirst root is in no git repository. Every worktree of a repository\nhas the same project, so the rail shows them as one (ADR 0028)."
+        },
         "roots": {
           "description": "Folder roots, in display order. Never empty.",
           "items": {
@@ -11478,6 +11631,78 @@
       "required": [
         "entries",
         "seq"
+      ],
+      "type": "object"
+    },
+    "Worktree": {
+      "description": "One worktree of a root's repository ([`Worktrees`]).",
+      "properties": {
+        "branch": {
+          "description": "The branch checked out (short name); absent when `HEAD` is detached.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "changes": {
+          "description": "Changed files, staged or not, untracked included; absent when its\nstatus could not be read (its folder is gone).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "head": {
+          "description": "The commit checked out; absent on a branch with no commits yet.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "locked": {
+          "description": "Locked (`git worktree lock`): git refuses to remove it.",
+          "type": "boolean"
+        },
+        "main": {
+          "description": "The main worktree, which is never removed.",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "Its top folder, absolute (canonical when it exists). A workspace\nwhose first root is this folder shows it.",
+          "type": "string"
+        },
+        "prunable": {
+          "description": "Its folder is gone; removing it only forgets it.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "main",
+        "locked",
+        "prunable"
+      ],
+      "type": "object"
+    },
+    "WorktreesResult": {
+      "description": "Result of [`Worktrees`].",
+      "properties": {
+        "worktrees": {
+          "description": "Every worktree, the main one first (as `git worktree list`; a bare\nrepository's own entry is left out).",
+          "items": {
+            "$ref": "#/$defs/Worktree"
+          },
+          "type": "array"
+        },
+        "worktreesDir": {
+          "description": "Where [`AddWorktree`] puts new ones: `<parent>/<repo>-worktrees`\nbeside the main worktree.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "worktrees",
+        "worktreesDir"
       ],
       "type": "object"
     }
@@ -11995,6 +12220,17 @@
         "$ref": "#/$defs/FileStat"
       }
     },
+    "git/addWorktree": {
+      "description": "Check a branch out in a new worktree and open a workspace on it.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/AddWorktreeParams"
+      },
+      "result": {
+        "$ref": "#/$defs/AddWorktreeResult"
+      }
+    },
     "git/blame": {
       "description": "Which commit last changed each line of a file.",
       "direction": "client→server",
@@ -12094,6 +12330,17 @@
         "$ref": "#/$defs/LogResult"
       }
     },
+    "git/removeWorktree": {
+      "description": "Remove a worktree (never forced, never the main one) and forget its workspaces.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/RemoveWorktreeParams"
+      },
+      "result": {
+        "$ref": "#/$defs/RemoveWorktreeResult"
+      }
+    },
     "git/stage": {
       "description": "Stage whole files, or chosen lines of one file.",
       "direction": "client→server",
@@ -12191,6 +12438,17 @@
       },
       "result": {
         "type": "null"
+      }
+    },
+    "git/worktrees": {
+      "description": "Every worktree of a root's repository, with its branch and change count.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/RepoParams"
+      },
+      "result": {
+        "$ref": "#/$defs/WorktreesResult"
       }
     },
     "mcp/call": {

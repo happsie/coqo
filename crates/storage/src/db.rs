@@ -343,6 +343,18 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
             ) WITHOUT ROWID;
         ",
     },
+    Migration {
+        version: 15,
+        name: "workspace project",
+        // The project a workspace belongs to (#92, ADR 0028): the canonical
+        // git common directory of its first root's repository, which every
+        // worktree of the repository shares. `''` when the first root is in
+        // no repository; NULL until the daemon first looks (a row from
+        // before this migration), which it does when it starts.
+        sql: "
+            ALTER TABLE workspaces ADD COLUMN project TEXT;
+        ",
+    },
 ];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.

@@ -14,8 +14,9 @@
 //!   chosen lines through `git apply --cached`), [`Repo::discard`] and
 //!   [`Repo::discard_lines`] (back to the index version; untracked files
 //!   are refused, the daemon moves them to the trash), [`Repo::commit`],
-//!   [`Repo::create_branch`], [`Repo::switch_branch`] and the stash
-//!   operations.
+//!   [`Repo::create_branch`], [`Repo::switch_branch`], the stash
+//!   operations, and worktrees ([`Repo::worktrees`], [`Repo::add_worktree`]
+//!   and [`Repo::remove_worktree`], which never forces).
 //!
 //! **Paths** are relative to the repository's work tree and `/`-separated.
 //! A repository opened from a subdirectory reports it as
@@ -41,6 +42,9 @@ mod refs;
 mod rename;
 mod status;
 pub mod testing;
+mod worktree;
+#[cfg(test)]
+mod worktree_tests;
 
 #[cfg(test)]
 mod tests;
@@ -58,6 +62,7 @@ pub use log::{EdgeKind, GraphEdge, GraphRow, LogCommit, LogOptions, LogPage};
 pub use patch::LineSelection;
 pub use refs::{Branch, Stash};
 pub use status::{Change, Conflict, Head, Status, StatusEntry};
+pub use worktree::{Removal, Worktree, WorktreeWork};
 
 /// The mod's `coqo.mod.toml`.
 pub const MANIFEST: &str = include_str!("../coqo.mod.toml");

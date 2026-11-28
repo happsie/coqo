@@ -278,6 +278,7 @@ mod tests {
             created_at: 0,
             last_opened_at: 0,
             open: true,
+            project: None,
         }
     }
 
