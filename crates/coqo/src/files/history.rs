@@ -24,6 +24,13 @@ pub enum FileOp {
         path: String,
         kind: EntryKind,
     },
+    /// `from` was copied (or duplicated) to `path`. Redo copies it again.
+    Copy {
+        root: RootId,
+        from: String,
+        path: String,
+        kind: EntryKind,
+    },
     /// `from` was renamed or moved to `to`.
     Move {
         root: RootId,
@@ -52,9 +59,22 @@ impl FileOp {
     /// The root it was in.
     pub fn root(&self) -> RootId {
         match self {
-            Self::Create { root, .. } | Self::Move { root, .. } | Self::Delete { root, .. } => {
-                *root
-            }
+            Self::Create { root, .. }
+            | Self::Copy { root, .. }
+            | Self::Move { root, .. }
+            | Self::Delete { root, .. } => *root,
+        }
+    }
+
+    /// The entry an undo of this operation would delete: what a creation or
+    /// a copy made.
+    pub fn made(&self) -> Option<(RootId, &str, EntryKind)> {
+        match self {
+            Self::Create { root, path, kind }
+            | Self::Copy {
+                root, path, kind, ..
+            } => Some((*root, path, *kind)),
+            _ => None,
         }
     }
 
@@ -64,6 +84,7 @@ impl FileOp {
     pub fn describe(&self) -> String {
         match self {
             Self::Create { path, .. } => format!("creation of “{}”", name(path)),
+            Self::Copy { path, .. } => format!("copy of “{}”", name(path)),
             Self::Delete { path, .. } => format!("delete of “{}”", name(path)),
             Self::Move { from, to, .. } if parent(from) == parent(to) => {
                 format!("rename of “{}” → “{}”", name(from), name(to))
@@ -258,6 +279,15 @@ mod tests {
             kind: EntryKind::File,
         };
         assert_eq!(made.describe(), "creation of “a.md”");
+        let copied = FileOp::Copy {
+            root: RootId(0),
+            from: "docs/a.md".into(),
+            path: "docs/a copy.md".into(),
+            kind: EntryKind::File,
+        };
+        assert_eq!(copied.describe(), "copy of “a copy.md”");
+        assert_eq!(copied.made().map(|m| m.1), Some("docs/a copy.md"));
+        assert_eq!(copied.cannot_undo(), None);
         assert_eq!(made.cannot_undo(), None);
     }
 }

@@ -1733,6 +1733,115 @@ fn undoes_and_redoes_file_operations_in_the_tree() {
     assert_eq!(ui.next_undo(), None, "dropped");
 }
 
+/// Copy, paste and duplicate in the tree (issue #290), with a real daemon:
+/// Duplicate names the copy `name copy.ext` next to the entry and starts a
+/// rename on it, Paste puts a copied file or folder in a folder (` copy`,
+/// ` copy 2` where the name is taken), and undo and redo go through the
+/// window's history.
+#[test]
+fn copies_pastes_and_duplicates_in_the_tree() {
+    use super::history::FileOp;
+
+    let fixture = Fixture::new();
+    let mut ui = open_ui(&fixture, Some(fixture.project.clone()));
+    ui.wait_for_tree();
+    let tree = ui.tree();
+    let project = &fixture.project;
+
+    // Duplicate README.md from the menu: `README copy.md` appears next to
+    // it, selected, with its name in a field.
+    ui.right_click_row("README.md");
+    ui.click("file-menu-duplicate");
+    ui.wait_for("README copy.md, being renamed", |ui| {
+        ui.rows().iter().any(|r| r.editing)
+    });
+    assert_eq!(
+        std::fs::read_to_string(project.join("README copy.md")).unwrap(),
+        "# Demo\n"
+    );
+    assert_eq!(ui.selected_path().as_deref(), Some("README copy.md"));
+    let field_text = ui.cx.read(|cx| {
+        tree.read(cx)
+            .name_field()
+            .map(|(_, input)| input.read(cx).text(cx))
+    });
+    assert_eq!(field_text.as_deref(), Some("README copy.md"));
+    assert!(matches!(ui.next_undo(), Some(FileOp::Copy { .. })));
+    // The name can be changed in place, as for any rename.
+    ui.enter_name("NOTES.md");
+    ui.wait_for("NOTES.md", |ui| {
+        ui.names().contains(&"NOTES.md".to_owned()) && project.join("NOTES.md").is_file()
+    });
+    assert!(!project.join("README copy.md").exists());
+
+    // Copy and paste: a file into a folder, twice (the second is renamed),
+    // and a folder next to itself (pasted on a root-level file).
+    ui.right_click_row("README.md");
+    ui.click("file-menu-copy");
+    assert_eq!(
+        ui.cx
+            .read(|cx| tree.read(cx).copied().map(|t| t.path.clone())),
+        Some("README.md".to_owned())
+    );
+    ui.right_click_row("src");
+    ui.click("file-menu-paste");
+    ui.wait_for("src/README.md", |_| project.join("src/README.md").is_file());
+    ui.right_click_row("src");
+    ui.click("file-menu-paste");
+    ui.wait_for("src/README copy.md", |_| {
+        project.join("src/README copy.md").is_file()
+    });
+    assert_eq!(ui.selected_path().as_deref(), Some("src/README copy.md"));
+
+    ui.right_click_row("src");
+    ui.click("file-menu-copy");
+    ui.right_click_row("NOTES.md");
+    ui.click("file-menu-paste");
+    ui.wait_for("src copy", |_| project.join("src copy/lib.rs").is_file());
+    assert!(project.join("src copy/README copy.md").is_file());
+    assert!(project.join("src/lib.rs").is_file(), "the source is kept");
+    ui.wait_for("src copy in the tree", |ui| {
+        ui.names().contains(&"src copy".to_owned())
+    });
+    assert_eq!(ui.selected_path().as_deref(), Some("src copy"));
+
+    // Undo takes the folder copy to the trash; redo copies it again.
+    ui.press(UNDO);
+    ui.wait_for_toast("Undid copy of “src copy”");
+    assert!(!project.join("src copy").exists());
+    assert!(fixture.daemon.trash().join("src copy").is_dir());
+    ui.press(REDO_SHIFT);
+    ui.wait_for_toast("Redid copy of “src copy”");
+    assert!(project.join("src copy/lib.rs").is_file());
+    // And back through the file copies, one by one.
+    ui.press(UNDO);
+    ui.wait_for_toast("Undid copy of “src copy”");
+    ui.press(UNDO);
+    ui.wait_for_toast("Undid copy of “README copy.md”");
+    assert!(!project.join("src/README copy.md").exists());
+    ui.press(UNDO);
+    ui.wait_for_toast("Undid copy of “README.md”");
+    assert!(!project.join("src/README.md").exists());
+    // Then the rename of the first duplicate, and the duplicate itself.
+    ui.press(UNDO);
+    ui.wait_for_toast("Undid rename of “README copy.md” → “NOTES.md”");
+    ui.press(UNDO);
+    ui.wait_for_toast("Undid copy of “README copy.md”");
+    assert!(!project.join("README copy.md").exists());
+    assert!(project.join("README.md").is_file());
+
+    // A copy whose source is gone says so.
+    ui.right_click_row(".gitignore");
+    ui.click("file-menu-copy");
+    std::fs::remove_file(project.join(".gitignore")).unwrap();
+    ui.right_click_row("src");
+    ui.click("file-menu-paste");
+    ui.wait_for("the error", |ui| {
+        let tree = ui.tree();
+        ui.cx.read(|cx| tree.read(cx).op_error().is_some())
+    });
+}
+
 impl Ui {
     /// Hold every tab's open back (the tabs stay loading) until
     /// [`release_open`](Self::release_open).
@@ -2082,24 +2191,10 @@ fn files_screenshots() {
         // delete waiting for confirmation (#161). Nothing is sent: the
         // folder is this repository.
         let tree = cx.update(|cx| tree(cx)).unwrap();
-        let row_of = |cx: &mut HeadlessAppContext, name: &str| {
-            cx.update(|cx| {
-                tree.read(cx)
-                    .rows()
-                    .iter()
-                    .position(|r| r.name.as_ref() == name && r.depth == 4)
-                    .unwrap_or_else(|| panic!("no row {name}"))
-            })
-        };
-        let files = "crates/coqo/src/files";
         let root = cx.update(|cx| tree.read(cx).rows()[0].root);
-        let glyph = row_of(&mut cx, "glyph.rs");
-        let at = cx
-            .update_window(handle, |_, window, _| {
-                let bounds = window.find(("file-row", glyph)).bounds();
-                coqo_ui::gpui::point(bounds.left() + px(64.), bounds.center().y)
-            })
-            .unwrap();
+        let files = "crates/coqo/src/files";
+        // Over the rows, where a right-click lands.
+        let at = coqo_ui::gpui::point(px(150.), px(200.));
         cx.update(|cx| {
             tree.update(cx, |t, cx| {
                 let target = super::tree::Target {

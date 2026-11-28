@@ -184,6 +184,11 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "Rename or move an entry within a workspace root; open buffers follow it (daemon token only).",
         ),
+        request::<fs::CopyEntry>(
+            g,
+            "client→server",
+            "Copy a file or folder within a workspace root, naming the copy ' copy', ' copy 2' where the name is taken (daemon token only).",
+        ),
         request::<fs::Delete>(
             g,
             "client→server",
@@ -1080,6 +1085,7 @@ fn schema_covers_the_application_methods() {
         fs::ReadFile::NAME,
         fs::Create::NAME,
         fs::Rename::NAME,
+        fs::CopyEntry::NAME,
         fs::Delete::NAME,
         fs::Restore::NAME,
         fs::Find::NAME,

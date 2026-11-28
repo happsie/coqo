@@ -2237,6 +2237,34 @@
         }
       ]
     },
+    "CopyParams": {
+      "description": "Params of [`CopyEntry`].",
+      "properties": {
+        "dir": {
+          "description": "The existing folder to put the copy in (`\"\"` is the root). Giving the\nsource's own folder duplicates it.",
+          "type": "string"
+        },
+        "from": {
+          "description": "The file or folder to copy (a folder with everything in it). A\nsymlink is copied as a link, not through to its target.",
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root both paths are relative to."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root",
+        "from",
+        "dir"
+      ],
+      "type": "object"
+    },
     "Cost": {
       "description": "A cost figure.",
       "properties": {
@@ -3347,7 +3375,7 @@
       ]
     },
     "EntryResult": {
-      "description": "Result of [`Create`] and [`Rename`]: the entry's path, normalised\n(`./a//b` is `a/b`).",
+      "description": "Result of [`Create`], [`Rename`] and [`CopyEntry`]: the entry's path, normalised\n(`./a//b` is `a/b`).",
       "properties": {
         "path": {
           "description": "`/`-separated path relative to the root.",
@@ -12342,6 +12370,17 @@
       "kind": "topic",
       "params": {
         "$ref": "#/$defs/ChangesParams"
+      }
+    },
+    "fs/copy": {
+      "description": "Copy a file or folder within a workspace root, naming the copy ' copy', ' copy 2' where the name is taken (daemon token only).",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/CopyParams"
+      },
+      "result": {
+        "$ref": "#/$defs/EntryResult"
       }
     },
     "fs/create": {

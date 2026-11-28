@@ -33,7 +33,8 @@ use std::{
 use coqo_protocol::methods::{
     codes,
     fs::{
-        self, CreateParams, DeleteParams, DirEntry, EntryKind, FsChanges, PathParams, RenameParams,
+        self, CopyParams, CreateParams, DeleteParams, DirEntry, EntryKind, FsChanges, PathParams,
+        RenameParams,
     },
     workspace::{RootId, WorkspaceId, WorkspaceInfo},
 };
@@ -52,8 +53,9 @@ use coqo_ui::{
 };
 
 use super::{
-    Collapse, Confirm, CopyPath, CopyRelativePath, DeleteEntry, Dismiss, Expand, NewFile,
-    NewFolder, RenameEntry, RevealInFileManager, SelectNext, SelectPrev,
+    Collapse, Confirm, CopyEntry, CopyPath, CopyRelativePath, DeleteEntry, Dismiss, DuplicateEntry,
+    Expand, NewFile, NewFolder, PasteEntry, RenameEntry, RevealInFileManager, SelectNext,
+    SelectPrev,
     decorations::{RowDecoration, RowDecorations},
     editor::{self, FileEditor},
     history::{FileOp, History},
@@ -229,6 +231,8 @@ pub struct FileTree {
     menu: Option<Menu>,
     editing: Option<Editing>,
     pending_delete: Option<PendingDelete>,
+    /// The file or folder Copy remembered, for Paste.
+    copied: Option<Target>,
     /// The last operation's error, above the tree.
     op_error: Option<String>,
     /// The window's file operations, to undo and redo.
@@ -384,6 +388,7 @@ impl FileTree {
             menu: None,
             editing: None,
             pending_delete: None,
+            copied: None,
             op_error: None,
             history: History::for_window(window, cx),
             undoing: false,
@@ -1001,6 +1006,37 @@ impl FileTree {
         }
     }
 
+    fn duplicate_selected(
+        &mut self,
+        _: &DuplicateEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.editing.is_some() {
+            return;
+        }
+        if let Some(ix) = self.selected_index() {
+            let target = self.rows[ix].target();
+            self.duplicate(target, window, cx);
+        }
+    }
+
+    fn copy_selected_entry(&mut self, _: &CopyEntry, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.selected_index() {
+            let target = self.rows[ix].target();
+            self.copy_entry(target, cx);
+        }
+    }
+
+    fn paste_selected(&mut self, _: &PasteEntry, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            return;
+        }
+        if let Some(target) = self.selected_target() {
+            self.paste(target.folder(), window, cx);
+        }
+    }
+
     fn delete_selected(&mut self, _: &DeleteEntry, window: &mut Window, cx: &mut Context<Self>) {
         if self.editing.is_some() {
             return;
@@ -1297,6 +1333,117 @@ impl FileTree {
         );
         window.focus(&self.focus, cx);
         self.rebuild(cx);
+    }
+
+    /// Remember `target` (a file or a folder) for [`paste`](Self::paste).
+    pub(crate) fn copy_entry(&mut self, target: Target, cx: &mut Context<Self>) {
+        self.menu = None;
+        if !target.path.is_empty() {
+            self.copied = Some(target);
+        }
+        cx.notify();
+    }
+
+    /// The file or folder Copy remembered.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn copied(&self) -> Option<&Target> {
+        self.copied.as_ref()
+    }
+
+    /// Copy `target` next to itself (`name copy.ext`) and start renaming
+    /// the copy.
+    pub(crate) fn duplicate(
+        &mut self,
+        target: Target,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        self.pending_delete = None;
+        if target.path.is_empty() {
+            return; // a root is not copied
+        }
+        let dir = (target.root, parent(&target.path).to_owned());
+        self.copy_into(target, dir, true, window, cx);
+    }
+
+    /// Paste what Copy remembered into folder `dir`; a name taken there
+    /// gets ` copy`.
+    pub(crate) fn paste(&mut self, dir: DirKey, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = None;
+        self.pending_delete = None;
+        let Some(from) = self.copied.clone() else {
+            return;
+        };
+        if from.root != dir.0 {
+            self.op_error = Some("Copying between workspace folders isn't supported yet.".into());
+            cx.notify();
+            return;
+        }
+        self.copy_into(from, dir, false, window, cx);
+    }
+
+    /// Send `fs/copy` of `from` into `dir`; `rename` starts a rename of the
+    /// copy.
+    fn copy_into(
+        &mut self,
+        from: Target,
+        dir: DirKey,
+        rename: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.op_error = None;
+        let Some((workspace, daemon)) = self.session(cx) else {
+            self.op_failed(&DaemonError::NotConnected, base_name(&from.path), cx);
+            return;
+        };
+        let copy = daemon.read(cx).request::<fs::CopyEntry>(CopyParams {
+            workspace,
+            root: from.root,
+            from: from.path.clone(),
+            dir: dir.1,
+        });
+        self._op = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = copy.await;
+            this.update_in(cx, |this, window, cx| {
+                this.copied_to(from, rename, result, window, cx)
+            })
+            .ok();
+        }));
+    }
+
+    fn copied_to(
+        &mut self,
+        from: Target,
+        rename: bool,
+        result: Result<fs::EntryResult, DaemonError>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(e) => return self.op_failed(&e, base_name(&from.path), cx),
+        };
+        let root = from.root;
+        self.history.update(cx, |h, _| {
+            h.record(FileOp::Copy {
+                root,
+                from: from.path.clone(),
+                path: entry.path.clone(),
+                kind: from.kind,
+            })
+        });
+        // Shown in its folder, opened if it was closed.
+        let dir = (root, parent(&entry.path).to_owned());
+        self.expanded.insert(dir.clone());
+        self.relist(dir, cx);
+        self.pending_select = Some((root, entry.path.clone()));
+        window.focus(&self.focus, cx);
+        self.rebuild(cx);
+        if rename {
+            self.start_rename(root, &entry.path, window, cx);
+        }
     }
 
     /// An operation failed: say why, and let a name field be edited again.
@@ -1985,6 +2132,8 @@ impl FileTree {
             target.clone(),
             target.clone(),
         );
+        let (duplicate, copy_entry, paste_into) = (target.clone(), target.clone(), target.folder());
+        let can_paste = self.copied.is_some();
         let undo_rows = self.render_undo_items(cx);
         let mut card = popover(cx)
             .id("file-menu")
@@ -2020,6 +2169,27 @@ impl FileTree {
                     }),
                 ),
             );
+        }
+        if !is_root || can_paste {
+            card = card.child(separator());
+        }
+        if !is_root {
+            card = card
+                .child(
+                    item("file-menu-duplicate", Icon::File, "Duplicate", None).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.duplicate(duplicate.clone(), window, cx)
+                        }),
+                    ),
+                )
+                .child(item("file-menu-copy", Icon::File, "Copy", None).on_click(
+                    cx.listener(move |this, _, _, cx| this.copy_entry(copy_entry.clone(), cx)),
+                ));
+        }
+        if can_paste {
+            card = card.child(item("file-menu-paste", Icon::File, "Paste", None).on_click(
+                cx.listener(move |this, _, window, cx| this.paste(paste_into.clone(), window, cx)),
+            ));
         }
         card = card
             .child(separator())
@@ -2142,6 +2312,9 @@ impl Render for FileTree {
             .on_action(cx.listener(Self::new_folder))
             .on_action(cx.listener(Self::rename_selected))
             .on_action(cx.listener(Self::delete_selected))
+            .on_action(cx.listener(Self::duplicate_selected))
+            .on_action(cx.listener(Self::copy_selected_entry))
+            .on_action(cx.listener(Self::paste_selected))
             .on_action(cx.listener(|this, _: &CopyPath, _, cx| this.copy_selected(false, cx)))
             .on_action(
                 cx.listener(|this, _: &CopyRelativePath, _, cx| this.copy_selected(true, cx)),

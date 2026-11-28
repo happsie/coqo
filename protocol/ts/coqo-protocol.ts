@@ -790,6 +790,18 @@ export type ContentBlock = {
   uri: string;
 };
 
+/** Params of [`CopyEntry`]. */
+export type CopyParams = {
+  /** The existing folder to put the copy in (`""` is the root). Giving the source's own folder duplicates it. */
+  dir: string;
+  /** The file or folder to copy (a folder with everything in it). A symlink is copied as a link, not through to its target. */
+  from: string;
+  /** The root both paths are relative to. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
 /** A cost figure. */
 export type Cost = {
   /** Amount. */
@@ -1170,7 +1182,7 @@ export type Encoding = "json" | "msgpack";
 /** What a path points at. */
 export type EntryKind = "file" | "dir" | "other";
 
-/** Result of [`Create`] and [`Rename`]: the entry's path, normalised (`./a//b` is `a/b`). */
+/** Result of [`Create`], [`Rename`] and [`CopyEntry`]: the entry's path, normalised (`./a//b` is `a/b`). */
 export type EntryResult = {
   /** `/`-separated path relative to the root. */
   path: string;
@@ -3939,6 +3951,8 @@ export interface Requests {
   "fs/create": { params: CreateParams; result: EntryResult };
   /** Rename or move an entry within a workspace root; open buffers follow it (daemon token only). (client→server) */
   "fs/rename": { params: RenameParams2; result: EntryResult };
+  /** Copy a file or folder within a workspace root, naming the copy ' copy', ' copy 2' where the name is taken (daemon token only). (client→server) */
+  "fs/copy": { params: CopyParams; result: EntryResult };
   /** Move an entry to the OS trash, or delete it for good with permanent (daemon token only). (client→server) */
   "fs/delete": { params: DeleteParams; result: DeleteResult };
   /** Bring back an entry fs/delete deleted, from the OS trash or Coqo's copy (daemon token only). (client→server) */
