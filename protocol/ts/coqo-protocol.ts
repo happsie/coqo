@@ -16,6 +16,7 @@ export const ErrorCodes = {
   INTERNAL_ERROR: -32603,
   INVALID_EDIT: 1204,
   INVALID_PARAMS: -32602,
+  INVALID_QUERY: 2001,
   INVALID_REQUEST: -32600,
   INVALID_WALKTHROUGH: 1702,
   IO_ERROR: 1009,
@@ -35,6 +36,7 @@ export const ErrorCodes = {
   RESUME_GAP: -32003,
   REVISION_GONE: 1203,
   SAVE_CONFLICT: 1205,
+  SEARCH_UNAVAILABLE: 2002,
   SESSION_BUSY: 1103,
   SESSION_CLOSED: 1104,
   SPAWN_FAILED: 1302,
@@ -1124,6 +1126,36 @@ export type FileLocation = {
   root: RootId;
 };
 
+/** The matches of one file. */
+export type FileMatches = {
+  /** In order. */
+  matches: Array<SearchMatch>;
+  /** `/`-separated path relative to the root. */
+  path: string;
+  /** The file's root. */
+  root: RootId;
+};
+
+/** One file of a [`ReplaceResult`]. */
+export type FileReplaced = {
+  /** Its open buffer, if it has one. */
+  buffer?: BufferId | null;
+  /** For `held` only: the edits, in order, against the buffer at `rev`. */
+  edits?: Array<TextEdit>;
+  /** For `failed`: why. */
+  error?: string | null;
+  /** What happened. */
+  outcome: ReplaceOutcome;
+  /** Its path, as given. */
+  path: string;
+  /** Matches replaced (or to replace, when held). */
+  replaced: number;
+  /** The buffer's revision after the change (`buffer`), or the one the edits apply to (`held`). */
+  rev?: number | null;
+  /** The file's root. */
+  root: RootId;
+};
+
 /** A file as one diff side has it. */
 export type FileSide = {
   /** Git's mode: `33188` (`0o100644`), `33261` (`0o100755`), `40960` (`0o120000`, a symlink) or `57344` (`0o160000`, a submodule). */
@@ -1447,6 +1479,16 @@ export type MarkReadParams = {
   session?: SessionId | null;
 };
 
+/** Where a match is: its line and character columns, as [`SearchMatch`] gives them. */
+export type MatchAt = {
+  /** 0-based end character (exclusive). */
+  end: number;
+  /** 0-based line. */
+  line: number;
+  /** 0-based start character. */
+  start: number;
+};
+
 /** Terminal modes that change how a client encodes input. */
 export type Modes = {
   /** The alternate screen is active (full-screen programs such as `top`); it has no scrollback, so a client turns wheel scrolling into arrow keys. */
@@ -1532,7 +1574,7 @@ export type Origin = {
 };
 
 /** Who made a change. */
-export type OriginKind = "client" | "agent" | "disk" | "format" | "revert" | "save";
+export type OriginKind = "client" | "agent" | "disk" | "format" | "revert" | "save" | "replace";
 
 /** A symbol and the symbols inside it. */
 export type OutlineItem = {
@@ -1938,6 +1980,41 @@ export type RenameParams3 = {
   title: string;
 };
 
+/** A file to replace in. */
+export type ReplaceFile = {
+  /** Only the matches at these places; omitted: every match in the file. A place where the current text no longer has a match (it changed since the search) is skipped. */
+  matches?: Array<MatchAt> | null;
+  /** `/`-separated path relative to the root. */
+  path: string;
+  /** The file's root. */
+  root: RootId;
+};
+
+/** What happened to one file of a [`Replace`]. */
+export type ReplaceOutcome = "buffer" | "written" | "held" | "unchanged" | "failed";
+
+/** Params of [`Replace`]. */
+export type ReplaceParams = {
+  /** The files. */
+  files: Array<ReplaceFile>;
+  /** Open buffers the client edits itself (its editor tabs, so the replacement joins their undo history): their edits come back as [`ReplaceOutcome::Held`] instead of being applied. */
+  hold?: Array<BufferId>;
+  /** The search whose matches to replace. */
+  query: SearchQuery;
+  /** What each match becomes. For a regular expression it may name capture groups (`$1`, `${name}`; `$$` is a `$`); otherwise it is literal. */
+  replacement: string;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
+/** Result of [`Replace`]. */
+export type ReplaceResult = {
+  /** One entry per file asked for, in order. */
+  files: Array<FileReplaced>;
+  /** Matches replaced in all (held ones included). */
+  replaced: number;
+};
+
 /** Identifies one replica of a buffer (one editor in one window), e.g. `r-3f2a9c1d0b7e4a65`. Assigned by [`Open`]; a replica keeps it across reconnects and reopens so the daemon can recognise its changes. */
 export type ReplicaId = string;
 
@@ -2126,6 +2203,18 @@ export type RunParams = {
   id: string;
 };
 
+/** Params of [`Run`]. */
+export type RunParams2 = {
+  /** Stop after this many matches (default [`DEFAULT_MAX_MATCHES`], at most [`MAX_MATCHES`]); [`SearchSummary::limit_hit`] then says there are more. */
+  max_matches?: number | null;
+  /** What to search for. */
+  query: SearchQuery;
+  /** Only these roots; omitted: every root. */
+  roots?: Array<RootId> | null;
+  /** The workspace to search. */
+  workspace: WorkspaceId;
+};
+
 /** Result of [`Run`]: what the handler returned. */
 export type RunResult = {
   /** The handler's result (`null` when it has none). */
@@ -2184,6 +2273,59 @@ export type ScrollParams = {
 /** How to move a terminal's viewport through its scrollback. */
 export type ScrollTo = "pageUp" | "pageDown" | "top" | "bottom" | {
   lines: number;
+};
+
+/** An event of [`Run`]. */
+export type SearchEvent = {
+  /** Each with its matches. */
+  files: Array<FileMatches>;
+  kind: "files";
+} | SearchSummary;
+
+/** One match. */
+export type SearchMatch = {
+  /** 0-based character where it ends (exclusive), on the same line. */
+  end: number;
+  /** 0-based line. */
+  line: number;
+  /** The line without its line ending and leading whitespace; a window around the match, with `…` where cut, if the line is long. */
+  preview: string;
+  /** Where it ends in `preview` (bytes, exclusive). */
+  preview_end: number;
+  /** Where the match starts in `preview` (bytes). */
+  preview_start: number;
+  /** 0-based character where it starts on the line. */
+  start: number;
+};
+
+/** What to search for. */
+export type SearchQuery = {
+  /** Match case; otherwise case is ignored. */
+  case_sensitive?: boolean;
+  /** Never files or folders matching these globs (`target`, `*.min.js`). */
+  exclude?: Array<string>;
+  /** Only files matching one of these globs (gitignore syntax, relative to the root: `*.rs`, `src/**`; a plain name such as `src` also covers what is under it). Empty: every file. */
+  include?: Array<string>;
+  /** The text, or a regular expression if `regex`. Must not be empty. */
+  pattern: string;
+  /** `pattern` is a regular expression (Rust `regex` syntax, as ripgrep); otherwise it is matched literally. */
+  regex?: boolean;
+  /** Only matches with a word boundary at both ends. */
+  whole_word?: boolean;
+};
+
+/** How a search went: the last event of [`Run`]. */
+export type SearchSummary = {
+  /** How long it took, in milliseconds. */
+  elapsed_ms: number;
+  /** Files with matches. */
+  files: number;
+  /** It stopped at `max_matches`: there are more. */
+  limit_hit: boolean;
+  /** Matches. */
+  matches: number;
+  /** Files searched. */
+  searched: number;
 };
 
 /** A selection or cursor in a tab. */
@@ -3648,6 +3790,8 @@ export interface Requests {
   "review/send": { params: SendReviewParams; result: SentReview };
   /** An agent session replies in a review thread of its workspace, optionally resolving it. (client→server) */
   "review/reply": { params: AgentReplyParams; result: Thread };
+  /** Replace a search's matches in chosen files: open buffers are edited, other files written. (client→server) */
+  "search/replace": { params: ReplaceParams; result: ReplaceResult };
 }
 
 /** Notifications: method name → params. */
@@ -3694,6 +3838,8 @@ export interface Topics {
   "walkthroughs/changes": { params: ChangesParams7; event: WalkthroughChange };
   /** Threads whose state changed, as their latest state, and deleted ones (resumable). */
   "threads/changes": { params: ChangesParams8; event: ThreadEvent };
+  /** Search a workspace: batches of files with matches as they are searched, then a summary; unsubscribe to cancel. */
+  "search/run": { params: RunParams2; event: SearchEvent };
 }
 
 /** Encode one frame: u32 big-endian length, then the JSON payload. */

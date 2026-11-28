@@ -3214,6 +3214,96 @@
       ],
       "type": "object"
     },
+    "FileMatches": {
+      "description": "The matches of one file.",
+      "properties": {
+        "matches": {
+          "description": "In order.",
+          "items": {
+            "$ref": "#/$defs/SearchMatch"
+          },
+          "type": "array"
+        },
+        "path": {
+          "description": "`/`-separated path relative to the root.",
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The file's root."
+        }
+      },
+      "required": [
+        "root",
+        "path",
+        "matches"
+      ],
+      "type": "object"
+    },
+    "FileReplaced": {
+      "description": "One file of a [`ReplaceResult`].",
+      "properties": {
+        "buffer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BufferId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its open buffer, if it has one."
+        },
+        "edits": {
+          "description": "For `held` only: the edits, in order, against the buffer at `rev`.",
+          "items": {
+            "$ref": "#/$defs/TextEdit"
+          },
+          "type": "array"
+        },
+        "error": {
+          "description": "For `failed`: why.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/ReplaceOutcome",
+          "description": "What happened."
+        },
+        "path": {
+          "description": "Its path, as given.",
+          "type": "string"
+        },
+        "replaced": {
+          "description": "Matches replaced (or to replace, when held).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rev": {
+          "description": "The buffer's revision after the change (`buffer`), or the one the\nedits apply to (`held`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The file's root."
+        }
+      },
+      "required": [
+        "root",
+        "path",
+        "outcome",
+        "replaced"
+      ],
+      "type": "object"
+    },
     "FileSide": {
       "description": "A file as one diff side has it.",
       "properties": {
@@ -4206,6 +4296,35 @@
       },
       "type": "object"
     },
+    "MatchAt": {
+      "description": "Where a match is: its line and character columns, as\n[`SearchMatch`] gives them.",
+      "properties": {
+        "end": {
+          "description": "0-based end character (exclusive).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line": {
+          "description": "0-based line.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "description": "0-based start character.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "line",
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
     "Modes": {
       "description": "Terminal modes that change how a client encodes input.",
       "properties": {
@@ -4450,6 +4569,11 @@
         {
           "const": "save",
           "description": "The buffer was saved: no edits, `dirty` becomes false.",
+          "type": "string"
+        },
+        {
+          "const": "replace",
+          "description": "Project search and replace (`search/replace`) by the user.",
           "type": "string"
         }
       ]
@@ -5644,6 +5768,125 @@
       ],
       "type": "object"
     },
+    "ReplaceFile": {
+      "description": "A file to replace in.",
+      "properties": {
+        "matches": {
+          "description": "Only the matches at these places; omitted: every match in the file.\nA place where the current text no longer has a match (it changed\nsince the search) is skipped.",
+          "items": {
+            "$ref": "#/$defs/MatchAt"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "`/`-separated path relative to the root.",
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The file's root."
+        }
+      },
+      "required": [
+        "root",
+        "path"
+      ],
+      "type": "object"
+    },
+    "ReplaceOutcome": {
+      "description": "What happened to one file of a [`Replace`].",
+      "oneOf": [
+        {
+          "const": "buffer",
+          "description": "Its open buffer was edited (one change, unsaved).",
+          "type": "string"
+        },
+        {
+          "const": "written",
+          "description": "It was not open; the file was written.",
+          "type": "string"
+        },
+        {
+          "const": "held",
+          "description": "Its buffer is one the client holds: apply `edits` at `rev`.",
+          "type": "string"
+        },
+        {
+          "const": "unchanged",
+          "description": "Nothing to replace (no match at the places named, any more).",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "It could not be done; `error` says why.",
+          "type": "string"
+        }
+      ]
+    },
+    "ReplaceParams": {
+      "description": "Params of [`Replace`].",
+      "properties": {
+        "files": {
+          "description": "The files.",
+          "items": {
+            "$ref": "#/$defs/ReplaceFile"
+          },
+          "type": "array"
+        },
+        "hold": {
+          "description": "Open buffers the client edits itself (its editor tabs, so the\nreplacement joins their undo history): their edits come back as\n[`ReplaceOutcome::Held`] instead of being applied.",
+          "items": {
+            "$ref": "#/$defs/BufferId"
+          },
+          "type": "array"
+        },
+        "query": {
+          "$ref": "#/$defs/SearchQuery",
+          "description": "The search whose matches to replace."
+        },
+        "replacement": {
+          "description": "What each match becomes. For a regular expression it may name\ncapture groups (`$1`, `${name}`; `$$` is a `$`); otherwise it is\nliteral.",
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "query",
+        "replacement",
+        "files"
+      ],
+      "type": "object"
+    },
+    "ReplaceResult": {
+      "description": "Result of [`Replace`].",
+      "properties": {
+        "files": {
+          "description": "One entry per file asked for, in order.",
+          "items": {
+            "$ref": "#/$defs/FileReplaced"
+          },
+          "type": "array"
+        },
+        "replaced": {
+          "description": "Matches replaced in all (held ones included).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "files",
+        "replaced"
+      ],
+      "type": "object"
+    },
     "ReplicaId": {
       "description": "Identifies one replica of a buffer (one editor in one window), e.g.\n`r-3f2a9c1d0b7e4a65`. Assigned by [`Open`]; a replica keeps it across\nreconnects and reopens so the daemon can recognise its changes.",
       "type": "string"
@@ -6128,6 +6371,43 @@
       ],
       "type": "object"
     },
+    "RunParams2": {
+      "description": "Params of [`Run`].",
+      "properties": {
+        "max_matches": {
+          "description": "Stop after this many matches (default [`DEFAULT_MAX_MATCHES`], at most\n[`MAX_MATCHES`]); [`SearchSummary::limit_hit`] then says there are\nmore.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "query": {
+          "$ref": "#/$defs/SearchQuery",
+          "description": "What to search for."
+        },
+        "roots": {
+          "description": "Only these roots; omitted: every root.",
+          "items": {
+            "$ref": "#/$defs/RootId"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace to search."
+        }
+      },
+      "required": [
+        "workspace",
+        "query"
+      ],
+      "type": "object"
+    },
     "RunResult": {
       "description": "Result of [`Run`]: what the handler returned.",
       "properties": {
@@ -6321,6 +6601,177 @@
           "type": "object"
         }
       ]
+    },
+    "SearchEvent": {
+      "description": "An event of [`Run`].",
+      "oneOf": [
+        {
+          "description": "Files with matches, as they were searched.",
+          "properties": {
+            "files": {
+              "description": "Each with its matches.",
+              "items": {
+                "$ref": "#/$defs/FileMatches"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "files",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "files"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/SearchSummary",
+          "description": "The search is over; the subscription ends after this.",
+          "properties": {
+            "kind": {
+              "const": "done",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SearchMatch": {
+      "description": "One match.",
+      "properties": {
+        "end": {
+          "description": "0-based character where it ends (exclusive), on the same line.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line": {
+          "description": "0-based line.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "preview": {
+          "description": "The line without its line ending and leading whitespace; a window\naround the match, with `…` where cut, if the line is long.",
+          "type": "string"
+        },
+        "preview_end": {
+          "description": "Where it ends in `preview` (bytes, exclusive).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "preview_start": {
+          "description": "Where the match starts in `preview` (bytes).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "description": "0-based character where it starts on the line.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "line",
+        "start",
+        "end",
+        "preview",
+        "preview_start",
+        "preview_end"
+      ],
+      "type": "object"
+    },
+    "SearchQuery": {
+      "description": "What to search for.",
+      "properties": {
+        "case_sensitive": {
+          "default": false,
+          "description": "Match case; otherwise case is ignored.",
+          "type": "boolean"
+        },
+        "exclude": {
+          "description": "Never files or folders matching these globs (`target`, `*.min.js`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "Only files matching one of these globs (gitignore syntax, relative to\nthe root: `*.rs`, `src/**`; a plain name such as `src` also covers\nwhat is under it). Empty: every file.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "pattern": {
+          "description": "The text, or a regular expression if `regex`. Must not be empty.",
+          "type": "string"
+        },
+        "regex": {
+          "default": false,
+          "description": "`pattern` is a regular expression (Rust `regex` syntax, as ripgrep);\notherwise it is matched literally.",
+          "type": "boolean"
+        },
+        "whole_word": {
+          "default": false,
+          "description": "Only matches with a word boundary at both ends.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "type": "object"
+    },
+    "SearchSummary": {
+      "description": "How a search went: the last event of [`Run`].",
+      "properties": {
+        "elapsed_ms": {
+          "description": "How long it took, in milliseconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "description": "Files with matches.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "limit_hit": {
+          "description": "It stopped at `max_matches`: there are more.",
+          "type": "boolean"
+        },
+        "matches": {
+          "description": "Matches.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "searched": {
+          "description": "Files searched.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "files",
+        "matches",
+        "searched",
+        "limit_hit",
+        "elapsed_ms"
+      ],
+      "type": "object"
     },
     "Selection": {
       "description": "A selection or cursor in a tab.",
@@ -10522,6 +10973,7 @@
     "INTERNAL_ERROR": -32603,
     "INVALID_EDIT": 1204,
     "INVALID_PARAMS": -32602,
+    "INVALID_QUERY": 2001,
     "INVALID_REQUEST": -32600,
     "INVALID_WALKTHROUGH": 1702,
     "IO_ERROR": 1009,
@@ -10541,6 +10993,7 @@
     "RESUME_GAP": -32003,
     "REVISION_GONE": 1203,
     "SAVE_CONFLICT": 1205,
+    "SEARCH_UNAVAILABLE": 2002,
     "SESSION_BUSY": 1103,
     "SESSION_CLOSED": 1104,
     "SPAWN_FAILED": 1302,
@@ -11347,6 +11800,28 @@
       },
       "result": {
         "$ref": "#/$defs/SentReview"
+      }
+    },
+    "search/replace": {
+      "description": "Replace a search's matches in chosen files: open buffers are edited, other files written.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/ReplaceParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ReplaceResult"
+      }
+    },
+    "search/run": {
+      "description": "Search a workspace: batches of files with matches as they are searched, then a summary; unsubscribe to cancel.",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/SearchEvent"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/RunParams2"
       }
     },
     "sessions/cancel": {

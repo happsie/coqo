@@ -1,0 +1,26 @@
+[package]
+name = "coqo-mod-search"
+description = "The search mod: project search and replace with ripgrep's crates (gitignore-aware walk, regex, case, whole word, globs)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# Mods may depend only on coqo-mod-api (plus third-party crates); see
+# scripts/check-mod-boundary.sh.
+[dependencies]
+coqo-mod-api = { path = "../../crates/mod-api" }
+# ripgrep's crates (MIT OR Unlicense): the matcher, the line searcher and
+# the parallel, gitignore-aware walk with include and exclude globs.
+grep-matcher = "0.1"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+ignore = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

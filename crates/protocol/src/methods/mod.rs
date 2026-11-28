@@ -33,6 +33,8 @@
 //!   and the user's pending review.
 //! - [`commands`]: `commands/*`, the commands mods contribute, for the
 //!   command palette and keybindings.
+//! - [`search`]: `search/*`, project search and replace (the `coqo.search`
+//!   mod).
 
 pub mod agents;
 pub mod alerts;
@@ -43,6 +45,7 @@ pub mod fs;
 pub mod git;
 pub mod mcp;
 pub mod questions;
+pub mod search;
 pub mod syntax;
 pub mod terminal;
 pub mod threads;
@@ -161,4 +164,10 @@ pub mod codes {
     pub const UNKNOWN_COMMAND: i64 = 1901;
     /// The command's handler failed; the message says why.
     pub const COMMAND_FAILED: i64 = 1902;
+
+    /// The search's pattern or a glob does not parse, or the pattern is
+    /// empty; the message says what is wrong.
+    pub const INVALID_QUERY: i64 = 2001;
+    /// Search is not available: the `coqo.search` mod is not active.
+    pub const SEARCH_UNAVAILABLE: i64 = 2002;
 }

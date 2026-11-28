@@ -39,7 +39,7 @@ use coqo_ui::{
         deferred, div, hsla, point, px,
     },
     slots::{PaneBuilder, SidebarPanes, Slot, Slots},
-    widgets::{Icon, TestSupportExt as _, icon, kbd, panel, raised, status_dot, tab},
+    widgets::{Icon, TestSupportExt as _, icon, kbd, panel, raised, status_dot, tab_frame},
 };
 
 use crate::{
@@ -93,6 +93,7 @@ pub fn init(cx: &mut App) {
     questions::init(cx);
     activity::init(cx);
     crate::git::init(cx);
+    crate::search::init(cx);
     alerts::init(cx);
     crate::diff::init(cx);
     crate::walkthrough::init(cx);
@@ -809,7 +810,6 @@ impl Shell {
     }
 
     /// A sidebar pane's view, once it has been shown.
-    #[allow(dead_code)] // Used by tests.
     pub fn sidebar_pane(&self, id: &str) -> Option<AnyView> {
         self.pane_views.get(id).map(|(_, view)| view.clone())
     }
@@ -844,6 +844,46 @@ impl Shell {
         let layout = self.layout(cx);
         if let Err(err) = self.store.save(&self.layout_key, &layout) {
             eprintln!("coqo: couldn't save the layout: {err}");
+        }
+    }
+
+    /// Show sidebar pane `id` and return its view, built now if needed.
+    pub fn show_pane(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyView> {
+        let id = SharedString::from(id.to_owned());
+        let view = self.pane_view(&id, window, cx)?;
+        self.select_pane(id, cx);
+        Some(view)
+    }
+
+    /// `Ctrl/Cmd+Shift+F`: the Search pane, its query focused and seeded
+    /// with the active editor's selection.
+    fn show_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = {
+            let dock = self.dock.read(cx);
+            dock.active_tab()
+                .and_then(|id| dock.tab(id)?.downcast::<files::editor::FileEditor>())
+                .and_then(|f| f.read(cx).selected_text(cx))
+        };
+        let Some(view) = self.show_pane(crate::search::PANE, window, cx) else {
+            return;
+        };
+        if let Ok(pane) = view.downcast::<crate::search::pane::SearchPane>() {
+            pane.update(cx, |pane, cx| pane.focus_query(selection, window, cx));
+        }
+    }
+
+    /// `F4` / `Shift+F4`: the next or previous match of the Search pane.
+    fn step_search(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let pane = self
+            .sidebar_pane(crate::search::PANE)
+            .and_then(|v| v.downcast::<crate::search::pane::SearchPane>().ok());
+        if let Some(pane) = pane {
+            pane.update(cx, |pane, cx| pane.step(forward, window, cx));
         }
     }
 
@@ -959,6 +999,21 @@ impl Render for Shell {
                 chat::ask_agent(&this.dock, action, window, cx)
             }))
             .on_action(cx.listener(|this, _: &chat::SessionSwitched, _, cx| this.schedule_save(cx)))
+            .on_action(
+                cx.listener(|this, _: &crate::search::ShowSearch, window, cx| {
+                    this.show_search(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::search::NextMatch, window, cx| {
+                    this.step_search(true, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::search::PreviousMatch, window, cx| {
+                    this.step_search(false, window, cx)
+                }),
+            )
             .on_action(
                 cx.listener(|this, _: &questions::NextQuestion, window, cx| {
                     navigate::step_question(&this.dock, &this.workspaces, true, window, cx)
@@ -1182,17 +1237,26 @@ impl Shell {
             let id = pane.id.clone();
             let selected = active.as_ref() == Some(&id);
             let badge = pane.badge.as_ref().and_then(|badge| badge(window, cx));
+            // When the sidebar is too narrow for every tab, the titles shrink
+            // with an ellipsis; the badges never do.
+            let title = div()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(pane.title.clone());
             strip = strip.child(
-                tab(
+                tab_frame(
                     ElementId::Name(format!("sidebar-{id}").into()),
-                    pane.title.clone(),
                     selected,
                     cx,
                 )
+                .flex_shrink_1()
+                .min_w_0()
                 // The badge brings its own spacing, so one with nothing to
                 // show takes no room.
                 .gap_0()
-                .children(badge)
+                .child(title)
+                .child(div().flex_none().children(badge))
                 .test_support()
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| this.select_pane(id.clone(), cx))),

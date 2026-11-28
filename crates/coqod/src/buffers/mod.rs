@@ -1242,6 +1242,130 @@ impl BufferService {
         Ok(feed.events.take_until(until).boxed())
     }
 
+    // ---- project search and replace (`search/*`) -------------------------------
+
+    /// The text of every open buffer of `workspace`, unsaved edits included,
+    /// by the file's canonical path: what `search/run` searches instead of
+    /// the disk.
+    pub fn open_texts(&self, workspace: &WorkspaceId) -> HashMap<PathBuf, String> {
+        let open: Vec<Arc<OpenBuffer>> = self
+            .registry()
+            .buffers
+            .values()
+            .filter(|b| &b.workspace == workspace)
+            .cloned()
+            .collect();
+        open.into_iter()
+            .map(|b| {
+                let text = b.lock().buf.text().to_string();
+                (b.real(), text)
+            })
+            .collect()
+    }
+
+    /// The revision and text of an open buffer, taken together.
+    pub fn head(&self, buffer: BufferId) -> Result<(u64, String), ErrorObject> {
+        let b = self.get(buffer)?;
+        let st = b.lock();
+        Ok((st.buf.rev(), st.buf.text().to_string()))
+    }
+
+    /// Edit an open buffer at its head with the edits `compute` makes of its
+    /// current text (under the buffer's lock, so nothing changes in
+    /// between), as one `replace` change. Returns the new revision and the
+    /// number of edits, or `None` if `compute` made none.
+    pub fn replace_with(
+        &self,
+        buffer: BufferId,
+        compute: impl FnOnce(&str) -> Vec<bufm::TextEdit>,
+    ) -> Result<Option<(u64, usize)>, ErrorObject> {
+        let b = self.get(buffer)?;
+        let mut st = b.lock();
+        let edits = compute(&st.buf.text().to_string());
+        if edits.is_empty() {
+            return Ok(None);
+        }
+        let c = st
+            .buf
+            .apply_head(Origin::of(OriginKind::Replace), &edits)
+            .map_err(|e| buffer_error(&e))?;
+        let rev = c.rev;
+        self.commit(&b, &mut st, c, false);
+        Ok(Some((rev, edits.len())))
+    }
+
+    /// Replace in file `real` (canonical) of `workspace` with the edits
+    /// `compute` makes of its text. An open buffer is edited
+    /// ([`replace_with`](Self::replace_with)); otherwise the file is read,
+    /// edited and written atomically, keeping its encoding (a byte-order
+    /// mark) and line endings. No buffer is loaded meanwhile, so none can
+    /// miss the write.
+    pub async fn replace_in_file<F>(
+        &self,
+        workspace: &WorkspaceId,
+        real: PathBuf,
+        compute: F,
+    ) -> Result<FileReplace, ErrorObject>
+    where
+        F: FnOnce(&str) -> Vec<bufm::TextEdit> + Send + 'static,
+    {
+        let _loading = self.open_lock.lock().await;
+        if let Some(id) = self.buffer_at(workspace, &real) {
+            return Ok(match self.replace_with(id, compute)? {
+                Some((rev, n)) => FileReplace::Buffer {
+                    buffer: id,
+                    rev,
+                    replaced: n,
+                },
+                None => FileReplace::Unchanged,
+            });
+        }
+        let limit = self.config.max_file_bytes;
+        tokio::task::spawn_blocking(move || {
+            let bytes = disk::read(&real, limit).map_err(|e| match e {
+                disk::ReadError::TooLarge { size } => ErrorObject::new(
+                    codes::FILE_TOO_LARGE,
+                    format!(
+                        "{} is {size} bytes, more than the limit of {limit}",
+                        real.display()
+                    ),
+                ),
+                disk::ReadError::Io(e) => io_error(&real, &e),
+            })?;
+            let decoded = buftext::decode(bytes).map_err(|e| {
+                ErrorObject::new(
+                    codes::UNSUPPORTED_ENCODING,
+                    format!("{}: {e}", real.display()),
+                )
+            })?;
+            let edits = compute(&decoded.text);
+            if edits.is_empty() {
+                return Ok(FileReplace::Unchanged);
+            }
+            let mut text = decoded.text;
+            for e in edits.iter().rev() {
+                if e.start > e.end
+                    || e.end > text.len()
+                    || !text.is_char_boundary(e.start)
+                    || !text.is_char_boundary(e.end)
+                {
+                    return Err(ErrorObject::new(
+                        codes::INVALID_EDIT,
+                        format!("{}: a replacement is out of range", real.display()),
+                    ));
+                }
+                text.replace_range(e.start..e.end, &e.text);
+            }
+            let bytes = buftext::encode(&text, decoded.encoding);
+            disk::write_atomic(&real, &bytes).map_err(|e| io_error(&real, &e))?;
+            Ok(FileReplace::Written {
+                replaced: edits.len(),
+            })
+        })
+        .await
+        .map_err(join_error)?
+    }
+
     /// An agent edit at the head of an open buffer (edits against its
     /// current text).
     pub fn agent_edit(
@@ -1260,6 +1384,21 @@ impl BufferService {
         self.commit(&b, &mut st, c, false);
         Ok(rev)
     }
+}
+
+/// What [`BufferService::replace_in_file`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileReplace {
+    /// The file's open buffer was edited.
+    Buffer {
+        buffer: BufferId,
+        rev: u64,
+        replaced: usize,
+    },
+    /// The file was written.
+    Written { replaced: usize },
+    /// Nothing to replace.
+    Unchanged,
 }
 
 /// An open buffer as [`BufferService::syntax_view`] sees it.

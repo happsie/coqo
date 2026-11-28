@@ -158,7 +158,15 @@ async fn every_route_declares_who_may_call_it() {
 
     // The file tree's operations are the user's: agents have file tools of
     // their own (#161).
-    for name in ["fs/create", "fs/rename", "fs/delete"] {
+    // Project search and replace are the user's too: agents search with
+    // their own tools (#45).
+    for name in [
+        "fs/create",
+        "fs/rename",
+        "fs/delete",
+        "search/run",
+        "search/replace",
+    ] {
         let route = routes
             .iter()
             .find(|r| r.name == name)
