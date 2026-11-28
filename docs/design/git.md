@@ -34,6 +34,13 @@ From top to bottom:
 
 The pane keeps itself current from `git/changes`, which covers edits, `git` runs in a terminal and other tools. A window's `GitModel` holds the state, and `GitModel::letter(root, path)` gives the same letters to the file tree (#163).
 
+## Tab badge and status bar
+
+These describe the root the pane shows (`GitModel::shown_root`: the picked root chip, else the first repository). Both update live, even while another sidebar pane is open (#227, `crates/coqo/src/git/chrome.rs`).
+
+- **Tab badge:** the sidebar's "Git" tab reads "Git N", where N is the number of changed files (staged, unstaged, untracked or conflicted, each file once) in `sand`, 4 px after the title. A clean tree, or a folder that isn't a repository, shows no number.
+- **Status bar:** the `branch` item at the start of the status bar shows the `git-branch` icon and the branch, with `↑n ↓m` against the upstream (`detached at <short oid>` for a detached `HEAD`). Without a repository it reads "No repository".
+
 ## Diff tab
 
 The `git-diff` tab kind shows a root's changes in the review surface of board 4 ([diff.md](diff.md), #93): one tab for the unstaged changes (index → working tree, untracked files included) and one for the staged ones (`HEAD` → index).

@@ -8,6 +8,7 @@
 //! registries. [`model::GitModel`] holds a window's git state for every
 //! view that needs it.
 
+pub mod chrome;
 pub mod diff;
 pub mod model;
 pub mod pane;
@@ -15,10 +16,11 @@ pub mod pane;
 use coqo_ui::{
     dock::register_tab_kind,
     gpui::{App, AppContext as _},
-    slots::{SidebarPane, SidebarPanes},
+    slots::{SidebarPane, SidebarPanes, Slot, Slots},
 };
 
-/// Register the Git pane and the `git-diff` tab kind.
+/// Register the Git pane (with its tab's badge), the status bar's branch
+/// and the `git-diff` tab kind.
 pub fn init(cx: &mut App) {
     register_tab_kind(cx, diff::KIND, |state, window, cx| {
         diff::restore(state, window, cx)
@@ -27,8 +29,10 @@ pub fn init(cx: &mut App) {
         cx,
         SidebarPane::new("git", "Git", 10, |dock, window, cx| {
             cx.new(|cx| pane::GitPane::new(dock, window, cx)).into()
-        }),
+        })
+        .with_badge(chrome::badge),
     );
+    Slots::register(cx, Slot::StatusBarStart, "branch", 0, chrome::status_branch);
 }
 
 #[cfg(test)]

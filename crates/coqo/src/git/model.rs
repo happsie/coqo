@@ -63,6 +63,35 @@ impl RootGit {
         self.entries().filter(|e| e.conflict.is_some())
     }
 
+    /// How many files have changes, staged or not (the Git tab's badge).
+    pub fn changed_files(&self) -> usize {
+        self.entries().count()
+    }
+
+    /// What `HEAD` is, for the branch button and the status bar: the
+    /// branch, `detached at <short oid>`, or `no commits`. `None` until the
+    /// status is in.
+    pub fn head_label(&self) -> Option<String> {
+        let head = &self.status.as_ref()?.head;
+        Some(head.branch.clone().unwrap_or_else(|| match &head.oid {
+            Some(oid) => format!("detached at {}", &oid[..oid.len().min(7)]),
+            None => "no commits".into(),
+        }))
+    }
+
+    /// `↑n ↓m` against the upstream, or `None` when level with it.
+    pub fn tracking_label(&self) -> Option<String> {
+        let head = &self.status.as_ref()?.head;
+        let mut track = Vec::new();
+        if head.ahead > 0 {
+            track.push(format!("↑{}", head.ahead));
+        }
+        if head.behind > 0 {
+            track.push(format!("↓{}", head.behind));
+        }
+        (!track.is_empty()).then(|| track.join(" "))
+    }
+
     fn entries(&self) -> impl Iterator<Item = &StatusEntry> {
         self.status.iter().flat_map(|s| s.entries.iter())
     }
@@ -100,6 +129,9 @@ pub enum StashAction {
 pub struct GitModel {
     workspace: Option<WorkspaceInfo>,
     roots: Vec<RootGit>,
+    /// The root the Git pane shows, picked with its chips; `None` follows
+    /// the first repository.
+    selected: Option<RootId>,
     in_flight: HashSet<(RootId, Part)>,
     stale: HashSet<(RootId, Part)>,
     /// The last write that failed, for the pane to show.
@@ -181,6 +213,7 @@ impl GitModel {
         let mut this = Self {
             workspace: None,
             roots: Vec::new(),
+            selected: None,
             in_flight: HashSet::new(),
             stale: HashSet::new(),
             error: None,
@@ -203,6 +236,27 @@ impl GitModel {
 
     pub fn root(&self, root: RootId) -> Option<&RootGit> {
         self.roots.iter().find(|r| r.root == root)
+    }
+
+    /// The root the Git pane shows, and the sidebar badge and status bar
+    /// describe: the selected one, else the first repository, else the
+    /// first root.
+    pub fn shown_root(&self) -> Option<RootId> {
+        self.selected
+            .filter(|s| self.roots.iter().any(|r| r.root == *s))
+            .or_else(|| {
+                self.roots
+                    .iter()
+                    .find(|r| r.status.is_some())
+                    .map(|r| r.root)
+            })
+            .or_else(|| self.roots.first().map(|r| r.root))
+    }
+
+    /// Show `root` (the pane's root chips).
+    pub fn select_root(&mut self, root: RootId, cx: &mut Context<Self>) {
+        self.selected = Some(root);
+        cx.notify();
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -250,6 +304,7 @@ impl GitModel {
         let same = self.workspace.as_ref().map(|w| &w.id) == info.as_ref().map(|w| &w.id);
         if !same {
             self.roots.clear();
+            self.selected = None;
             self.error = None;
         }
         self.in_flight.clear();

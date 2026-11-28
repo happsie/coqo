@@ -14,7 +14,8 @@
 //! reflogs, the stash), classified into [`GitChangeKind`]s and debounced.
 //! Writes made through `git/*` publish their event at once. The watch
 //! starts with the first subscriber and stops with the last, or when the
-//! workspace closes (the feeds end then).
+//! workspace closes (the feeds end then). It follows `workspace/events`, so
+//! a root added later has its git directory watched too.
 //!
 //! **Access:** every route needs the daemon token. Agents have their own
 //! git; the editor's MCP tools stay to what harnesses lack, so no git tools
@@ -22,7 +23,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use coqo_mod_api::Service as _;
@@ -30,7 +31,7 @@ use coqo_mod_git::{self as mg, Git, GitError, Repo};
 use coqo_protocol::methods::codes;
 use coqo_protocol::methods::fs::ChangesParams as FsChangesParams;
 use coqo_protocol::methods::git::{self as gm, GitChangeKind, GitChanges};
-use coqo_protocol::methods::workspace::{RootId, WorkspaceId};
+use coqo_protocol::methods::workspace::{EventsParams, RootId, WorkspaceEvent, WorkspaceId};
 use coqo_protocol::{Access, ErrorObject, EventFeed, Router, SeqLog};
 use futures_util::StreamExt as _;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
@@ -510,12 +511,24 @@ impl GitService {
                 None,
             )
             .await?;
+        // Before reading the roots, so a root added in between is not missed.
+        let events = self
+            .workspaces
+            .events(
+                EventsParams {
+                    workspace: Some(workspace.clone()),
+                },
+                None,
+            )
+            .await?;
         let roots = self.workspaces.roots(workspace.clone()).await?;
         let git = self.git().ok();
         let dirs = tokio::task::spawn_blocking(move || git_dirs(git.as_deref(), &roots))
             .await
             .map_err(|e| ErrorObject::internal(format!("git task failed: {e}")))?;
-        let watch = Arc::new(GitWatch::start(fs, dirs, self.debounce));
+        let svc = Arc::downgrade(self);
+        let resolve: GitResolver = Arc::new(move || svc.upgrade().and_then(|s| s.git().ok()));
+        let watch = Arc::new(GitWatch::start(fs, events, dirs, resolve, self.debounce));
         self.watches
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -587,12 +600,41 @@ fn classify(rel: &Path, in_git_dir: bool) -> Option<GitChangeKind> {
 
 type Pending = Arc<Mutex<BTreeMap<RootId, BTreeSet<GitChangeKind>>>>;
 
+/// Resolves the git service when a root is added later (the mod may have
+/// changed since the watch started).
+type GitResolver = Arc<dyn Fn() -> Option<Arc<Git>> + Send + Sync>;
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The paths watched for one root's repository.
+fn targets(d: &GitDirs) -> Vec<(PathBuf, RecursiveMode)> {
+    let mut targets = vec![(d.git_dir.clone(), RecursiveMode::NonRecursive)];
+    if d.common_dir != d.git_dir {
+        targets.push((d.common_dir.clone(), RecursiveMode::NonRecursive));
+    }
+    targets.push((d.common_dir.join("refs"), RecursiveMode::Recursive));
+    targets.push((d.common_dir.join("logs"), RecursiveMode::Recursive));
+    targets
+}
+
+fn watch_dirs(w: &mut RecommendedWatcher, d: &GitDirs) {
+    for (path, mode) in targets(d) {
+        if path.exists()
+            && let Err(e) = w.watch(&path, mode)
+        {
+            tracing::warn!(path = %path.display(), error = %e, "cannot watch git directory");
+        }
+    }
+}
+
 /// Watches one workspace's repositories for `git/changes`. Dropping it
 /// stops the watch and ends its subscriptions.
 struct GitWatch {
     log: Arc<SeqLog<GitChanges>>,
     closed: watch::Sender<bool>,
-    _watcher: Option<RecommendedWatcher>,
+    _watcher: Arc<Mutex<Option<RecommendedWatcher>>>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -614,36 +656,37 @@ impl Drop for GitWatch {
 }
 
 impl GitWatch {
+    /// Watch `dirs`, merge in `fs` as work-tree changes, and follow the
+    /// workspace's `events` to watch roots added later (and drop removed
+    /// ones).
     fn start(
         mut fs: EventFeed<coqo_protocol::methods::fs::FsChanges>,
+        mut events: EventFeed<WorkspaceEvent>,
         dirs: Vec<GitDirs>,
+        resolve: GitResolver,
         debounce: Duration,
     ) -> Self {
         let log = Arc::new(SeqLog::new(RETAINED));
         let pending: Pending = Arc::default();
         let wake = Arc::new(Notify::new());
         let closed = watch::channel(false).0;
+        let dirs = Arc::new(Mutex::new(dirs));
 
         let record = {
             let (pending, wake) = (Arc::clone(&pending), Arc::clone(&wake));
             move |root: RootId, kind: GitChangeKind| {
-                pending
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .entry(root)
-                    .or_default()
-                    .insert(kind);
+                lock(&pending).entry(root).or_default().insert(kind);
                 wake.notify_one();
             }
         };
 
         let watcher = {
             let record = record.clone();
-            let dirs_cb = dirs.clone();
+            let dirs_cb = Arc::clone(&dirs);
             let cb = move |res: notify::Result<notify::Event>| {
                 let Ok(ev) = res else {
                     // Lost events: anything may have changed.
-                    for d in &dirs_cb {
+                    for d in lock(&dirs_cb).iter() {
                         for k in [
                             GitChangeKind::Index,
                             GitChangeKind::Head,
@@ -658,7 +701,7 @@ impl GitWatch {
                     return;
                 }
                 for path in &ev.paths {
-                    for d in &dirs_cb {
+                    for d in lock(&dirs_cb).iter() {
                         let kind = path
                             .strip_prefix(&d.git_dir)
                             .ok()
@@ -676,20 +719,8 @@ impl GitWatch {
             };
             match notify::recommended_watcher(cb) {
                 Ok(mut w) => {
-                    for d in &dirs {
-                        let mut targets = vec![(d.git_dir.clone(), RecursiveMode::NonRecursive)];
-                        if d.common_dir != d.git_dir {
-                            targets.push((d.common_dir.clone(), RecursiveMode::NonRecursive));
-                        }
-                        targets.push((d.common_dir.join("refs"), RecursiveMode::Recursive));
-                        targets.push((d.common_dir.join("logs"), RecursiveMode::Recursive));
-                        for (path, mode) in targets {
-                            if path.exists()
-                                && let Err(e) = w.watch(&path, mode)
-                            {
-                                tracing::warn!(path = %path.display(), error = %e, "cannot watch git directory");
-                            }
-                        }
+                    for d in lock(&dirs).iter() {
+                        watch_dirs(&mut w, d);
                     }
                     Some(w)
                 }
@@ -699,6 +730,7 @@ impl GitWatch {
                 }
             }
         };
+        let watcher = Arc::new(Mutex::new(watcher));
 
         let forward = {
             let record = record.clone();
@@ -712,14 +744,69 @@ impl GitWatch {
             })
         };
 
+        // Roots added after the watch started get their git directories
+        // watched too; removed ones stop being reported.
+        let follow_roots = {
+            let (dirs, watcher) = (Arc::clone(&dirs), Arc::clone(&watcher));
+            tokio::spawn(async move {
+                while let Some(Ok(item)) = events.events.next().await {
+                    let WorkspaceEvent::Changed { workspace } = item.event else {
+                        continue;
+                    };
+                    let roots: Vec<(RootId, PathBuf)> = workspace
+                        .roots
+                        .iter()
+                        .map(|r| (r.id, PathBuf::from(&r.path)))
+                        .collect();
+                    let is_root = |id: RootId| roots.iter().any(|(r, _)| *r == id);
+                    let known = lock(&dirs).clone();
+                    let (removed, kept): (Vec<_>, Vec<_>) =
+                        known.into_iter().partition(|d| !is_root(d.root));
+                    let added: Vec<_> = roots
+                        .iter()
+                        .filter(|(id, _)| !kept.iter().any(|d| d.root == *id))
+                        .cloned()
+                        .collect();
+                    if !removed.is_empty()
+                        && let Some(w) = lock(&watcher).as_mut()
+                    {
+                        // Two roots can share a repository: keep what a
+                        // remaining root still needs.
+                        let needed: Vec<PathBuf> =
+                            kept.iter().flat_map(targets).map(|(p, _)| p).collect();
+                        for (path, _) in removed.iter().flat_map(targets) {
+                            if !needed.contains(&path) {
+                                let _ = w.unwatch(&path);
+                            }
+                        }
+                    }
+                    *lock(&dirs) = kept;
+                    if added.is_empty() {
+                        continue;
+                    }
+                    let git = resolve();
+                    let Ok(found) =
+                        tokio::task::spawn_blocking(move || git_dirs(git.as_deref(), &added)).await
+                    else {
+                        continue;
+                    };
+                    lock(&dirs).extend(found.iter().cloned());
+                    if let Some(w) = lock(&watcher).as_mut() {
+                        for d in &found {
+                            watch_dirs(w, d);
+                        }
+                    }
+                }
+            })
+        };
+
         let publish = {
             let log = Arc::clone(&log);
             tokio::spawn(async move {
                 loop {
                     wake.notified().await;
                     tokio::time::sleep(debounce).await;
-                    let batch =
-                        std::mem::take(&mut *pending.lock().unwrap_or_else(|e| e.into_inner()));
+                    let batch = std::mem::take(&mut *lock(&pending));
                     for (root, kinds) in batch {
                         log.publish(GitChanges {
                             root,
@@ -734,7 +821,7 @@ impl GitWatch {
             log,
             closed,
             _watcher: watcher,
-            tasks: vec![forward, publish],
+            tasks: vec![forward, follow_roots, publish],
         }
     }
 }

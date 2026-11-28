@@ -76,7 +76,9 @@ SidebarPanes::register(cx, SidebarPane::new("files", "Files", 0, |dock, window, 
 }));
 ```
 
-**A top bar or status bar item:** `Slots::register(cx, Slot::StatusBarStart, "git.branch", 0, |window, cx| …)`. Registering the same id again replaces the item, so a mod replaces the built-in placeholders (`bolt`, `daemon-status`, `branch`, `problems`, `agents`).
+`SidebarPane::with_badge(|window, cx| …)` adds a badge after the tab's title (the Git tab's "Git 5"). It runs on every render of the shell and brings its own leading space. For a badge that updates by itself, return the element of a view kept per window that observes its data.
+
+**A top bar or status bar item:** `Slots::register(cx, Slot::StatusBarStart, "git.branch", 0, |window, cx| …)`. Registering the same id again replaces the item, so a mod replaces the built-in placeholders (`bolt`, `daemon-status`, `problems`, `agents`). The git module registers the status bar's `branch` ([git.md](git.md)).
 
 ## Light appearance
 

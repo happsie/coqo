@@ -1143,6 +1143,7 @@ impl Shell {
         for pane in &panes {
             let id = pane.id.clone();
             let selected = active.as_ref() == Some(&id);
+            let badge = pane.badge.as_ref().and_then(|badge| badge(window, cx));
             strip = strip.child(
                 tab(
                     ElementId::Name(format!("sidebar-{id}").into()),
@@ -1150,6 +1151,10 @@ impl Shell {
                     selected,
                     cx,
                 )
+                // The badge brings its own spacing, so one with nothing to
+                // show takes no room.
+                .gap_0()
+                .children(badge)
                 .test_support()
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| this.select_pane(id.clone(), cx))),
@@ -1348,8 +1353,9 @@ fn status_bar(window: &mut Window, cx: &mut App) -> AnyElement {
     )
 }
 
-/// The chrome items that exist before any mod does. The bolt, daemon, git and
-/// agent items are replaced by their mods as those land.
+/// The chrome items that exist before any mod does. The bolt, problems and
+/// agent items are replaced by their mods as those land; the git module
+/// registers the status bar's `branch`.
 fn register_builtin_slots(cx: &mut App) {
     Slots::register(cx, Slot::TopBarEnd, "bolt", 0, |_, cx| {
         let t = cx.tokens();
@@ -1372,17 +1378,6 @@ fn register_builtin_slots(cx: &mut App) {
         .child(icon(Icon::Zap, px(15.), p.text_muted.hsla()))
         .child("Intellisense · off")
         .into_any_element()
-    });
-    Slots::register(cx, Slot::StatusBarStart, "branch", 0, |_, cx| {
-        let p = &cx.tokens().palette;
-        div()
-            .id("status-branch")
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .child(icon(Icon::GitBranch, px(12.), p.text_muted.hsla()))
-            .child("No repository")
-            .into_any_element()
     });
     Slots::register(cx, Slot::StatusBarStart, "problems", 10, |_, cx| {
         let p = &cx.tokens().palette;

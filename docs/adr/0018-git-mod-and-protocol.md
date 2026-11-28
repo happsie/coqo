@@ -64,4 +64,4 @@ Writes made through `git/*` publish their event at once. The watch starts with t
 - #93 builds its diff component on `git/diff` (any two sides: work tree, index or a revision) and on line staging. The `git-diff` tab is the place it plugs in.
 - Rename detection, attribute filters, discarding changes, an agent-drafted commit message, and the blame and log views are follow-ups. The protocol has room for all of them.
 - Every call reopens the repository. That is cheap with `gix`, and it keeps the daemon stateless about repositories. A cache can come later if profiling asks for it.
-- The git-directory watch is set up when the subscription starts. A root added to a workspace later is watched only from the next subscription; its work-tree edits still arrive through `fs/changes`.
+- The git-directory watch follows the workspace's `workspace/events`. A root added after the subscription started has its git and common directories watched as soon as its `changed` event lands, and a removed root's directories stop being watched unless another root shares them (#227).
