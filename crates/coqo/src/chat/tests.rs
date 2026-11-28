@@ -2367,3 +2367,31 @@ fn a_chat_is_titled_by_its_first_prompt_and_renamed_in_place() {
     assert_eq!(renaming(&mut ui), None);
     assert_eq!(ui.listed()[0].title.as_deref(), Some("Login flake"));
 }
+
+/// #304: features that start their own session (questions, a review sent
+/// to a new chat, commit drafts) go to Claude Code (`claude-acp`) even
+/// when another provider is available and listed first.
+#[test]
+fn features_prefer_the_claude_code_provider() {
+    use coqo_agents::model::{ProviderInfo, ProviderKind};
+
+    let provider = |id: &str, available: bool| ProviderInfo {
+        id: id.into(),
+        name: id.into(),
+        kind: ProviderKind::Acp,
+        description: None,
+        available,
+        capabilities: None,
+        status: None,
+    };
+    assert_eq!(super::PREFERRED_PROVIDER, "claude-acp");
+    let pick =
+        |providers: &[ProviderInfo]| super::preferred_provider(providers).map(|p| p.id.clone());
+
+    let both = [provider("codex", true), provider("claude-acp", true)];
+    assert_eq!(pick(&both).as_deref(), Some("claude-acp"));
+    // Not set up: the first available one instead.
+    let claude_down = [provider("codex", true), provider("claude-acp", false)];
+    assert_eq!(pick(&claude_down).as_deref(), Some("codex"));
+    assert_eq!(pick(&[provider("claude-acp", false)]), None);
+}

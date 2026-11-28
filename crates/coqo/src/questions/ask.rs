@@ -29,15 +29,13 @@ use coqo_ui::{
 
 use super::WorkspaceQuestions;
 use crate::{
-    chat::list::ChatList,
+    chat::{self, list::ChatList},
     daemon::{Daemon, DaemonError},
     workspace::Workspaces,
 };
 
 /// Chats offered at most, besides a new one.
 const CHOICES: usize = 4;
-/// The provider a new chat prefers.
-const PREFERRED_PROVIDER: &str = "claude";
 
 /// Emitted by an [`AskPopover`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -356,11 +354,7 @@ pub fn start_chat(workspace: &WorkspaceId, cx: &mut App) -> Task<Result<SessionI
         let providers = providers
             .await
             .map_err(|e| format!("Couldn't start a chat: {e}"))?;
-        let provider = providers
-            .iter()
-            .filter(|p| p.available)
-            .find(|p| p.id == PREFERRED_PROVIDER)
-            .or_else(|| providers.iter().find(|p| p.available))
+        let provider = chat::preferred_provider(&providers)
             .ok_or_else(|| "No agent is available".to_owned())?
             .id
             .clone();
