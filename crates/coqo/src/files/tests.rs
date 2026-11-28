@@ -1661,6 +1661,9 @@ fn undoes_and_redoes_file_operations_in_the_tree() {
     ui.wait_for("notes.md open", |ui| ui.tab_at("src/notes.md").is_some());
     // Maybe still loading (#312): it ends as "File not found" all the same.
     let notes = ui.tab_at("src/notes.md").unwrap();
+    ui.wait_for("notes.md in the tree", |ui| {
+        ui.names().contains(&"  notes.md".to_owned())
+    });
     ui.select_in_tree("src/notes.md");
     ui.press(UNDO);
     ui.wait_for("notes.md gone", |ui| {
