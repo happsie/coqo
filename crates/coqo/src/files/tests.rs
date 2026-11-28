@@ -17,7 +17,7 @@ use coqo_client::connect;
 use coqo_protocol::{
     ClientConfig,
     methods::{
-        buffer::{self, EditParams, OpenParams, OpenResult, TextEdit},
+        buffer::{self, BufferId, EditParams, OpenParams, OpenResult, ReplicaId, TextEdit},
         editor as edm,
         fs::EntryKind,
         workspace::{RootId, WorkspaceId},
@@ -36,7 +36,7 @@ use coqo_ui::{
 
 use super::{
     context,
-    editor::{Content, FileEditor, HIGHLIGHT_FOR, KIND},
+    editor::{Content, FileEditor, HIGHLIGHT_FOR, HoldOpens, KIND},
     tree::{FileTree, Row},
 };
 use crate::{
@@ -1659,13 +1659,16 @@ fn undoes_and_redoes_file_operations_in_the_tree() {
     ui.wait_for("the name field", |ui| ui.rows().iter().any(|r| r.editing));
     ui.enter_name("notes.md");
     ui.wait_for("notes.md open", |ui| ui.tab_at("src/notes.md").is_some());
+    // Maybe still loading (#312): it ends as "File not found" all the same.
     let notes = ui.tab_at("src/notes.md").unwrap();
-    ui.wait_for("notes.md loaded", |ui| ui.content(&notes) == Content::Text);
     ui.select_in_tree("src/notes.md");
     ui.press(UNDO);
     ui.wait_for("notes.md gone", |ui| {
-        !fixture.project.join("src/notes.md").exists() && ui.content(&notes) == Content::Missing
+        !fixture.project.join("src/notes.md").exists()
+            && ui.content(&notes) == Content::Missing
+            && !ui.cx.read(|cx| notes.read(cx).is_opening())
     });
+    assert!(ui.code(&notes).is_none(), "no buffer behind the message");
     assert!(
         !fixture.daemon.trash().join("notes.md").exists(),
         "an empty file is just removed"
@@ -1722,6 +1725,183 @@ fn undoes_and_redoes_file_operations_in_the_tree() {
         Some("Can't undo the delete of “gone.txt”. “gone.txt” was deleted permanently.")
     );
     assert_eq!(ui.next_undo(), None, "dropped");
+}
+
+impl Ui {
+    /// Hold every tab's open back (the tabs stay loading) until
+    /// [`release_open`](Self::release_open).
+    fn hold_opens(&mut self, hold: bool) {
+        self.cx.update(|cx| {
+            if hold {
+                cx.set_global(HoldOpens);
+            } else {
+                cx.remove_global::<HoldOpens>();
+            }
+        });
+    }
+
+    /// Let the tab's held open finish.
+    fn release_open(&mut self, tab: &Entity<FileEditor>) {
+        self.frame(|window, cx| tab.update(cx, |tab, cx| tab.release_open(window, cx)));
+    }
+
+    /// Open `name`'s row (its folder expanded) with opens held back, and
+    /// wait until the daemon opened its buffer: the tab is still loading.
+    fn open_held(&mut self, name: &str, path: &str) -> (Entity<FileEditor>, BufferId, ReplicaId) {
+        self.hold_opens(true);
+        self.click_row(name);
+        self.wait_for("the open held", |ui| {
+            ui.tab_at(path)
+                .is_some_and(|tab| ui.cx.read(|cx| tab.read(cx).holds_open()))
+        });
+        let tab = self.tab_at(path).unwrap();
+        assert_eq!(self.content(&tab), Content::Loading);
+        let (buffer, replica) = self
+            .cx
+            .read(|cx| tab.read(cx).held_buffer())
+            .expect("the daemon opened the buffer");
+        (tab, buffer, replica)
+    }
+
+    /// Delete `name` from the tree (a file in an expanded folder).
+    fn delete_row(&mut self, fixture: &Fixture, name: &str) {
+        self.right_click_row(name);
+        self.click("file-menu-delete");
+        self.press("enter");
+        self.wait_for("the file in the trash", |_| {
+            fixture.daemon.trash().join(name).is_file()
+        });
+    }
+}
+
+/// Whether `replica` is still in the daemon's buffer of `path`: it made
+/// edits (see [`edit_as`]), and the daemon forgets a replica's edits when it
+/// closes. The file must be on disk.
+fn replica_joined(
+    fixture: &Fixture,
+    other: &OtherWindow,
+    place: &Place,
+    path: &str,
+    replica: &ReplicaId,
+) -> bool {
+    let params = OpenParams {
+        workspace: place.0.clone(),
+        root: place.1,
+        path: path.to_owned(),
+        replica: Some(replica.clone()),
+    };
+    let client = other.client.clone();
+    let open = fixture
+        .daemon
+        .runtime
+        .block_on(async move { client.request::<buffer::Open>(params).await })
+        .unwrap();
+    open.last_seq > 0
+}
+
+/// Two edits by `replica` that cancel out, so the daemon knows the replica
+/// (its last seq) and the buffer stays clean.
+fn edit_as(
+    fixture: &Fixture,
+    other: &OtherWindow,
+    buffer: BufferId,
+    replica: &ReplicaId,
+    rev: u64,
+) {
+    let client = other.client.clone();
+    let edits = [
+        (rev, 1, TextEdit::insert(0, "x")),
+        (rev + 1, 2, TextEdit::delete(0..1)),
+    ]
+    .map(|(base_rev, client_seq, edit)| EditParams {
+        buffer,
+        replica: replica.clone(),
+        base_rev,
+        client_seq,
+        edits: vec![edit],
+    });
+    fixture.daemon.runtime.block_on(async move {
+        for params in edits {
+            client.notify::<buffer::Edit>(params).await.unwrap();
+        }
+    });
+}
+
+/// A tab whose file is deleted while it loads (#312): the open in flight
+/// already got the buffer, and the delete comes before its outcome. The tab
+/// ends as "File not found", like a clean loaded tab, with the buffer it got
+/// closed again and nothing reopened. Undoing the delete opens it cleanly.
+#[test]
+fn a_tab_deleted_while_it_loads_says_the_file_is_gone() {
+    let fixture = Fixture::new();
+    let mut ui = open_ui(&fixture, Some(fixture.project.clone()));
+    ui.wait_for_tree();
+    let place = ui.workspace_id();
+    ui.click_row("src");
+    ui.wait_for("src open", |ui| ui.names().contains(&"  lib.rs".to_owned()));
+    let (tab, buffer, replica) = ui.open_held("lib.rs", "src/lib.rs");
+    let other = OtherWindow::connect(&fixture);
+    let rev = other.open(&fixture, &place, "src/lib.rs").rev;
+    edit_as(&fixture, &other, buffer, &replica, rev);
+    ui.wait_for("the replica's edits", |_| {
+        replica_joined(&fixture, &other, &place, "src/lib.rs", &replica)
+    });
+
+    ui.delete_row(&fixture, "lib.rs");
+    ui.wait_for("the tab told", |ui| ui.content(&tab) == Content::Missing);
+    ui.hold_opens(false);
+    ui.release_open(&tab);
+    ui.advance(Duration::from_millis(500));
+    ui.frame(|_, _| ());
+    assert_eq!(ui.content(&tab), Content::Missing);
+    ui.cx.read(|cx| {
+        let tab = tab.read(cx);
+        assert!(tab.editor().is_none(), "no buffer behind the message");
+        assert!(!tab.is_opening(), "nothing reopens");
+        assert!(!tab.is_subscribed());
+    });
+
+    // Undone: the file is back, and so is the tab.
+    ui.press(UNDO);
+    ui.wait_for_toast("Undid delete of “lib.rs”");
+    ui.wait_for("the tab open again", |ui| {
+        ui.text(&tab).as_deref() == Some("pub fn f() {}\n")
+    });
+    assert_eq!(ui.content(&tab), Content::Text);
+    assert!(ui.cx.read(|cx| tab.read(cx).is_subscribed()));
+    assert!(!ui.dirty(&tab));
+    // The stale open's replica left the buffer (the file can be opened by
+    // path again to ask).
+    ui.wait_for("the stale replica closed in the daemon", |_| {
+        !replica_joined(&fixture, &other, &place, "src/lib.rs", &replica)
+    });
+    assert_ne!(ui.cx.read(|cx| tab.read(cx).replica()), Some(replica));
+}
+
+/// A delete and its undo, both while the tab loads (#312): the stale open's
+/// buffer is closed and the tab opens the restored file afresh.
+#[test]
+fn a_tab_deleted_and_restored_while_it_loads_opens_the_file() {
+    let fixture = Fixture::new();
+    let mut ui = open_ui(&fixture, Some(fixture.project.clone()));
+    ui.wait_for_tree();
+    let (tab, _, replica) = ui.open_held("README.md", "README.md");
+
+    ui.delete_row(&fixture, "README.md");
+    ui.wait_for("the tab told", |ui| ui.content(&tab) == Content::Missing);
+    ui.press(UNDO);
+    ui.wait_for_toast("Undid delete of “README.md”");
+    assert_eq!(ui.content(&tab), Content::Loading, "it reopens");
+    ui.hold_opens(false);
+    ui.release_open(&tab);
+    ui.wait_for("the tab open", |ui| {
+        ui.text(&tab).as_deref() == Some("# Demo\n")
+    });
+    assert_eq!(ui.content(&tab), Content::Text);
+    let fresh = ui.cx.read(|cx| tab.read(cx).replica()).expect("a session");
+    assert_ne!(fresh, replica, "a fresh replica, not the stale open's");
+    assert!(ui.cx.read(|cx| tab.read(cx).is_subscribed()));
+    assert!(!ui.dirty(&tab));
 }
 
 /// Renders the workbench with this repository open, `crates/coqo/src/files`

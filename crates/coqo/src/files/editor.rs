@@ -54,8 +54,8 @@ use std::{
 use coqo_buffers::{ClientReplica, ReplicaError, Rope, UndoGrouping, diff};
 use coqo_protocol::methods::{
     buffer::{
-        self, BufferChange, ChangesParams, CloseParams, EditParams, EditRejected, OpenParams,
-        OpenResult, OriginKind, SaveParams, TextEdit,
+        self, BufferChange, BufferId, ChangesParams, CloseParams, EditParams, EditRejected,
+        OpenParams, OpenResult, OriginKind, ReplicaId, SaveParams, TextEdit,
     },
     codes,
     fs::{self, EntryKind, FileTooLarge, PathParams, ReadParams},
@@ -192,6 +192,14 @@ enum Opened {
     Failed(DaemonError),
 }
 
+/// Tests: while set, a tab's open holds its outcome back until
+/// [`FileEditor::release_open`], so the tab stays loading.
+#[cfg(test)]
+pub struct HoldOpens;
+
+#[cfg(test)]
+impl coqo_ui::gpui::Global for HoldOpens {}
+
 /// The open buffer behind a text tab.
 struct Session {
     replica: ClientReplica,
@@ -274,6 +282,12 @@ pub struct FileEditor {
     resync_pending: bool,
     /// Another open was asked for while one was in flight.
     open_queued: bool,
+    /// The file was deleted while an open was in flight: its outcome is
+    /// stale (a buffer it got is closed again).
+    open_cancelled: bool,
+    /// An open's outcome held back by [`HoldOpens`].
+    #[cfg(test)]
+    held_open: Option<Option<Opened>>,
     /// A reveal waiting for the file to open.
     pending_reveal: Option<Option<coqo_protocol::methods::editor::Range>>,
     /// The workspace's questions.
@@ -437,6 +451,9 @@ impl FileEditor {
             notice: None,
             resync_pending: false,
             open_queued: false,
+            open_cancelled: false,
+            #[cfg(test)]
+            held_open: None,
             pending_reveal: None,
             questions,
             popover: None,
@@ -582,12 +599,9 @@ impl FileEditor {
                 path,
             } if *workspace == self.workspace
                 && *root == self.root
-                && ops::is_at_or_under(&self.path, path)
-                && self.notice == Some(Notice::Deleted) =>
+                && ops::is_at_or_under(&self.path, path) =>
             {
-                // An undone delete: the file is back (unsaved edits stay).
-                self.notice = None;
-                cx.notify();
+                self.restored(window, cx);
             }
             _ => {}
         }
@@ -616,13 +630,31 @@ impl FileEditor {
 
     /// The file was deleted. Unsaved edits stay in the tab (saving writes the
     /// file again); a clean tab lets its buffer go and says the file is gone.
+    /// A tab still loading ends the same way: the open in flight is stale,
+    /// and a buffer it gets is closed again (#312).
     fn deleted(&mut self, cx: &mut Context<Self>) {
         if self.is_dirty() {
             self.notice = Some(Notice::Deleted);
         } else {
             self.close(cx);
+            self.open_cancelled = self._opening.is_some();
+            self.open_queued = false;
+            self.resync_pending = false;
             self.notice = None;
             self.content = Content::Missing;
+        }
+        cx.notify();
+    }
+
+    /// A delete was undone: the file is back. Unsaved edits stay; a tab that
+    /// said the file was gone opens it again.
+    fn restored(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.notice == Some(Notice::Deleted) {
+            self.notice = None;
+        }
+        if self.session.is_none() && self.content == Content::Missing {
+            self.content = Content::Loading;
+            self.open(window, cx);
         }
         cx.notify();
     }
@@ -694,20 +726,79 @@ impl FileEditor {
             };
             let outcome = outcome.await;
             this.update_in(cx, |this, window, cx| {
-                this._opening = None;
-                match outcome {
-                    Some(Opened::Buffer(open)) => this.opened(open, window, cx),
-                    Some(Opened::Message(content)) => this.show(content, cx),
-                    Some(Opened::Failed(e)) => this.open_failed(e, cx),
-                    // The connection dropped; `reconnected` opens again.
-                    None => {}
+                #[cfg(test)]
+                if cx.has_global::<HoldOpens>() {
+                    this.held_open = Some(outcome);
+                    cx.notify();
+                    return;
                 }
-                if std::mem::take(&mut this.open_queued) {
-                    this.open(window, cx);
-                }
+                this.open_done(outcome, window, cx);
             })
             .ok();
         }));
+    }
+
+    /// The open in flight finished.
+    fn open_done(&mut self, outcome: Option<Opened>, window: &mut Window, cx: &mut Context<Self>) {
+        self._opening = None;
+        if std::mem::take(&mut self.open_cancelled) {
+            // The file was deleted meanwhile; the tab says so already.
+            if let Some(Opened::Buffer(open)) = outcome {
+                Self::close_buffer(open.buffer, open.replica, cx);
+            }
+        } else {
+            match outcome {
+                Some(Opened::Buffer(open)) => self.opened(open, window, cx),
+                Some(Opened::Message(content)) => self.show(content, cx),
+                Some(Opened::Failed(e)) => self.open_failed(e, cx),
+                // The connection dropped; `reconnected` opens again.
+                None => {}
+            }
+        }
+        if std::mem::take(&mut self.open_queued) {
+            self.open(window, cx);
+        }
+    }
+
+    /// Whether an open is in flight.
+    #[cfg(test)]
+    pub fn is_opening(&self) -> bool {
+        self._opening.is_some()
+    }
+
+    /// Whether an open's outcome is held back by [`HoldOpens`].
+    #[cfg(test)]
+    pub fn holds_open(&self) -> bool {
+        self.held_open.is_some()
+    }
+
+    /// The buffer an open held back by [`HoldOpens`] got, if any.
+    #[cfg(test)]
+    pub fn held_buffer(&self) -> Option<(BufferId, ReplicaId)> {
+        match &self.held_open {
+            Some(Some(Opened::Buffer(open))) => Some((open.buffer, open.replica.clone())),
+            _ => None,
+        }
+    }
+
+    /// Let an open held back by [`HoldOpens`] finish.
+    #[cfg(test)]
+    pub fn release_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(outcome) = self.held_open.take() {
+            self.open_done(outcome, window, cx);
+        }
+    }
+
+    /// Whether the tab follows its buffer's `buffer/changes`.
+    #[cfg(test)]
+    pub fn is_subscribed(&self) -> bool {
+        self._changes.is_some()
+    }
+
+    /// The open buffer's replica id.
+    #[cfg(test)]
+    pub fn replica(&self) -> Option<ReplicaId> {
+        self.session.as_ref().map(|s| s.replica.replica().clone())
     }
 
     fn show(&mut self, content: Content, cx: &mut Context<Self>) {
@@ -1426,12 +1517,24 @@ impl FileEditor {
         let Some(session) = self.session.take() else {
             return;
         };
+        self.stream += 1;
+        self._changes = None;
+        Self::close_buffer(
+            session.replica.buffer(),
+            session.replica.replica().clone(),
+            cx,
+        );
+    }
+
+    /// `buffer/close` `replica` of `buffer`.
+    fn close_buffer(buffer: BufferId, replica: ReplicaId, cx: &mut App) {
         if let Some(daemon) = Self::daemon(cx) {
             // The request runs on the connection's runtime by itself.
-            drop(daemon.read(cx).request::<buffer::Close>(CloseParams {
-                buffer: session.replica.buffer(),
-                replica: session.replica.replica().clone(),
-            }));
+            drop(
+                daemon
+                    .read(cx)
+                    .request::<buffer::Close>(CloseParams { buffer, replica }),
+            );
         }
     }
 
