@@ -899,6 +899,10 @@ export type DeleteParams2 = {
 
 /** Result of [`Delete`]. */
 export type DeleteResult = {
+  /** Why the entry can't be restored (deleted for good, too large for a copy where the trash can't give it back), for the user. */
+  no_restore?: string | null;
+  /** What [`Restore`] takes to bring the entry back (undo), while this daemon runs. Absent when it can't be restored; `no_restore` says why. */
+  restore?: string | null;
   /** Whether it went to the OS trash (`false`: deleted for good). */
   trashed: boolean;
 };
@@ -1987,6 +1991,18 @@ export type RespondPermissionParams = {
   requestId: PermissionRequestId;
   /** The session. */
   session: SessionId;
+};
+
+/** Params of [`Restore`]. */
+export type RestoreParams = {
+  /** Where the entry was: the path [`Delete`] was given. */
+  path: string;
+  /** [`DeleteResult::restore`]. */
+  restore: string;
+  /** The root the path is relative to. */
+  root: RootId;
+  /** The workspace. */
+  workspace: WorkspaceId;
 };
 
 /** `data` of a [`RESUME_GAP`](codes::RESUME_GAP) error. */
@@ -3466,6 +3482,8 @@ export interface Requests {
   "fs/rename": { params: RenameParams2; result: EntryResult };
   /** Move an entry to the OS trash, or delete it for good with permanent (daemon token only). (client→server) */
   "fs/delete": { params: DeleteParams; result: DeleteResult };
+  /** Bring back an entry fs/delete deleted, from the OS trash or Coqo's copy (daemon token only). (client→server) */
+  "fs/restore": { params: RestoreParams; result: EntryResult };
   /** Every agent provider, with whether it is available. (client→server) */
   "agents/providers": { params: null; result: Array<ProviderInfo> };
   /** Run a provider's setup action (such as installing its adapter) at the user's request. (client→server) */

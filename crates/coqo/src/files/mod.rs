@@ -11,13 +11,16 @@
 //! `Delete` (`Cmd Backspace` on macOS) deletes after a confirmation, Escape
 //! dismisses a menu or a confirmation. Right-click a row for New File, New
 //! Folder, Rename, Delete, Copy Path, Copy Relative Path and Reveal; drag a
-//! row onto a folder to move it ([`ops`]). In a file tab: `Ctrl S`
+//! row onto a folder to move it ([`ops`]). `Ctrl Z` / `Cmd Z` undoes the
+//! last of those, `Ctrl Shift Z` / `Cmd Shift Z` (also `Ctrl Y` off macOS)
+//! redoes it, while the tree itself has focus ([`history`]). In a file tab: `Ctrl S`
 //! (`Cmd S`) saves, `Ctrl F` finds, `Ctrl Z` / `Ctrl Y` undo and redo this
 //! tab's own edits.
 
 pub mod context;
 pub mod editor;
 pub mod glyph;
+pub mod history;
 pub mod ops;
 pub mod tree;
 
@@ -55,8 +58,24 @@ coqo_ui::gpui::actions!(
         DeleteEntry,
         /// Close the context menu, the delete confirmation or an error.
         Dismiss,
+        /// Undo the tree's last file operation.
+        UndoFileOp,
+        /// Redo the file operation undone last.
+        RedoFileOp,
     ]
 );
+
+/// Where undo and redo of file operations work: the focused tree, never a
+/// field in it (its name field has text undo).
+const UNDO_CONTEXT: &str = "FileTree && !Input";
+#[cfg(target_os = "macos")]
+const UNDO_KEYS: &[&str] = &["cmd-z"];
+#[cfg(not(target_os = "macos"))]
+const UNDO_KEYS: &[&str] = &["ctrl-z"];
+#[cfg(target_os = "macos")]
+const REDO_KEYS: &[&str] = &["cmd-shift-z"];
+#[cfg(not(target_os = "macos"))]
+const REDO_KEYS: &[&str] = &["ctrl-shift-z", "ctrl-y"];
 
 #[cfg(target_os = "macos")]
 const DELETE_KEYS: &[&str] = &["delete", "cmd-backspace"];
@@ -80,6 +99,16 @@ pub fn init(cx: &mut App) {
             .iter()
             .map(|&stroke| keys::binding(stroke, DeleteEntry, context)),
     );
+    use crate::commands::Command;
+    let undo = UNDO_KEYS.iter().fold(
+        Command::new("files.undo", "Undo file operation", "Files", UndoFileOp),
+        |c, k| c.key(*k),
+    );
+    let redo = REDO_KEYS.iter().fold(
+        Command::new("files.redo", "Redo file operation", "Files", RedoFileOp),
+        |c, k| c.key(*k),
+    );
+    crate::commands::register(cx, [undo.context(UNDO_CONTEXT), redo.context(UNDO_CONTEXT)]);
     ops::FileEvents::init(cx);
     editor::init(cx);
     register_tab_kind(cx, editor::KIND, |state, window, cx| {

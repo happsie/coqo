@@ -187,13 +187,20 @@ pub(crate) fn rename(roots: &Roots<'_>, from: &str, to: &str) -> Result<Renamed,
     Ok(renamed)
 }
 
-/// `fs/delete`. Returns whether it went to the trash.
+/// What [`delete`] did.
+#[derive(Debug)]
+pub(crate) struct Deleted {
+    /// Where [`Trash::Folder`] put it.
+    pub binned: Option<PathBuf>,
+}
+
+/// `fs/delete`.
 pub(crate) fn delete(
     roots: &Roots<'_>,
     rel: &str,
     permanent: bool,
     trash: &Trash,
-) -> Result<bool, ErrorObject> {
+) -> Result<Deleted, ErrorObject> {
     let entry = entry(roots, rel)?;
     let meta = existing(&entry)?;
     not_a_root(roots, &entry)?;
@@ -204,13 +211,16 @@ pub(crate) fn delete(
             fs::remove_file(&entry.path)
         };
         removed.map_err(|e| error::io(entry.rel(), &e))?;
-        return Ok(false);
+        return Ok(Deleted { binned: None });
     }
-    match trash {
-        Trash::System => trash::delete(&entry.path).map_err(|e| trash_failed(&entry, &e))?,
-        Trash::Folder(folder) => to_folder(&entry, folder)?,
-    }
-    Ok(true)
+    let binned = match trash {
+        Trash::System => {
+            trash::delete(&entry.path).map_err(|e| trash_failed(&entry, &e))?;
+            None
+        }
+        Trash::Folder(folder) => Some(to_folder(&entry, folder)?),
+    };
+    Ok(Deleted { binned })
 }
 
 fn trash_failed(entry: &Entry, e: &dyn std::fmt::Display) -> ErrorObject {
@@ -223,8 +233,9 @@ fn trash_failed(entry: &Entry, e: &dyn std::fmt::Display) -> ErrorObject {
     )
 }
 
-/// [`Trash::Folder`]: move the entry in under a name not taken yet.
-fn to_folder(entry: &Entry, folder: &Path) -> Result<(), ErrorObject> {
+/// [`Trash::Folder`]: move the entry in under a name not taken yet, and
+/// say where.
+fn to_folder(entry: &Entry, folder: &Path) -> Result<PathBuf, ErrorObject> {
     fs::create_dir_all(folder).map_err(|e| trash_failed(entry, &e))?;
     let name = entry.comps.last().map_or("entry", String::as_str);
     let mut n = 0u32;
@@ -235,7 +246,9 @@ fn to_folder(entry: &Entry, folder: &Path) -> Result<(), ErrorObject> {
             folder.join(format!("{name}.{n}"))
         };
         if fs::symlink_metadata(&to).is_err() {
-            return fs::rename(&entry.path, &to).map_err(|e| trash_failed(entry, &e));
+            return fs::rename(&entry.path, &to)
+                .map(|()| to)
+                .map_err(|e| trash_failed(entry, &e));
         }
         n += 1;
     }

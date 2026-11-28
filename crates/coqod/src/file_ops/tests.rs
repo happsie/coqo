@@ -36,7 +36,12 @@ struct Harness {
 
 impl Harness {
     async fn new(files: &[(&str, &str)]) -> Self {
-        let data = tempfile::tempdir().unwrap();
+        Self::with(files, false, None).await
+    }
+
+    /// With Coqo's undo copies kept (`copies`), on data in `data` if given.
+    async fn with(files: &[(&str, &str)], copies: bool, data: Option<TempDir>) -> Self {
+        let data = data.unwrap_or_else(|| tempfile::tempdir().unwrap());
         let folder = tempfile::tempdir().unwrap();
         let trash = tempfile::tempdir().unwrap();
         for (name, text) in files {
@@ -50,7 +55,8 @@ impl Harness {
         let workspaces = Arc::new(
             WorkspaceService::open_with(dirs.clone(), watch)
                 .unwrap()
-                .with_trash(Trash::Folder(trash.path().join("bin"))),
+                .with_trash(Trash::Folder(trash.path().join("bin")))
+                .with_undo_copies(copies),
         );
         let buffers = BufferService::new(Arc::clone(&workspaces), dirs, BufferConfig::default());
         let router = workspace::register(Router::new(), Arc::clone(&workspaces));
@@ -123,6 +129,12 @@ impl Harness {
     }
 
     async fn delete(&self, path: &str, permanent: bool) -> Result<bool, i64> {
+        self.delete_for_undo(path, permanent)
+            .await
+            .map(|r| r.trashed)
+    }
+
+    async fn delete_for_undo(&self, path: &str, permanent: bool) -> Result<fsm::DeleteResult, i64> {
         self.call::<fsm::Delete>(DeleteParams {
             workspace: self.workspace.clone(),
             root: self.root,
@@ -130,7 +142,17 @@ impl Harness {
             permanent,
         })
         .await
-        .map(|r| r.trashed)
+    }
+
+    async fn restore(&self, path: &str, token: &str) -> Result<String, i64> {
+        self.call::<fsm::Restore>(fsm::RestoreParams {
+            workspace: self.workspace.clone(),
+            root: self.root,
+            path: path.to_owned(),
+            restore: token.to_owned(),
+        })
+        .await
+        .map(|r| r.path)
     }
 
     async fn open(&self, path: &str) -> Result<OpenResult, i64> {
@@ -462,5 +484,124 @@ async fn a_deleted_files_buffer_keeps_its_edits() {
     assert_eq!(
         fs::read_to_string(h.path("notes.md")).unwrap(),
         "zero\none\n"
+    );
+}
+
+/// Undo of a delete (issue #291): restored from the trash folder (the OS
+/// trash's stand-in), once; refused when something took its place; a
+/// folder with everything in it; nothing to restore after a permanent
+/// delete.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_delete_is_restored_from_the_trash() {
+    let h = Harness::new(&[
+        ("a.txt", "a\n"),
+        ("dir/one.txt", "1\n"),
+        ("dir/sub/two.txt", "2\n"),
+    ])
+    .await;
+
+    let deleted = h.delete_for_undo("a.txt", false).await.unwrap();
+    assert!(deleted.trashed);
+    assert_eq!(deleted.no_restore, None);
+    let token = deleted.restore.unwrap();
+    assert!(h.binned("a.txt").is_file());
+    assert_eq!(h.restore("./a.txt", &token).await, Ok("a.txt".to_owned()));
+    assert_eq!(fs::read_to_string(h.path("a.txt")).unwrap(), "a\n");
+    assert!(!h.binned("a.txt").exists(), "out of the trash");
+    assert_eq!(
+        h.restore("a.txt", &token).await,
+        Err(codes::NOT_FOUND),
+        "once"
+    );
+
+    // Something new at the path: the restore waits for it to go.
+    let token = h
+        .delete_for_undo("a.txt", false)
+        .await
+        .unwrap()
+        .restore
+        .unwrap();
+    write(h.folder.path(), "a.txt", "new\n");
+    assert_eq!(h.restore("a.txt", &token).await, Err(codes::ALREADY_EXISTS));
+    assert_eq!(fs::read_to_string(h.path("a.txt")).unwrap(), "new\n");
+    assert_eq!(
+        h.restore("dir/one.txt", &token).await,
+        Err(coqo_protocol::codes::INVALID_PARAMS),
+        "a token is for its own path"
+    );
+    fs::remove_file(h.path("a.txt")).unwrap();
+    assert_eq!(h.restore("a.txt", &token).await, Ok("a.txt".to_owned()));
+
+    let token = h
+        .delete_for_undo("dir", false)
+        .await
+        .unwrap()
+        .restore
+        .unwrap();
+    assert!(!h.path("dir").exists());
+    h.restore("dir", &token).await.unwrap();
+    assert_eq!(
+        fs::read_to_string(h.path("dir/sub/two.txt")).unwrap(),
+        "2\n"
+    );
+
+    let gone = h.delete_for_undo("dir", true).await.unwrap();
+    assert_eq!(gone.restore, None);
+    assert_eq!(
+        gone.no_restore.as_deref(),
+        Some("“dir” was deleted permanently.")
+    );
+    assert_eq!(h.restore("dir", "nope").await, Err(codes::NOT_FOUND));
+}
+
+/// Where the trash can't give entries back (macOS), Coqo keeps a copy of
+/// small ones to restore from; big ones get a reason instead. Copies from
+/// an earlier run are cleaned up when the daemon starts.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_delete_is_restored_from_coqos_copy() {
+    let data = tempfile::tempdir().unwrap();
+    let stale = data.path().join("undo/0123");
+    fs::create_dir_all(&stale).unwrap();
+    let h = Harness::with(
+        &[("src/a.rs", "fn a() {}\n"), ("src/b.rs", "fn b() {}\n")],
+        true,
+        Some(data),
+    )
+    .await;
+    assert!(!stale.exists(), "an earlier run's copies are gone");
+
+    let token = h
+        .delete_for_undo("src", false)
+        .await
+        .unwrap()
+        .restore
+        .unwrap();
+    // The trash folder has it too; empty it, as a trash that can't give it
+    // back would be.
+    fs::remove_dir_all(h.binned("src")).unwrap();
+    assert_eq!(h.restore("src", &token).await, Ok("src".to_owned()));
+    assert_eq!(
+        fs::read_to_string(h.path("src/b.rs")).unwrap(),
+        "fn b() {}\n"
+    );
+    assert_eq!(
+        fs::read_dir(h._data.path().join("undo")).unwrap().count(),
+        0,
+        "the copy is used up"
+    );
+
+    // Too big for a copy (sparse, so the test stays small on disk).
+    let big = fs::File::create(h.path("big.bin")).unwrap();
+    big.set_len(crate::workspace::UNDO_COPY_LIMIT + 1).unwrap();
+    drop(big);
+    let deleted = h.delete_for_undo("big.bin", false).await.unwrap();
+    assert_eq!(deleted.restore, None);
+    assert_eq!(
+        deleted.no_restore.as_deref(),
+        Some("“big.bin” is too large for Coqo to keep a copy; restore it from the Trash.")
+    );
+    assert!(
+        h.binned("big.bin").exists(),
+        "it went to the trash all the same"
     );
 }

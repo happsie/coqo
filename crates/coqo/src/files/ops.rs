@@ -29,6 +29,12 @@ pub enum FileEvent {
         root: RootId,
         path: String,
     },
+    /// `path` (a file or a folder) was restored: a delete was undone.
+    Restored {
+        workspace: WorkspaceId,
+        root: RootId,
+        path: String,
+    },
 }
 
 /// The app's file-operation announcements. See the module docs.
