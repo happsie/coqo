@@ -4,9 +4,10 @@
 //! styling GPUI elements or gpui-component widgets directly.
 
 use gpui_kit::{
-    App, BoxShadow, Div, ElementId, Hsla, InteractiveElement as _, ParentElement as _, Pixels,
-    SharedString, Stateful, Styled as _, Svg, div, hsla, linear_color_stop, linear_gradient, point,
-    px, svg,
+    AnyView, App, AppContext as _, BoxShadow, Context, Div, ElementId, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
+    Stateful, Styled as _, Svg, Window, div, hsla, linear_color_stop, linear_gradient, point, px,
+    svg,
 };
 
 use crate::theme::{ActiveTokens as _, Appearance, Rgb};
@@ -223,6 +224,31 @@ pub fn popover(cx: &App) -> Div {
         .rounded(px(14.))
         .shadow(vec![shadow(hsla(0., 0., 0., shadow_alpha), 18., 48.)])
         .overflow_hidden()
+}
+
+/// A tooltip with `text`, for an element's `.tooltip(…)`: a small
+/// [`popover`] card.
+pub fn tooltip(text: impl Into<SharedString>, cx: &mut App) -> AnyView {
+    let text = text.into();
+    cx.new(|_| Tip(text)).into()
+}
+
+struct Tip(SharedString);
+
+impl Render for Tip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.tokens();
+        popover(cx)
+            .id("tooltip")
+            .test_support()
+            .px(px(10.))
+            .py(px(6.))
+            .max_w(px(320.))
+            .text_size(t.metrics.text_sm)
+            .text_color(t.palette.text.hsla())
+            .font_family(t.metrics.font_ui.clone())
+            .child(self.0.clone())
+    }
 }
 
 /// The raised ("tactile") control surface: a top-lit gradient, a hairline border,

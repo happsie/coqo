@@ -735,19 +735,13 @@ impl QuestionService {
     /// The prompt of a thread's message: the text, then the code as
     /// embedded resources (as the composer embeds a selection).
     async fn prompt_for(&self, q: &Question, text: &str, first: bool) -> Vec<ContentBlock> {
-        let places: Vec<String> = q.anchors.iter().map(|a| anchor_place(&a.anchor)).collect();
-        let intro = if first {
-            format!(
-                "I'm asking about {} (attached; pinned in my editor as thread #{}). \
-                 Please answer here. If a note on the code itself would help, you can also \
-                 `annotate` the same lines.",
-                places.join(", "),
-                q.id
-            )
-        } else {
-            format!("Follow-up on thread #{} about {}:", q.id, places.join(", "))
+        let prompt = qm::ThreadPrompt {
+            thread: q.id,
+            places: q.anchors.iter().map(|a| anchor_place(&a.anchor)).collect(),
+            first,
+            body: text.to_owned(),
         };
-        let mut content = vec![ContentBlock::text(format!("{intro}\n\n{text}"))];
+        let mut content = vec![ContentBlock::text(prompt.to_text())];
         if first {
             for a in &q.anchors {
                 let code = &a.anchor;

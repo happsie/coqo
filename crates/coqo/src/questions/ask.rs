@@ -4,8 +4,9 @@
 //! tab. It opens under them (the gutter's ask button, or `Ctrl/Cmd+Shift+/`)
 //! with a text field and the chat to ask: the chat shown in the workbench,
 //! else the workspace's most recent one, else a new one. `Enter` sends
-//! (`questions/ask`), `Esc` cancels. Once sent the file tab shows the pinned
-//! thread's popover instead.
+//! (`questions/ask`), `Esc` cancels. Its lines follow edits made while it
+//! is open (#248). Once sent the file tab shows the pinned thread's popover
+//! instead.
 
 use std::ops::Range;
 
@@ -158,6 +159,20 @@ impl AskPopover {
             error: None,
             _sending: None,
             _subscriptions: subscriptions,
+        }
+    }
+
+    /// The lines it asks about (0-based, `end` exclusive).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn lines(&self) -> &Range<usize> {
+        &self.lines
+    }
+
+    /// Ask about `lines` instead: where edits took them (#248).
+    pub fn set_lines(&mut self, lines: Range<usize>, cx: &mut Context<Self>) {
+        if self.lines != lines {
+            self.lines = lines;
+            cx.notify();
         }
     }
 

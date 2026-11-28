@@ -506,6 +506,78 @@ pub struct ReplyParams {
     pub body: String,
 }
 
+/// The text a message of a user's thread prompts its chat with ([`Ask`],
+/// [`Reply`]): a line naming the thread and the code, then the message.
+/// The daemon writes it; a chat parses it back to show the message in short
+/// (#248). The code itself follows a first message as embedded resources.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadPrompt {
+    /// The thread.
+    pub thread: QuestionId,
+    /// Where its code is, e.g. `src/cart.rs:16-17` (1-based lines).
+    pub places: Vec<String>,
+    /// The thread's first message ([`Ask`]), else a follow-up.
+    pub first: bool,
+    /// The user's message, markdown.
+    pub body: String,
+}
+
+impl ThreadPrompt {
+    const ASK: &'static str = "I'm asking about ";
+    const PINNED: &'static str = " (attached; pinned in my editor as thread #";
+    const ASK_END: &'static str = "). Please answer here. If a note on the code itself would \
+        help, you can also `annotate` the same lines.\n\n";
+    const FOLLOW_UP: &'static str = "Follow-up on thread #";
+    const ABOUT: &'static str = " about ";
+    const FOLLOW_UP_END: &'static str = ":\n\n";
+
+    /// The prompt's text.
+    pub fn to_text(&self) -> String {
+        let (places, id) = (self.places.join(", "), self.thread);
+        if self.first {
+            format!(
+                "{}{places}{}{id}{}{}",
+                Self::ASK,
+                Self::PINNED,
+                Self::ASK_END,
+                self.body
+            )
+        } else {
+            format!(
+                "{}{id}{}{places}{}{}",
+                Self::FOLLOW_UP,
+                Self::ABOUT,
+                Self::FOLLOW_UP_END,
+                self.body
+            )
+        }
+    }
+
+    /// The thread prompt `text` is, if it is one.
+    pub fn parse(text: &str) -> Option<Self> {
+        let places = |s: &str| s.split(", ").map(str::to_owned).collect();
+        if let Some(rest) = text.strip_prefix(Self::ASK) {
+            let (at, rest) = rest.split_once(Self::PINNED)?;
+            let (id, body) = rest.split_once(Self::ASK_END)?;
+            return Some(Self {
+                thread: QuestionId(id.parse().ok()?),
+                places: places(at),
+                first: true,
+                body: body.to_owned(),
+            });
+        }
+        let rest = text.strip_prefix(Self::FOLLOW_UP)?;
+        let (id, rest) = rest.split_once(Self::ABOUT)?;
+        let (at, body) = rest.split_once(Self::FOLLOW_UP_END)?;
+        Some(Self {
+            thread: QuestionId(id.parse().ok()?),
+            places: places(at),
+            first: false,
+            body: body.to_owned(),
+        })
+    }
+}
+
 /// Params of the [`Watch`] topic.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -724,6 +796,44 @@ mod tests {
         );
         let back: Question = serde_json::from_value(v).unwrap();
         assert_eq!(back, q);
+    }
+
+    #[test]
+    fn thread_prompts_parse_back() {
+        for first in [true, false] {
+            let prompt = ThreadPrompt {
+                thread: QuestionId(12),
+                places: vec!["src/cart.rs:16-17".into(), "src/a, b.rs:3".into()],
+                first,
+                body: "Why cap it?\n\nAnd where: (here).".into(),
+            };
+            let text = prompt.to_text();
+            assert_eq!(
+                ThreadPrompt::parse(&text).map(|p| p.body),
+                Some(prompt.body)
+            );
+            let back = ThreadPrompt::parse(&text).unwrap();
+            assert_eq!((back.thread, back.first), (QuestionId(12), first));
+            assert_eq!(back.places[0], "src/cart.rs:16-17");
+        }
+        let text = ThreadPrompt {
+            thread: QuestionId(3),
+            places: vec!["src/cart.rs:6-7".into()],
+            first: true,
+            body: "Why?".into(),
+        }
+        .to_text();
+        assert_eq!(
+            text,
+            "I'm asking about src/cart.rs:6-7 (attached; pinned in my editor as thread #3). \
+             Please answer here. If a note on the code itself would help, you can also \
+             `annotate` the same lines.\n\nWhy?"
+        );
+        assert_eq!(ThreadPrompt::parse("I'm asking about the weather"), None);
+        assert_eq!(
+            ThreadPrompt::parse("Follow-up on thread #x about a:\n\nb"),
+            None
+        );
     }
 
     #[test]

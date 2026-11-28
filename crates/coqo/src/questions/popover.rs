@@ -20,7 +20,9 @@
 //! A thread the user started (#229, `author: user`) shows the conversation
 //! instead: each of the user's messages and the agent's reply to it,
 //! streamed from that turn of the chat ([`ThreadReplies`]), and a field for
-//! a follow-up (`questions/reply`). **Resolve** closes the thread.
+//! a follow-up (`questions/reply`). **Resolve** closes the thread. The
+//! conversation stays scrolled to its end while a reply streams in, unless
+//! the user scrolled up to read (#248).
 //!
 //! [`CodeEditor::set_overlay`]: coqo_ui::editor::CodeEditor::set_overlay
 
@@ -37,8 +39,9 @@ use coqo_ui::{
     gpui::{
         Action, Animation, AnimationExt as _, AnyElement, App, AppContext as _, Context, Entity,
         EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement,
-        ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-        Subscription, Task, Window, div, prelude::FluentBuilder as _, pulsating_between, px,
+        ParentElement as _, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
+        Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
+        pulsating_between, px,
     },
     input::{PromptInput, PromptInputEvent},
     text::markdown,
@@ -104,6 +107,11 @@ pub struct QuestionPopover {
     reply: Option<Entity<PromptInput>>,
     /// The agent's replies, in a thread the user started.
     replies: Option<Entity<ThreadReplies>>,
+    /// The thread's scroll position.
+    thread_scroll: ScrollHandle,
+    /// Scroll the thread to its end on the next frame, even if the user
+    /// scrolled up (a follow-up was sent).
+    to_end: bool,
     focus: FocusHandle,
     sending: bool,
     error: Option<String>,
@@ -176,6 +184,8 @@ impl QuestionPopover {
             selected: None,
             reply,
             replies,
+            thread_scroll: ScrollHandle::new(),
+            to_end: true,
             focus: cx.focus_handle(),
             sending: false,
             error: None,
@@ -271,6 +281,23 @@ impl QuestionPopover {
         }
     }
 
+    /// The thread's scroll position.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn thread_scroll(&self) -> &ScrollHandle {
+        &self.thread_scroll
+    }
+
+    /// Keep the thread at its end as it grows (a reply streaming in, a new
+    /// message), unless the user scrolled up from there: as laid out last,
+    /// before this frame adds to it.
+    fn follow_thread(&mut self) {
+        let s = &self.thread_scroll;
+        let at_end = -s.offset().y >= s.max_offset().y - px(2.);
+        if std::mem::take(&mut self.to_end) || at_end {
+            s.scroll_to_bottom();
+        }
+    }
+
     /// The agent's replies, in a thread the user started.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn replies(&self) -> Option<&Entity<ThreadReplies>> {
@@ -362,6 +389,7 @@ impl QuestionPopover {
                         if let Some(reply) = &this.reply {
                             reply.update(cx, |r, cx| r.set_text("", window, cx));
                         }
+                        this.to_end = true;
                     }
                     Err(e) => this.error = Some(format!("Couldn't send it: {e}")),
                 }
@@ -389,6 +417,7 @@ impl QuestionPopover {
             .pt(px(10.))
             .max_h(px(THREAD_MAX_HEIGHT))
             .overflow_y_scroll()
+            .track_scroll(&self.thread_scroll)
             .flex()
             .flex_col()
             .gap(px(10.));
@@ -945,6 +974,7 @@ impl Render for QuestionPopover {
         };
         let header = self.render_header(&q, cx);
         let body = if self.replies.is_some() {
+            self.follow_thread();
             self.render_thread(&q, cx)
         } else {
             self.render_body(&q, cx)

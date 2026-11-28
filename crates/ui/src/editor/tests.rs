@@ -616,3 +616,85 @@ fn the_ask_button_asks_about_the_selected_lines() {
         "{overlay:?} below line 4"
     );
 }
+
+#[test]
+fn a_tracked_overlay_follows_edits_above_and_inside_its_lines() {
+    let mut h = open(TEXT);
+    let card = h.cx.update(|cx| cx.new(|_| Card(60.)));
+    // `let beta` and `let gamma`.
+    h.with(move |editor, _, cx| {
+        editor.set_overlay(OverlayAnchor::Tracked { start: 2, end: 4 }, card.into(), cx)
+    });
+    h.frame();
+    let anchor = |h: &mut Harness| h.cx.read(|cx| h.editor.read(cx).overlay_anchor());
+    let before = h.find("code-overlay").unwrap().origin.y;
+
+    // A line typed above moves it down a line.
+    h.with(|editor, _, cx| editor.set_selections(&[0..0], cx));
+    h.type_text("// The entry point.\n");
+    assert_eq!(
+        anchor(&mut h),
+        Some(OverlayAnchor::Tracked { start: 3, end: 5 })
+    );
+    h.frame();
+    let after = h.find("code-overlay").unwrap().origin.y;
+    assert_eq!(after - before, px(23.), "it moved with its lines");
+
+    // An agent's edit above, then one inside (a line added to them).
+    let text = h.text();
+    h.remote(&[(0..at(&text, "fn main"), "")]);
+    assert_eq!(
+        anchor(&mut h),
+        Some(OverlayAnchor::Tracked { start: 2, end: 4 })
+    );
+    let text = h.text();
+    let inside = at(&text, "    let gamma");
+    h.remote(&[(inside..inside, "    let delta = 4;\n")]);
+    assert_eq!(
+        anchor(&mut h),
+        Some(OverlayAnchor::Tracked { start: 2, end: 5 })
+    );
+
+    // A fixed one stays on its line numbers.
+    let card = h.cx.update(|cx| cx.new(|_| Card(60.)));
+    h.with(move |editor, _, cx| {
+        editor.set_overlay(OverlayAnchor::Lines { start: 2, end: 4 }, card.into(), cx)
+    });
+    h.remote(&[(0..0, "\n")]);
+    assert_eq!(
+        anchor(&mut h),
+        Some(OverlayAnchor::Lines { start: 2, end: 4 })
+    );
+    h.with(|editor, _, cx| editor.clear_overlay(cx));
+    assert_eq!(anchor(&mut h), None);
+}
+
+#[test]
+fn the_ask_button_has_the_owners_tooltip() {
+    let mut h = open(TEXT);
+    let hover = |h: &mut Harness| {
+        h.cx.update_window(h.window, |_, window, cx| window.hover("code-ask", cx))
+            .unwrap();
+        h.cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        h.frame();
+    };
+    // None by default.
+    h.with(|editor, _, cx| editor.set_ask_enabled(true, cx));
+    h.frame();
+    assert!(h.find("code-ask").is_some());
+    hover(&mut h);
+    assert!(h.find("tooltip").is_none());
+
+    h.with(|editor, _, cx| editor.set_ask_tip(Some("Ask an agent".into()), cx));
+    // Off the button and back on it.
+    h.cx.update_window(h.window, |_, window, cx| window.hover("input-state", cx))
+        .unwrap();
+    h.frame();
+    hover(&mut h);
+    assert!(h.find("tooltip").is_some(), "the tooltip shows on hover");
+    assert_eq!(
+        h.cx.read(|cx| h.editor.read(cx).ask_tip().cloned()),
+        Some("Ask an agent".into())
+    );
+}

@@ -2615,3 +2615,31 @@ fn a_closed_chat_reopens_from_history_and_an_ended_one_continues_in_a_new_chat()
     assert!(first_text(last).contains("User: Remember the code word\n\nAssistant: One"));
     assert_eq!(last[1], ContentBlock::text("What was it?"));
 }
+
+#[test]
+fn a_thread_message_is_summed_up_in_its_first_line() {
+    use coqo_protocol::methods::questions::{QuestionId, ThreadPrompt};
+
+    use super::tab::asked_summary;
+
+    let prompt = |first, body: &str| ThreadPrompt {
+        thread: QuestionId(4),
+        places: vec!["src/cart-v2.rs:16-17".into()],
+        first,
+        body: body.into(),
+    };
+    assert_eq!(
+        asked_summary(&prompt(true, "Why cap it?")),
+        "You asked about src/cart-v2.rs:16–17: Why cap it?"
+    );
+    assert_eq!(
+        asked_summary(&prompt(false, "Should it stay?\n\nIt looks odd.")),
+        "Follow-up on src/cart-v2.rs:16–17: Should it stay?…"
+    );
+    let long = "word ".repeat(40);
+    let summary = asked_summary(&prompt(true, &long));
+    assert!(
+        summary.ends_with('…') && summary.chars().count() < 160,
+        "{summary}"
+    );
+}
