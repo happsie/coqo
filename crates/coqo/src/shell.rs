@@ -949,6 +949,9 @@ impl Render for Shell {
                     chat::open_terminal(&this.dock, action, window, cx)
                 }),
             )
+            .on_action(cx.listener(|this, action: &chat::AskAgent, window, cx| {
+                chat::ask_agent(&this.dock, action, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &chat::SessionSwitched, _, cx| this.schedule_save(cx)))
             .on_action(
                 cx.listener(|this, _: &questions::NextQuestion, window, cx| {

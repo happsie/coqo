@@ -34,6 +34,7 @@
 //! understood, `d` editor or diff. A text field (the code, the question)
 //! gets its characters first.
 
+pub mod coverage;
 pub mod diff;
 pub mod player;
 pub mod popover;

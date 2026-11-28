@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-27
-- **Issue:** #97; coverage guard #99; publishing again #253. Builds on ADR 0013 (anchors), 0014 (core tools), 0016 (anchor wire types) and 0017 (acceptance criteria).
+- **Issue:** #97; coverage guard #99; publishing again #253; coverage in the player #264. Builds on ADR 0013 (anchors), 0014 (core tools), 0016 (anchor wire types) and 0017 (acceptance criteria).
 
 ## Context
 
@@ -42,7 +42,7 @@ The result is stored on the walkthrough as `coverage { total, covered, trivial, 
 
 **The tool** is a core bridge tool (`crates/mcp/src/tools/walkthrough.rs`), a Coqo feature no harness has (ADR 0014). Its description says when: after finishing a change and before saying it is done, with the reading order and how to anchor. The bridge now serves MCP resources (`crates/mcp/src/resources.rs`), so far the schema.
 
-**UI.** The chat shows a card, "Walkthrough published: <title> · n steps" (published again, the card shows the latest and the chat adds a line "Walkthrough updated: <title> · n steps" with its coverage, opening the player, instead of a second card; an open player reloads on `updated`, staying at its step), and the session panel a "Walkthroughs" card listing the session's; either opens the walkthrough's player (#100, [design](../design/walkthrough.md)) at the first unread step, with the step's popover at its code. With coverage complete the card says "Coverage n/n hunks" with a sage check; with hunks uncovered it carries board 3's rose banner, "12 of 14 changed hunks covered." and which hunks are not explained, each a link to its lines, and "Ask <agent> to explain it", which sends the agent the list (or leaves it in the composer while a turn runs). The panel's row shows "Coverage 12/14 hunks" in rose with the first three. Showing the banner in the player itself (it has `coverage` from `walkthroughs/get`) is a follow-up.
+**UI.** The chat shows a card, "Walkthrough published: <title> · n steps" (published again, the card shows the latest and the chat adds a line "Walkthrough updated: <title> · n steps" with its coverage, opening the player, instead of a second card; an open player reloads on `updated`, staying at its step), and the session panel a "Walkthroughs" card listing the session's; either opens the walkthrough's player (#100, [design](../design/walkthrough.md)) at the first unread step, with the step's popover at its code. With coverage complete the card says "Coverage n/n hunks" with a sage check; with hunks uncovered it carries board 3's rose banner, "12 of 14 changed hunks covered." and which hunks are not explained, each a link to its lines, and "Ask <agent> to explain it", which sends the agent the list (or leaves it in the composer while a turn runs). The panel's row shows "Coverage 12/14 hunks" in rose with the first three. The player shows the same banner under its header from `walkthroughs/get`'s `coverage` (#264): the hunks link into its diff (diff mode) or a file tab, and its "Ask <agent> to explain it" opens the publishing session's chat and asks there (`chat::AskAgent`); coverage that could not be checked is a "Coverage not checked" chip in the header.
 
 ## Consequences
 

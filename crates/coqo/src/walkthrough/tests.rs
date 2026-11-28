@@ -537,6 +537,10 @@ fn the_session_panel_row_opens_the_player_at_the_first_unread_step() {
         ui.overlay(&player, "src/discount.rs") == Some(OverlayAnchor::Marker(marker(1, 0)))
     });
     assert_eq!(ui.cx.read(|cx| player.read(cx).current()), 1);
+    // Not a repository: the banner says coverage was not checked, without
+    // asking the agent anything.
+    assert!(ui.exists("walkthrough-coverage"));
+    assert!(!ui.exists("walkthrough-coverage-ask"));
     // A click on a step's marker goes there.
     ui.click(ElementId::NamedInteger("code-marker".into(), marker(0, 0)));
     ui.wait_for("step 1", |ui| {
@@ -651,6 +655,158 @@ fn publishing_again_refreshes_the_open_player_and_updates_the_card() {
         ui.exists(("chat-walkthrough-updated", line))
     });
     assert!(!ui.exists(("chat-walkthrough-row", 1usize)));
+    drop(ui);
+    drop(daemon);
+}
+
+/// The fixture's project as a git repository: `BEFORE` committed, then the
+/// change and two files no step of [`draft`] explains (`README.md`,
+/// `src/lib.rs`), with the git mod in the daemon so coverage is checked.
+fn git_fixture(provider: &ScriptedProvider) -> (tempfile::TempDir, PathBuf, AgentDaemon) {
+    use coqo_mod_git::testing::Fixture as Repo;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = Repo::init(&tmp.path().join("shop"));
+    repo.write("src/discount.rs", BEFORE);
+    repo.commit_all("Initial commit");
+    repo.write("src/discount.rs", DISCOUNT);
+    repo.write("src/tests.rs", TESTS);
+    repo.write(
+        "src/lib.rs",
+        "pub mod discount;\n#[cfg(test)]\nmod tests;\n",
+    );
+    repo.write("README.md", "# Shop\n\nVolume discounts.\n");
+    let project = repo.path().canonicalize().unwrap();
+    let daemon = AgentDaemon::with_review(tmp.path(), provider);
+    (tmp, project, daemon)
+}
+
+#[test]
+fn the_player_shows_the_coverage_banner_with_links_and_the_ask_button() {
+    let provider = ScriptedProvider::new().turn(say("I'll add them."));
+    let (_tmp, project, daemon) = git_fixture(&provider);
+    let mut ui = open_ui(&project, &daemon.paths, Appearance::Dark);
+    let (session, id) = published(&mut ui, &daemon, &project);
+    let (ws, root) = ui.place().unwrap();
+    ui.wait_for("the row", |ui| ui.exists(("chat-walkthrough-row", 0usize)));
+    ui.click(("chat-walkthrough-row", 0usize));
+    ui.wait_for("the player", |ui| ui.player(&id).is_some());
+    let player = ui.player(&id).unwrap();
+
+    // Board 3's banner under the header: the counts, each uncovered hunk
+    // and the ask button.
+    ui.wait_for("the banner", |ui| {
+        ui.exists("walkthrough-coverage") && ui.exists(("walkthrough-coverage-hunk", 1usize))
+    });
+    assert!(ui.exists("walkthrough-coverage-ask"));
+    assert!(!ui.exists(("walkthrough-coverage-hunk", 2usize)));
+    let paths: Vec<String> = ui.cx.read(|cx| {
+        let c = player
+            .read(cx)
+            .walkthrough()
+            .unwrap()
+            .coverage
+            .clone()
+            .unwrap();
+        assert_eq!(c.uncovered_count(), 2, "{c:#?}");
+        assert_eq!(
+            coverage::banner_label(&c).0,
+            format!("{} of {} changed hunks covered.", c.total - 2, c.total)
+        );
+        c.uncovered.iter().map(|h| h.path.clone()).collect()
+    });
+    let link = |path: &str| {
+        let k = paths.iter().position(|p| p == path).unwrap();
+        ("walkthrough-coverage-hunk", k)
+    };
+
+    // In the editor, a hunk opens its file in a tab of its own.
+    ui.click(link("src/lib.rs"));
+    let key = crate::files::editor::key(&ws, root, "src/lib.rs");
+    let dock = ui.dock();
+    ui.wait_for("the hunk's file", |ui| {
+        ui.cx.read(|cx| {
+            dock.read(cx)
+                .find_tab(crate::files::editor::KIND, &key, cx)
+                .is_some()
+        })
+    });
+
+    // In diff mode, it goes to the hunk in the walkthrough's diff.
+    let open = id.clone();
+    ui.frame(|window, cx| super::open(&dock, ws.clone(), open, window, cx));
+    ui.cx
+        .update_window(ui.window, |_, window, cx| {
+            player.update(cx, |p, cx| p.set_mode(Mode::Diff, window, cx))
+        })
+        .unwrap();
+    ui.wait_for("the diff", |ui| {
+        ui.cx.read(|cx| {
+            player
+                .read(cx)
+                .diff()
+                .is_some_and(|(v, _)| !v.read(cx).files().is_empty())
+        })
+    });
+    ui.click(link("README.md"));
+    ui.wait_for("the hunk in the diff", |ui| {
+        ui.cx.read(|cx| {
+            player
+                .read(cx)
+                .diff()
+                .is_some_and(|(v, _)| v.read(cx).selected_file() == Some("README.md"))
+        })
+    });
+
+    // "Ask Fake agent to explain it" asks the publishing session in its
+    // chat, as the chat card's button does.
+    assert!(ui.exists("walkthrough-coverage-ask"));
+    ui.click("walkthrough-coverage-ask");
+    let chat = ui.chat().unwrap();
+    assert_eq!(ui.cx.read(|cx| chat.read(cx).session().clone()), session);
+    ui.wait_for("the request sent", |ui| {
+        ui.cx.read(|cx| {
+            chat.read(cx).transcript().entries.iter().any(|e| {
+                matches!(e, Entry::User { content } if format!("{content:?}").contains("Your walkthrough \\\"Volume discount\\\""))
+            })
+        })
+    });
+    let sent = ui.cx.read(|cx| {
+        format!(
+            "{:?}",
+            chat.read(cx)
+                .transcript()
+                .entries
+                .iter()
+                .find(|e| matches!(e, Entry::User { .. }))
+                .unwrap()
+        )
+    });
+    assert!(sent.contains("README.md:1-3 (new file, 3 lines)"), "{sent}");
+    assert!(
+        sent.contains("src/lib.rs:1-3 (new file, 3 lines)"),
+        "{sent}"
+    );
+
+    // Explained (published again): the banner goes, live.
+    let mut fixed = draft();
+    fixed["trivial_hunks"] = json!([
+        { "path": "README.md", "reason": "docs" },
+        { "path": "src/lib.rs", "reason": "module list" },
+    ]);
+    let params = CreateParams {
+        workspace: ws.clone(),
+        session: session.0.clone(),
+        walkthrough: fixed,
+    };
+    let w = daemon
+        .with_client(async move |client| client.request::<wtm::Create>(params).await.unwrap());
+    assert!(w.coverage.unwrap().is_complete());
+    let open = id.clone();
+    ui.frame(|window, cx| super::open(&dock, ws.clone(), open, window, cx));
+    ui.wait_for("the banner gone", |ui| {
+        ui.exists("walkthrough-header") && !ui.exists("walkthrough-coverage")
+    });
     drop(ui);
     drop(daemon);
 }
@@ -811,7 +967,8 @@ fn diff_mode_shows_the_walkthroughs_change_with_step_markers() {
 // ---- screenshots ----------------------------------------------------------------------
 
 /// Offscreen screenshots of the player (board 3): step 2 in the editor and
-/// in the diff, as `coqo-walkthrough-{dark,light}.png` and
+/// in the diff, with the coverage banner (no step explains `src/lib.rs`),
+/// as `coqo-walkthrough-{dark,light}.png` and
 /// `coqo-walkthrough-diff-{dark,light}.png` in `$COQO_SHOT_DIR` (default:
 /// the system temp dir).
 #[test]
@@ -834,6 +991,10 @@ fn walkthrough_screenshots() {
     repo.commit_all("Initial commit");
     repo.write("src/discount.rs", DISCOUNT);
     repo.write("src/tests.rs", TESTS);
+    repo.write(
+        "src/lib.rs",
+        "pub mod discount;\n#[cfg(test)]\nmod tests;\n",
+    );
     let daemon = TestDaemon::start(tmp.path().join("run"), tmp.path().join("data"));
     let mut id: Option<WalkthroughId> = None;
     for (name, appearance) in [("dark", Appearance::Dark), ("light", Appearance::Light)] {

@@ -26,8 +26,9 @@ The tab is padded 10 px, with 10 px between its parts, as the board's window is.
 - **Header card:** `panel_raised`, at the panel radius.
   - A 20 px code-file icon in `sage` (the board's book glyph is not in the icon set).
   - "Walkthrough · <title>" at 15 px semibold. Below it, at 12.5 px in `text_muted`: the scope (`working tree vs HEAD`, `feature vs main`), the number of files the steps are in, and "written by <provider>".
-  - On the right: where it is kept ("Stored locally", "In .coqo/walkthroughs") on a `surface` chip, then the progress: an 8 px bar on `surface_selected` filled in `sage`, and "n of m understood".
+  - On the right: "Coverage not checked" on a `surface` chip with a `text_subtle` circle-alert when the diff could not be computed (not a repository, no git; why is in its tooltip), where it is kept ("Stored locally", "In .coqo/walkthroughs") on a `surface` chip, then the progress: an 8 px bar on `surface_selected` filled in `sage`, and "n of m understood".
   - The summary (markdown, `text_muted`) under them.
+- **Coverage banner** (#264, board 3's coverage guard), under the header, only while changed hunks are uncovered: 14 px radius, `rose` at 12 % with a 30 % hairline, 16 × 10 px padding. One wrapping row: a 16 px rose circle-alert (the board's triangle is not in the icon set), "14 of 15 changed hunks covered." in semibold `rose` followed by the chat card's sentence in `text_muted` ("path:lines (+a −r) is not explained by any step and wasn't marked trivial.", or "n hunks are not explained…"), and on the right **Ask <provider> to explain it** (`rose` 18 % fill, 35 % border, radius 10). Below, indented to the text, up to eight hunks as mono `blue` `path:lines` links with their change in `text_subtle` ("and n more" after). A link goes to the hunk: in diff mode it scrolls the walkthrough's diff there; in the editor it opens the file at the hunk's lines in a tab of its own (a deleted file switches to the diff). The button sends the publishing session the list, as the chat card's does: it opens (or shows) that session's chat and sends it, or leaves it in the composer while a turn runs. The banner follows `walkthroughs/get` (coverage is checked again on each load of a worktree scope) and goes when every hunk is covered.
 - **Step list:** 320 px wide, `panel_raised`, 12 px padding. Board: 300 to 330 px.
   - The `STEPS · READING ORDER` label.
   - A row per step, radius 12: a 24 px number badge on `surface_selected`, the title (semibold) over "<kind> · <file>" in `text_subtle` with a `MEDIUM` / `HIGH` badge for the step's worst risk, and the state on the right: `✓` in `sage` (understood) or `?` in `sand` (asked about).
@@ -77,6 +78,5 @@ Key context `WalkthroughPlayer`. A focused text field (the code, the question) g
 
 ## Not yet
 
-- **Coverage guard** (board 3's banner, "14 of 15 changed hunks covered"): #99.
 - **Attach to PR** (board 3's header button): M8.
 - Step markers show in the player's editor only, not in other file tabs of the same file.
