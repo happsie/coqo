@@ -7,7 +7,8 @@
 use coqo_protocol::methods::agents::CriterionAuthor;
 use coqo_protocol::methods::agents::{
     Cancel, Changes, Close, Create, DeletePermissionRule, Get, List, PermissionRules, Prompt,
-    Providers, RespondPermission, RunAction, SetCriteria, SetMode, SetStatus, Updates,
+    Providers, RespondPermission, RunAction, SetConfigOption, SetCriteria, SetMode, SetStatus,
+    Updates,
 };
 use coqo_protocol::{Access, Router, Scope};
 
@@ -31,6 +32,7 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
     let cancel = m.clone();
     let respond = m.clone();
     let set_mode = m.clone();
+    let set_config = m.clone();
     let set_status = m.clone();
     let set_criteria = m.clone();
     let close = m.clone();
@@ -80,6 +82,14 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
         .method_with::<SetMode, _, _>(Access::daemon(), move |_, p| {
             let m = set_mode.clone();
             async move { m.set_mode(&p.session, p.mode_id).await.map_err(Into::into) }
+        })
+        .method_with::<SetConfigOption, _, _>(Access::daemon(), move |_, p| {
+            let m = set_config.clone();
+            async move {
+                m.set_config_option(&p.session, p.config_id, p.value)
+                    .await
+                    .map_err(Into::into)
+            }
         })
         .method_with::<SetStatus, _, _>(Access::session(|p| &p.session.0), move |_, p| {
             let r = set_status.set_status(p).map_err(Into::into);

@@ -219,6 +219,11 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "Answer a pending permission request.",
         ),
         request::<agents::SetMode>(g, "client→server", "Switch a session's mode."),
+        request::<agents::SetConfigOption>(
+            g,
+            "client→server",
+            "Change one of a session's config options (model, effort, a toggle, …).",
+        ),
         request::<agents::SetStatus>(
             g,
             "client→server",
@@ -677,7 +682,12 @@ fn ts_type(schema: &Value) -> String {
     }
     for key in ["oneOf", "anyOf"] {
         if let Some(variants) = obj.get(key).and_then(Value::as_array) {
-            return variants.iter().map(ts_type).collect::<Vec<_>>().join(" | ");
+            let union = variants.iter().map(ts_type).collect::<Vec<_>>().join(" | ");
+            // Fields shared by every variant (a `#[serde(flatten)]` enum).
+            if obj.contains_key("properties") {
+                return format!("{} & ({union})", ts_object(obj));
+            }
+            return union;
         }
     }
     match obj.get("type") {

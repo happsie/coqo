@@ -27,7 +27,7 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::schema as acp;
 use agent_client_protocol::v1::{ConnectionTo, Responder};
 use agent_client_protocol::{Agent, ByteStreams, Client, UntypedMessage};
-use coqo_agents::model::{AuthStatus, SessionId};
+use coqo_agents::model::{AuthStatus, SessionConfigOption, SessionId, follow_mode};
 use coqo_agents::{AgentUpdate, ProviderError, SessionEvents};
 use coqo_kernel::{
     ChildEvent, ChildHandle, ChildIo, ChildSpec, ChildStdio, OutputStream, Supervisor,
@@ -73,6 +73,21 @@ pub(crate) struct Route {
     pub replay: Replay,
     /// The auth status this session last recorded.
     pub auth_sent: Option<AuthStatus>,
+    /// The session's config options as the agent last reported them.
+    pub config: ConfigState,
+}
+
+/// One session's config options as the agent last reported them, shared by
+/// its route (`config_option_update`) and its `AcpSession` (responses).
+pub(crate) type ConfigState = Arc<Mutex<Vec<SessionConfigOption>>>;
+
+/// Keeps `config` in step with `update`.
+pub(crate) fn track_config(config: &ConfigState, update: &AgentUpdate) {
+    match update {
+        AgentUpdate::ConfigOptions(options) => options.clone_into(&mut lock(config)),
+        AgentUpdate::CurrentMode(mode) => follow_mode(&mut lock(config), mode),
+        _ => {}
+    }
 }
 
 /// A terminal an agent created (`terminal/create`).
@@ -186,6 +201,7 @@ impl Shared {
         match convert::update(update) {
             Some(mut u) => {
                 self.map_terminals(id, &mut u);
+                track_config(&route.config, &u);
                 route.events.update(u);
             }
             None => {
@@ -859,6 +875,12 @@ async fn connect(
                                     .read_text_file(true)
                                     .write_text_file(true))
                                 .plan(acp::PlanCapabilities::new())
+                                .session(
+                                    acp::ClientSessionCapabilities::new().config_options(
+                                        acp::SessionConfigOptionsCapabilities::new()
+                                            .boolean(acp::BooleanConfigOptionCapabilities::new()),
+                                    ),
+                                )
                                 .terminal(terminals),
                         )
                         .client_info(acp::Implementation::new(client_name, client_version)),

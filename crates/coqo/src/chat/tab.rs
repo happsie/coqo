@@ -21,6 +21,8 @@ mod permission;
 mod walkthroughs;
 
 #[cfg(test)]
+pub(crate) use composer::config_label;
+#[cfg(test)]
 pub(crate) use walkthroughs::{coverage_label, published_label};
 
 use std::collections::{HashMap, HashSet};
@@ -293,6 +295,7 @@ impl ChatTab {
             t.closed = snapshot.info.closed;
             t.plan = snapshot.plan;
             t.modes = snapshot.modes;
+            t.config_options = snapshot.config_options;
             t.usage = snapshot.usage;
             t.auth = snapshot.auth;
             t.commands = snapshot.available_commands;
@@ -710,14 +713,16 @@ impl ChatTab {
         let provider = self.provider_label();
         let letter: String = provider.chars().take(1).collect::<String>().to_uppercase();
         let mut line = provider;
-        if let Some(model) = self
-            .transcript
-            .usage
-            .as_ref()
-            .and_then(|u| u.model.as_ref())
-        {
+        // The model the turn started with, else the one shown now.
+        let model = match self.transcript.entries.get(ix) {
+            Some(Entry::TurnStart {
+                model: Some(model), ..
+            }) => Some(model.clone()),
+            _ => self.transcript.model_name(),
+        };
+        if let Some(model) = model {
             line.push_str(" · ");
-            line.push_str(model);
+            line.push_str(&model);
         }
         div()
             .id(("chat-turn", ix))

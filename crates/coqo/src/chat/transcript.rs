@@ -13,8 +13,9 @@ use std::collections::HashMap;
 
 use coqo_protocol::methods::agents::{
     AgentState, AuthKind, AuthStatus, AvailableCommand, ContentBlock, PermissionOutcome,
-    PermissionRequest, PermissionRequestId, PermissionRule, PlanEntry, SessionModes, SessionUpdate,
-    StopReason, ToolCall, ToolCallContent, ToolCallId, ToolCallUpdate, Usage,
+    PermissionRequest, PermissionRequestId, PermissionRule, PlanEntry, SessionConfigOption,
+    SessionModes, SessionUpdate, StopReason, ToolCall, ToolCallContent, ToolCallId, ToolCallUpdate,
+    Usage, config_category, follow_mode,
 };
 use coqo_protocol::methods::questions::{Question, QuestionId};
 use coqo_protocol::methods::walkthroughs::WalkthroughSummary;
@@ -118,6 +119,9 @@ pub enum Entry {
     /// Where an agent turn starts: the provider and model line.
     TurnStart {
         turn: u64,
+        /// The model chosen when the turn started (the session's `model`
+        /// config option), if the provider offers that choice.
+        model: Option<String>,
     },
     /// Agent output (Markdown), streamed.
     Agent {
@@ -186,6 +190,9 @@ pub struct Transcript {
     questions: HashMap<QuestionId, usize>,
     pub plan: Vec<PlanEntry>,
     pub modes: Option<SessionModes>,
+    /// The session's config options (model, effort, …), in the agent's
+    /// order.
+    pub config_options: Vec<SessionConfigOption>,
     pub commands: Vec<AvailableCommand>,
     pub usage: Option<Usage>,
     pub auth: Option<AuthStatus>,
@@ -301,9 +308,17 @@ impl Transcript {
                 changes.meta = true;
             }
             SessionUpdate::CurrentMode { mode_id } => {
+                follow_mode(&mut self.config_options, &mode_id);
                 if let Some(modes) = &mut self.modes {
                     modes.current_mode_id = mode_id;
                 }
+                changes.meta = true;
+            }
+            SessionUpdate::ConfigOptions { config_options } => {
+                if let Some(modes) = &mut self.modes {
+                    modes.follow(&config_options);
+                }
+                self.config_options = config_options;
                 changes.meta = true;
             }
             SessionUpdate::Usage(usage) => {
@@ -372,7 +387,8 @@ impl Transcript {
             SessionUpdate::TurnStarted { turn } => {
                 self.running = true;
                 changes.meta = true;
-                self.push(Entry::TurnStart { turn }, changes);
+                let model = self.model_option().map(SessionConfigOption::value_name);
+                self.push(Entry::TurnStart { turn, model }, changes);
             }
             SessionUpdate::TurnEnded {
                 stop_reason, error, ..
@@ -470,6 +486,29 @@ impl Transcript {
     }
 
     /// The current mode's display name.
+    /// The `model` config option, if the provider offers a choice of model.
+    pub fn model_option(&self) -> Option<&SessionConfigOption> {
+        self.config_options
+            .iter()
+            .find(|o| o.is(config_category::MODEL))
+    }
+
+    /// Whether a `mode` config option stands in for the modes (its chip
+    /// replaces the mode chip).
+    pub fn has_mode_option(&self) -> bool {
+        self.config_options
+            .iter()
+            .any(|o| o.is(config_category::MODE))
+    }
+
+    /// The model to show: the chosen one, else the one the provider's usage
+    /// reports name.
+    pub fn model_name(&self) -> Option<String> {
+        self.model_option()
+            .map(SessionConfigOption::value_name)
+            .or_else(|| self.usage.as_ref().and_then(|u| u.model.clone()))
+    }
+
     pub fn mode_name(&self) -> Option<&str> {
         let modes = self.modes.as_ref()?;
         modes

@@ -513,6 +513,194 @@ pub struct SessionModes {
     pub available_modes: Vec<SessionMode>,
 }
 
+impl SessionModes {
+    /// Takes the current mode from a `mode` config option, if `options`
+    /// has one whose value is one of these modes: an agent with both keeps
+    /// them in step, and the option is the one it changes first.
+    pub fn follow(&mut self, options: &[SessionConfigOption]) {
+        let current = options.iter().find_map(|o| match &o.kind {
+            ConfigOptionKind::Select { current_value, .. } if o.is(config_category::MODE) => {
+                Some(current_value)
+            }
+            _ => None,
+        });
+        if let Some(current) = current
+            && self.available_modes.iter().any(|m| &m.id == current)
+        {
+            self.current_mode_id.clone_from(current);
+        }
+    }
+}
+
+/// Sets the `mode` config options in `options` to `mode_id` (a
+/// `current_mode` update), where they take it.
+pub fn follow_mode(options: &mut [SessionConfigOption], mode_id: &str) {
+    for option in options.iter_mut().filter(|o| o.is(config_category::MODE)) {
+        option.set_value(&ConfigValue::Value(mode_id.to_owned()));
+    }
+}
+
+/// A setting the agent offers for the session (ACP session config
+/// options): the model, the reasoning effort, a fast-mode toggle, the mode,
+/// an agent persona, …. The agent decides which there are and their order;
+/// they can change at any time (a new model may offer other efforts), and
+/// every [`SessionUpdate::ConfigOptions`] replaces the whole list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfigOption {
+    /// Option id, passed to `sessions/setConfigOption`.
+    pub id: String,
+    /// Display name, such as `Model` or `Effort`.
+    pub name: String,
+    /// Description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// What the option is about, for placement and icons only: ACP's
+    /// [`config_category`] names (`mode`, `model`, `model_config`,
+    /// `thought_level`, `speed`) or any other string. Never needed to use
+    /// the option.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// Its kind and current value.
+    #[serde(flatten)]
+    pub kind: ConfigOptionKind,
+}
+
+impl SessionConfigOption {
+    /// The current value.
+    pub fn value(&self) -> ConfigValue {
+        match &self.kind {
+            ConfigOptionKind::Select { current_value, .. } => {
+                ConfigValue::Value(current_value.clone())
+            }
+            ConfigOptionKind::Boolean { current_value } => ConfigValue::Boolean(*current_value),
+        }
+    }
+
+    /// The display name of the current value: the chosen entry's name for
+    /// a select, `On` or `Off` for a toggle.
+    pub fn value_name(&self) -> String {
+        match &self.kind {
+            ConfigOptionKind::Select {
+                current_value,
+                options,
+            } => options
+                .iter()
+                .find(|o| &o.value == current_value)
+                .map_or_else(|| current_value.clone(), |o| o.name.clone()),
+            ConfigOptionKind::Boolean {
+                current_value: true,
+            } => "On".into(),
+            ConfigOptionKind::Boolean {
+                current_value: false,
+            } => "Off".into(),
+        }
+    }
+
+    /// Whether `value` is one this option takes: one of a select's
+    /// entries, or a boolean for a toggle.
+    pub fn accepts(&self, value: &ConfigValue) -> bool {
+        match (&self.kind, value) {
+            (ConfigOptionKind::Select { options, .. }, ConfigValue::Value(v)) => {
+                options.iter().any(|o| &o.value == v)
+            }
+            (ConfigOptionKind::Boolean { .. }, ConfigValue::Boolean(_)) => true,
+            _ => false,
+        }
+    }
+
+    /// Sets the current value, if the option takes it. Returns whether it
+    /// did.
+    pub fn set_value(&mut self, value: &ConfigValue) -> bool {
+        if !self.accepts(value) {
+            return false;
+        }
+        match (&mut self.kind, value) {
+            (ConfigOptionKind::Select { current_value, .. }, ConfigValue::Value(v)) => {
+                current_value.clone_from(v);
+            }
+            (ConfigOptionKind::Boolean { current_value }, ConfigValue::Boolean(b)) => {
+                *current_value = *b;
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Whether its category is `category` (see [`config_category`]).
+    pub fn is(&self, category: &str) -> bool {
+        self.category.as_deref() == Some(category)
+    }
+}
+
+/// [`SessionConfigOption::category`] names from ACP.
+pub mod config_category {
+    /// The session mode (the same choice as [`super::SessionModes`]).
+    pub const MODE: &str = "mode";
+    /// The model.
+    pub const MODEL: &str = "model";
+    /// Another setting of the model.
+    pub const MODEL_CONFIG: &str = "model_config";
+    /// Reasoning effort.
+    pub const THOUGHT_LEVEL: &str = "thought_level";
+    /// Response speed, such as a fast-mode toggle.
+    pub const SPEED: &str = "speed";
+}
+
+/// The kind of a [`SessionConfigOption`], tagged by `type`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ConfigOptionKind {
+    /// One value of a list (a dropdown).
+    Select {
+        /// The chosen entry's `value`.
+        current_value: String,
+        /// The entries, in the agent's order.
+        options: Vec<ConfigOptionValue>,
+    },
+    /// On or off (a toggle).
+    Boolean {
+        /// Whether it is on.
+        current_value: bool,
+    },
+}
+
+/// One entry of a select [`SessionConfigOption`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigOptionValue {
+    /// Value id, passed to `sessions/setConfigOption`.
+    pub value: String,
+    /// Display name.
+    pub name: String,
+    /// Description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The name of the group it is listed under, if the agent groups its
+    /// entries. Entries of one group are adjacent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+}
+
+/// A value for `sessions/setConfigOption`: a select entry's `value`, or a
+/// boolean for a toggle.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub enum ConfigValue {
+    /// For a toggle.
+    Boolean(bool),
+    /// For a select: one of its entries' `value`.
+    Value(String),
+}
+
 /// A cost figure.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -975,6 +1163,12 @@ pub enum SessionUpdate {
         /// The new mode's id.
         mode_id: String,
     },
+    /// The session's config options, with their current values; replaces
+    /// the earlier list (an empty list: none).
+    ConfigOptions {
+        /// Every option, in the agent's order.
+        config_options: Vec<SessionConfigOption>,
+    },
     /// Context and cost usage.
     Usage(Usage),
     /// The billing source.
@@ -1100,6 +1294,10 @@ pub struct SessionSnapshot {
     /// The session's modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modes: Option<SessionModes>,
+    /// The session's config options (model, effort, …), in the agent's
+    /// order. Empty if the provider has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_options: Vec<SessionConfigOption>,
     /// The latest slash commands.
     pub available_commands: Vec<AvailableCommand>,
     /// The latest usage.
@@ -1309,6 +1507,33 @@ pub enum SetMode {}
 impl Method for SetMode {
     const NAME: &'static str = "sessions/setMode";
     type Params = SetModeParams;
+    type Result = ();
+}
+
+/// Params of `sessions/setConfigOption`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct SetConfigOptionParams {
+    /// The session.
+    pub session: SessionId,
+    /// The option's id, from the session's config options.
+    pub config_id: String,
+    /// The new value: a select entry's `value`, or a boolean for a toggle.
+    pub value: ConfigValue,
+}
+
+/// `sessions/setConfigOption`: change one of the session's config options
+/// (the model, the effort, …). The new values arrive as a `config_options`
+/// update; changing one option may change others (a new model may offer
+/// other efforts). Fails with `INVALID_PARAMS` for an option the session
+/// does not have or a value it does not take, and `UNSUPPORTED` if the
+/// provider has no config options.
+#[derive(Debug)]
+pub enum SetConfigOption {}
+impl Method for SetConfigOption {
+    const NAME: &'static str = "sessions/setConfigOption";
+    type Params = SetConfigOptionParams;
     type Result = ();
 }
 
@@ -1530,5 +1755,65 @@ mod tests {
             v,
             json!({"type": "resource_link", "uri": "file:///a.rs", "name": "a.rs"})
         );
+    }
+
+    #[test]
+    fn config_options_are_tagged_by_type() {
+        let model = SessionConfigOption {
+            id: "model".into(),
+            name: "Model".into(),
+            description: None,
+            category: Some(config_category::MODEL.into()),
+            kind: ConfigOptionKind::Select {
+                current_value: "opus".into(),
+                options: vec![ConfigOptionValue {
+                    value: "opus".into(),
+                    name: "Opus".into(),
+                    description: None,
+                    group: None,
+                }],
+            },
+        };
+        let fast = SessionConfigOption {
+            id: "fast".into(),
+            name: "Fast mode".into(),
+            description: None,
+            category: None,
+            kind: ConfigOptionKind::Boolean {
+                current_value: false,
+            },
+        };
+        let update = SessionUpdate::ConfigOptions {
+            config_options: vec![model.clone(), fast.clone()],
+        };
+        let v = serde_json::to_value(&update).unwrap();
+        assert_eq!(
+            v,
+            json!({"update": "config_options", "configOptions": [
+                {"id": "model", "name": "Model", "category": "model", "type": "select",
+                 "currentValue": "opus", "options": [{"value": "opus", "name": "Opus"}]},
+                {"id": "fast", "name": "Fast mode", "type": "boolean", "currentValue": false},
+            ]})
+        );
+        assert_eq!(serde_json::from_value::<SessionUpdate>(v).unwrap(), update);
+
+        let params: SetConfigOptionParams =
+            serde_json::from_value(json!({"session": "s1", "configId": "fast", "value": true}))
+                .unwrap();
+        assert_eq!(params.value, ConfigValue::Boolean(true));
+        let params: SetConfigOptionParams =
+            serde_json::from_value(json!({"session": "s1", "configId": "model", "value": "opus"}))
+                .unwrap();
+        assert_eq!(params.value, ConfigValue::Value("opus".into()));
+
+        assert!(model.is(config_category::MODEL));
+        assert_eq!(model.value_name(), "Opus");
+        assert!(model.accepts(&ConfigValue::Value("opus".into())));
+        assert!(!model.accepts(&ConfigValue::Value("haiku".into())));
+        assert!(!model.accepts(&ConfigValue::Boolean(true)));
+        let mut fast = fast;
+        assert!(fast.set_value(&ConfigValue::Boolean(true)));
+        assert_eq!(fast.value(), ConfigValue::Boolean(true));
+        assert_eq!(fast.value_name(), "On");
     }
 }

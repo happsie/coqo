@@ -10,14 +10,20 @@
 //!   of that workspace on one connection. The process runs under the kernel
 //!   supervisor (its own process group, stdio as a protocol channel,
 //!   restarts with backoff) and stops when its last session closes.
-//! - **Lifecycle:** `initialize` advertises `fs`, `plan` and, with a
-//!   terminal backend, `terminal` (never `auth.terminal`: Coqo runs no
-//!   login flow); `session/new` with the
-//!   session's `cwd` and MCP servers; `session/prompt` streams
-//!   `session/update`s into the session manager; `session/cancel`,
-//!   `session/set_mode` and `session/close`. Sessions reattach with
-//!   `session/resume` (no replay) or, failing that, `session/load` (full
-//!   replay), after a daemon restart or an agent crash.
+//! - **Lifecycle:** `initialize` advertises `fs`, `plan`, boolean config
+//!   options (`session.configOptions.boolean`) and, with a terminal
+//!   backend, `terminal` (never `auth.terminal`: Coqo runs no login flow);
+//!   `session/new` with the session's `cwd` and MCP servers;
+//!   `session/prompt` streams `session/update`s into the session manager;
+//!   `session/cancel`, `session/set_mode`, `session/set_config_option` and
+//!   `session/close`. Sessions reattach with `session/resume` (no replay)
+//!   or, failing that, `session/load` (full replay), after a daemon restart
+//!   or an agent crash.
+//! - **Config options** (model, effort, Fast mode, …): `configOptions`
+//!   and `config_option_update` become the session's config options. A
+//!   mode change goes through the agent's `mode` config option when it has
+//!   one, else `session/set_mode`. After a reattach every value the agent
+//!   lost is set again with `session/set_config_option`, in order.
 //! - **Permissions** go to the user through the session manager; the
 //!   answer is the option id the user picked, never a position.
 //! - **Files:** `fs/read_text_file` and `fs/write_text_file` go through

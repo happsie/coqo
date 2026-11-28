@@ -26,8 +26,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use coqo_mod_api::BoxFuture;
 use coqo_protocol::methods::agents::{
-    AgentState, ContentBlock, PermissionOutcome, ProviderCapabilities, ProviderStatus, SessionMode,
-    SessionModes, StopReason,
+    AgentState, ConfigOptionKind, ConfigOptionValue, ConfigValue, ContentBlock, PermissionOutcome,
+    ProviderCapabilities, ProviderStatus, SessionConfigOption, SessionMode, SessionModes,
+    StopReason, config_category,
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -86,6 +87,8 @@ pub enum Call {
     Cancel,
     /// `set_mode`.
     SetMode(String),
+    /// `set_config_option`.
+    SetConfigOption(String, ConfigValue),
     /// `close`.
     Close,
     /// `run_action`.
@@ -105,6 +108,8 @@ struct Script {
     turns: Mutex<VecDeque<Vec<Step>>>,
     calls: Mutex<Vec<Call>>,
     contexts: Mutex<Vec<SessionContext>>,
+    /// The config options of each `resume_session`.
+    resume_options: Mutex<Vec<Vec<SessionConfigOption>>>,
     outcomes: Mutex<Vec<PermissionOutcome>>,
     next_session: AtomicU64,
 }
@@ -145,6 +150,65 @@ pub fn test_modes() -> SessionModes {
         current_mode_id: "default".into(),
         available_modes: vec![mode("default", "Manual"), mode("plan", "Plan")],
     }
+}
+
+/// Config options like Claude's: `model` (Opus or Sonnet, category
+/// `model`), `effort` (Low, Medium or High, `thought_level`) and `fast` (a
+/// toggle, `speed`).
+pub fn test_config_options() -> Vec<SessionConfigOption> {
+    let select = |id: &str, name: &str, category: &str, current: &str, values: &[(&str, &str)]| {
+        SessionConfigOption {
+            id: id.into(),
+            name: name.into(),
+            description: None,
+            category: Some(category.into()),
+            kind: ConfigOptionKind::Select {
+                current_value: current.into(),
+                options: values
+                    .iter()
+                    .map(|(value, name)| ConfigOptionValue {
+                        value: (*value).into(),
+                        name: (*name).into(),
+                        description: None,
+                        group: None,
+                    })
+                    .collect(),
+            },
+        }
+    };
+    vec![
+        select(
+            "model",
+            "Model",
+            config_category::MODEL,
+            "opus",
+            &[("opus", "Opus"), ("sonnet", "Sonnet")],
+        ),
+        select(
+            "effort",
+            "Effort",
+            config_category::THOUGHT_LEVEL,
+            "medium",
+            &[("low", "Low"), ("medium", "Medium"), ("high", "High")],
+        ),
+        SessionConfigOption {
+            id: "fast".into(),
+            name: "Fast mode".into(),
+            description: None,
+            category: Some(config_category::SPEED.into()),
+            kind: ConfigOptionKind::Boolean {
+                current_value: false,
+            },
+        },
+    ]
+}
+
+/// The last config options in `updates`, if any.
+fn config_options(updates: &[AgentUpdate]) -> Option<Vec<SessionConfigOption>> {
+    updates.iter().rev().find_map(|u| match u {
+        AgentUpdate::ConfigOptions(o) => Some(o.clone()),
+        _ => None,
+    })
 }
 
 impl ScriptedProvider {
@@ -229,6 +293,12 @@ impl ScriptedProvider {
         lock(&self.script.contexts).clone()
     }
 
+    /// The config options each `resume_session` was asked to keep, in
+    /// order.
+    pub fn resume_options(&self) -> Vec<Vec<SessionConfigOption>> {
+        lock(&self.script.resume_options).clone()
+    }
+
     /// The answers to its permission requests, in order.
     pub fn outcomes(&self) -> Vec<PermissionOutcome> {
         lock(&self.script.outcomes).clone()
@@ -238,12 +308,18 @@ impl ScriptedProvider {
         lock(&self.script.calls).push(call);
     }
 
-    fn session(&self, id: String, events: SessionEvents) -> Arc<dyn ProviderSession> {
+    fn session(
+        &self,
+        id: String,
+        events: SessionEvents,
+        options: Vec<SessionConfigOption>,
+    ) -> Arc<dyn ProviderSession> {
         Arc::new(ScriptedSession {
             provider: self.clone(),
             id,
             events,
             cancel: Mutex::new(CancellationToken::new()),
+            options: Mutex::new(options),
         })
     }
 }
@@ -286,7 +362,8 @@ impl AgentProvider for ScriptedProvider {
                     events.update(u.clone());
                 }
                 let n = self.script.next_session.fetch_add(1, Ordering::Relaxed) + 1;
-                Ok(self.session(format!("fake-{n}"), events))
+                let options = config_options(&self.script.on_start).unwrap_or_default();
+                Ok(self.session(format!("fake-{n}"), events, options))
             }
         };
         Box::pin(std::future::ready(result))
@@ -299,15 +376,20 @@ impl AgentProvider for ScriptedProvider {
     ) -> BoxFuture<'_, Result<Arc<dyn ProviderSession>, ProviderError>> {
         self.call(Call::Resume(request.provider_session.clone()));
         lock(&self.script.contexts).push(request.context);
+        lock(&self.script.resume_options).push(request.config_options.clone());
         if let Some(e) = &self.script.fail_resume {
             return Box::pin(std::future::ready(Err(e.clone())));
         }
         for u in &self.script.on_resume {
             events.update(u.clone());
         }
-        Box::pin(std::future::ready(Ok(
-            self.session(request.provider_session, events)
-        )))
+        // Like an agent that keeps its settings across a resume.
+        let options = config_options(&self.script.on_resume).unwrap_or(request.config_options);
+        Box::pin(std::future::ready(Ok(self.session(
+            request.provider_session,
+            events,
+            options,
+        ))))
     }
 }
 
@@ -316,6 +398,8 @@ struct ScriptedSession {
     id: String,
     events: SessionEvents,
     cancel: Mutex<CancellationToken>,
+    /// Its config options, as a real agent keeps them.
+    options: Mutex<Vec<SessionConfigOption>>,
 }
 
 impl ProviderSession for ScriptedSession {
@@ -380,6 +464,34 @@ impl ProviderSession for ScriptedSession {
         self.provider.call(Call::SetMode(mode_id.clone()));
         self.events.update(AgentUpdate::CurrentMode(mode_id));
         Box::pin(std::future::ready(Ok(())))
+    }
+
+    /// Sets the value if the session has the option and it takes the
+    /// value, then reports every option.
+    fn set_config_option(
+        &self,
+        config_id: String,
+        value: ConfigValue,
+    ) -> BoxFuture<'_, Result<(), ProviderError>> {
+        self.provider
+            .call(Call::SetConfigOption(config_id.clone(), value.clone()));
+        let result = {
+            let mut options = lock(&self.options);
+            let set = options
+                .iter_mut()
+                .find(|o| o.id == config_id)
+                .is_some_and(|o| o.set_value(&value));
+            if set {
+                Ok(options.clone())
+            } else {
+                Err(ProviderError::Failed(format!(
+                    "no value {value:?} for config option {config_id}"
+                )))
+            }
+        };
+        Box::pin(std::future::ready(result.map(|options| {
+            self.events.update(AgentUpdate::ConfigOptions(options));
+        })))
     }
 
     fn close(&self) -> BoxFuture<'_, Result<(), ProviderError>> {

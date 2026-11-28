@@ -44,6 +44,8 @@
 //!     same id;
 //!   - `write <path> <text>`: `fs/write_text_file` through the client;
 //!   - `read <path>`: `fs/read_text_file`, then says what it read;
+//!   - `config <id> <value>`: the agent changes a config option itself
+//!     (`true`/`false` for a toggle) and sends `config_option_update`;
 //!   - `wait`: waits for `session/cancel` and ends the turn as cancelled;
 //!   - `crash`: exits with status 3.
 //!
@@ -53,6 +55,13 @@
 //!   `session/load` fail with `auth_required`.
 //! - `FAKE_ACP_NO_RESUME=1`: no `session/resume` (only `session/load`).
 //! - `FAKE_ACP_NO_SYSTEM_PROMPT=1`: no `sessionCapabilities.systemPrompt`.
+//! - `FAKE_ACP_CONFIG=1`: sessions have config options, like Claude's:
+//!   `model` (`opus`, `sonnet`), `effort` (`low`, `medium`, `high`;
+//!   `thought_level`), `fast` (a boolean, or an `off`/`on` select for a
+//!   client that does not take booleans) and `mode` (the modes again).
+//!   `session/set_config_option` changes them (a `mode` change also sends
+//!   `current_mode_update`). A new process starts each session, resumed
+//!   or loaded, from these defaults.
 //! - `FAKE_ACP_LOG=<file>`: appends one JSON line per event: `start` (argv
 //!   pid, argv and the `CLAUDE*`/`FAKE_ACP*` variables), then
 //!   each request with its params.
@@ -104,6 +113,10 @@ impl Log {
 struct State {
     next: AtomicU64,
     cancels: Mutex<HashMap<String, Arc<Notify>>>,
+    /// The client takes boolean config options.
+    booleans: std::sync::atomic::AtomicBool,
+    /// Each session's config options (`FAKE_ACP_CONFIG=1`).
+    config: Mutex<HashMap<String, Vec<acp::SessionConfigOption>>>,
 }
 
 impl State {
@@ -111,6 +124,128 @@ impl State {
         let mut cancels = self.cancels.lock().unwrap_or_else(PoisonError::into_inner);
         Arc::clone(cancels.entry(id.to_owned()).or_default())
     }
+
+    /// The session's config options: the ones this process has, else the
+    /// defaults (a new process forgot them). `None` without
+    /// `FAKE_ACP_CONFIG=1`.
+    fn config_options(&self, id: &str) -> Option<Vec<acp::SessionConfigOption>> {
+        if !flag("FAKE_ACP_CONFIG") {
+            return None;
+        }
+        let booleans = self.booleans.load(Ordering::Relaxed);
+        let mut config = self.config.lock().unwrap_or_else(PoisonError::into_inner);
+        Some(
+            config
+                .entry(id.to_owned())
+                .or_insert_with(|| default_config(booleans))
+                .clone(),
+        )
+    }
+
+    /// Sets `config_id` to `value`; the options it leaves, or why not.
+    fn set_config(
+        &self,
+        id: &str,
+        config_id: &str,
+        value: &acp::SessionConfigOptionValue,
+    ) -> Result<Vec<acp::SessionConfigOption>, agent_client_protocol::Error> {
+        self.config_options(id);
+        let mut config = self.config.lock().unwrap_or_else(PoisonError::into_inner);
+        let options = config
+            .get_mut(id)
+            .ok_or_else(|| agent_client_protocol::Error::invalid_params().data("no config"))?;
+        let invalid = || {
+            agent_client_protocol::Error::invalid_params().data(format!("{config_id}={value:?}"))
+        };
+        let option = options
+            .iter_mut()
+            .find(|o| o.id.0.as_ref() == config_id)
+            .ok_or_else(invalid)?;
+        match (&mut option.kind, value) {
+            (
+                acp::SessionConfigKind::Boolean(b),
+                acp::SessionConfigOptionValue::Boolean { value },
+            ) => {
+                b.current_value = *value;
+            }
+            (
+                acp::SessionConfigKind::Select(s),
+                acp::SessionConfigOptionValue::ValueId { value },
+            ) => {
+                let listed = match &s.options {
+                    acp::SessionConfigSelectOptions::Ungrouped(list) => {
+                        list.iter().any(|o| &o.value == value)
+                    }
+                    _ => false,
+                };
+                if !listed {
+                    return Err(invalid());
+                }
+                s.current_value = value.clone();
+            }
+            _ => return Err(invalid()),
+        }
+        Ok(options.clone())
+    }
+}
+
+/// The fake's config options, like Claude's: `model` (Opus, Sonnet),
+/// `effort` (Low, Medium, High; `thought_level`), `fast` (a toggle, or an
+/// On/Off select for a client without boolean options) and `mode` (the
+/// modes again, category `mode`).
+fn default_config(booleans: bool) -> Vec<acp::SessionConfigOption> {
+    let select = |id: &str, name: &str, category, current: &str, values: &[(&str, &str)]| {
+        acp::SessionConfigOption::select(
+            id.to_owned(),
+            name,
+            current.to_owned(),
+            values
+                .iter()
+                .map(|(v, n)| acp::SessionConfigSelectOption::new((*v).to_owned(), *n))
+                .collect::<Vec<_>>(),
+        )
+        .category(Some(category))
+    };
+    let speed = acp::SessionConfigOptionCategory::Other("speed".into());
+    let fast = if booleans {
+        acp::SessionConfigOption::boolean("fast", "Fast mode", false).category(Some(speed))
+    } else {
+        select(
+            "fast",
+            "Fast mode",
+            speed,
+            "off",
+            &[("off", "Off"), ("on", "On")],
+        )
+    };
+    vec![
+        select(
+            "model",
+            "Model",
+            acp::SessionConfigOptionCategory::Model,
+            "opus",
+            &[("opus", "Opus"), ("sonnet", "Sonnet")],
+        ),
+        select(
+            "effort",
+            "Effort",
+            acp::SessionConfigOptionCategory::ThoughtLevel,
+            "medium",
+            &[("low", "Low"), ("medium", "Medium"), ("high", "High")],
+        ),
+        fast,
+        select(
+            "mode",
+            "Mode",
+            acp::SessionConfigOptionCategory::Mode,
+            "default",
+            &[
+                ("default", "Manual"),
+                ("acceptEdits", "Accept edits"),
+                ("plan", "Plan"),
+            ],
+        ),
+    ]
 }
 
 /// Sends `fields` as a `tool_call`, then asks permission with the whole call
@@ -458,6 +593,23 @@ async fn turn(
                 };
                 notify(&cx, &id, acp::SessionUpdate::AgentMessageChunk(text(said)));
             }
+            "config" => {
+                let (config_id, value) = rest.split_once(' ').unwrap_or((rest, ""));
+                let value = match value {
+                    "true" => acp::SessionConfigOptionValue::boolean(true),
+                    "false" => acp::SessionConfigOptionValue::boolean(false),
+                    v => acp::SessionConfigOptionValue::value_id(v.to_owned()),
+                };
+                if let Ok(options) = state.set_config(&id.0, config_id, &value) {
+                    notify(
+                        &cx,
+                        &id,
+                        acp::SessionUpdate::ConfigOptionUpdate(acp::ConfigOptionUpdate::new(
+                            options,
+                        )),
+                    );
+                }
+            }
             "terminal" => run_terminal(&cx, &id, n, rest).await?,
             "wait" => {
                 state.cancel_signal(&id.0).notified().await;
@@ -504,12 +656,26 @@ pub async fn run_fake_agent() -> Result<(), agent_client_protocol::Error> {
         log.clone(),
     );
     let (s1, s2, s3) = (Arc::clone(&state), Arc::clone(&state), Arc::clone(&state));
+    let (s4, s5, s6, s7) = (
+        Arc::clone(&state),
+        Arc::clone(&state),
+        Arc::clone(&state),
+        Arc::clone(&state),
+    );
+    let l7 = log.clone();
     agent_client_protocol::Agent
         .v1()
         .name("coqo-fake-acp-agent")
         .on_receive_request(
             async move |req: acp::InitializeRequest, responder, cx| {
                 l1.write("initialize", serde_json::to_value(&req).unwrap_or_default());
+                let booleans = req
+                    .client_capabilities
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.config_options.as_ref())
+                    .is_some_and(|c| c.boolean.is_some());
+                s4.booleans.store(booleans, Ordering::Relaxed);
                 let mut sessions =
                     acp::SessionCapabilities::new().close(acp::SessionCloseCapabilities::new());
                 if !flag("FAKE_ACP_NO_RESUME") {
@@ -556,7 +722,11 @@ pub async fn run_fake_agent() -> Result<(), agent_client_protocol::Error> {
                 }
                 let n = s1.next.fetch_add(1, Ordering::Relaxed) + 1;
                 let id = acp::SessionId::new(format!("fake-{}-{n}", std::process::id()));
-                responder.respond(acp::NewSessionResponse::new(id.clone()).modes(modes()))?;
+                responder.respond(
+                    acp::NewSessionResponse::new(id.clone())
+                        .modes(modes())
+                        .config_options(s1.config_options(&id.0)),
+                )?;
                 let commands = vec![
                     acp::AvailableCommand::new("review", "Review the change"),
                     acp::AvailableCommand::new("my-skill", "A user skill").input(
@@ -596,7 +766,11 @@ pub async fn run_fake_agent() -> Result<(), agent_client_protocol::Error> {
                     &id,
                     acp::SessionUpdate::AgentMessageChunk(text("(replayed answer)")),
                 );
-                responder.respond(acp::LoadSessionResponse::new().modes(modes()))
+                responder.respond(
+                    acp::LoadSessionResponse::new()
+                        .modes(modes())
+                        .config_options(s5.config_options(&id.0)),
+                )
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -609,7 +783,39 @@ pub async fn run_fake_agent() -> Result<(), agent_client_protocol::Error> {
                 if flag("FAKE_ACP_SIGNED_OUT") {
                     return responder.respond_with_error(signed_out());
                 }
-                responder.respond(acp::ResumeSessionResponse::new().modes(modes()))
+                responder.respond(
+                    acp::ResumeSessionResponse::new()
+                        .modes(modes())
+                        .config_options(s6.config_options(&req.session_id.0)),
+                )
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: acp::SetSessionConfigOptionRequest, responder, cx| {
+                l7.write(
+                    "session/set_config_option",
+                    serde_json::to_value(&req).unwrap_or_default(),
+                );
+                match s7.set_config(&req.session_id.0, &req.config_id.0, &req.value) {
+                    Ok(options) => {
+                        // Like the Claude adapter: a mode change also goes
+                        // out as `current_mode_update`.
+                        if req.config_id.0.as_ref() == "mode"
+                            && let Some(mode) = req.value.as_value_id()
+                        {
+                            notify(
+                                &cx,
+                                &req.session_id,
+                                acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
+                                    mode.0.to_string(),
+                                )),
+                            );
+                        }
+                        responder.respond(acp::SetSessionConfigOptionResponse::new(options))
+                    }
+                    Err(e) => responder.respond_with_error(e),
+                }
             },
             agent_client_protocol::on_receive_request!(),
         )

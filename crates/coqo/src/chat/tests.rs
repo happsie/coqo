@@ -15,13 +15,14 @@ use coqo_agents::{
     AgentUpdate, ManagerOptions, PermissionAsk, ProviderError, SessionManager, SessionStore,
     StaticProviders,
     model::{
-        AgentState, AuthKind, AuthStatus, AvailableCommand, ContentBlock, PermissionOption,
-        PermissionOptionKind, PermissionOutcome, PlanEntry, PlanEntryStatus, ProviderAction,
-        ProviderActionRun, ProviderCapabilities, ProviderStatus, RuleDecision, SessionInfo,
-        SetStatusParams, StatusProgress, StatusState, StopReason, ToolCall, ToolCallContent,
-        ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
+        AgentState, AuthKind, AuthStatus, AvailableCommand, ConfigValue, ContentBlock,
+        PermissionOption, PermissionOptionKind, PermissionOutcome, PlanEntry, PlanEntryStatus,
+        ProviderAction, ProviderActionRun, ProviderCapabilities, ProviderStatus, RuleDecision,
+        SessionConfigOption, SessionInfo, SetStatusParams, StatusProgress, StatusState, StopReason,
+        ToolCall, ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
+        ToolKind,
     },
-    testing::{Call, ScriptedProvider, Step, test_modes},
+    testing::{Call, ScriptedProvider, Step, test_config_options, test_modes},
 };
 use coqo_client::{DaemonPaths, RuntimeDir};
 use coqo_mod_api::contrib::{AgentProviderInfo, AgentProviderKind};
@@ -42,7 +43,7 @@ use tokio::{runtime::Runtime, sync::Notify};
 use super::{
     KIND,
     list::ChatList,
-    tab::ChatTab,
+    tab::{ChatTab, config_label},
     transcript::{Entry, NoticeKind},
 };
 use crate::{
@@ -1299,6 +1300,150 @@ fn the_mode_dropdown_switches_the_mode() {
     });
 }
 
+/// The current value's name of the chat's config option `id`.
+fn option_value(ui: &mut Ui, chat: &Entity<ChatTab>, id: &str) -> Option<String> {
+    ui.cx.read(|cx| {
+        chat.read(cx)
+            .transcript()
+            .config_options
+            .iter()
+            .find(|o| o.id == id)
+            .map(SessionConfigOption::value_name)
+    })
+}
+
+#[test]
+fn config_option_chips_pick_a_model_an_effort_and_fast_mode() {
+    let provider = ScriptedProvider::new().on_start([
+        AgentUpdate::Modes(test_modes()),
+        AgentUpdate::ConfigOptions(test_config_options()),
+    ]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.wait_for("the config chips", |ui| ui.shows("chat-config-model"));
+    assert!(ui.shows("chat-config-effort") && ui.shows("chat-config-fast"));
+    // No mode option here: the mode chip stays. The model chip replaces the
+    // read-only label.
+    assert!(ui.shows("chat-mode"));
+    assert!(!ui.shows("chat-model"));
+    let labels: Vec<String> = ui.cx.read(|cx| {
+        chat.read(cx)
+            .transcript()
+            .config_options
+            .iter()
+            .map(config_label)
+            .collect()
+    });
+    assert_eq!(labels, ["Opus", "Effort: Medium", "Fast mode: Off"]);
+
+    // The model, by mouse.
+    ui.frame(|window, cx| window.click("chat-config-model", cx));
+    assert!(ui.shows("chat-config-option-model-opus"));
+    ui.frame(|window, cx| window.click(name("chat-config-option-model-sonnet"), cx));
+    ui.wait_for("the model", |ui| {
+        fixture.provider.calls().contains(&Call::SetConfigOption(
+            "model".into(),
+            ConfigValue::Value("sonnet".into()),
+        )) && option_value(ui, &chat, "model").as_deref() == Some("Sonnet")
+    });
+    assert!(!ui.shows("chat-menu"));
+
+    // The effort, by keyboard: Medium, Down to High, Enter.
+    ui.frame(|window, cx| window.click("chat-config-effort", cx));
+    assert!(ui.shows("chat-config-option-effort-low"));
+    ui.press("down");
+    ui.press("enter");
+    ui.wait_for("the effort", |ui| {
+        fixture.provider.calls().contains(&Call::SetConfigOption(
+            "effort".into(),
+            ConfigValue::Value("high".into()),
+        )) && option_value(ui, &chat, "effort").as_deref() == Some("High")
+    });
+
+    // Fast mode is a toggle.
+    ui.frame(|window, cx| window.click("chat-config-fast", cx));
+    ui.wait_for("fast mode", |ui| {
+        option_value(ui, &chat, "fast").as_deref() == Some("On")
+    });
+    assert!(fixture.provider.calls().contains(&Call::SetConfigOption(
+        "fast".into(),
+        ConfigValue::Boolean(true)
+    )));
+
+    // The agent changes one itself: the chip follows. The turn header shows
+    // the model the turn ran with.
+    let mut lowered = test_config_options();
+    lowered[0].set_value(&ConfigValue::Value("sonnet".into()));
+    lowered[1].set_value(&ConfigValue::Value("low".into()));
+    fixture.provider.push_turn([
+        Step::Update(AgentUpdate::ConfigOptions(lowered)),
+        chunk("Lowered the effort"),
+        Step::Stop(StopReason::EndTurn),
+    ]);
+    ui.send(&chat, "Go faster");
+    ui.wait_for("the agent's change", |ui| {
+        option_value(ui, &chat, "effort").as_deref() == Some("Low") && !running(ui, &chat)
+    });
+    let header = ui
+        .entries(&chat)
+        .into_iter()
+        .find_map(|e| match e {
+            Entry::TurnStart { model, .. } => Some(model),
+            _ => None,
+        })
+        .expect("a turn header");
+    assert_eq!(header.as_deref(), Some("Sonnet"));
+}
+
+#[test]
+fn a_mode_config_option_replaces_the_mode_chip() {
+    use coqo_agents::model::{ConfigOptionKind, ConfigOptionValue, config_category};
+
+    let mut options = test_config_options();
+    options.push(SessionConfigOption {
+        id: "mode".into(),
+        name: "Mode".into(),
+        description: None,
+        category: Some(config_category::MODE.into()),
+        kind: ConfigOptionKind::Select {
+            current_value: "default".into(),
+            options: [("default", "Manual"), ("plan", "Plan")]
+                .map(|(value, name)| ConfigOptionValue {
+                    value: value.into(),
+                    name: name.into(),
+                    description: None,
+                    group: None,
+                })
+                .to_vec(),
+        },
+    });
+    let provider = ScriptedProvider::new().on_start([
+        AgentUpdate::Modes(test_modes()),
+        AgentUpdate::ConfigOptions(options),
+    ]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.wait_for("the mode option", |ui| ui.shows("chat-config-mode"));
+    assert!(!ui.shows("chat-mode"));
+    ui.frame(|window, cx| window.click("chat-config-mode", cx));
+    ui.frame(|window, cx| window.click(name("chat-config-option-mode-plan"), cx));
+    ui.wait_for("the mode", |ui| {
+        ui.cx.read(|cx| {
+            chat.read(cx)
+                .transcript()
+                .modes
+                .as_ref()
+                .is_some_and(|m| m.current_mode_id == "plan")
+        })
+    });
+    assert!(fixture.provider.calls().contains(&Call::SetConfigOption(
+        "mode".into(),
+        ConfigValue::Value("plan".into())
+    )));
+}
+
 #[test]
 fn up_in_an_empty_composer_recalls_earlier_prompts() {
     let fixture = Fixture::new(ScriptedProvider::new());
@@ -1328,10 +1473,85 @@ fn up_in_an_empty_composer_recalls_earlier_prompts() {
     assert_eq!(ui.composer_text(&chat), "");
 }
 
+/// Config options shaped like Claude's adapter, for screenshots.
+fn screenshot_config_options() -> Vec<SessionConfigOption> {
+    use coqo_agents::model::{ConfigOptionKind, ConfigOptionValue, config_category};
+
+    let select =
+        |id: &str, name: &str, category: &str, current: &str, values: &[(&str, &str, &str)]| {
+            SessionConfigOption {
+                id: id.into(),
+                name: name.into(),
+                description: None,
+                category: Some(category.into()),
+                kind: ConfigOptionKind::Select {
+                    current_value: current.into(),
+                    options: values
+                        .iter()
+                        .map(|(value, name, description)| ConfigOptionValue {
+                            value: (*value).into(),
+                            name: (*name).into(),
+                            description: (!description.is_empty()).then(|| (*description).into()),
+                            group: None,
+                        })
+                        .collect(),
+                },
+            }
+        };
+    vec![
+        select(
+            "model",
+            "Model",
+            config_category::MODEL,
+            "opus",
+            &[
+                ("default", "Default (recommended)", "Opus for complex work"),
+                ("opus", "Opus", "Most capable for complex work"),
+                ("sonnet", "Sonnet", "Best for everyday tasks"),
+                ("haiku", "Haiku", "Fastest for quick answers"),
+            ],
+        ),
+        select(
+            "effort",
+            "Effort",
+            config_category::THOUGHT_LEVEL,
+            "high",
+            &[
+                ("low", "Low", ""),
+                ("medium", "Medium", ""),
+                ("high", "High", ""),
+                ("max", "Max", ""),
+            ],
+        ),
+        SessionConfigOption {
+            id: "fast_mode".into(),
+            name: "Fast mode".into(),
+            description: None,
+            category: Some(config_category::SPEED.into()),
+            kind: ConfigOptionKind::Boolean {
+                current_value: true,
+            },
+        },
+        select(
+            "mode",
+            "Mode",
+            config_category::MODE,
+            "default",
+            &[
+                ("default", "Manual", ""),
+                ("acceptEdits", "Accept edits", ""),
+                ("plan", "Plan", ""),
+            ],
+        ),
+    ]
+}
+
 /// Renders a chat tab offscreen to PNGs for visual review against board 1.
 /// Needs a GPU: `cargo test -p coqo -- --ignored chat_screenshots`.
-/// Writes `coqo-chat-<appearance>.png` and `coqo-composer-<appearance>.png`
-/// (an @-mention popover) to `$COQO_SHOT_DIR` (default: the system temp dir).
+/// Writes `coqo-chat-<appearance>.png`, `coqo-composer-<appearance>.png`
+/// (an @-mention popover) and `coqo-settings-<appearance>.png` (config
+/// option chips, the model dropdown open) to `$COQO_SHOT_DIR` (default: the
+/// system temp dir).
 #[test]
 #[ignore = "needs a GPU; run manually"]
 fn chat_screenshots() {
@@ -1574,10 +1794,20 @@ fn chat_screenshots() {
         ("composer-dark", Appearance::Dark, true),
         ("composer-light", Appearance::Light, true),
         ("setup-dark", Appearance::Dark, false),
+        ("settings-dark", Appearance::Dark, false),
+        ("settings-light", Appearance::Light, false),
     ];
     for (name, appearance, composing) in shots {
         let setup = name.starts_with("setup");
-        let updates = updates.clone();
+        let mut updates = updates.clone();
+        if name.starts_with("settings") {
+            // Claude's session config options: Model, Effort, Fast mode on,
+            // Mode; the model dropdown open.
+            updates.push(SessionUpdate::ConfigOptions {
+                config_options: screenshot_config_options(),
+            });
+        }
+        let settings = name.starts_with("settings");
         let rules = rules.clone();
         let image = render_offscreen(appearance, size(1440., 900.), move |window, cx| {
             crate::shell::init(cx);
@@ -1624,6 +1854,9 @@ fn chat_screenshots() {
                     chat.set_preview(shipping(), "Claude Code", cx);
                     chat.apply((1..).zip(updates).collect(), cx);
                     chat.set_preview_rules(rules, cx);
+                    if settings {
+                        chat.set_preview_config_menu("model");
+                    }
                     if composing {
                         // An @-mention chip, and the popover for `@ship`.
                         chat.set_preview_files(

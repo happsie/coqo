@@ -13,6 +13,7 @@
 //! | `session/prompt` → `StopReason` | [`ProviderSession::prompt`] |
 //! | `session/cancel` | [`ProviderSession::cancel`] |
 //! | `session/set_mode` | [`ProviderSession::set_mode`] |
+//! | `session/set_config_option` | [`ProviderSession::set_config_option`] |
 //! | `session/update` notifications | [`SessionEvents::update`] with an [`AgentUpdate`] |
 //! | `session/request_permission` | [`SessionEvents::request_permission`] |
 //! | `auth/status` | [`AgentUpdate::AuthStatus`] |
@@ -29,9 +30,9 @@ use std::sync::Arc;
 
 use coqo_mod_api::BoxFuture;
 use coqo_protocol::methods::agents::{
-    AgentState, AuthStatus, AvailableCommand, ContentBlock, PermissionOption, PermissionOutcome,
-    PlanEntry, ProviderCapabilities, ProviderStatus, SessionId, SessionModes, SessionUpdate,
-    StopReason, ToolCall, ToolCallUpdate, Usage,
+    AgentState, AuthStatus, AvailableCommand, ConfigValue, ContentBlock, PermissionOption,
+    PermissionOutcome, PlanEntry, ProviderCapabilities, ProviderStatus, SessionConfigOption,
+    SessionId, SessionModes, SessionUpdate, StopReason, ToolCall, ToolCallUpdate, Usage,
 };
 
 /// An MCP server to inject into a session (ACP `session/new.mcpServers`),
@@ -74,6 +75,12 @@ pub struct ResumeRequest {
     /// The provider's own session id, from
     /// [`ProviderSession::provider_session_id`].
     pub provider_session: String,
+    /// The session's config options as they were, with the values the user
+    /// chose (empty if it had none). An agent may forget some on resume
+    /// (Claude's adapter keeps the model but not the effort): the provider
+    /// sets again each value the resumed session reports differently, if
+    /// the option still takes it, and reports the options it ends up with.
+    pub config_options: Vec<SessionConfigOption>,
 }
 
 /// Why a provider call failed.
@@ -149,8 +156,8 @@ pub trait AgentProvider: Send + Sync + 'static {
 
 /// One live session of a provider.
 ///
-/// Calls may overlap: `cancel`, `set_mode` and `close` can arrive while a
-/// `prompt` is running.
+/// Calls may overlap: `cancel`, `set_mode`, `set_config_option` and
+/// `close` can arrive while a `prompt` is running.
 pub trait ProviderSession: Send + Sync + 'static {
     /// The provider's own id for the session (ACP `sessionId`, the terminal
     /// agent's `--session-id`), persisted for
@@ -174,6 +181,20 @@ pub trait ProviderSession: Send + Sync + 'static {
         let _ = mode_id;
         Box::pin(std::future::ready(Err(ProviderError::Unsupported(
             "session modes".into(),
+        ))))
+    }
+
+    /// Changes one of the session's config options (ACP
+    /// `session/set_config_option`). Report the options it leaves, with
+    /// their values, as an [`AgentUpdate::ConfigOptions`].
+    fn set_config_option(
+        &self,
+        config_id: String,
+        value: ConfigValue,
+    ) -> BoxFuture<'_, Result<(), ProviderError>> {
+        let _ = (config_id, value);
+        Box::pin(std::future::ready(Err(ProviderError::Unsupported(
+            "session config options".into(),
         ))))
     }
 
@@ -205,6 +226,9 @@ pub enum AgentUpdate {
     Modes(SessionModes),
     /// The current mode changed.
     CurrentMode(String),
+    /// The session's config options (model, effort, …) with their current
+    /// values; replaces the earlier list.
+    ConfigOptions(Vec<SessionConfigOption>),
     /// Context and cost usage.
     Usage(Usage),
     /// The billing source. Report kind and plan only, never an email or
@@ -224,6 +248,7 @@ impl From<AgentUpdate> for SessionUpdate {
             AgentUpdate::AvailableCommands(commands) => Self::AvailableCommands { commands },
             AgentUpdate::Modes(m) => Self::Modes(m),
             AgentUpdate::CurrentMode(mode_id) => Self::CurrentMode { mode_id },
+            AgentUpdate::ConfigOptions(config_options) => Self::ConfigOptions { config_options },
             AgentUpdate::Usage(u) => Self::Usage(u),
             AgentUpdate::AuthStatus(a) => Self::AuthStatus(a),
         }
