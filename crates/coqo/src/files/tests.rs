@@ -1634,7 +1634,12 @@ fn undoes_and_redoes_file_operations_in_the_tree() {
         std::fs::read_to_string(fixture.project.join("README.md")).unwrap(),
         "# Demo\n"
     );
-    assert!(!fixture.daemon.trash().join("README.md").exists());
+    // Out of the trash; on macOS, Coqo's copy came back instead and the
+    // trashed one stays.
+    assert_eq!(
+        fixture.daemon.trash().join("README.md").exists(),
+        cfg!(target_os = "macos")
+    );
     assert_eq!(ui.toast().as_deref(), Some("Undid delete of “README.md”"));
     ui.press(REDO);
     ui.wait_for_toast("Redid delete of “README.md”");
