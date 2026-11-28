@@ -32,3 +32,4 @@ Architecture decisions for Coqo, one file per decision. See [ADR 0001](0001-reco
 | [0026](0026-session-resume-and-forks.md) | Session resume: ended sessions, new chats with context, forks, retry and reopen | Accepted |
 | [0027](0027-watcher-ignored-folders.md) | The file watcher skips ignored folders, nested repositories and build caches | Accepted |
 | [0028](0028-worktrees-and-projects.md) | Worktrees are workspaces; the rail shows one icon per project (git common directory) | Accepted |
+| [0030](0030-skill-questions-in-code.md) | Third-party skills' questions and findings, shown in the code without changing the skills | Accepted |

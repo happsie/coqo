@@ -1,0 +1,20 @@
+[
+  {"skill": "feature-dev Phase 6", "label": "offer", "text": "I found three issues, the worst being the SQL in listOrders. Do you want me to fix them now, later, or proceed as-is?", "turn": [{"tool": "Read", "path": "src/api/orders.ts"}]},
+  {"skill": "superpowers brainstorming", "label": "other", "text": "If it's mostly for people checking on an order, I'd lead with status and tracking. What do you want someone to do when they land on it?", "turn": [{"tool": "Read", "path": "README.md"}]},
+  {"skill": "superpowers brainstorming", "label": "code", "text": "Today a second coupon replaces the first one without a word. Should a second coupon replace the first, or should the cart refuse it?", "turn": [{"tool": "Read", "path": "src/cart/cart.ts"}]},
+  {"skill": "superpowers brainstorming (play back)", "label": "other", "text": "That's how I understand the gift card part. What's wrong or missing?", "turn": [{"tool": "Read", "path": "src/cart/discounts.ts"}]},
+  {"skill": "gstack prose fallback (D-brief)", "label": "code", "text": "D2 — cancelOrder deletes without an existence check (orders.ts:42).\nRecommendation: A because it is a one-line guard.\nA) Fix as recommended (recommended)\nB) Skip\nReply with A or B. Fix it?", "turn": [{"tool": "Read", "path": "src/api/orders.ts"}]},
+  {"skill": "feature-dev Phase 3 (question list)", "label": "code", "text": "Before I design this, a few questions:\n1. Should the volume discount tiers move to config?\n2. Should createOrder keep retrying three times when the insert fails?", "turn": [{"tool": "Read", "path": "src/cart/discounts.ts"}, {"tool": "Read", "path": "src/api/orders.ts"}]},
+  {"skill": "free-form", "label": "offer", "text": "The tests pass now. Want me to open a PR?", "turn": [{"tool": "Bash"}]},
+  {"skill": "free-form", "label": "offer", "text": "Let me know if you'd like the backoff too?", "turn": [{"tool": "Edit", "path": "src/api/orders.ts", "start": 19, "end": 33}]},
+  {"skill": "free-form", "label": "code", "text": "I set the session TTL to 24 hours to match the old service. Is 24 hours right for the session TTL, or should it be shorter?", "turn": [{"tool": "Edit", "path": "src/config.ts", "start": 8, "end": 8}]},
+  {"skill": "free-form", "label": "other", "text": "Which CI provider does your team use?", "turn": []},
+  {"skill": "free-form", "label": "none", "text": "Done: the migration copies legacy_orders and drops it. Tests pass.", "turn": [{"tool": "Write", "path": "src/db/migrations/0003_orders.sql", "start": 1, "end": 13}]},
+  {"skill": "superpowers executing-plans (stop and ask)", "label": "code", "text": "The migration drops legacy_orders, which can't be undone. Run 0003_orders.sql against dev now?", "turn": [{"tool": "Write", "path": "src/db/migrations/0003_orders.sql", "start": 1, "end": 13}]},
+  {"skill": "free-form", "label": "other", "text": "Do your customers expect prices with or without VAT?", "turn": [{"tool": "Read", "path": "src/cart/cart.ts"}]},
+  {"skill": "free-form", "label": "offer", "text": "Should I go ahead and implement the plan?", "turn": [{"tool": "Read", "path": "src/cart/cart.ts"}]},
+  {"skill": "free-form", "label": "code", "text": "`login` counts attempts but never resets them. Should the lockout last an hour, or until a password reset?", "turn": [{"tool": "Read", "path": "src/api/auth.ts"}]},
+  {"skill": "free-form", "label": "other", "text": "Is this for the web shop only, or for the mobile app as well?", "turn": [{"tool": "Read", "path": "src/index.ts"}]},
+  {"skill": "superpowers brainstorming, real run in Coqo (play back)", "label": "other", "file": "real-coqo-brainstorming.md", "workspace": "shop", "turn": [{"tool": "Read", "path": "shop/config.py"}, {"tool": "Read", "path": "shop/pricing.py"}]},
+  {"skill": "superpowers requesting-code-review, real run in Coqo", "label": "code", "file": "real-coqo-requesting-code-review.md", "workspace": "shop-taxed", "turn": [{"tool": "Read", "path": "shop/pricing.py"}, {"tool": "Read", "path": "shop/orders.py"}]}
+]

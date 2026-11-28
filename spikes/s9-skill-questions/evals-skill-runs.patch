@@ -1,0 +1,85 @@
+diff --git a/crates/evals/src/main.rs b/crates/evals/src/main.rs
+index ef77eb6..9e264fd 100644
+--- a/crates/evals/src/main.rs
++++ b/crates/evals/src/main.rs
+@@ -403,6 +403,16 @@ async fn run(
+         &repo_root().join("evals/fixtures").join(scenario.fixture),
+         &dir,
+     )?;
++    // Spike S9 (local only): third-party skills for this temporary copy.
++    if let Some(extra) = std::env::var_os("COQO_EVAL_EXTRA") {
++        let extra = PathBuf::from(extra).join(scenario.name);
++        if extra.is_dir() {
++            let status = Command::new("cp").arg("-a").arg(extra.join(".")).arg(&dir).status()?;
++            if !status.success() {
++                bail!("cannot copy the extra files");
++            }
++        }
++    }
+     if let Some(change) = scenario.change {
+         apply_change(&dir, &repo_root().join("evals/changes").join(change))?;
+     }
+@@ -495,6 +505,7 @@ async fn run(
+                     if !asked.insert(q.id) {
+                         continue;
+                     }
++                    eprintln!("\n[question {:?} {:?}] {}", q.kind, q.options.iter().map(|o| o.label.clone()).collect::<Vec<_>>(), q.body);
+                     if let Some(anchor) = q.anchors.first() {
+                         outcome.questions.push((
+                             relative(&ws, &anchor.anchor.path),
+@@ -505,6 +516,21 @@ async fn run(
+                         answer_question(client, &q, scenario.answer).await?;
+                     }
+                 }
++                SessionUpdate::AgentMessageChunk { content } => {
++                    if let ContentBlock::Text { text } = &content {
++                        eprint!("{text}");
++                    }
++                }
++                SessionUpdate::ToolCall(call) => {
++                    let input = call.raw_input.as_ref().map(|v| v.to_string()).unwrap_or_default();
++                    eprintln!(
++                        "\n[tool {} {:?}: {}] {}",
++                        call.id.0,
++                        call.name,
++                        call.title,
++                        input.chars().take(1500).collect::<String>()
++                    );
++                }
+                 SessionUpdate::Usage(usage) => {
+                     outcome.tokens = usage.used_tokens.or(outcome.tokens);
+                     outcome.cost = usage.cost.map(|c| c.amount).or(outcome.cost);
+diff --git a/crates/evals/src/scenarios.rs b/crates/evals/src/scenarios.rs
+index e319bf9..bec8339 100644
+--- a/crates/evals/src/scenarios.rs
++++ b/crates/evals/src/scenarios.rs
+@@ -271,6 +271,29 @@ const CONFIG: &str = "shop/config.py";
+ 
+ /// The scenarios, in the order they run.
+ pub const SCENARIOS: &[Scenario] = &[
++    // Spike S9 (local only).
++    Scenario {
++        name: "s9-brainstorm",
++        fixture: "shop",
++        change: None,
++        tabs: &[],
++        review: &[],
++        prompt: "Use the brainstorming skill. I want big orders to ship for free.",
++        answer: "Mostly so people add one more item to reach it; it should feel reachable.",
++        expects: "observe",
++        check: |_| true,
++    },
++    Scenario {
++        name: "s9-review",
++        fixture: "shop",
++        change: Some("shop-tax-rate.patch"),
++        tabs: &[],
++        review: &[],
++        prompt: "Use the requesting-code-review skill to review my uncommitted change (base: HEAD). Run the reviewer yourself, no subagent, and print its full output.",
++        answer: "Go ahead.",
++        expects: "observe",
++        check: |_| true,
++    },
+     Scenario {
+         name: "explain-selection",
+         fixture: "shop",
