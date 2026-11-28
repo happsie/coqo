@@ -496,6 +496,19 @@ impl FileEditor {
             {
                 self.deleted(cx);
             }
+            FileEvent::Restored {
+                workspace,
+                root,
+                path,
+            } if *workspace == self.workspace
+                && *root == self.root
+                && ops::is_at_or_under(&self.path, path)
+                && self.notice == Some(Notice::Deleted) =>
+            {
+                // An undone delete: the file is back (unsaved edits stay).
+                self.notice = None;
+                cx.notify();
+            }
             _ => {}
         }
     }

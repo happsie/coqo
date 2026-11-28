@@ -14,6 +14,10 @@
 //! dragging a row onto a folder moves it. The daemon does the work
 //! (`fs/create`, `fs/rename`, `fs/delete`); the tree selects the result,
 //! and [`FileEvents`] tells open file tabs to follow.
+//!
+//! **Undo** (issue #291, [`undo`]): `Ctrl Z` / `Cmd Z` in the focused tree
+//! undoes the window's last create, rename, move or delete, and `Ctrl Shift
+//! Z` / `Cmd Shift Z` (and `Ctrl Y` off macOS) redoes it ([`History`]).
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
@@ -46,8 +50,11 @@ use super::{
     Collapse, Confirm, DeleteEntry, Dismiss, Expand, NewFile, NewFolder, RenameEntry, SelectNext,
     SelectPrev,
     editor::{self, FileEditor},
+    history::{FileOp, History},
     ops::{FileEvent, FileEvents, is_at_or_under, moved_path},
 };
+
+mod undo;
 use crate::{
     daemon::{Daemon, DaemonError, DaemonEvent},
     welcome::shortcut,
@@ -155,6 +162,8 @@ pub struct PendingDelete {
     /// The trash refused it: offer to delete it for good.
     pub permanent: bool,
     pub error: Option<String>,
+    /// Undoing this creation: the entry changed since, so the user is asked.
+    pub undo: Option<FileOp>,
     busy: bool,
 }
 
@@ -215,6 +224,13 @@ pub struct FileTree {
     pending_delete: Option<PendingDelete>,
     /// The last operation's error, above the tree.
     op_error: Option<String>,
+    /// The window's file operations, to undo and redo.
+    history: History,
+    /// An undo or redo is in flight.
+    undoing: bool,
+    /// What the last undo or redo did ("Undid rename of …"), shown briefly.
+    toast: Option<SharedString>,
+    _toast_timer: Option<Task<()>>,
     _op: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -349,6 +365,10 @@ impl FileTree {
             editing: None,
             pending_delete: None,
             op_error: None,
+            history: History::default(),
+            undoing: false,
+            toast: None,
+            _toast_timer: None,
             _op: None,
             _subscriptions: subscriptions,
         };
@@ -417,6 +437,8 @@ impl FileTree {
             self.editing = None;
             self.pending_delete = None;
             self.op_error = None;
+            self.history.clear();
+            self.toast = None;
         }
         self.loading.clear();
         self.stale.clear();
@@ -862,7 +884,10 @@ impl FileTree {
 
     fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
-        self.pending_delete = None;
+        // An undo of a creation the user didn't confirm stays undoable.
+        if let Some(op) = self.pending_delete.take().and_then(|p| p.undo) {
+            self.history.put_back(op, true);
+        }
         self.op_error = None;
         cx.notify();
     }
@@ -1055,6 +1080,11 @@ impl FileTree {
             Ok(entry) => entry,
             Err(e) => return self.op_failed(&e, base_name(asked), cx),
         };
+        self.history.record(FileOp::Create {
+            root,
+            path: entry.path.clone(),
+            kind,
+        });
         let dir = match &self.editing {
             Some(Editing {
                 kind: EditKind::Create { dir, .. },
@@ -1132,6 +1162,27 @@ impl FileTree {
         ) {
             self.editing = None;
         }
+        if from != entry.path {
+            self.history.record(FileOp::Move {
+                root,
+                from: from.to_owned(),
+                to: entry.path.clone(),
+            });
+        }
+        self.apply_move(workspace, root, from, entry.path, window, cx);
+    }
+
+    /// `from` is now `to`: show it there, selected, and tell the tabs.
+    fn apply_move(
+        &mut self,
+        workspace: WorkspaceId,
+        root: RootId,
+        from: &str,
+        to: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entry = fs::EntryResult { path: to };
         self.op_error = None;
         self.rekey(root, from, &entry.path);
         self.relist((root, parent(from).to_owned()), cx);
@@ -1207,6 +1258,7 @@ impl FileTree {
             dirty,
             permanent: false,
             error: None,
+            undo: None,
             busy: false,
         });
         // Enter confirms, Escape cancels.
@@ -1252,22 +1304,23 @@ impl FileTree {
     ) {
         let name = base_name(&target.path).to_owned();
         match result {
-            Ok(_) => {
-                self.pending_delete = None;
-                if target.kind == EntryKind::Dir {
-                    self.forget(&(target.root, target.path.clone()));
-                }
-                self.relist((target.root, parent(&target.path).to_owned()), cx);
-                FileEvents::announce(
-                    FileEvent::Deleted {
-                        workspace,
+            Ok(result) => {
+                let undo = self.pending_delete.take().and_then(|p| p.undo);
+                match undo {
+                    // Undoing a creation, confirmed: it can be made again.
+                    Some(op) => self.undone(op, cx),
+                    None => self.history.record(FileOp::Delete {
                         root: target.root,
-                        path: target.path,
-                    },
-                    cx,
-                );
-                window.focus(&self.focus, cx);
-                self.rebuild(cx);
+                        path: target.path.clone(),
+                        kind: target.kind,
+                        restore: result.restore.ok_or_else(|| {
+                            result
+                                .no_restore
+                                .unwrap_or_else(|| format!("“{name}” can't be restored."))
+                        }),
+                    }),
+                }
+                self.apply_delete(workspace, target, window, cx);
             }
             Err(e) => {
                 if let Some(pending) = self.pending_delete.as_mut() {
@@ -1284,6 +1337,30 @@ impl FileTree {
                 cx.notify();
             }
         }
+    }
+
+    /// `target` is gone: drop it from the tree and tell the tabs.
+    fn apply_delete(
+        &mut self,
+        workspace: WorkspaceId,
+        target: Target,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if target.kind == EntryKind::Dir {
+            self.forget(&(target.root, target.path.clone()));
+        }
+        self.relist((target.root, parent(&target.path).to_owned()), cx);
+        FileEvents::announce(
+            FileEvent::Deleted {
+                workspace,
+                root: target.root,
+                path: target.path,
+            },
+            cx,
+        );
+        window.focus(&self.focus, cx);
+        self.rebuild(cx);
     }
 
     /// A row was dropped on folder `dir`: move it there.
@@ -1613,13 +1690,18 @@ impl FileTree {
         let t = cx.tokens();
         let (p, m) = (t.palette.clone(), t.metrics.clone());
         let name = base_name(&pending.target.path).to_owned();
-        let title = if pending.target.kind == EntryKind::Dir {
+        let title = if pending.undo.is_some() {
+            format!("Undo the creation of “{name}”?")
+        } else if pending.target.kind == EntryKind::Dir {
             format!("Delete the folder “{name}”?")
         } else {
             format!("Delete “{name}”?")
         };
         let detail = match (&pending.error, pending.permanent, pending.target.kind) {
             (Some(error), _, _) => error.clone(),
+            (None, _, _) if pending.undo.is_some() => {
+                "It has changed since it was created. It moves to the trash.".to_owned()
+            }
             (None, _, EntryKind::Dir) => "It moves to the trash with everything in it.".to_owned(),
             (None, _, _) => "It moves to the trash.".to_owned(),
         };
@@ -1763,6 +1845,7 @@ impl FileTree {
             target.clone(),
             target.clone(),
         );
+        let undo_rows = self.render_undo_items(cx);
         let mut card = popover(cx)
             .id("file-menu")
             .occlude()
@@ -1770,7 +1853,11 @@ impl FileTree {
             .w(px(230.))
             .py(px(6.))
             .text_size(m.text_sm)
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_menu(cx)))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_menu(cx)));
+        if !undo_rows.is_empty() {
+            card = card.children(undo_rows).child(separator());
+        }
+        card = card
             .child(
                 item("file-menu-new-file", Icon::Plus, "New File…", None).on_click(cx.listener(
                     move |this, _, window, cx| {
@@ -1858,6 +1945,7 @@ impl Render for FileTree {
         let note = self.render_note(cx);
         let banner = self.render_banner(cx);
         let menu = self.menu.as_ref().map(|menu| self.render_menu(menu, cx));
+        let toast = self.render_toast(cx);
         // The space below the rows: right-click and drops reach the root.
         let root = self
             .workspace
@@ -1915,6 +2003,8 @@ impl Render for FileTree {
             .on_action(cx.listener(Self::rename_selected))
             .on_action(cx.listener(Self::delete_selected))
             .on_action(cx.listener(Self::dismiss))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .size_full()
             .flex()
             .flex_col()
@@ -1923,6 +2013,7 @@ impl Render for FileTree {
             .children(banner)
             .children(note)
             .child(body)
+            .children(toast)
             .children(menu)
     }
 }

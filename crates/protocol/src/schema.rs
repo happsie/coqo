@@ -189,6 +189,11 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "Move an entry to the OS trash, or delete it for good with permanent (daemon token only).",
         ),
+        request::<fs::Restore>(
+            g,
+            "client→server",
+            "Bring back an entry fs/delete deleted, from the OS trash or Coqo's copy (daemon token only).",
+        ),
         topic::<fs::Changes>(
             g,
             "Debounced file-system changes in an open workspace (live only).",
@@ -1009,6 +1014,7 @@ fn schema_covers_the_application_methods() {
         fs::Create::NAME,
         fs::Rename::NAME,
         fs::Delete::NAME,
+        fs::Restore::NAME,
     ] {
         assert_eq!(methods[name]["kind"], "request", "{name}");
     }

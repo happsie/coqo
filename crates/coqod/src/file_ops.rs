@@ -12,7 +12,10 @@
 //! saving writes the file again. After a rename, everything else anchored
 //! to the moved paths follows it too ([`PathMoves`], issue #288).
 //!
-//! All three take the daemon token only. Agents edit files through their
+//! A restored file's open tab finds it again through `fs/changes`, like a
+//! file that reappears on disk.
+//!
+//! All of them take the daemon token only. Agents edit files through their
 //! own tools and `buffer/*`; creating, moving and deleting whole entries is
 //! the user's, from the tree.
 
@@ -25,7 +28,8 @@ use crate::buffers::BufferService;
 use crate::path_moves::{PathMove, PathMoves};
 use crate::workspace::WorkspaceService;
 
-/// Register `fs/create`, `fs/rename` and `fs/delete` on `router`.
+/// Register `fs/create`, `fs/rename`, `fs/delete` and `fs/restore` on
+/// `router`.
 pub fn register(
     router: Router,
     workspaces: Arc<WorkspaceService>,
@@ -60,9 +64,14 @@ pub fn register(
             Ok(fsm::EntryResult { path: renamed.rel })
         }
     });
-    router.method_with::<fsm::Delete, _, _>(Access::daemon(), move |_ctx, p| {
-        let ws = Arc::clone(&workspaces);
+    let ws = Arc::clone(&workspaces);
+    let router = router.method_with::<fsm::Delete, _, _>(Access::daemon(), move |_ctx, p| {
+        let ws = Arc::clone(&ws);
         async move { ws.delete_entry(p).await }
+    });
+    router.method_with::<fsm::Restore, _, _>(Access::daemon(), move |_ctx, p| {
+        let ws = Arc::clone(&workspaces);
+        async move { ws.restore_entry(p).await }
     })
 }
 

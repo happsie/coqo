@@ -2541,6 +2541,20 @@
     "DeleteResult": {
       "description": "Result of [`Delete`].",
       "properties": {
+        "no_restore": {
+          "description": "Why the entry can't be restored (deleted for good, too large for a\ncopy where the trash can't give it back), for the user.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "restore": {
+          "description": "What [`Restore`] takes to bring the entry back (undo), while this\ndaemon runs. Absent when it can't be restored; `no_restore` says why.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "trashed": {
           "description": "Whether it went to the OS trash (`false`: deleted for good).",
           "type": "boolean"
@@ -5732,6 +5746,34 @@
         "session",
         "requestId",
         "outcome"
+      ],
+      "type": "object"
+    },
+    "RestoreParams": {
+      "description": "Params of [`Restore`].",
+      "properties": {
+        "path": {
+          "description": "Where the entry was: the path [`Delete`] was given.",
+          "type": "string"
+        },
+        "restore": {
+          "description": "[`DeleteResult::restore`].",
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/RootId",
+          "description": "The root the path is relative to."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "root",
+        "path",
+        "restore"
       ],
       "type": "object"
     },
@@ -10899,6 +10941,17 @@
       "kind": "request",
       "params": {
         "$ref": "#/$defs/RenameParams2"
+      },
+      "result": {
+        "$ref": "#/$defs/EntryResult"
+      }
+    },
+    "fs/restore": {
+      "description": "Bring back an entry fs/delete deleted, from the OS trash or Coqo's copy (daemon token only).",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/RestoreParams"
       },
       "result": {
         "$ref": "#/$defs/EntryResult"

@@ -36,6 +36,7 @@ mod fs;
 mod ignores;
 mod ops;
 mod paths;
+mod restore;
 mod store;
 mod watch;
 
@@ -58,6 +59,8 @@ use coqo_storage::{DataDirs, GlobalDb, StorageError};
 use self::ignores::IgnoreCache;
 pub(crate) use self::ops::Renamed;
 pub use self::ops::Trash;
+pub use self::restore::COPY_LIMIT as UNDO_COPY_LIMIT;
+use self::restore::Restores;
 pub use self::watch::WatchConfig;
 use self::watch::WorkspaceWatcher;
 use crate::path_moves::PathMove;
@@ -93,6 +96,8 @@ pub struct WorkspaceService {
     trash: Trash,
     /// Renames the watchers saw, for [`crate::path_moves`].
     renames: tokio::sync::broadcast::Sender<PathMove>,
+    /// What deleted entries can be restored from (undo).
+    restores: Arc<Restores>,
 }
 
 fn now_ms() -> i64 {
@@ -152,13 +157,17 @@ impl WorkspaceService {
         let head = db.events().head()?.0;
         Ok(Self {
             db: Mutex::new(db),
-            dirs,
             head: tokio::sync::watch::channel(head).0,
             watchers: Mutex::default(),
             ignores: Arc::default(),
             watch_config,
             trash: Trash::default(),
             renames: tokio::sync::broadcast::channel(RENAMES_SEEN).0,
+            restores: Arc::new(Restores::new(
+                dirs.root().join("undo"),
+                Restores::copies_by_default(),
+            )),
+            dirs,
         })
     }
 
@@ -166,6 +175,17 @@ impl WorkspaceService {
     #[must_use]
     pub fn with_trash(mut self, trash: Trash) -> Self {
         self.trash = trash;
+        self
+    }
+
+    /// Undo deletes from copies Coqo keeps (up to the size limit) instead
+    /// of from the trash, as where the OS trash can't restore (the default
+    /// on macOS).
+    #[must_use]
+    pub fn with_undo_copies(mut self, copies: bool) -> Self {
+        if let Some(r) = Arc::get_mut(&mut self.restores) {
+            r.set_copies(copies);
+        }
         self
     }
 
@@ -633,9 +653,23 @@ impl WorkspaceService {
         p: fsm::DeleteParams,
     ) -> Result<fsm::DeleteResult, ErrorObject> {
         let trash = self.trash.clone();
+        let restores = Arc::clone(&self.restores);
         self.with_root(p.workspace, p.root, move |_, roots| {
-            ops::delete(roots, &p.path, p.permanent, &trash)
-                .map(|trashed| fsm::DeleteResult { trashed })
+            restores.delete(roots, &p.path, p.permanent, &trash)
+        })
+        .await
+    }
+
+    /// `fs/restore`: bring back what `fs/delete` deleted. Returns the path.
+    pub async fn restore_entry(
+        self: &Arc<Self>,
+        p: fsm::RestoreParams,
+    ) -> Result<fsm::EntryResult, ErrorObject> {
+        let restores = Arc::clone(&self.restores);
+        self.with_root(p.workspace, p.root, move |_, roots| {
+            restores
+                .restore(roots, &p.path, &p.restore)
+                .map(|path| fsm::EntryResult { path })
         })
         .await
     }

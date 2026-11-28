@@ -15,8 +15,9 @@
 //! ignored too). `.git` itself is always reported as ignored. Ignored entries
 //! are still listed; the UI decides how to show them.
 //!
-//! **File operations** ([`Create`], [`Rename`], [`Delete`]) create, rename or
-//! move, and delete entries for the file tree. They take the daemon token
+//! **File operations** ([`Create`], [`Rename`], [`Delete`], [`Restore`])
+//! create, rename or move, delete and restore entries for the file tree.
+//! They take the daemon token
 //! only: agents have file tools of their own. Writing a file's contents
 //! belongs to buffers, not to this module.
 
@@ -232,11 +233,33 @@ pub struct EntryResult {
 }
 
 /// Result of [`Delete`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 pub struct DeleteResult {
     /// Whether it went to the OS trash (`false`: deleted for good).
     pub trashed: bool,
+    /// What [`Restore`] takes to bring the entry back (undo), while this
+    /// daemon runs. Absent when it can't be restored; `no_restore` says why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<String>,
+    /// Why the entry can't be restored (deleted for good, too large for a
+    /// copy where the trash can't give it back), for the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_restore: Option<String>,
+}
+
+/// Params of [`Restore`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct RestoreParams {
+    /// The workspace.
+    pub workspace: WorkspaceId,
+    /// The root the path is relative to.
+    pub root: RootId,
+    /// Where the entry was: the path [`Delete`] was given.
+    pub path: String,
+    /// [`DeleteResult::restore`].
+    pub restore: String,
 }
 
 /// `fs/list`: list a directory.
@@ -297,6 +320,20 @@ impl Method for Delete {
     const NAME: &'static str = "fs/delete";
     type Params = DeleteParams;
     type Result = DeleteResult;
+}
+
+/// `fs/restore`: bring back an entry [`Delete`] deleted (undo in the file
+/// tree), from the OS trash where the platform can restore from it, else
+/// from the copy Coqo kept of a small entry. Nothing may be at the path
+/// ([`ALREADY_EXISTS`](super::codes::ALREADY_EXISTS)); an entry no longer
+/// in the trash is [`NOT_FOUND`](super::codes::NOT_FOUND). A rename that
+/// follows it is the client's. Daemon token only.
+#[derive(Debug)]
+pub enum Restore {}
+impl Method for Restore {
+    const NAME: &'static str = "fs/restore";
+    type Params = RestoreParams;
+    type Result = EntryResult;
 }
 
 /// `fs/changes`: live, debounced change events for an open workspace. Not

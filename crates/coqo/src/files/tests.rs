@@ -1483,6 +1483,237 @@ fn a_question_follows_its_file_through_a_rename() {
     });
 }
 
+impl Ui {
+    fn toast(&mut self) -> Option<String> {
+        let tree = self.tree();
+        self.cx.read(|cx| tree.read(cx).toast().map(str::to_owned))
+    }
+
+    fn next_undo(&mut self) -> Option<super::history::FileOp> {
+        let tree = self.tree();
+        self.cx
+            .read(|cx| tree.read(cx).history().next_undo().cloned())
+    }
+
+    /// Put the keyboard in the tree with `path` selected: click `src`
+    /// (twice, to leave it open), then move down to it.
+    fn select_in_tree(&mut self, path: &str) {
+        self.click_row("src");
+        self.click_row("src");
+        for _ in 0..20 {
+            if self.selected_path().as_deref() == Some(path) {
+                return;
+            }
+            self.press("down");
+        }
+        panic!("cannot select {path}: {:?}", self.selected_path());
+    }
+}
+
+#[cfg(target_os = "macos")]
+const REDO_SHIFT: &str = "cmd-shift-z";
+#[cfg(not(target_os = "macos"))]
+const REDO_SHIFT: &str = "ctrl-shift-z";
+
+/// Undo and redo in the focused tree (issue #291): a rename (the tab
+/// follows back), a move, a delete restored from the (test daemon's)
+/// trash, a new empty file removed, a changed one only after asking, and
+/// an operation that can't be undone greyed with its reason. `Ctrl Z` in
+/// the file's editor or the tree's name field is text undo, never a file
+/// operation.
+#[test]
+fn undoes_and_redoes_file_operations_in_the_tree() {
+    use super::history::FileOp;
+
+    let fixture = Fixture::new();
+    let (mut ui, main) = open_main(&fixture);
+    let tree = ui.tree();
+
+    // Rename main.rs to app.rs, then undo: back, with the tab.
+    ui.click_row("src");
+    ui.press("right");
+    ui.press("right");
+    ui.press("down");
+    assert_eq!(ui.selected_path().as_deref(), Some("src/main.rs"));
+    ui.press("f2");
+    ui.enter_name("app.rs");
+    ui.wait_for("app.rs", |ui| {
+        ui.cx.read(|cx| main.read(cx).path() == "src/app.rs")
+    });
+    // In the name field, Ctrl Z is the field's own.
+    ui.press("f2");
+    assert!(ui.rows().iter().any(|r| r.editing));
+    ui.press(UNDO);
+    assert!(ui.rows().iter().any(|r| r.editing), "still naming");
+    assert!(
+        fixture.project.join("src/app.rs").is_file(),
+        "nothing undone"
+    );
+    ui.press("escape");
+    ui.press(UNDO);
+    ui.wait_for("main.rs back", |ui| {
+        ui.cx.read(|cx| main.read(cx).path() == "src/main.rs")
+            && ui.names().contains(&"  main.rs".to_owned())
+    });
+    assert!(fixture.project.join("src/main.rs").is_file());
+    assert!(!fixture.project.join("src/app.rs").exists());
+    assert_eq!(
+        ui.toast().as_deref(),
+        Some("Undid rename of “main.rs” → “app.rs”")
+    );
+    assert!(ui.shows("file-undo-toast"));
+    // Redo with Ctrl Shift Z, undo again, redo with the other key.
+    ui.press(REDO_SHIFT);
+    ui.wait_for("app.rs again", |ui| {
+        ui.cx.read(|cx| main.read(cx).path() == "src/app.rs")
+    });
+    assert_eq!(
+        ui.toast().as_deref(),
+        Some("Redid rename of “main.rs” → “app.rs”")
+    );
+    ui.press(UNDO);
+    ui.wait_for("main.rs again", |ui| {
+        ui.cx.read(|cx| main.read(cx).path() == "src/main.rs")
+    });
+    ui.press(REDO);
+    ui.wait_for("app.rs once more", |ui| {
+        ui.cx.read(|cx| main.read(cx).path() == "src/app.rs")
+    });
+    ui.press(UNDO);
+    ui.wait_for("main.rs once more", |ui| {
+        ui.cx.read(|cx| main.read(cx).path() == "src/main.rs")
+    });
+
+    // Ctrl Z in the editor undoes typing, not the rename.
+    ui.type_at(&main, 0, "// x\n");
+    ui.wait_for("the edit", |ui| ui.dirty(&main));
+    let before = ui.next_undo();
+    ui.edit(&main, |editor, window, cx| editor.focus(window, cx));
+    ui.press(UNDO);
+    ui.wait_for("the typing undone", |ui| {
+        ui.text(&main).as_deref() == Some(MAIN_RS)
+    });
+    assert_eq!(ui.next_undo(), before, "the tree's history is untouched");
+    assert!(fixture.project.join("src/main.rs").is_file());
+
+    // A move by drag and drop, undone.
+    let from = ui.row_index("logo.png");
+    let to = ui.row_index("src");
+    ui.frame(|window, cx| window.drag_to(("file-row", from), ("file-row", to), cx));
+    ui.wait_for("logo.png in src", |_| {
+        fixture.project.join("src/logo.png").is_file()
+    });
+    ui.wait_for("the move in the tree", |ui| {
+        ui.names().contains(&"  logo.png".to_owned())
+    });
+    ui.press(UNDO);
+    ui.wait_for("logo.png back", |_| {
+        fixture.project.join("logo.png").is_file()
+    });
+    assert_eq!(
+        ui.toast().as_deref(),
+        Some("Undid move of “logo.png” to “src”")
+    );
+
+    // A delete, restored from the trash; redo deletes it again.
+    ui.right_click_row("README.md");
+    ui.click("file-menu-delete");
+    ui.press("enter");
+    ui.wait_for("README.md in the trash", |_| {
+        fixture.daemon.trash().join("README.md").is_file()
+    });
+    ui.wait_for("README.md out of the tree", |ui| {
+        !ui.names().contains(&"README.md".to_owned())
+    });
+    ui.press(UNDO);
+    ui.wait_for("README.md restored", |ui| {
+        ui.names().contains(&"README.md".to_owned())
+    });
+    assert_eq!(
+        std::fs::read_to_string(fixture.project.join("README.md")).unwrap(),
+        "# Demo\n"
+    );
+    assert!(!fixture.daemon.trash().join("README.md").exists());
+    assert_eq!(ui.toast().as_deref(), Some("Undid delete of “README.md”"));
+    ui.press(REDO);
+    ui.wait_for("README.md deleted again", |_| {
+        !fixture.project.join("README.md").exists()
+    });
+    ui.press(UNDO);
+    ui.wait_for("README.md restored again", |_| {
+        fixture.project.join("README.md").is_file()
+    });
+
+    // A new, empty file: undo removes it (its tab says it's gone); redo
+    // makes it again.
+    ui.right_click_row("src");
+    ui.click("file-menu-new-file");
+    ui.wait_for("the name field", |ui| ui.rows().iter().any(|r| r.editing));
+    ui.enter_name("notes.md");
+    ui.wait_for("notes.md open", |ui| ui.tab_at("src/notes.md").is_some());
+    let notes = ui.tab_at("src/notes.md").unwrap();
+    ui.wait_for("notes.md loaded", |ui| ui.content(&notes) == Content::Text);
+    ui.select_in_tree("src/notes.md");
+    ui.press(UNDO);
+    ui.wait_for("notes.md gone", |ui| {
+        !fixture.project.join("src/notes.md").exists() && ui.content(&notes) == Content::Missing
+    });
+    assert!(
+        !fixture.daemon.trash().join("notes.md").exists(),
+        "an empty file is just removed"
+    );
+    assert_eq!(ui.toast().as_deref(), Some("Undid creation of “notes.md”"));
+    ui.press(REDO);
+    ui.wait_for("notes.md again", |_| {
+        fixture.project.join("src/notes.md").is_file()
+    });
+
+    // Changed since: undo asks first, and Escape keeps it (still undoable).
+    write(&fixture.project, "src/notes.md", "# Notes\n");
+    ui.press(UNDO);
+    ui.wait_for("the question", |ui| ui.shows("file-delete-confirm"));
+    let pending = ui
+        .cx
+        .read(|cx| tree.read(cx).pending_delete().cloned())
+        .unwrap();
+    assert!(pending.undo.is_some());
+    ui.press("escape");
+    assert!(fixture.project.join("src/notes.md").is_file());
+    assert!(matches!(ui.next_undo(), Some(FileOp::Create { .. })));
+    ui.press(UNDO);
+    ui.wait_for("the question again", |ui| ui.shows("file-delete-confirm"));
+    ui.press("enter");
+    ui.wait_for("notes.md in the trash", |_| {
+        !fixture.project.join("src/notes.md").exists()
+            && fixture.daemon.trash().join("notes.md").is_file()
+    });
+
+    // What can't be undone (deleted for good) shows greyed in the menu,
+    // with why; the key says so and drops it.
+    let root = ui.rows()[0].root;
+    ui.cx.update(|cx| {
+        tree.update(cx, |tree, _| {
+            tree.record_for_tests(FileOp::Delete {
+                root,
+                path: "gone.txt".into(),
+                kind: EntryKind::File,
+                restore: Err("“gone.txt” was deleted permanently.".into()),
+            })
+        })
+    });
+    ui.right_click_row("README.md");
+    assert!(ui.shows("file-menu-undo"));
+    assert!(ui.shows("file-menu-undo-why"));
+    ui.press("escape");
+    ui.select_in_tree("README.md");
+    ui.press(UNDO);
+    assert_eq!(
+        ui.toast().as_deref(),
+        Some("Can't undo the delete of “gone.txt”. “gone.txt” was deleted permanently.")
+    );
+    assert_eq!(ui.next_undo(), None, "dropped");
+}
+
 /// Renders the workbench with this repository open, `crates/coqo/src/files`
 /// expanded and a file tab open, offscreen to PNGs. Needs a GPU:
 /// `cargo test -p coqo -- --ignored files_screenshots`. Writes to
