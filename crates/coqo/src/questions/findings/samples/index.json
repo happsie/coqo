@@ -1,0 +1,209 @@
+{
+ "truth": {
+  "code-review-plugin.md": {
+   "truth": [
+    [
+     "src/api/auth.ts",
+     15
+    ],
+    [
+     "src/api/orders.ts",
+     47
+    ]
+   ],
+   "workspace": "workspace"
+  },
+  "feature-dev-review.md": {
+   "truth": [
+    [
+     "src/api/auth.ts",
+     30
+    ],
+    [
+     "src/api/auth.ts",
+     28
+    ],
+    [
+     "src/api/orders.ts",
+     19
+    ]
+   ],
+   "workspace": "workspace"
+  },
+  "gstack-review.md": {
+   "truth": [
+    [
+     "src/cart/cart.ts",
+     48
+    ],
+    [
+     "src/api/orders.ts",
+     49
+    ],
+    [
+     "src/api/auth.ts",
+     30
+    ],
+    [
+     "src/cart/discounts.ts",
+     25
+    ]
+   ],
+   "workspace": "workspace"
+  },
+  "pr-review-toolkit.md": {
+   "truth": [
+    [
+     "src/api/orders.ts",
+     27
+    ],
+    [
+     "src/api/orders.ts",
+     42
+    ],
+    [
+     "src/cart/discounts.ts",
+     21
+    ],
+    [
+     "src/cart/cart.ts",
+     34
+    ],
+    [
+     "src/db/index.ts",
+     2
+    ]
+   ],
+   "workspace": "workspace"
+  },
+  "real-coqo-brainstorming.md": {
+   "truth": [
+    [
+     "shop/config.py",
+     8
+    ],
+    [
+     "shop/pricing.py",
+     15
+    ],
+    [
+     "shop/config.py",
+     7
+    ],
+    [
+     "shop/orders.py",
+     17
+    ],
+    [
+     "test_pricing.py",
+     10
+    ]
+   ],
+   "workspace": "shop"
+  },
+  "real-coqo-requesting-code-review.md": {
+   "truth": [
+    [
+     "shop/config.py",
+     13
+    ],
+    [
+     "shop/pricing.py",
+     36
+    ],
+    [
+     "shop/pricing.py",
+     22
+    ],
+    [
+     "test_pricing.py",
+     17
+    ],
+    [
+     "shop/pricing.py",
+     37
+    ],
+    [
+     "shop/orders.py",
+     17
+    ],
+    [
+     "shop/orders.py",
+     32
+    ],
+    [
+     "shop/pricing.py",
+     24
+    ],
+    [
+     "shop/pricing.py",
+     3
+    ],
+    [
+     "shop/orders.py",
+     35
+    ]
+   ],
+   "workspace": "shop-taxed"
+  },
+  "superpowers-code-reviewer.md": {
+   "truth": [
+    [
+     "src/cart/cart.ts",
+     38
+    ],
+    [
+     "src/cart/discounts.ts",
+     20
+    ],
+    [
+     "src/api/orders.ts",
+     48
+    ],
+    [
+     "src/api/orders.ts",
+     38
+    ],
+    [
+     "src/api/auth.ts",
+     16
+    ],
+    [
+     "src/cart/discounts.ts",
+     10
+    ]
+   ],
+   "workspace": "workspace"
+  }
+ },
+ "workspaces": {
+  "shop": {
+   "README.md": 13,
+   "shop/__init__.py": 0,
+   "shop/config.py": 10,
+   "shop/orders.py": 36,
+   "shop/pricing.py": 28,
+   "test_pricing.py": 11
+  },
+  "shop-taxed": {
+   "README.md": 13,
+   "shop/__init__.py": 0,
+   "shop/config.py": 13,
+   "shop/orders.py": 36,
+   "shop/pricing.py": 37,
+   "test_pricing.py": 22
+  },
+  "workspace": {
+   "README.md": 4,
+   "src/api/auth.ts": 34,
+   "src/api/orders.ts": 52,
+   "src/cart/cart.ts": 54,
+   "src/cart/discounts.ts": 31,
+   "src/config.ts": 13,
+   "src/db/index.ts": 2,
+   "src/db/migrations/0003_orders.sql": 13,
+   "src/index.ts": 2,
+   "tests/cart.test.ts": 14
+  }
+ }
+}

@@ -313,6 +313,7 @@ async fn every_anchored_item_follows_a_rename_and_keeps_it_across_a_restart() {
             body: "Why not saturating?".into(),
             options: Vec::new(),
             severity: None,
+            origin: None,
             anchors: vec![anchor("src/cart.rs", 4, 6)],
         })
         .await

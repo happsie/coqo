@@ -1175,6 +1175,7 @@ fn the_toggle_hides_the_markers_and_stacked_markers_cycle() {
     // An agent's question on step 1's first line: it shows over the step.
     let (ws, root) = ui.place().unwrap();
     let params = qm::CreateParams {
+        origin: None,
         workspace: ws.clone(),
         session: session.0.clone(),
         kind: QuestionKind::Clarification,
@@ -1548,6 +1549,7 @@ fn file_steps_screenshots() {
                 client.request::<wtm::SetStepState>(mark).await.unwrap();
             });
             let ask = qm::CreateParams {
+                origin: None,
                 workspace: ws.clone(),
                 session: "s-shot".into(),
                 kind: QuestionKind::Clarification,

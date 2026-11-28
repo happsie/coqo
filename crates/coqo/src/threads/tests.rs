@@ -1001,6 +1001,7 @@ fn a_review_thread_shows_in_its_file_tab_and_a_reply_there_is_in_the_diff() {
 
     // An agent's question on the same line stacks over the thread.
     let params = qm::CreateParams {
+        origin: None,
         workspace: ws.clone(),
         session: "s-test".into(),
         kind: QuestionKind::Clarification,

@@ -9,6 +9,10 @@
 //! ```toml
 //! [files]
 //! auto_reveal = true   # show the active file tab's file in the tree
+//!
+//! [questions]
+//! findings_in_gutter = true   # `file:line` findings in agent messages
+//!                             # become gutter notes (#345)
 //! ```
 //!
 //! A palette command can flip a setting for the running app
@@ -32,6 +36,7 @@ pub fn path() -> PathBuf {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     pub files: FileSettings,
+    pub questions: QuestionSettings,
 }
 
 impl Global for Settings {}
@@ -43,6 +48,23 @@ pub struct FileSettings {
     /// folders, selects and scrolls to its row) without moving the focus.
     /// Off by default.
     pub auto_reveal: bool,
+}
+
+/// `[questions]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestionSettings {
+    /// Findings an agent writes as text (`file:line - issue`) become
+    /// dismissible gutter notes linked to their chat message (ADR 0030).
+    /// On by default.
+    pub findings_in_gutter: bool,
+}
+
+impl Default for QuestionSettings {
+    fn default() -> Self {
+        Self {
+            findings_in_gutter: true,
+        }
+    }
 }
 
 /// Read the settings at `path`. A missing file is the defaults; what can't
@@ -80,6 +102,20 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
                 }
             }
             _ => problems.push("`files`: expected a table, like [files]".into()),
+        }
+    }
+    if let Some(questions) = table.get("questions") {
+        match questions {
+            toml::Value::Table(questions) => {
+                if let Some(value) = questions.get("findings_in_gutter") {
+                    match value.as_bool() {
+                        Some(on) => settings.questions.findings_in_gutter = on,
+                        None => problems
+                            .push("`questions.findings_in_gutter`: expected true or false".into()),
+                    }
+                }
+            }
+            _ => problems.push("`questions`: expected a table, like [questions]".into()),
         }
     }
     (settings, problems)
@@ -124,6 +160,19 @@ mod tests {
         let (s, problems) = parse("[files\n");
         assert_eq!(s, Settings::default());
         assert!(problems[0].contains("not valid TOML"), "{problems:?}");
+    }
+
+    #[test]
+    fn findings_in_the_gutter_are_on_unless_turned_off() {
+        assert!(parse("").0.questions.findings_in_gutter);
+        let off = parse("[questions]\nfindings_in_gutter = false\n").0;
+        assert!(!off.questions.findings_in_gutter);
+        let (s, problems) = parse("[questions]\nfindings_in_gutter = 'no'\n");
+        assert!(s.questions.findings_in_gutter);
+        assert_eq!(
+            problems,
+            ["`questions.findings_in_gutter`: expected true or false"]
+        );
     }
 
     #[test]

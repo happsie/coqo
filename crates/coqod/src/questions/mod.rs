@@ -368,6 +368,7 @@ impl QuestionService {
             thread: record.thread.clone(),
             created_at: record.created_at,
             closed_at: record.closed_at,
+            origin: record.origin,
             seq: record.seq,
         }
     }
@@ -570,6 +571,11 @@ impl QuestionService {
         let Some(sessions) = &self.sessions else {
             return;
         };
+        // A finding the chat pinned from a message is not a card of its own:
+        // the message says how many notes it has (#345).
+        if q.origin.is_some() {
+            return;
+        }
         if let Err(e) = sessions.record_question(&q.session, q.clone()) {
             tracing::debug!(session = %q.session, error = %e, "cannot record a question");
         }
@@ -666,6 +672,7 @@ impl QuestionService {
                     body: body.clone(),
                     options: Vec::new(),
                     severity: None,
+                    origin: None,
                     anchors: p.anchors,
                 },
                 QuestionAuthor::User,
@@ -876,6 +883,7 @@ impl QuestionService {
             options,
             anchors: anchors.iter().map(|(a, ..)| a.clone()).collect(),
             created_at: Timestamp::now().0,
+            origin: p.origin.filter(|_| p.kind == QuestionKind::Annotation),
         };
         let resolutions: Vec<_> = anchors.iter().map(|(.., r)| *r).collect();
         let question = {

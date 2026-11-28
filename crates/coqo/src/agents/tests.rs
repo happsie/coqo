@@ -141,6 +141,7 @@ impl Fixture {
         self.daemon.with_client(async move |client| {
             client
                 .request::<qm::Create>(CreateParams {
+                    origin: None,
                     workspace: wsid,
                     session,
                     kind: QuestionKind::Clarification,

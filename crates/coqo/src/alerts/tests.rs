@@ -344,6 +344,7 @@ fn a_waiting_question_opens_its_code_and_an_error_turns_the_bell_rose() {
     let question = fixture.daemon.with_client(async move |client| {
         client
             .request::<qm::Create>(CreateParams {
+                origin: None,
                 workspace: wsid,
                 session,
                 kind: QuestionKind::Clarification,

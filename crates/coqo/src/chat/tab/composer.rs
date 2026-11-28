@@ -650,8 +650,37 @@ impl ChatTab {
         };
     }
 
+    /// The workspace's files as findings in a message see them: with where
+    /// each is (root and root-relative path), once the index is built.
+    pub(super) fn finding_files(&self) -> Option<super::findings::FindingFiles> {
+        let id = self.info.as_ref()?.workspace.as_deref()?;
+        if self.files.built.is_none()
+            || self.files.workspace.as_ref().map(|w| w.0.as_str()) != Some(id)
+        {
+            return None;
+        }
+        let mut roots: Vec<String> = Vec::new();
+        let mut places = std::collections::HashMap::new();
+        for f in &self.files.files {
+            if !roots.contains(&f.root_path) {
+                roots.push(f.root_path.clone());
+            }
+            places.insert(f.display.clone(), (f.root, f.path.clone()));
+        }
+        let mut paths: Vec<String> = places.keys().cloned().collect();
+        paths.sort();
+        Some(super::findings::FindingFiles {
+            workspace: crate::questions::findings::Workspace {
+                paths,
+                counts: Default::default(),
+                roots,
+            },
+            places,
+        })
+    }
+
     /// Start (or refresh) the file index for @-mentions.
-    fn ensure_index(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn ensure_index(&mut self, cx: &mut Context<Self>) {
         let Some(workspace) = self.workspace(cx) else {
             return;
         };
@@ -686,6 +715,7 @@ impl ChatTab {
                 this.files.loading = false;
                 this.files.built = Some(Instant::now());
                 this.refresh_completion(cx);
+                this.scan_findings(cx);
             })
             .ok();
         }));

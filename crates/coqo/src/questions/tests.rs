@@ -31,9 +31,11 @@ use coqo_ui::{
 };
 use futures_util::StreamExt as _;
 
+use coqo_ui::gpui::Focusable as _;
+
 use super::{popover::QuestionPopover, *};
 use crate::{
-    chat::tab::ChatTab,
+    chat::{tab::ChatTab, transcript::Entry},
     daemon::{self, DaemonConfig},
     files::editor::FileEditor,
     shell::{DEFAULT_WORKSPACE, Shell},
@@ -306,6 +308,7 @@ fn ask(
 ) -> Question {
     let (ws, root) = ui.place().unwrap();
     let params = CreateParams {
+        origin: None,
         workspace: ws.clone(),
         session: "s-test".into(),
         kind,
@@ -786,6 +789,7 @@ pub fn round_8(c: Cents) -> Cents {
                         .unwrap()
                 };
                 let q = create(CreateParams {
+                    origin: None,
                     workspace: ws.clone(),
                     session: "s-shot".into(),
                     kind: QuestionKind::Decision,
@@ -813,6 +817,7 @@ pub fn round_8(c: Cents) -> Cents {
                 });
                 // A note on another line of the same file.
                 create(CreateParams {
+                    origin: None,
                     workspace: ws.clone(),
                     session: "s-shot".into(),
                     kind: QuestionKind::Annotation,
@@ -1527,5 +1532,495 @@ If the cap should hold for what they pay, subtract the bonus first and cap \
             })
         });
         shoot(&mut cx, format!("coqo-asked-chat-{name}.png"));
+    }
+}
+
+// ---- findings written as text (#345) ----------------------------------------------
+
+/// What an agent says after a review: two findings in lists with severity
+/// words, a nit, one inside a code block, one past the end, one in a file
+/// that isn't there, and a port number.
+const REVIEW: &str = "\
+Review of the cart:
+
+- src/cart.rs:6 critical: the sum can overflow
+- `src/cart.rs:5` should check the lines first
+- nit: src/cart.rs:2 stray blank line
+- src/cart.rs:900 is past the end
+- src/gone.rs:3 does not exist
+- served on localhost:8080
+
+```
+src/cart.rs:1
+```
+";
+
+/// A chat in the UI's workspace, on a scripted agent that says `turns` in
+/// turn.
+struct ReviewChat {
+    ui: Ui,
+    chat: Entity<ChatTab>,
+    session: agm::SessionId,
+    _daemon: crate::test_support::AgentDaemon,
+    _tmp: tempfile::TempDir,
+}
+
+fn review_chat(turns: &[&str]) -> ReviewChat {
+    use coqo_agents::{
+        AgentUpdate,
+        model::{ContentBlock as Block, StopReason},
+        testing::{ScriptedProvider, Step},
+    };
+
+    use crate::test_support::AgentDaemon;
+
+    let mut provider = ScriptedProvider::new();
+    for text in turns {
+        provider = provider.turn([
+            Step::Update(AgentUpdate::AgentMessageChunk(Block::text(*text))),
+            Step::Stop(StopReason::EndTurn),
+        ]);
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("demo-project");
+    write(&project, "src/main.rs", "fn main() {}\n");
+    let project = project.canonicalize().unwrap();
+    let daemon = AgentDaemon::start(tmp.path(), &provider);
+    let mut ui = open_ui_at(&project, &daemon.paths, &daemon.runtime);
+    let (ws, _) = ui.place().unwrap();
+    let cwd = project.to_string_lossy().into_owned();
+    let session = daemon.with_client(async move |client| {
+        client
+            .request::<agm::Create>(agm::CreateSessionParams {
+                provider: "fake".into(),
+                cwd,
+                workspace: Some(ws.0.clone()),
+                title: Some("Cart review".into()),
+                mode: None,
+                from: None,
+            })
+            .await
+            .unwrap()
+            .id
+    });
+    ui.wait_for("the chat listed", |ui| {
+        ui.cx.read(|cx| {
+            crate::chat::list::ChatList::global(cx)
+                .is_some_and(|l| l.read(cx).info(&session).is_some())
+        })
+    });
+    let dock = ui.dock();
+    let id = session.clone();
+    ui.cx
+        .update_window(ui.window, |_, window, cx| {
+            crate::chat::open_session(dock.downgrade(), id, window, cx)
+        })
+        .unwrap();
+    let chat = {
+        let dock = ui.dock();
+        ui.cx.read(|cx| {
+            let dock = dock.read(cx);
+            dock.tree()
+                .tabs()
+                .into_iter()
+                .find_map(|t| dock.tab(t.id)?.downcast::<ChatTab>())
+                .unwrap()
+        })
+    };
+    ReviewChat {
+        ui,
+        chat,
+        session,
+        _daemon: daemon,
+        _tmp: tmp,
+    }
+}
+
+impl ReviewChat {
+    /// Send `text` and wait for the turn to end.
+    fn say(&mut self, text: &str) {
+        let chat = self.chat.clone();
+        let composer = self.ui.cx.read(|cx| chat.read(cx).composer().clone());
+        let text = text.to_owned();
+        self.ui.frame(|window, cx| {
+            composer.update(cx, |c, cx| c.set_text(text, window, cx));
+            let focus = composer.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+        let before = self.agent_messages();
+        self.ui.press("enter");
+        self.ui.wait_for("the reply", |ui| {
+            ui.cx.read(|cx| {
+                let t = chat.read(cx).transcript();
+                !t.running
+                    && t.entries
+                        .iter()
+                        .filter(|e| matches!(e, Entry::Agent { .. }))
+                        .count()
+                        > before
+            })
+        });
+    }
+
+    fn agent_messages(&mut self) -> usize {
+        self.ui.cx.read(|cx| {
+            self.chat
+                .read(cx)
+                .transcript()
+                .entries
+                .iter()
+                .filter(|e| matches!(e, Entry::Agent { .. }))
+                .count()
+        })
+    }
+
+    /// The seq and entry of the agent message `n`.
+    fn message(&mut self, n: usize) -> (u64, usize) {
+        self.ui.cx.read(|cx| {
+            let t = self.chat.read(cx).transcript();
+            let ix = (0..t.entries.len())
+                .filter(|ix| matches!(t.entries[*ix], Entry::Agent { .. }))
+                .nth(n)
+                .unwrap();
+            (t.message_seq(ix).unwrap(), ix)
+        })
+    }
+
+    /// The open notes made from messages, oldest first.
+    fn notes(&mut self) -> Vec<Question> {
+        let store = self.ui.store();
+        self.ui.cx.read(|cx| {
+            store
+                .read(cx)
+                .open()
+                .into_iter()
+                .filter(|q| q.origin.is_some())
+                .cloned()
+                .collect()
+        })
+    }
+}
+
+/// The 1-based lines of `notes`, sorted.
+fn lines_of(notes: &[Question]) -> Vec<u32> {
+    let mut lines: Vec<u32> = notes
+        .iter()
+        .map(|q| anchor_line(&q.anchors[0]) + 1)
+        .collect();
+    lines.sort_unstable();
+    lines
+}
+
+#[test]
+fn findings_in_a_message_become_notes_linked_to_it() {
+    use crate::files::editor::layer;
+
+    // The user's own prompt names a place too: no note comes from it.
+    let mut r = review_chat(&[REVIEW]);
+    r.say("Review src/cart.rs:3 please");
+    let (seq, ix) = r.message(0);
+    r.ui.wait_for("the notes", |ui| ui.exists(("chat-notes", ix)));
+
+    // One note per valid finding, and none for the code block, the line past
+    // the end, the missing file, the port or the user's message.
+    let notes = r.notes();
+    assert_eq!(lines_of(&notes), vec![2, 5, 6]);
+    for q in &notes {
+        assert_eq!(q.kind, QuestionKind::Annotation);
+        assert_eq!(q.session, r.session);
+        assert_eq!(q.origin.map(|o| o.message), Some(seq));
+        assert!(q.author.is_agent());
+        assert_eq!(kind_label(q), "FINDING");
+    }
+
+    // Coloured by severity words.
+    let at = |line: u32| {
+        notes
+            .iter()
+            .find(|q| anchor_line(&q.anchors[0]) + 1 == line)
+            .cloned()
+            .unwrap()
+    };
+    let (critical, warning, nit) = (at(6), at(5), at(2));
+    let colors = r.ui.cx.read(|cx| {
+        let p = cx.tokens().palette.clone();
+        (
+            marker_color(&critical, cx) == p.rose,
+            marker_color(&warning, cx) == p.sand,
+            marker_color(&nit, cx) == p.text_subtle,
+        )
+    });
+    assert_eq!(colors, (true, true, true));
+
+    // The message says so; its link shows the first note's popover.
+    r.ui.click(("chat-notes-show", ix));
+    r.ui.wait_for("the file", |ui| ui.file_tab("src/cart.rs").is_some());
+    let tab = r.ui.file_tab("src/cart.rs").unwrap();
+    r.ui.wait_for("a popover", |ui| ui.popover(&tab).is_some());
+    let open =
+        r.ui.cx
+            .read(|cx| tab.read(cx).popover_question(cx))
+            .unwrap();
+    assert!(notes.iter().any(|q| q.id == open));
+
+    // They are gutter markers in the file, below everything deliberate.
+    r.ui.wait_for("the markers", |ui| ui.markers(&tab).len() == 3);
+    assert!(
+        r.ui.markers(&tab)
+            .iter()
+            .all(|m| m.priority == layer::FINDING)
+    );
+    const { assert!(layer::FINDING < layer::OWN_THREAD) };
+
+    // F8 stays with what an agent pinned on purpose.
+    let store = r.ui.store();
+    assert!(r.ui.cx.read(|cx| store.read(cx).navigation().is_empty()));
+
+    // "Open in chat" on the note scrolls the chat to the message and marks it.
+    let chat = r.chat.clone();
+    assert_eq!(r.ui.cx.read(|cx| chat.read(cx).marked_message()), None);
+    r.ui.click("question-open-chat");
+    r.ui.wait_for("the message marked", |ui| {
+        ui.cx.read(|cx| chat.read(cx).marked_message()) == Some(seq)
+    });
+
+    // Dismissing one note keeps the others.
+    let session = r.session.clone();
+    let remaining = |ui: &mut Ui| {
+        ui.cx
+            .read(|cx| store.read(cx).message_notes(&session, seq).len())
+    };
+    r.ui.cx
+        .update(|cx| dismiss(&store, notes[0].id, cx).detach());
+    r.ui.wait_for("one dismissed", |ui| remaining(ui) == 2);
+    assert!(r.ui.exists(("chat-notes", ix)));
+
+    // "Dismiss all" closes the rest at once.
+    r.ui.click(("chat-notes-dismiss", ix));
+    r.ui.wait_for("all dismissed", |ui| remaining(ui) == 0);
+    r.ui.wait_for("the footer gone", |ui| !ui.exists(("chat-notes", ix)));
+    // The message is not scanned again.
+    assert!(
+        r.ui.cx
+            .read(|cx| store.read(cx).has_message_notes(&session, seq))
+    );
+    assert!(r.notes().is_empty());
+}
+
+#[test]
+fn findings_can_be_turned_off() {
+    let mut r = review_chat(&[REVIEW]);
+    r.ui.cx
+        .update(|cx| crate::settings::update(cx, |s| s.questions.findings_in_gutter = false));
+    r.say("Review it");
+    let (_, ix) = r.message(0);
+    for _ in 0..30 {
+        r.ui.wait_for("a frame", |_| true);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(r.notes().is_empty());
+    assert!(!r.ui.exists(("chat-notes", ix)));
+}
+
+/// Offscreen screenshots of findings written as text (#345): the chat with
+/// its message and "3 notes in code", then the file with the notes in its
+/// gutter and one popover open, as `coqo-findings-chat-{dark,light}.png` and
+/// `coqo-findings-code-{dark,light}.png` in `$COQO_SHOT_DIR` (default: the
+/// system temp dir). Needs a GPU:
+/// `cargo test -p coqo -- --ignored findings_screenshots`.
+#[test]
+#[ignore = "needs a GPU; run manually"]
+fn findings_screenshots() {
+    use std::sync::Arc;
+
+    use coqo_agents::{
+        AgentUpdate,
+        model::{ContentBlock as Block, CreateSessionParams, StopReason},
+        testing::{ScriptedProvider, Step},
+    };
+    use coqo_protocol::methods::agents as agm;
+    use coqo_ui::{
+        CoqoAssets,
+        gpui::{Focusable as _, HeadlessAppContext, platform},
+    };
+
+    use crate::test_support::AgentDaemon;
+
+    const SHOT: &str = "\
+use crate::money::Cents;
+
+/// A line of the cart.
+pub struct Line {
+    pub price: Cents,
+    pub quantity: u32,
+}
+
+pub struct Cart {
+    lines: Vec<Line>,
+    loyalty: Option<Cents>,
+}
+
+/// What the customer pays: the lines, less the loyalty bonus, capped.
+pub fn total(cart: &Cart) -> Cents {
+    let sum: Cents = cart.lines.iter().map(|l| l.price * l.quantity).sum();
+    let capped = sum.min(Cents(50_000));
+    capped - cart.loyalty.unwrap_or_default()
+}
+";
+    const REVIEW: &str = "\
+I read the cart and found three things.\n\n\
+### Critical\n\n\
+- `src/cart.rs:15` the sum of the lines can overflow `Cents` before it is capped.\n\n\
+### Should fix\n\n\
+- `src/cart.rs:17` the loyalty bonus can take the total below zero, and the result is unsigned.\n\n\
+### Nits\n\n\
+- `src/cart.rs:4` the doc comment says \"line\" twice.\n\n\
+`localhost:8080` is only the dev server, and `src/cart.rs:90` is past the end of the file, so neither is pinned.";
+
+    let dir = std::env::var_os("COQO_SHOT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    for (name, appearance) in [("dark", Appearance::Dark), ("light", Appearance::Light)] {
+        let provider = ScriptedProvider::new().turn([
+            Step::Update(AgentUpdate::AgentMessageChunk(Block::text(REVIEW))),
+            Step::Stop(StopReason::EndTurn),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("demo-project");
+        write(&project, "src/cart.rs", SHOT);
+        let project = project.canonicalize().unwrap();
+        let daemon = AgentDaemon::start(tmp.path(), &provider);
+        let mut cx = HeadlessAppContext::with_platform(
+            platform::current_platform(true).text_system(),
+            Arc::new(CoqoAssets),
+            platform::current_headless_renderer,
+        );
+        cx.allow_parking();
+        let (paths, folder) = (daemon.paths.clone(), project.clone());
+        let (handle, shell) = cx
+            .update(|cx| {
+                coqo_ui::init(appearance, cx);
+                let mut config = DaemonConfig::at(paths);
+                config.spawn = false;
+                daemon::init(config, cx);
+                workspace::init(Some(folder), cx);
+                crate::shell::init(cx);
+                coqo_ui::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds {
+                            origin: Point::default(),
+                            size: size(px(1440.), px(900.)),
+                        })),
+                        focus: false,
+                        show: false,
+                        ..Default::default()
+                    },
+                    cx,
+                    |window, cx| {
+                        let store = Rc::new(MemoryLayoutStore::default());
+                        cx.new(|cx| Shell::new(store, DEFAULT_WORKSPACE, window, cx))
+                    },
+                )
+            })
+            .expect("open window");
+        let settle = |cx: &mut HeadlessAppContext, done: &dyn Fn(&App) -> bool| {
+            let deadline = Instant::now() + TIMEOUT;
+            loop {
+                cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+                    .unwrap();
+                cx.run_until_parked();
+                if cx.update(|cx| done(cx)) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "timed out");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let shoot = |cx: &mut HeadlessAppContext, file: String| {
+            for _ in 0..20 {
+                cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+                    .unwrap();
+                cx.run_until_parked();
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let image = cx.capture_screenshot(handle).expect("screenshot");
+            let path = dir.join(file);
+            image.save(&path).expect("save png");
+            println!("wrote {}", path.display());
+        };
+        let place = |cx: &App| {
+            let current = Workspaces::global(cx)?.read(cx).current()?.clone();
+            Some((current.id.clone(), current.roots[0].id))
+        };
+        settle(&mut cx, &|cx| place(cx).is_some());
+        let (ws, _) = cx.update(|cx| place(cx)).unwrap();
+        let (cwd, ws_id) = (project.to_string_lossy().into_owned(), ws.0.clone());
+        let id = daemon.with_client(async move |client| {
+            client
+                .request::<agm::Create>(CreateSessionParams {
+                    provider: "fake".into(),
+                    cwd,
+                    workspace: Some(ws_id),
+                    title: Some("Review the cart".into()),
+                    mode: None,
+                    from: None,
+                })
+                .await
+                .unwrap()
+                .id
+        });
+        settle(&mut cx, &|cx| {
+            crate::chat::list::ChatList::global(cx).is_some_and(|l| l.read(cx).info(&id).is_some())
+        });
+        let dock = cx.update(|cx| shell.read(cx).dock().clone());
+        let session = id.clone();
+        cx.update_window(handle, |_, window, cx| {
+            crate::chat::open_session(dock.downgrade(), session, window, cx)
+        })
+        .unwrap();
+        let chat = cx.update(|cx| {
+            let dock = dock.read(cx);
+            dock.tree()
+                .tabs()
+                .into_iter()
+                .find_map(|t| dock.tab(t.id)?.downcast::<ChatTab>())
+                .unwrap()
+        });
+        // The user asks; the agent's review comes back.
+        let composer = cx.update(|cx| chat.read(cx).composer().clone());
+        cx.update_window(handle, |_, window, cx| {
+            composer.update(cx, |c, cx| c.set_text("Review the cart", window, cx));
+            let focus = composer.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+        })
+        .unwrap();
+        let store = cx.update(|cx| questions_for(&ws, cx)).unwrap();
+        settle(&mut cx, &|cx| store.read(cx).open().len() == 3);
+        shoot(&mut cx, format!("coqo-findings-chat-{name}.png"));
+
+        // The critical one, open at its code.
+        let critical = cx.update(|cx| {
+            store
+                .read(cx)
+                .open()
+                .into_iter()
+                .find(|q| q.origin.is_some_and(|o| o.level == FindingLevel::Critical))
+                .map(|q| q.id)
+                .unwrap()
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_action(Box::new(OpenQuestion { id: critical.0 }), cx);
+        })
+        .unwrap();
+        let tab = |cx: &App| {
+            let dock = dock.read(cx);
+            dock.active_tab()
+                .and_then(|id| dock.tab(id)?.downcast::<FileEditor>())
+        };
+        settle(&mut cx, &|cx| {
+            tab(cx).is_some_and(|t| t.read(cx).popover().is_some())
+        });
+        shoot(&mut cx, format!("coqo-findings-code-{name}.png"));
     }
 }

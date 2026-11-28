@@ -355,6 +355,15 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
             ALTER TABLE workspaces ADD COLUMN project TEXT;
         ",
     },
+    Migration {
+        version: 16,
+        name: "question origin",
+        // The chat message a note was made from (#345): the JSON
+        // `NoteOrigin`, NULL for what an agent pinned itself.
+        sql: "
+            ALTER TABLE questions ADD COLUMN origin TEXT;
+        ",
+    },
 ];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.

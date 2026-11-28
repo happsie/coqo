@@ -2372,6 +2372,17 @@
           },
           "type": "array"
         },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NoteOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The chat message a finding was made from (the UI's findings as\nnotes, #345); only for an annotation."
+        },
         "session": {
           "description": "The asking agent session.",
           "type": "string"
@@ -3848,6 +3859,26 @@
       ],
       "type": "object"
     },
+    "FindingLevel": {
+      "description": "How strongly a finding written as text is worded (ADR 0030): the\nseverity words of its line or heading. It sets the note's colour.",
+      "oneOf": [
+        {
+          "const": "critical",
+          "description": "critical, bug, error: shown in rose.",
+          "type": "string"
+        },
+        {
+          "const": "warning",
+          "description": "warning, should: shown in sand.",
+          "type": "string"
+        },
+        {
+          "const": "note",
+          "description": "nit, suggestion, or no severity word: shown in the subtle colour.",
+          "type": "string"
+        }
+      ]
+    },
     "FoldKind": {
       "description": "What a fold holds (LSP's `FoldingRangeKind`).",
       "oneOf": [
@@ -4875,6 +4906,26 @@
       },
       "required": [
         "label"
+      ],
+      "type": "object"
+    },
+    "NoteOrigin": {
+      "description": "The chat message a note was made from (#345, ADR 0030): findings an\nagent wrote as text (`file:line - issue`), pinned by the UI as notes\nthat link back to the message. Only the UI sets it; the message is of\nthe note's `session`.",
+      "properties": {
+        "level": {
+          "$ref": "#/$defs/FindingLevel",
+          "default": "note",
+          "description": "How its text words the finding."
+        },
+        "message": {
+          "description": "The message: the seq of its first `sessions/updates` chunk.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "message"
       ],
       "type": "object"
     },
@@ -5926,6 +5977,17 @@
             "$ref": "#/$defs/QuestionOption"
           },
           "type": "array"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NoteOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The chat message the note was made from, for a finding written as\ntext; absent for what an agent pinned itself."
         },
         "seq": {
           "description": "The `questions/changes` seq of this state.",

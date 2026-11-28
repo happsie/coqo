@@ -342,6 +342,7 @@ impl Tool for AskQuestionTool {
             let question = cx
                 .daemon()
                 .request::<qm::Create>(CreateParams {
+                    origin: None,
                     workspace: cx.workspace().clone(),
                     session: cx.session().to_owned(),
                     kind,
@@ -479,6 +480,7 @@ impl Tool for AnnotateTool {
             let note = cx
                 .daemon()
                 .request::<qm::Create>(CreateParams {
+                    origin: None,
                     workspace: cx.workspace().clone(),
                     session: cx.session().to_owned(),
                     kind: QuestionKind::Annotation,
