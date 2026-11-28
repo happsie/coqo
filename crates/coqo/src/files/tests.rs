@@ -1825,7 +1825,8 @@ fn edit_as(
 /// A tab whose file is deleted while it loads (#312): the open in flight
 /// already got the buffer, and the delete comes before its outcome. The tab
 /// ends as "File not found", like a clean loaded tab, with the buffer it got
-/// closed again and nothing reopened. Undoing the delete opens it cleanly.
+/// closed again (no session, nothing to resync). Undoing the delete opens it
+/// cleanly.
 #[test]
 fn a_tab_deleted_while_it_loads_says_the_file_is_gone() {
     let fixture = Fixture::new();
@@ -1850,13 +1851,16 @@ fn a_tab_deleted_while_it_loads_says_the_file_is_gone() {
     ui.wait_for("the tab told", |ui| ui.content(&tab) == Content::Missing);
     ui.hold_opens(false);
     ui.release_open(&tab);
+    // The watcher's report of the delete may make the message check again
+    // (a stat that finds nothing); either way the tab settles as missing.
     ui.advance(Duration::from_millis(500));
-    ui.frame(|_, _| ());
+    ui.wait_for("the tab settled", |ui| {
+        !ui.cx.read(|cx| tab.read(cx).is_opening())
+    });
     assert_eq!(ui.content(&tab), Content::Missing);
     ui.cx.read(|cx| {
         let tab = tab.read(cx);
         assert!(tab.editor().is_none(), "no buffer behind the message");
-        assert!(!tab.is_opening(), "nothing reopens");
         assert!(!tab.is_subscribed());
     });
 
