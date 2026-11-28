@@ -53,6 +53,21 @@ Coqo is an agent-first desktop editor written in Rust: a GPUI UI plus a backgrou
 - If the implementation has to differ from PLAN.md, write or update an ADR in `docs/adr/` and update PLAN.md in the same PR.
 - Spikes: answer the questions in the issue, write `docs/adr/NNNN-<topic>.md` with findings, measurements and a clear **go / fallback** decision, and keep prototype code in `spikes/<id>/`.
 
+## Choosing a model for subagents
+
+Usage limits are shared by every agent, so match the model to the task, and set `model` explicitly whenever you spawn a subagent.
+
+- **Sonnet**, the default for well-specified work:
+  - a task with a clear Scope that follows existing patterns: UI polish, a small feature on an existing design, docs, adding tests;
+  - rebases, CI watching, filing follow-up issues.
+- **Opus**:
+  - root-cause hunts: flaky tests, races, failures on one OS only;
+  - design and architecture: new ADRs, protocol or schema changes, cross-cutting features;
+  - spikes;
+  - anything that touches the Claude policy (PLAN §7.3) or security.
+- **Haiku**: mechanical chores only, such as status checks, listing issues, and summarising logs.
+- **Escalate instead of settling.** A Sonnet agent can get stuck after two real attempts, or reach for a retry, a sleep or a longer timeout to "fix" a flake. When that happens, hand the work to Opus rather than merging the workaround.
+
 ## Opening and merging the PR
 
 - The PR title is a conventional commit, e.g. `feat(daemon): idle shutdown policy (#42)`.
