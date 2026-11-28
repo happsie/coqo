@@ -294,6 +294,18 @@ pub async fn connect_or_spawn(
                 });
             }
             Err(ConnectError::NotRunning(_)) => {}
+            // A daemon that binds its socket and then fails before serving
+            // closes the connections queued on it, mid-handshake. If that
+            // was ours, its own reason says more than the closed handshake.
+            Err(e @ (ConnectError::Protocol(_) | ConnectError::Io { .. })) => {
+                let exited = tokio::time::timeout(EXIT_GRACE, child.process.wait()).await;
+                match exited {
+                    Ok(Ok(status)) if status.code() != Some(EXIT_ALREADY_RUNNING) => {
+                        return Err(child.exited(status));
+                    }
+                    _ => return Err(e),
+                }
+            }
             Err(e) => return Err(e),
         }
 
@@ -306,17 +318,7 @@ pub async fn connect_or_spawn(
             })?;
         if let Some(status) = exited {
             if status.code() != Some(EXIT_ALREADY_RUNNING) {
-                let reason = child.stderr.reason(child.pid);
-                tracing::warn!(
-                    %status,
-                    reason = reason.as_deref().unwrap_or("unknown"),
-                    "coqod exited during startup"
-                );
-                return Err(ConnectError::DaemonExited {
-                    status,
-                    reason,
-                    log: child.stderr.path,
-                });
+                return Err(child.exited(status));
             }
             // Another daemon holds the lock: it is starting (we attach to it
             // on the next try) or shutting down (it is gone soon, so try to
@@ -340,6 +342,28 @@ struct Spawned {
     /// Taken right away: the pid is gone once the child is reaped.
     pid: Option<u32>,
     stderr: StderrCapture,
+}
+
+/// How long a failed handshake with a just-spawned daemon waits for it to
+/// exit, to tell "it died at start-up" from other failures.
+const EXIT_GRACE: Duration = Duration::from_secs(2);
+
+impl Spawned {
+    /// The error for a spawned daemon that exited with `status` before it
+    /// served, with its reason.
+    fn exited(self, status: ExitStatus) -> ConnectError {
+        let reason = self.stderr.reason(self.pid);
+        tracing::warn!(
+            %status,
+            reason = reason.as_deref().unwrap_or("unknown"),
+            "coqod exited during startup"
+        );
+        ConnectError::DaemonExited {
+            status,
+            reason,
+            log: self.stderr.path,
+        }
+    }
 }
 
 fn spawn(paths: &DaemonPaths, options: &SpawnOptions) -> Result<Spawned, ConnectError> {
