@@ -1496,10 +1496,15 @@ impl Ui {
     /// not only on disk).
     fn wait_for_toast(&mut self, text: &str) {
         let deadline = Instant::now() + TIMEOUT;
+        let mut seen = Vec::new();
         loop {
             self.cx.run_until_parked();
             self.frame(|_, _| ());
-            if self.toast().as_deref() == Some(text) {
+            let toast = self.toast();
+            if toast.is_some() && seen.last() != Some(&toast) {
+                seen.push(toast.clone());
+            }
+            if toast.as_deref() == Some(text) {
                 return;
             }
             if Instant::now() >= deadline {
@@ -1508,12 +1513,11 @@ impl Ui {
                     let tree = tree.read(cx);
                     (
                         tree.op_error().map(str::to_owned),
-                        tree.history().read(cx).next_undo().cloned(),
+                        format!("{:?}", tree.history().read(cx)),
                     )
                 });
                 panic!(
-                    "timed out waiting for {text}: toast {:?}, error {error:?}, next undo {undo:?}",
-                    self.toast()
+                    "timed out waiting for {text}: toasts seen {seen:?}, error {error:?}, history {undo}"
                 );
             }
             std::thread::sleep(Duration::from_millis(10));
