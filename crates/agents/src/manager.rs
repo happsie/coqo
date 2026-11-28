@@ -30,6 +30,7 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use coqo_mod_api::BoxFuture;
@@ -122,6 +123,9 @@ struct Inner {
     /// Head of `sessions/changes`. Locked after a session, never before.
     changes: Mutex<u64>,
     changes_tx: broadcast::Sender<Sequenced<SessionInfo>>,
+    /// Set by [`SessionManager::shutdown`]: provider sessions' reports are
+    /// dropped from then on. Read under a session's lock.
+    stopped: AtomicBool,
 }
 
 struct Session {
@@ -535,13 +539,26 @@ struct Sink {
     session: Arc<Session>,
 }
 
+impl Sink {
+    /// The manager and the locked session, unless the manager is gone or
+    /// shut down. The stop flag is read under the session's lock, so once
+    /// [`SessionManager::shutdown`] returns nothing more is recorded.
+    fn attach(&self) -> Option<(Arc<Inner>, MutexGuard<'_, SessionState>)> {
+        let inner = self.inner.upgrade()?;
+        let st = lock(&self.session.state);
+        if inner.stopped.load(Ordering::SeqCst) {
+            return None;
+        }
+        Some((inner, st))
+    }
+}
+
 impl EventSink for Sink {
     fn update(&self, update: AgentUpdate) {
-        let Some(inner) = self.inner.upgrade() else {
+        let Some((inner, mut st)) = self.attach() else {
             return;
         };
         let s = &self.session;
-        let mut st = lock(&s.state);
         if st.info().closed {
             return;
         }
@@ -595,11 +612,10 @@ impl EventSink for Sink {
         let cancelled = || -> BoxFuture<'static, PermissionOutcome> {
             Box::pin(std::future::ready(PermissionOutcome::Cancelled))
         };
-        let Some(inner) = self.inner.upgrade() else {
+        let Some((inner, mut st)) = self.attach() else {
             return cancelled();
         };
         let s = &self.session;
-        let mut st = lock(&s.state);
         if st.replaying || st.info().closed {
             return cancelled();
         }
@@ -661,11 +677,10 @@ impl EventSink for Sink {
     }
 
     fn report_state(&self, state: AgentState, reason: Option<String>) {
-        let Some(inner) = self.inner.upgrade() else {
+        let Some((inner, mut st)) = self.attach() else {
             return;
         };
         let s = &self.session;
-        let mut st = lock(&s.state);
         if st.replaying || st.info().closed {
             return;
         }
@@ -695,6 +710,7 @@ impl SessionManager {
             sessions: Mutex::new(HashMap::new()),
             changes: Mutex::new(change_head),
             changes_tx: broadcast::channel(CHANGE_CHANNEL).0,
+            stopped: AtomicBool::new(false),
         });
         for id in inner.store.running()? {
             let s = inner.session(&id)?;
@@ -1266,11 +1282,19 @@ impl SessionManager {
     /// Ends running turns as interrupted and closes their provider sessions;
     /// call when the daemon stops. Their sessions resume on the next prompt
     /// after a restart.
+    ///
+    /// From then on, whatever a provider session still reports (an idle
+    /// session's late `available_commands_update`, say) is dropped: once
+    /// this returns the manager writes no more session updates, so the next
+    /// daemon on the same database is each session's only writer and its
+    /// seqs cannot collide with this one's.
     pub async fn shutdown(&self) {
         let inner = &self.inner;
+        inner.stopped.store(true, Ordering::SeqCst);
         let sessions: Vec<_> = lock(&inner.sessions).values().cloned().collect();
         for s in sessions {
             let live = {
+                // Taking the lock also waits out a report being recorded.
                 let mut st = lock(&s.state);
                 if st.turn.is_none() {
                     continue;

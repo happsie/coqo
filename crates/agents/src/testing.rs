@@ -111,6 +111,8 @@ struct Script {
     /// The config options of each `resume_session`.
     resume_options: Mutex<Vec<Vec<SessionConfigOption>>>,
     outcomes: Mutex<Vec<PermissionOutcome>>,
+    /// The sink of each `start_session` and `resume_session`.
+    events: Mutex<Vec<SessionEvents>>,
     next_session: AtomicU64,
 }
 
@@ -304,6 +306,12 @@ impl ScriptedProvider {
         lock(&self.script.outcomes).clone()
     }
 
+    /// The sink each `start_session` and `resume_session` got, in order:
+    /// for reporting the way an agent does outside a turn.
+    pub fn events(&self) -> Vec<SessionEvents> {
+        lock(&self.script.events).clone()
+    }
+
     fn call(&self, call: Call) {
         lock(&self.script.calls).push(call);
     }
@@ -314,6 +322,7 @@ impl ScriptedProvider {
         events: SessionEvents,
         options: Vec<SessionConfigOption>,
     ) -> Arc<dyn ProviderSession> {
+        lock(&self.script.events).push(events.clone());
         Arc::new(ScriptedSession {
             provider: self.clone(),
             id,
