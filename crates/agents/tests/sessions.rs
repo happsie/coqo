@@ -878,6 +878,34 @@ async fn manager_shutdown_interrupts_running_turns() {
     assert_eq!(d.busy.held(), 0);
 }
 
+/// #293: an idle session's provider can still report after shutdown (an
+/// ACP agent's `available_commands_update` follows `session/new`). Once
+/// `shutdown` returns nothing is recorded, so a new daemon on the same
+/// database does not hand out a seq the old one also wrote.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nothing_is_recorded_after_shutdown() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("coqo.db");
+    let first = ScriptedProvider::new();
+    let d = daemon(SessionStore::open(&db).unwrap(), &first);
+    let client = d.connect().await;
+    let id = create(&client).await.id;
+    d.manager.shutdown().await;
+
+    // The next daemon reads the head while the old agent is still talking.
+    let second = ScriptedProvider::new();
+    let next = daemon(SessionStore::open(&db).unwrap(), &second);
+    let head = next.manager.snapshot(&id).unwrap().head;
+    let late = first.events().pop().unwrap();
+    late.update(AgentUpdate::AgentMessageChunk(text("late")));
+    late.report_state(AgentState::Working, None);
+    assert_eq!(d.manager.snapshot(&id).unwrap().head, head);
+
+    let next_client = next.connect().await;
+    let result = prompt(&next_client, &id, "again").await.unwrap();
+    assert_eq!(result.seq, head + 1);
+}
+
 /// Workspace `ws-rules` with one root, as the workspace service stores it.
 fn add_workspace(db: &std::path::Path, root: &std::path::Path) {
     let conn = rusqlite::Connection::open(db).unwrap();
