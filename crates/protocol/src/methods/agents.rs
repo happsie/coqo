@@ -1182,6 +1182,20 @@ pub struct ToolUse {
     pub count: u64,
 }
 
+/// Another worktree of a session's project that its tool calls are
+/// working in: a subagent of its own in `.claude/worktrees/…`, say
+/// (ADR 0028, #359). The work stays the session's; no session is made for
+/// it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeActivity {
+    /// The worktree's folder, as `git/worktrees` lists it.
+    pub path: String,
+    /// When the session started working there, Unix milliseconds.
+    pub since: i64,
+}
+
 /// One acceptance criterion of a session's task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -1422,6 +1436,11 @@ pub struct SessionInfo {
     /// Current mode id, if the provider has modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// Other worktrees of its project its tool calls touched lately, the
+    /// one it went to last first. Each goes when the turn ends or after a quiet
+    /// spell there. Not stored: a restarted daemon starts with none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worktrees: Vec<WorktreeActivity>,
     /// Whether it was closed.
     pub closed: bool,
     /// Created, Unix milliseconds.

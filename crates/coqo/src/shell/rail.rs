@@ -1029,7 +1029,8 @@ impl Render for RailTooltip {
 #[cfg(test)]
 mod tests;
 
-/// Renders the shell with four projects (one with three worktrees)
+/// Renders the shell with four projects (one with four worktrees, one a
+/// subagent's that the main worktree's chat works in)
 /// offscreen to PNGs, for visual review against boards 1 and 6: the rail,
 /// its menu, and the sidebar's worktree switcher open. Needs a GPU:
 /// `cargo test -p coqo -- --ignored rail_screenshots`. Writes to
@@ -1039,7 +1040,7 @@ mod screenshots {
     use std::rc::Rc;
 
     use coqo_protocol::methods::{
-        agents::{AgentState, SessionId, SessionInfo},
+        agents::{AgentState, SessionId, SessionInfo, WorktreeActivity},
         git::{Head, RepoInfo, StatusResult, Worktree, WorktreesResult},
         workspace::{ProjectInfo, RootId, WorkspaceId, WorkspaceInfo, WorkspaceRoot},
     };
@@ -1112,6 +1113,7 @@ mod screenshots {
             status: None,
             criteria: Vec::new(),
             tool_use: Vec::new(),
+            worktrees: Vec::new(),
             mode: None,
             closed: false,
             created_at: 0,
@@ -1154,6 +1156,19 @@ mod screenshots {
                                 session(4, AgentState::Error),
                                 session(5, AgentState::Working),
                                 session(6, AgentState::NeedsInput),
+                                // The main worktree's chat, its subagent
+                                // working in `.claude/worktrees` (#359).
+                                SessionInfo {
+                                    id: SessionId("s-7".into()),
+                                    title: Some("Split pricing".into()),
+                                    provider: coqo_protocol::methods::agents::CLAUDE_PROVIDER_ID
+                                        .into(),
+                                    worktrees: vec![WorktreeActivity {
+                                        path: format!("{MAIN}/.claude/worktrees/agent-a1b2"),
+                                        since: 1,
+                                    }],
+                                    ..session(1, AgentState::Working)
+                                },
                             ],
                             cx,
                         )
@@ -1185,6 +1200,17 @@ mod screenshots {
                                 row(MAIN, "main", true, 0),
                                 row(&current.roots[0].path, "feature/volume-discount", false, 3),
                                 row(&list[5].roots[0].path, "fix-flaky-it", false, 1),
+                                // Made by Claude Code for a subagent: no
+                                // workspace, its work the main chat's.
+                                Worktree {
+                                    branch: None,
+                                    ..row(
+                                        &format!("{MAIN}/.claude/worktrees/agent-a1b2"),
+                                        "",
+                                        false,
+                                        2,
+                                    )
+                                },
                             ],
                             worktrees_dir: format!("{MAIN}-worktrees"),
                         };

@@ -388,6 +388,7 @@ mod unit_tests {
             status: None,
             criteria: Vec::new(),
             tool_use: Vec::new(),
+            worktrees: Vec::new(),
             mode: None,
             closed: false,
             created_at: 0,

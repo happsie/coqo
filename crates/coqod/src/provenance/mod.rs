@@ -70,6 +70,7 @@ use self::store::{Row, Store};
 use crate::buffers::BufferService;
 use crate::path_moves::{FollowsMoves, PathMove};
 use crate::workspace::WorkspaceService;
+use crate::worktree_activity::{self, WorktreeActivityTracker};
 
 /// How long after a turn ends a change on disk still counts as the turn's:
 /// the watcher reports changes after a short debounce, and the agent's last
@@ -259,6 +260,9 @@ pub struct Provenance {
     tx: mpsc::UnboundedSender<Signal>,
     /// The `fs/changes` followers, per workspace.
     followers: Mutex<HashMap<WorkspaceId, tokio::task::JoinHandle<()>>>,
+    /// Hears the same tool calls and writes: which other worktrees each
+    /// session works in (#359).
+    worktrees: WorktreeActivityTracker,
 }
 
 impl Provenance {
@@ -273,11 +277,17 @@ impl Provenance {
         signals: &Signals,
         rx: SignalReceiver,
     ) -> Result<Arc<Self>, StoreError> {
+        let worktrees = WorktreeActivityTracker::spawn(
+            Arc::clone(&workspaces),
+            sessions.clone(),
+            worktree_activity::QUIET,
+        );
         let svc = Arc::new(Self {
             store: Mutex::new(Store::open(db)?),
             workspaces,
             buffers,
             sessions,
+            worktrees,
             tx: signals.tx.clone(),
             followers: Mutex::default(),
         });
@@ -292,6 +302,7 @@ impl Provenance {
         if self.tx.send(Signal::Settled(tx)).is_ok() {
             let _ = rx.await;
         }
+        self.worktrees.settled().await;
     }
 
     /// `agents/changedBy`.
@@ -441,6 +452,8 @@ impl Provenance {
             }
             Signal::Wrote { session, path } => {
                 if let Some(workspace) = self.workspace_of(live, &session) {
+                    self.worktrees
+                        .touched(&session, &workspace, vec![path.clone()]);
                     let path = path.to_string_lossy().into_owned();
                     self.wrote(&workspace, &session, &[path]).await;
                 }
@@ -459,6 +472,32 @@ impl Provenance {
         workspace: WorkspaceId,
         update: SessionUpdate,
     ) {
+        // Any path a tool call names: working in another worktree (#359).
+        match &update {
+            SessionUpdate::ToolCall(tc) => {
+                let mut paths: Vec<PathBuf> = tc
+                    .locations
+                    .iter()
+                    .map(|l| PathBuf::from(&l.path))
+                    .collect();
+                paths.extend(diff_paths(&tc.content).into_iter().map(PathBuf::from));
+                self.worktrees.touched(&session, &workspace, paths);
+            }
+            SessionUpdate::ToolCallUpdate(u) => {
+                let mut paths: Vec<PathBuf> = u
+                    .locations
+                    .iter()
+                    .flatten()
+                    .map(|l| PathBuf::from(&l.path))
+                    .collect();
+                if let Some(content) = &u.content {
+                    paths.extend(diff_paths(content).into_iter().map(PathBuf::from));
+                }
+                self.worktrees.touched(&session, &workspace, paths);
+            }
+            SessionUpdate::TurnEnded { .. } => self.worktrees.turn_ended(&session),
+            _ => {}
+        }
         let done = match update {
             SessionUpdate::TurnStarted { .. } => {
                 self.follow(&workspace);

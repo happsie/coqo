@@ -54,6 +54,10 @@ Otherwise it runs `git worktree remove <path>` from the main worktree. The daemo
 
 **The switcher** (`crates/coqo/src/worktrees.rs`) is per window, at the top of the sidebar. Choosing a worktree switches the window to its workspace, opening one on the folder the first time. If the window's own worktree is removed, the window shows the main worktree. The palette commands are `worktree.switch` and `worktree.new`.
 
+**Worktrees made outside Coqo appear live (#359).** Agents make worktrees themselves: Claude Code's `isolation: worktree` subagents in `.claude/worktrees/agent-…`, or an agent running `git worktree add`. The git directory watch behind `git/changes` also watches the common directory's `worktrees/` admin folder (non-recursively: only its entries, not each worktree's index or `HEAD`) and reports a worktree added, removed or pruned as a new change kind, `worktrees`. The first `git worktree add` makes the folder and `prune` can remove it with the last worktree, so the common directory's own (non-recursive) watch reports the folder coming and going, and the watch on it is set again after each `worktrees` change. An open switcher list fetches `git/worktrees` again on `worktrees`. A discovered worktree opens no workspace and takes no focus.
+
+**Work in a worktree with no session of its own is its chat's (#359).** A subagent of a chat works in its worktree inside the chat's turn, so no session is made for it. The daemon (`coqod::worktree_activity`) hears every session's tool calls (their locations and `diff` paths, whatever the tool) and ACP writes, through the provenance service that already follows them (#286). When one touches a path in another worktree of the session's project (the deepest worktree holding the path, from git's admin folders; a worktree inside the main worktree's folder is still another), the worktree goes into `SessionInfo.worktrees` (`{path, since}`, not stored) and out again when the turn ends or after 30 s without a touch there. Only changes of that set go out on `sessions/changes`. The switcher's row shows "Claude working · from <chat>"; the project's rail button counts the chat already. Belongs with the `workspaces` mod once mods can see sessions' tool calls (#353).
+
 ## Consequences
 
 - Worktrees cost no rail space, so running agents on several branches at once is practical. Their agents keep running in the daemon while another worktree is on screen, and the project's icon shows what they do.
@@ -62,6 +66,8 @@ Otherwise it runs `git worktree remove <path>` from the main worktree. The daemo
 - Uncommitted work can't be thrown away from Coqo. The user has to commit, stash or use git directly, which is deliberate.
 - The sibling folder can surprise someone who expects worktrees inside the repository. The path is shown in the **New worktree** form, and a setting can come later without a protocol change, since `path` is already a parameter.
 
+- A shell command that edits another worktree (`sed -i` in `.claude/worktrees/…`) names no path in its tool call, so it doesn't mark the row; the subagents' own Read, Edit and Write calls do.
+
 ## Alternatives considered
 
 - **Group by the main worktree's path, or by remote URL.** The path breaks for bare repositories and when the main worktree moves. A remote URL would join unrelated clones of one repository and split a repository with no remote. The common directory is what git itself uses.
@@ -69,3 +75,5 @@ Otherwise it runs `git worktree remove <path>` from the main worktree. The daemo
 - **Put worktrees inside the repository (`.coqo/worktrees`, like `.claude/worktrees`).** Every tool working on the main worktree would then see nested checkouts. ADR 0027 already had to work around that for the watcher.
 - **One workspace with several worktrees as roots.** That would share one chat list, dock and git state between branches, which is exactly the interference worktrees are meant to prevent.
 - **`--force` behind a confirmation.** It loses work for good. Refusing costs one `git stash` and keeps "never forces" literal.
+- **Poll `git worktree list` for live discovery.** It works on every platform but spawns git every second per project. The admin folder is git's own record of the worktrees, and watching it costs one more watch per repository.
+- **A session per subagent worktree.** Claude Code's in-process subagents aren't sessions Coqo can drive, and a fake one would show work it can't steer; attributing the work to the chat that does it is accurate.

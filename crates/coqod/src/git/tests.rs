@@ -646,6 +646,13 @@ fn git_directory_changes_are_classified() {
     assert_eq!(c("logs/refs/stash", true), Some(K::Stash));
     assert_eq!(c("objects/ab/cdef", true), None);
     assert_eq!(c("COMMIT_EDITMSG", true), None);
+    // Worktrees made, removed or pruned, from the main worktree's git
+    // directory (the common one) or a linked worktree's common directory.
+    assert_eq!(c("worktrees", true), Some(K::Worktrees));
+    assert_eq!(c("worktrees/feature-x", false), Some(K::Worktrees));
+    assert_eq!(c("worktrees/feature-x", true), Some(K::Worktrees));
+    assert_eq!(c("worktrees/feature-x/index", false), None);
+    assert_eq!(c("worktrees/feature-x/HEAD", true), None);
 }
 
 // ---- worktrees (#92) ----------------------------------------------------------
@@ -756,4 +763,91 @@ async fn worktrees_are_workspaces_of_one_project() {
         f.git(&["branch", "--list", "feature/x"])
             .contains("feature/x")
     );
+}
+
+/// Drop the events already sent, so the next wait sees only new ones.
+async fn drain(sub: &mut Subscription<gm::Changes>) {
+    while tokio::time::timeout(Duration::from_millis(300), sub.next())
+        .await
+        .is_ok()
+    {}
+}
+
+/// #359: worktrees made, removed and pruned outside Coqo (an agent's
+/// `git worktree add`, Claude Code's `.claude/worktrees/*`) reach
+/// `git/changes` as `worktrees`, in every worktree's workspace, from the
+/// first one made to the last one gone.
+#[tokio::test]
+async fn changes_topic_reports_worktrees_made_outside_coqo() {
+    let (tmp, f) = repo_fixture();
+    let h = harness(true).await;
+    let main = h.open(f.path()).await;
+    let subscribe = async |ws: &WorkspaceInfo| {
+        h.client
+            .subscribe::<gm::Changes>(
+                gm::ChangesParams {
+                    workspace: ws.id.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap()
+    };
+    let mut sub = subscribe(&main).await;
+    let listed = async || h.call::<gm::Worktrees>(repo(&main)).await.worktrees.len();
+    assert!(!f.path().join(".git/worktrees").exists());
+
+    // The first one: git makes the worktrees folder too.
+    let first = tmp.path().join("first");
+    f.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "first",
+        first.to_str().unwrap(),
+    ]);
+    until_kind(&mut sub, GitChangeKind::Worktrees).await;
+    assert_eq!(listed().await, 2);
+    drain(&mut sub).await;
+
+    // One inside the repository, as Claude Code's subagents make them,
+    // detached (no new branch, so no `refs` change).
+    let agent = f.path().join(".claude/worktrees/agent-1");
+    f.git(&["worktree", "add", "-q", "--detach", agent.to_str().unwrap()]);
+    until_kind(&mut sub, GitChangeKind::Worktrees).await;
+    assert_eq!(listed().await, 3);
+    drain(&mut sub).await;
+
+    // A linked worktree's workspace hears of them too.
+    let linked = h.open(&first).await;
+    let mut linked_sub = subscribe(&linked).await;
+    drain(&mut linked_sub).await;
+
+    // Removed.
+    f.git(&["worktree", "remove", agent.to_str().unwrap()]);
+    until_kind(&mut sub, GitChangeKind::Worktrees).await;
+    until_kind(&mut linked_sub, GitChangeKind::Worktrees).await;
+    assert_eq!(listed().await, 2);
+    drain(&mut sub).await;
+
+    // Deleted by hand, then pruned: git drops the worktrees folder with
+    // the last one.
+    drop(linked_sub);
+    std::fs::remove_dir_all(&first).unwrap();
+    f.git(&["worktree", "prune"]);
+    until_kind(&mut sub, GitChangeKind::Worktrees).await;
+    assert_eq!(listed().await, 1);
+    drain(&mut sub).await;
+
+    // And made again from nothing.
+    let again = tmp.path().join("again");
+    f.git(&["worktree", "add", "-q", "--detach", again.to_str().unwrap()]);
+    until_kind(&mut sub, GitChangeKind::Worktrees).await;
+    assert_eq!(listed().await, 2);
+    drain(&mut sub).await;
+    let more = tmp.path().join("more");
+    f.git(&["worktree", "add", "-q", "--detach", more.to_str().unwrap()]);
+    until_kind(&mut sub, GitChangeKind::Worktrees).await;
+    assert_eq!(listed().await, 3);
 }

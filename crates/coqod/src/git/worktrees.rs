@@ -67,7 +67,11 @@ impl GitService {
                 repo.add_worktree(&branch, base.as_deref(), path.as_deref())
             })
             .await?;
-        self.changed(&p.workspace, p.root, &[GitChangeKind::Refs]);
+        self.changed(
+            &p.workspace,
+            p.root,
+            &[GitChangeKind::Refs, GitChangeKind::Worktrees],
+        );
         let workspace = self
             .workspaces
             .open_workspace(OpenParams {
@@ -109,7 +113,11 @@ impl GitService {
                 .await?;
         }
         if !forgotten.contains(&p.workspace) {
-            self.changed(&p.workspace, p.root, &[GitChangeKind::Refs]);
+            self.changed(
+                &p.workspace,
+                p.root,
+                &[GitChangeKind::Refs, GitChangeKind::Worktrees],
+            );
         }
         Ok(gm::RemoveWorktreeResult {
             removed: true,

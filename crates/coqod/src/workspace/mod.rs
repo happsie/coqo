@@ -69,8 +69,8 @@ use self::ignores::IgnoreCache;
 use self::index::FileIndex;
 pub(crate) use self::ops::Renamed;
 pub use self::ops::Trash;
-#[cfg(test)]
 pub(crate) use self::project::common_dir as project_of;
+pub(crate) use self::project::worktrees as project_worktrees;
 pub use self::restore::COPY_LIMIT as UNDO_COPY_LIMIT;
 use self::restore::Restores;
 pub use self::watch::WatchConfig;
