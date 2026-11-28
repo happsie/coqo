@@ -22,7 +22,7 @@ The command palette opens from the top bar's command search (design board 1). Ev
   - The list scrolls past 380 px and keeps the selection in view.
 - **Empty:** "No command matches here" in `text_subtle`.
 - **Problems:** if `keybindings.toml` has problems, a `sand` line says how many and points to the log.
-- **Footer:** key caps for `↑↓`, `Enter` and `Esc` with "to move / to run / to close", and the `>` mode hint at the right (outside the commands), all `text_xs` in `text_subtle` above a `border` hairline. A mode with a second way to run an item (the finder's split) shows `Ctrl Enter` and its hint in place of the arrows.
+- **No footer:** the palette shows no key hints (see the [README](README.md)). The keys still work.
 
 ![Typing "new" after the >: fuzzy matches highlighted in sage](screenshots/palette-query-dark.png)
 
@@ -63,7 +63,7 @@ The palette's default mode finds a file by its path (`crates/coqo/src/files/find
 - **No query:** the workspace's recently opened files first, up to 20, labelled "recently opened", then the files nearest the roots. Every file tab opened counts (from the tree, the finder, an agent's link or a restored layout). The last 100 are kept in `<data dir>/ui/recent-files.json`, and they follow the tree's renames and deletes.
 - **A query:** fuzzy over the whole path, smart case, whitespace ignored. Matches at the start of a folder or name, after `_ - .`, at camelCase humps, in runs and in the file name rank higher, and so does a query that is the file name or its stem. Shorter paths win ties. Recently opened files get a small bonus.
 - **`path:line`** (`main.rs:42`, also `main.rs:42:7` for a column) puts the cursor on that line. The rows show the line after the name (`main.rs:42`).
-- **Keys:** `Enter` opens the file in the active group, or shows its tab if it's open. **`Ctrl Enter`** (`⌘Enter`) opens it in a new group to the right (a second view if it's open already). `Esc` closes. The footer says so: "Enter to open, Ctrl Enter to the side, Esc to close, > commands".
+- **Keys:** `Enter` opens the file in the active group, or shows its tab if it's open. **`Ctrl Enter`** (`⌘Enter`) opens it in a new group to the right (a second view if it's open already). `Esc` closes. The finder shows no footer.
 - **Empty:** "No file matches", or "Open a folder to find its files" without a workspace. While the daemon is still building the index, the list waits for it.
 
 ![Typing "tree": matches in sage, folders in text_subtle](screenshots/finder-query-dark.png)
@@ -114,7 +114,7 @@ commands::register(cx, [
 | `walkthrough.toggle_diff` | Show the step in the editor or the diff | `D` | `WalkthroughPlayer` |
 | `hello.greet` (mod) | Say hello | | anywhere |
 
-The key caps in the top bar, the empty state and the Welcome tab show the current keys, including the user's.
+The key cap in the top bar shows the current key, including the user's. The empty state and the Welcome tab show no keys.
 
 ## `keybindings.toml`
 

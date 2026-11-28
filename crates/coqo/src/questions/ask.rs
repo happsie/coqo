@@ -486,7 +486,7 @@ impl Render for AskPopover {
                         div()
                             .text_size(m.text_sm)
                             .text_color(p.text_subtle.hsla())
-                            .child("The code goes along. Enter sends, Esc cancels."),
+                            .child("The code goes along."),
                     )
                     .child(div().flex_1())
                     .child(

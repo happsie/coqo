@@ -27,7 +27,6 @@ The tab is padded 10 px, with 10 px between its parts, as the board's window is.
     - on the right, `+a` in `green` and `−d` in `rose` (or `binary`), then the change letter in mono semibold: `M` in `sand`, `A` in `green`, `D` in `rose`, `?` in `text_subtle`, `T` in `lavender`.
   - **Row states:** the shown file is `surface_selected` with a `sage` hairline at 40%. Other rows get a `surface` hover.
   - **Clicks:** clicking a row shows that file. Clicking its checkbox only marks it.
-  - **Key hints:** at the bottom, a `surface` card at 50%, with key caps: `J K` file, `j k` hunk, `v` viewed, `m` layout.
 - **Diff card:** `panel`, at the panel radius.
   - **File header:** the glyph, the path in semibold, `+a −d`, then, on the right, `base → head` in `text_subtle` and `text_muted`. With lines selected in a stageable diff, a raised **Stage n lines** (or **Unstage n lines**) button sits before the sides. A rename's path reads `old → new`.
   - **Discard (#226):** in a diff whose source can discard (the unstaged git diff), a selection also shows a raised **Discard n lines…** in `rose` before the stage button. It never discards at once. A confirmation band opens under the header, in `surface` with a `border_strong` hairline and radius 10:

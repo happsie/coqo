@@ -791,18 +791,6 @@ fn render_rename(renaming: &Renaming, cx: &mut Context<Rail>) -> AnyElement {
                 .border_1()
                 .border_color(p.blue.alpha(0.6))
                 .child(renaming.input.clone()),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .text_size(m.text_xs)
-                .text_color(p.text_subtle.hsla())
-                .child(kbd("Enter", cx))
-                .child("to rename")
-                .child(kbd("Esc", cx))
-                .child("to cancel"),
         );
     popup(card.into_any_element(), cx)
 }

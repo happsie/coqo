@@ -994,8 +994,6 @@ impl ChatTab {
         let rid = request.id;
         let hint: SharedString = if !waiting {
             format!("{agent} no longer waits; your answers go as a new message.").into()
-        } else if active {
-            "1–9 pick · ↑↓ move · Space tick · Enter send · Esc skip".into()
         } else {
             "".into()
         };

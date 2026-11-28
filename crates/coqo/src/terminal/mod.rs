@@ -54,9 +54,6 @@ pub(crate) const COPY_PASTE: [&str; 2] = ["cmd-c", "cmd-v"];
 #[cfg(not(target_os = "macos"))]
 pub(crate) const COPY_PASTE: [&str; 2] = ["ctrl-shift-c", "ctrl-shift-v"];
 
-/// The shortcut that opens a terminal, as shown to the user.
-pub const NEW_TERMINAL_KEYS: &str = "Ctrl `";
-
 struct Terminals {
     backend: Rc<dyn TerminalBackend>,
     views: OpenViews,

@@ -36,7 +36,7 @@ use coqo_ui::{
     },
     serde_json::Value,
     text::markdown,
-    widgets::{Icon, TestSupportExt as _, icon, kbd, primary, raised, section_label},
+    widgets::{Icon, TestSupportExt as _, icon, primary, raised, section_label},
 };
 
 use super::{ChatTab, kind_icon, option_rank};
@@ -556,11 +556,6 @@ impl ChatTab {
             } else {
                 raised(base, cx).text_color(p.text.hsla())
             };
-            let key = match option.kind {
-                PermissionOptionKind::AllowOnce if first => Some("Enter"),
-                PermissionOptionKind::RejectOnce if first => Some("Esc"),
-                _ => None,
-            };
             let (id, request_id) = (option.id.clone(), request.id);
             buttons = buttons.child(
                 base.id(ElementId::Name(
@@ -568,7 +563,6 @@ impl ChatTab {
                 ))
                 .test_support()
                 .child(option.name.clone())
-                .children(key.map(|k| kbd(k, cx)))
                 .on_click(
                     cx.listener(move |this, _, _, cx| this.respond(request_id, id.clone(), cx)),
                 ),
