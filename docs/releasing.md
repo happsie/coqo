@@ -13,9 +13,8 @@ Notarization, dmg and AppImage are out of scope here (issue #124).
 - `x86_64-unknown-linux-gnu`, built on `ubuntu-22.04` (the oldest runner, so
   the glibc requirement stays low) with the same GPUI system libraries as
   `ci.yml`. The build job prints the highest `GLIBC_*` symbol the binaries
-  need to its step summary; ubuntu-22.04 ships glibc 2.35, so the minimum is
-  **glibc 2.35 or older** (the dry run reports the exact figure: see the
-  run summary). That covers Ubuntu 22.04+, Debian 12+ and Fedora 36+.
+  need to its step summary; the measured minimum is **glibc 2.35** (highest symbol `GLIBC_2.35`, reported
+  in the build job's log and step summary). That covers Ubuntu 22.04+, Debian 12+ and Fedora 36+.
   The archive holds `coqo/bin/{coqo,coqod}` (stripped).
   Runtime libraries a desktop needs: libxkbcommon (and libxkbcommon-x11),
   Wayland or X11 (libwayland-client, libxcb), Vulkan (a loader plus a Mesa or
