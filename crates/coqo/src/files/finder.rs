@@ -192,6 +192,9 @@ impl RecentFiles {
             } => self.entries.retain(|e| {
                 e.workspace != *workspace || e.root != *root || !is_at_or_under(&e.path, path)
             }),
+            // An undone delete: the files come back to the list as they're
+            // opened again.
+            FileEvent::Restored { .. } => {}
         }
         self.save();
     }

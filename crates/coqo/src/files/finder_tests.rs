@@ -261,11 +261,17 @@ fn the_finder_follows_new_files() {
     write(&fixture.project, "docs/brand_new.md", "# New\n");
     // The daemon's index follows the watcher a moment later.
     let deadline = Instant::now() + TIMEOUT;
+    let shown = |ui: &mut Ui| ui.titles().first().map(String::as_str) == Some("brand_new.md");
     loop {
         ui.press(FIND_FILE_KEY);
         ui.type_text("brand_new");
-        ui.settle();
-        if ui.titles().first().map(String::as_str) == Some("brand_new.md") {
+        // Give this query's answer time to come back, even under load.
+        let answered = Instant::now() + Duration::from_secs(1);
+        while !shown(&mut ui) && Instant::now() < answered {
+            ui.settle();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if shown(&mut ui) {
             break;
         }
         ui.press("escape");
