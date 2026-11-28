@@ -322,7 +322,10 @@ fn the_search_finds_commands_by_name_and_by_keys() {
     search(&mut ui, "gam");
     assert!(ui.shows("kb-row-test.gamma"));
     assert!(!ui.shows("kb-row-test.alpha"));
-    search(&mut ui, "ctrl alt b");
+    search(
+        &mut ui,
+        &keyfile::display("ctrl-alt-b", cfg!(target_os = "macos")),
+    );
     assert!(ui.shows("kb-row-test.beta"));
     assert!(!ui.shows("kb-row-test.gamma"));
     search(&mut ui, "nothing like this");
