@@ -1196,7 +1196,11 @@ impl Shell {
                     .flex_col()
                     .px(m.gap)
                     .pb(px(14.))
-                    .child(chat::list::render_section(self.dock.downgrade(), cx)),
+                    .child(chat::list::render_section(
+                        self.dock.downgrade(),
+                        window,
+                        cx,
+                    )),
             )
             .into_any_element()
     }

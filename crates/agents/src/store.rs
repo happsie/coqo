@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Session persistence in the global database (`agent_sessions`,
-//! `agent_session_updates`; global migrations 3, 5 and 7), and the workspaces'
+//! `agent_session_updates`; global migrations 3, 5, 7, 9 and 13), and the workspaces'
 //! permission rules (`agent_permission_rules`; global migration 4).
 //!
 //! Synchronous and short: the manager calls it while holding a session's
@@ -33,6 +33,36 @@ pub enum StoreError {
 
 pub(crate) type Result<T> = std::result::Result<T, StoreError>;
 
+/// Where a session's title came from. A user's title is never replaced;
+/// an agent's replaces one derived from the prompt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TitleSource {
+    /// Derived from the first prompt.
+    Prompt,
+    /// Reported by the provider (ACP `session_info_update`).
+    Agent,
+    /// Given by the user (`sessions/create`, `sessions/rename`).
+    User,
+}
+
+impl TitleSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Prompt => "prompt",
+            Self::Agent => "agent",
+            Self::User => "user",
+        }
+    }
+
+    fn parse(s: &str) -> Self {
+        match s {
+            "prompt" => Self::Prompt,
+            "agent" => Self::Agent,
+            _ => Self::User,
+        }
+    }
+}
+
 /// A session row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredSession {
@@ -40,6 +70,8 @@ pub struct StoredSession {
     pub info: SessionInfo,
     /// The provider's own session id, for resume.
     pub provider_session: Option<String>,
+    /// Where `info.title` came from; `None` while it has none.
+    pub title_source: Option<TitleSource>,
 }
 
 /// Agent sessions and their transcripts in `coqo.db`.
@@ -69,7 +101,7 @@ fn parse_state(s: &str) -> AgentState {
 
 const SELECT: &str = "SELECT id, provider, workspace, cwd, title, state, state_reason, mode, \
                       closed, created_at, updated_at, provider_session, change_seq, \
-                      state_since, status, criteria, tool_use \
+                      state_since, status, criteria, tool_use, title_source \
                       FROM agent_sessions";
 
 /// A stored status; one that no longer parses is dropped (it is only a
@@ -99,6 +131,13 @@ fn parse_tool_use(json: Option<String>) -> Vec<ToolUse> {
 
 fn session_row(row: &Row<'_>) -> rusqlite::Result<(StoredSession, u64)> {
     let state: String = row.get(5)?;
+    let title: Option<String> = row.get(4)?;
+    // A titled row from before migration 13 has no source: only
+    // `sessions/create` titled sessions then.
+    let title_source = row
+        .get::<_, Option<String>>(17)?
+        .map(|s| TitleSource::parse(&s))
+        .or_else(|| title.as_ref().map(|_| TitleSource::User));
     Ok((
         StoredSession {
             info: SessionInfo {
@@ -106,7 +145,7 @@ fn session_row(row: &Row<'_>) -> rusqlite::Result<(StoredSession, u64)> {
                 provider: row.get(1)?,
                 workspace: row.get(2)?,
                 cwd: row.get(3)?,
-                title: row.get(4)?,
+                title,
                 state: parse_state(&state),
                 state_reason: row.get(6)?,
                 state_since: row.get(13)?,
@@ -119,6 +158,7 @@ fn session_row(row: &Row<'_>) -> rusqlite::Result<(StoredSession, u64)> {
                 updated_at: row.get(10)?,
             },
             provider_session: row.get(11)?,
+            title_source,
         },
         u64_of(row.get(12)?),
     ))
@@ -159,16 +199,17 @@ impl SessionStore {
             .prepare_cached(
                 "INSERT INTO agent_sessions (id, provider, workspace, cwd, title, state,
                      state_reason, mode, closed, provider_session, created_at, updated_at,
-                     change_seq, state_since, status, criteria, tool_use)
+                     change_seq, state_since, status, criteria, tool_use, title_source)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                     ?16, ?17)
+                     ?16, ?17, ?18)
                  ON CONFLICT (id) DO UPDATE SET
                      title = excluded.title, state = excluded.state,
                      state_reason = excluded.state_reason, mode = excluded.mode,
                      closed = excluded.closed, provider_session = excluded.provider_session,
                      updated_at = excluded.updated_at, change_seq = excluded.change_seq,
                      state_since = excluded.state_since, status = excluded.status,
-                     criteria = excluded.criteria, tool_use = excluded.tool_use",
+                     criteria = excluded.criteria, tool_use = excluded.tool_use,
+                     title_source = excluded.title_source",
             )?
             .execute(params![
                 i.id.0,
@@ -188,6 +229,7 @@ impl SessionStore {
                 status,
                 criteria,
                 tool_use,
+                session.title_source.map(TitleSource::as_str),
             ])?;
         Ok(())
     }
@@ -453,6 +495,7 @@ mod tests {
                 updated_at,
             },
             provider_session: Some("p-1".into()),
+            title_source: None,
         }
     }
 

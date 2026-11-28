@@ -15,6 +15,7 @@
 //! | `session/set_mode` | [`ProviderSession::set_mode`] |
 //! | `session/set_config_option` | [`ProviderSession::set_config_option`] |
 //! | `session/update` notifications | [`SessionEvents::update`] with an [`AgentUpdate`] |
+//! | `session_info_update` (title) | [`AgentUpdate::Title`] |
 //! | `session/request_permission` | [`SessionEvents::request_permission`] |
 //! | `auth/status` | [`AgentUpdate::AuthStatus`] |
 //!
@@ -234,24 +235,31 @@ pub enum AgentUpdate {
     /// The billing source. Report kind and plan only, never an email or
     /// organization.
     AuthStatus(AuthStatus),
+    /// The agent's own title for the session (ACP `session_info_update`;
+    /// Claude Code titles a session from its first prompt). It replaces a
+    /// title Coqo derived from the prompt, never one the user gave. Not part
+    /// of the transcript: it arrives on `sessions/changes`.
+    Title(String),
 }
 
-impl From<AgentUpdate> for SessionUpdate {
-    fn from(u: AgentUpdate) -> Self {
-        match u {
-            AgentUpdate::UserMessageChunk(content) => Self::UserMessageChunk { content },
-            AgentUpdate::AgentMessageChunk(content) => Self::AgentMessageChunk { content },
-            AgentUpdate::AgentThoughtChunk(content) => Self::AgentThoughtChunk { content },
-            AgentUpdate::ToolCall(c) => Self::ToolCall(c),
-            AgentUpdate::ToolCallUpdate(u) => Self::ToolCallUpdate(u),
-            AgentUpdate::Plan(entries) => Self::Plan { entries },
-            AgentUpdate::AvailableCommands(commands) => Self::AvailableCommands { commands },
-            AgentUpdate::Modes(m) => Self::Modes(m),
-            AgentUpdate::CurrentMode(mode_id) => Self::CurrentMode { mode_id },
-            AgentUpdate::ConfigOptions(config_options) => Self::ConfigOptions { config_options },
-            AgentUpdate::Usage(u) => Self::Usage(u),
-            AgentUpdate::AuthStatus(a) => Self::AuthStatus(a),
-        }
+impl AgentUpdate {
+    /// The transcript entry this update records, if it is one.
+    pub(crate) fn into_transcript(self) -> Option<SessionUpdate> {
+        Some(match self {
+            Self::UserMessageChunk(content) => SessionUpdate::UserMessageChunk { content },
+            Self::AgentMessageChunk(content) => SessionUpdate::AgentMessageChunk { content },
+            Self::AgentThoughtChunk(content) => SessionUpdate::AgentThoughtChunk { content },
+            Self::ToolCall(c) => SessionUpdate::ToolCall(c),
+            Self::ToolCallUpdate(u) => SessionUpdate::ToolCallUpdate(u),
+            Self::Plan(entries) => SessionUpdate::Plan { entries },
+            Self::AvailableCommands(commands) => SessionUpdate::AvailableCommands { commands },
+            Self::Modes(m) => SessionUpdate::Modes(m),
+            Self::CurrentMode(mode_id) => SessionUpdate::CurrentMode { mode_id },
+            Self::ConfigOptions(config_options) => SessionUpdate::ConfigOptions { config_options },
+            Self::Usage(u) => SessionUpdate::Usage(u),
+            Self::AuthStatus(a) => SessionUpdate::AuthStatus(a),
+            Self::Title(_) => return None,
+        })
     }
 }
 

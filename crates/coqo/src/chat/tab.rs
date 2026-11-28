@@ -54,10 +54,11 @@ use coqo_ui::{
 };
 
 use super::{
-    CancelTurn, KIND, OpenLocation, OpenTerminal, RunInTerminal, SIGN_IN_HELP, agent_dot,
-    attention_label,
+    CancelTurn, KIND, OpenLocation, OpenTerminal, RenameChat, RunInTerminal, SIGN_IN_HELP,
+    agent_dot, attention_label,
     diff::{DiffLine, DiffPreview, LineKind, file_name},
     list::ChatList,
+    rename::{self, Place},
     state_color, state_name,
     transcript::{Entry, NoticeKind, ToolEntry, Transcript, block_text},
 };
@@ -539,7 +540,7 @@ impl TabItem for ChatTab {
         json!({ "session": self.session.0 })
     }
 
-    fn render_label(&self, selected: bool, _: &mut Window, cx: &App) -> Option<AnyElement> {
+    fn render_label(&self, selected: bool, window: &mut Window, cx: &App) -> Option<AnyElement> {
         let state = self.state(cx);
         let t = cx.tokens();
         let p = &t.palette;
@@ -549,13 +550,38 @@ impl TabItem for ChatTab {
             None if selected => p.text.hsla(),
             None => p.text_muted.hsla(),
         };
+        let field = ChatList::global(cx)
+            .and_then(|l| l.read(cx).rename_field(&self.session, Place::Tab, window));
+        let title = self.title(cx);
+        let name = match field {
+            Some(input) => rename::field(input, "chat-tab-rename", Some(220.), cx),
+            None => {
+                let (session, title) = (self.session.clone(), title.to_string());
+                let composer = self.composer.read(cx).focus_handle(cx);
+                div()
+                    .id("chat-tab-title")
+                    .test_support()
+                    .child(title.clone())
+                    .on_click(move |e, window, cx| {
+                        // A double-click renames; the tab frame's click would
+                        // take the focus to the composer.
+                        if e.click_count() == 2 {
+                            cx.stop_propagation();
+                            let (id, title) = (session.clone(), title.clone());
+                            let restore = Some(composer.clone());
+                            rename::start(id, title, Place::Tab, restore, window, cx);
+                        }
+                    })
+                    .into_any_element()
+            }
+        };
         Some(
             div()
                 .flex()
                 .items_center()
                 .gap_2()
                 .child(icon(Icon::MessageCircle, px(14.), icon_color))
-                .child(self.title(cx))
+                .child(name)
                 .children(attention.map(|(label, color)| {
                     div()
                         .id("chat-tab-badge")
@@ -1777,6 +1803,11 @@ impl Render for ChatTab {
             .key_context("ChatTab")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &CancelTurn, _, cx| this.cancel(cx)))
+            .on_action(cx.listener(|this, _: &RenameChat, window, cx| {
+                let title = this.title(cx).to_string();
+                let restore = Some(this.composer.read(cx).focus_handle(cx));
+                rename::start(this.session.clone(), title, Place::Tab, restore, window, cx);
+            }))
             .size_full()
             .flex()
             .bg(p.panel.hsla())

@@ -1802,6 +1802,8 @@ fn chat_screenshots() {
         ("setup-dark", Appearance::Dark, false),
         ("settings-dark", Appearance::Dark, false),
         ("settings-light", Appearance::Light, false),
+        ("rename-tab-dark", Appearance::Dark, false),
+        ("rename-row-light", Appearance::Light, false),
     ];
     for (name, appearance, composing) in shots {
         let setup = name.starts_with("setup");
@@ -1814,6 +1816,13 @@ fn chat_screenshots() {
             });
         }
         let settings = name.starts_with("settings");
+        let renaming = match name {
+            "rename-tab-dark" => Some(("s1", "Free shipping threshold", super::rename::Place::Tab)),
+            "rename-row-light" => {
+                Some(("s2", "Fix the flaky login test", super::rename::Place::Row))
+            }
+            _ => None,
+        };
         let rules = rules.clone();
         let image = render_offscreen(appearance, size(1440., 900.), move |window, cx| {
             crate::shell::init(cx);
@@ -1838,6 +1847,7 @@ fn chat_screenshots() {
                     );
                     return;
                 }
+                l.set_preview_workspace("ws-shop");
                 l.upsert(info("s3", "Bump the HTTP client", AgentState::Done, 1), cx);
                 l.upsert(
                     with_status(
@@ -1850,7 +1860,7 @@ fn chat_screenshots() {
                 l.upsert(shipping(), cx);
             });
             let store = Rc::new(MemoryLayoutStore::default());
-            cx.new(|cx| {
+            let shell = cx.new(|cx| {
                 let shell = Shell::new(store, DEFAULT_WORKSPACE, window, cx);
                 if setup {
                     return shell;
@@ -1895,7 +1905,13 @@ fn chat_screenshots() {
                     dock.open_tab(coqo_ui::dock::AnyTab::new(chat), window, cx);
                 });
                 shell
-            })
+            });
+            if let Some((id, title, place)) = renaming {
+                list.update(cx, |l, cx| {
+                    l.start_rename(SessionId(id.into()), title.into(), place, None, window, cx)
+                });
+            }
+            shell
         })
         .expect("offscreen render");
         let path = dir.join(format!("coqo-{name}.png"));
@@ -2238,4 +2254,116 @@ fn a_published_walkthrough_shows_as_a_card_and_opens_its_player() {
     });
     next.notify_one();
     ui.wait_for("the end of the turn", |ui| !running(ui, &chat));
+}
+
+fn renaming(ui: &mut Ui) -> Option<super::rename::Place> {
+    ui.cx.read(|cx| {
+        ChatList::global(cx)
+            .unwrap()
+            .read(cx)
+            .renaming()
+            .map(|(_, place)| place)
+    })
+}
+
+/// Types `text` into the open name field and presses Enter.
+fn type_title(ui: &mut Ui, session: &coqo_agents::model::SessionId, text: &str) {
+    let text = text.to_owned();
+    let session = session.clone();
+    ui.frame(|window, cx| {
+        let list = ChatList::global(cx).unwrap();
+        let place = list.read(cx).renaming().unwrap().1;
+        let input = list
+            .read(cx)
+            .rename_field(&session, place, window)
+            .expect("the name field");
+        input.update(cx, |i, cx| i.set_text(text, window, cx));
+    });
+    ui.press("enter");
+}
+
+fn stored_title(fixture: &Fixture, session: &coqo_agents::model::SessionId) -> Option<String> {
+    fixture.daemon.manager.snapshot(session).unwrap().info.title
+}
+
+#[test]
+fn a_chat_is_titled_by_its_first_prompt_and_renamed_in_place() {
+    let provider = ScriptedProvider::new()
+        .turn([chunk("On it"), Step::Stop(StopReason::EndTurn)])
+        .turn([
+            Step::Update(AgentUpdate::Title("The agent's title".into())),
+            Step::Stop(StopReason::EndTurn),
+        ]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    let session = ui.cx.read(|cx| chat.read(cx).session().clone());
+    assert_eq!(ui.listed()[0].title, None);
+
+    // The sidebar row shows the derived title from `sessions/changes`.
+    ui.send(&chat, "Fix the **flaky** login test\n\nIt fails on CI.");
+    ui.wait_for("the derived title", |ui| {
+        ui.listed()[0].title.as_deref() == Some("Fix the flaky login test") && !running(ui, &chat)
+    });
+    assert_eq!(
+        ui.cx
+            .read(|cx| coqo_ui::dock::TabItem::title(chat.read(cx), cx)),
+        "Fix the flaky login test"
+    );
+
+    // A double-click on the tab label opens the name field there.
+    ui.frame(|window, cx| window.double_click("chat-tab-title", cx));
+    assert_eq!(renaming(&mut ui), Some(super::rename::Place::Tab));
+    assert!(ui.shows("chat-tab-rename"));
+    type_title(&mut ui, &session, "  Login test  ");
+    ui.wait_for("the renamed chat", |ui| {
+        ui.listed()[0].title.as_deref() == Some("Login test")
+    });
+    assert_eq!(renaming(&mut ui), None);
+    assert!(!ui.shows("chat-tab-rename"));
+    assert_eq!(
+        stored_title(&fixture, &session).as_deref(),
+        Some("Login test")
+    );
+    // The focus is back in the composer.
+    let composer = ui.cx.read(|cx| chat.read(cx).composer().clone());
+    ui.frame(|window, cx| {
+        assert!(composer.read(cx).focus_handle(cx).is_focused(window));
+    });
+
+    // The agent's own title no longer replaces the user's.
+    ui.send(&chat, "go on");
+    ui.wait_for("the second turn", |ui| {
+        !running(ui, &chat) && fixture.provider.calls().len() >= 3
+    });
+    assert_eq!(
+        stored_title(&fixture, &session).as_deref(),
+        Some("Login test")
+    );
+
+    // F2 in the chat opens it too; Esc leaves the title as it was.
+    ui.press("f2");
+    assert_eq!(renaming(&mut ui), Some(super::rename::Place::Tab));
+    ui.press("escape");
+    assert_eq!(renaming(&mut ui), None);
+    assert_eq!(ui.listed()[0].title.as_deref(), Some("Login test"));
+
+    // A double-click on the CHATS row renames it there.
+    let row = format!("chat-row-{session}");
+    ui.frame(|window, cx| window.double_click(name(&row), cx));
+    assert_eq!(renaming(&mut ui), Some(super::rename::Place::Row));
+    assert!(ui.shows("chat-row-rename"));
+    type_title(&mut ui, &session, "Login flake");
+    ui.wait_for("the row's new title", |ui| {
+        ui.listed()[0].title.as_deref() == Some("Login flake")
+    });
+    assert_eq!(
+        stored_title(&fixture, &session).as_deref(),
+        Some("Login flake")
+    );
+    // An empty title changes nothing.
+    ui.frame(|window, cx| window.double_click(name(&row), cx));
+    type_title(&mut ui, &session, "   ");
+    assert_eq!(renaming(&mut ui), None);
+    assert_eq!(ui.listed()[0].title.as_deref(), Some("Login flake"));
 }

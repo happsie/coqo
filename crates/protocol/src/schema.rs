@@ -249,6 +249,11 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "Set or update the session's acceptance criteria (session tokens: own session).",
         ),
+        request::<agents::Rename>(
+            g,
+            "client→server",
+            "Give a session the user's title (kept across restarts; the agent's title no longer replaces it).",
+        ),
         request::<agents::Close>(
             g,
             "client→server",
@@ -962,6 +967,7 @@ fn schema_covers_every_builtin_method() {
         agents::Prompt::NAME,
         agents::SetStatus::NAME,
         agents::SetCriteria::NAME,
+        agents::Rename::NAME,
         agents::PermissionRules::NAME,
         agents::DeletePermissionRule::NAME,
         agents::Updates::NAME,

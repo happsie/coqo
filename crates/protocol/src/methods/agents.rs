@@ -1238,7 +1238,9 @@ pub struct SessionInfo {
     pub workspace: Option<String>,
     /// The agent's working directory (the workspace root).
     pub cwd: String,
-    /// Title for tabs and the sidebar.
+    /// Title for tabs and the sidebar: the user's (`sessions/create`,
+    /// `sessions/rename`), else the agent's own, else one derived from the
+    /// first prompt. `None` until the first prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// What it is doing.
@@ -1616,6 +1618,29 @@ pub enum SetCriteria {}
 impl Method for SetCriteria {
     const NAME: &'static str = "sessions/setCriteria";
     type Params = SetCriteriaParams;
+    type Result = SessionInfo;
+}
+
+/// Params of `sessions/rename`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct RenameParams {
+    /// The session.
+    pub session: SessionId,
+    /// The new title: whitespace collapsed, cut at 120 characters; must not
+    /// be empty.
+    pub title: String,
+}
+
+/// `sessions/rename`: give a session the user's title. It is kept across
+/// restarts, and the agent's own title no longer replaces it. Works on
+/// closed sessions too. Returns the session's new info, which also goes out
+/// on `sessions/changes`.
+#[derive(Debug)]
+pub enum Rename {}
+impl Method for Rename {
+    const NAME: &'static str = "sessions/rename";
+    type Params = RenameParams;
     type Result = SessionInfo;
 }
 

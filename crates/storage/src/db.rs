@@ -310,6 +310,18 @@ pub const GLOBAL_MIGRATIONS: &[Migration] = &[
             CREATE INDEX review_comments_pending ON review_comments (pending, thread);
         ",
     },
+    Migration {
+        version: 13,
+        name: "agent session title source",
+        // Where a session's title came from (#172, `coqo-agents`): `prompt`
+        // (derived from the first prompt), `agent` (the provider reported
+        // it) or `user` (`sessions/create` or `sessions/rename`). NULL for an
+        // untitled session; a titled row from before this migration counts
+        // as `user`, since only `sessions/create` set titles then.
+        sql: "
+            ALTER TABLE agent_sessions ADD COLUMN title_source TEXT;
+        ",
+    },
 ];
 
 /// Schema of a per-workspace database, `workspaces/<id>/workspace.db`.
