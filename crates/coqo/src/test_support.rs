@@ -56,6 +56,8 @@ impl TestDaemon {
         let (paths, data) = (self.paths.clone(), DataDirs::at(&self.data));
         // Never the user's trash.
         let trash = coqod::workspace::Trash::Folder(self.trash());
+        // Never the user's settings.
+        let config = self.config_dir();
         // Binding needs the runtime's reactor.
         let _entered = self.runtime.enter();
         let lock = coqod::daemon::acquire(&paths).unwrap();
@@ -65,10 +67,16 @@ impl TestDaemon {
             exit_after: None,
         };
         self.serving = Some(self.runtime.spawn(async move {
-            coqod::daemon::serve_with(paths, data, policy, lock, listener, trash)
+            coqod::daemon::serve_with(paths, data, policy, lock, listener, trash, config)
                 .await
                 .unwrap();
         }));
+    }
+
+    /// The daemon's config directory (`settings.toml`): a folder next to the
+    /// data.
+    pub fn config_dir(&self) -> PathBuf {
+        self.data.with_file_name("config")
     }
 
     /// Where `fs/delete` puts deleted entries: a folder next to the data.

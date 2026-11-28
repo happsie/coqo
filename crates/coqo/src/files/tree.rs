@@ -436,7 +436,8 @@ impl FileTree {
     /// per switch, leaving the focus where it is. Not while a name is typed
     /// or a delete waits in the tree.
     fn follow_active_tab(&mut self, cx: &mut Context<Self>) {
-        if !settings::get(cx).files.auto_reveal {
+        let workspace = self.workspace.as_ref().map(|w| &w.id);
+        if !settings::get(cx).bool(settings::AUTO_REVEAL, workspace) {
             self.followed = None;
             return;
         }

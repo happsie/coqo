@@ -63,6 +63,8 @@ fn parses_the_full_example() {
             SettingType::StringList
         ]
     );
+    assert_eq!(c.settings_sections[0].title, "Maven");
+    assert!(c.settings_sections[0].holds("maven.threads"));
     assert_eq!(c.views.sidebar[0].id.as_str(), "maven.modules");
     assert_eq!(c.views.status[0].alignment, StatusAlignment::Right);
     assert_eq!(c.views.status[0].priority, 10);
@@ -406,6 +408,7 @@ fn contributes_register_every_point() {
         "acme.maven-tools.menu-0"
     );
     assert_eq!(host.contributions::<points::Settings>().len(), 5);
+    assert_eq!(host.contributions::<points::SettingsSections>().len(), 1);
     assert_eq!(host.contributions::<points::SidebarViews>().len(), 1);
     assert_eq!(host.contributions::<points::PanelViews>().len(), 1);
     assert_eq!(host.contributions::<points::TabViews>().len(), 1);

@@ -105,6 +105,7 @@ pub fn init(cx: &mut App) {
     crate::walkthrough::init(cx);
     crate::threads::init(cx);
     agents::init(cx);
+    crate::settings::page::init(cx);
 }
 
 /// The drag payload of the sidebar's resize edge.
@@ -585,6 +586,35 @@ impl Shell {
         dock.update(cx, |dock, cx| dock.open_tab(tab, window, cx));
     }
 
+    /// Open the Settings tab, or bring it forward, at `section` if given.
+    pub fn show_settings(
+        &mut self,
+        section: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::settings::page::{self, SettingsPage};
+        let dock = self.dock.clone();
+        let id = match dock.read(cx).find_tab(page::KIND, page::KIND, cx) {
+            Some(id) => {
+                dock.update(cx, |dock, cx| dock.activate_tab(id, window, cx));
+                id
+            }
+            None => {
+                let tab = page::new(window, cx);
+                dock.update(cx, |dock, cx| dock.open_tab(tab, window, cx))
+            }
+        };
+        if let Some(section) = section
+            && let Some(view) = dock
+                .read(cx)
+                .tab(id)
+                .and_then(|t| t.downcast::<SettingsPage>())
+        {
+            view.update(cx, |p, cx| p.select(section, cx));
+        }
+    }
+
     /// Whether the agents overview is the shown tab of a tab group.
     pub fn agents_shown(&self, cx: &App) -> bool {
         let dock = self.dock.read(cx);
@@ -1002,6 +1032,16 @@ impl Render for Shell {
                     this.show_agents(window, cx)
                 }),
             )
+            .on_action(cx.listener(
+                |this, _: &crate::settings::page::OpenSettings, window, cx| {
+                    this.show_settings(None, window, cx)
+                },
+            ))
+            .on_action(cx.listener(
+                |this, action: &crate::settings::page::OpenSettingsAt, window, cx| {
+                    this.show_settings(Some(action.section.clone()), window, cx)
+                },
+            ))
             .on_action(cx.listener(|this, _: &worktrees::SwitchWorktree, _, cx| {
                 this.switcher.update(cx, |s, cx| s.open_list(cx))
             }))

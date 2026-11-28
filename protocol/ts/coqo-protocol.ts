@@ -18,6 +18,7 @@ export const ErrorCodes = {
   INVALID_PARAMS: -32602,
   INVALID_QUERY: 2001,
   INVALID_REQUEST: -32600,
+  INVALID_SETTING: 2202,
   INVALID_WALKTHROUGH: 1702,
   IO_ERROR: 1009,
   METHOD_NOT_FOUND: -32601,
@@ -40,6 +41,7 @@ export const ErrorCodes = {
   SESSION_BUSY: 1103,
   SESSION_CLOSED: 1104,
   SESSION_ENDED: 1110,
+  SETTINGS_FILE_INVALID: 2203,
   SPAWN_FAILED: 1302,
   STALE_SELECTION: 1602,
   STORAGE_ERROR: 1109,
@@ -52,6 +54,7 @@ export const ErrorCodes = {
   UNKNOWN_PROVIDER: 1102,
   UNKNOWN_ROOT: 1002,
   UNKNOWN_SESSION: 1101,
+  UNKNOWN_SETTING: 2201,
   UNKNOWN_SUBSCRIPTION: -32004,
   UNKNOWN_THREAD: 1801,
   UNKNOWN_TOOL: 1401,
@@ -614,6 +617,9 @@ export type ChangesParams8 = {
   /** Only this workspace's threads. */
   workspace?: WorkspaceId | null;
 };
+
+/** Params of [`Changes`]. */
+export type ChangesParams9 = Record<string, unknown>;
 
 /** Params of [`Close`]. */
 export type CloseParams = {
@@ -1216,6 +1222,34 @@ export type EventsParams = {
   workspace?: WorkspaceId | null;
 };
 
+/** One setting of a section. */
+export type FieldInfo = {
+  /** The value when nobody set it. */
+  default: unknown;
+  /** What it does. */
+  description?: string;
+  /** The full key, such as `files.auto_reveal`. */
+  key: string;
+  /** The kind of value. */
+  kind: FieldKind;
+  /** Upper bound of a number. */
+  maximum?: number | null;
+  /** Lower bound of a number. */
+  minimum?: number | null;
+  /** Who may set it. */
+  scope?: FieldScope;
+  /** Title shown on its row. */
+  title: string;
+  /** The allowed values of an `enum`. */
+  values?: Array<string>;
+};
+
+/** What kind of value a field holds, and so how the settings page edits it. */
+export type FieldKind = "boolean" | "string" | "integer" | "number" | "enum" | "string_list";
+
+/** Who may set a field. */
+export type FieldScope = "workspace" | "user";
+
 /** How a path changed on one side. */
 export type FileChange = "added" | "modified" | "deleted" | "typeChanged" | "untracked" | "renamed";
 
@@ -1277,6 +1311,18 @@ export type FileReplaced = {
   rev?: number | null;
   /** The file's root. */
   root: RootId;
+};
+
+/** One settings file: where it is, its valid values and its problems. */
+export type FileSettings = {
+  /** Whether the file exists. */
+  exists?: boolean;
+  /** The file's absolute path (it may not exist yet). */
+  path: string;
+  /** What is wrong in it: invalid TOML, invalid values, unknown keys. */
+  problems?: Array<SettingsProblem>;
+  /** The valid values it sets, by full key. While the file is not valid TOML, the values it had when it last was. */
+  values?: Record<string, unknown>;
 };
 
 /** A file as one diff side has it. */
@@ -1396,6 +1442,24 @@ export type FsChanges = {
 export type GetContextParams = {
   /** The workspace. */
   workspace: WorkspaceId;
+};
+
+/** Params of [`Get`]. */
+export type GetParams = {
+  /** Workspaces whose own files to include too. The daemon follows each one asked for from then on, and [`Changes`] reports when it changes. */
+  workspaces?: Array<WorkspaceId>;
+};
+
+/** Result of [`Get`]. */
+export type GetResult = {
+  /** How many times the settings changed since the daemon started, as in [`Changes`]. */
+  generation: number;
+  /** The settings page's sections, in display order. */
+  sections: Array<SectionInfo>;
+  /** The user's `settings.toml`. */
+  user: FileSettings;
+  /** The workspaces asked for that are known, in the order asked. */
+  workspaces?: Array<WorkspaceSettings>;
 };
 
 /** What may have changed, in a [`GitChanges`] event. */
@@ -2631,6 +2695,22 @@ export type SearchSummary = {
   searched: number;
 };
 
+/** A section of the settings page, with its fields. */
+export type SectionInfo = {
+  /** A line under the title. */
+  description?: string | null;
+  /** Its fields, in the order they were contributed. */
+  fields: Array<FieldInfo>;
+  /** Section id, the key prefix of its fields (`files`). */
+  id: string;
+  /** The mod that contributes the section (the first field's, for a section no mod declared). */
+  mod: string;
+  /** Its position as the mod gave it (lowest first); the list is already in order, this places the UI's own pages among the sections. */
+  order?: number | null;
+  /** Title in the section list. */
+  title: string;
+};
+
 /** A selection or cursor in a tab. */
 export type Selection = {
   /** The selected range; empty for a cursor. */
@@ -2920,6 +3000,22 @@ export type SetModeParams = {
   session: SessionId;
 };
 
+/** Params of [`Set`]. */
+export type SetParams = {
+  /** The full key, such as `files.auto_reveal`. */
+  key: string;
+  /** The new value; `null` (or absent) removes the key from the file, so the next layer's value applies. */
+  value?: unknown;
+  /** Write the workspace's `.coqo/settings.toml` instead of the user's file. */
+  workspace?: WorkspaceId | null;
+};
+
+/** Result of [`Set`]. */
+export type SetResult = {
+  /** The generation after the write. */
+  generation: number;
+};
+
 /** Params of [`SetSettings`]: what to change. */
 export type SetSettingsParams = {
   /** Turn do-not-disturb on or off. */
@@ -2960,6 +3056,22 @@ export type SetStepStateParams = {
   state: StepState;
   /** The step's id. */
   step: string;
+};
+
+/** One event of [`Changes`]: something changed; [`Get`] again. */
+export type SettingsChanged = {
+  /** The new generation. */
+  generation: number;
+};
+
+/** Something wrong in a settings file. */
+export type SettingsProblem = {
+  /** The setting it is about; absent for the whole file (not valid TOML, cannot be read). */
+  key?: string | null;
+  /** The 1-based line, when known. */
+  line?: number | null;
+  /** What is wrong, for the user: "`appearance.theme`: `blue` is not one of system, dark, light". */
+  message: string;
 };
 
 /** How important a note is. */
@@ -3990,6 +4102,14 @@ export type WorkspaceRulesParams = {
   workspace: string;
 };
 
+/** A workspace's own settings file. */
+export type WorkspaceSettings = {
+  /** Its `.coqo/settings.toml`, in its first root. */
+  file: FileSettings;
+  /** The workspace. */
+  workspace: WorkspaceId;
+};
+
 /** A workspace's persisted state document, e.g. `tabs`, `layout`, `settings`. The keys and values belong to the UI; the daemon only stores them. */
 export type WorkspaceState = {
   /** State entries by key. */
@@ -4272,6 +4392,10 @@ export interface Requests {
   "review/reply": { params: AgentReplyParams; result: Thread };
   /** Replace a search's matches in chosen files: open buffers are edited, other files written. (client→server) */
   "search/replace": { params: ReplaceParams; result: ReplaceResult };
+  /** The settings schema (sections and fields), the user's file and workspaces' files. (client→server) */
+  "settings/get": { params: GetParams; result: GetResult };
+  /** Write one setting to the user's or a workspace's settings.toml, keeping comments. (client→server) */
+  "settings/set": { params: SetParams; result: SetResult };
 }
 
 /** Notifications: method name → params. */
@@ -4320,6 +4444,8 @@ export interface Topics {
   "threads/changes": { params: ChangesParams8; event: ThreadEvent };
   /** Search a workspace: batches of files with matches as they are searched, then a summary; unsubscribe to cancel. */
   "search/run": { params: RunParams2; event: SearchEvent };
+  /** The settings changed (a file, a write, the schema); get them again (live only). */
+  "settings/changes": { params: ChangesParams9; event: SettingsChanged };
 }
 
 /** Encode one frame: u32 big-endian length, then the JSON payload. */

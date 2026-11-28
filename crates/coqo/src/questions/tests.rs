@@ -1810,7 +1810,7 @@ fn findings_in_a_message_become_notes_linked_to_it() {
 fn findings_can_be_turned_off() {
     let mut r = review_chat(&[REVIEW]);
     r.ui.cx
-        .update(|cx| crate::settings::update(cx, |s| s.questions.findings_in_gutter = false));
+        .update(|cx| crate::settings::set_local(cx, crate::settings::FINDINGS_IN_GUTTER, false));
     r.say("Review it");
     let (_, ix) = r.message(0);
     for _ in 0..30 {

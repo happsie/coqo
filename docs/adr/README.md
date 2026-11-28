@@ -35,4 +35,5 @@ Architecture decisions for Coqo, one file per decision. See [ADR 0001](0001-reco
 | [0029](0029-agent-question-tools.md) | The agent's own question tools (`AskUserQuestion`, forms, plan approval) as chat cards, answered through the request that asked | Accepted |
 | [0030](0030-skill-questions-in-code.md) | Third-party skills' questions and findings, shown in the code without changing the skills | Accepted |
 | [0031](0031-in-app-updater.md) | The in-app updater: GitHub Releases, minisign against a compiled-in key, a two-rename swap, idle daemon handoff and a one-time rollback | Accepted |
+| [0032](0032-settings.md) | Settings: a daemon-side service for `settings.toml`, a schema contributed through the mod API, and a generic settings page | Accepted |
 | [0033](0033-mods-from-github.md) | Mods from GitHub repositories: pinned installs, a dry-run plan, content mods, and Claude plugins in Coqo's sessions | Accepted |

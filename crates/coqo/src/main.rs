@@ -42,7 +42,7 @@ mod test_support;
 
 use std::{path::PathBuf, process::ExitCode, rc::Rc};
 
-use coqo_ui::{Appearance, dock::store::JsonFileLayoutStore, gpui::QuitMode};
+use coqo_ui::{dock::store::JsonFileLayoutStore, gpui::QuitMode};
 
 const USAGE: &str = "usage: coqo [<folder>] | --version";
 
@@ -122,7 +122,9 @@ fn layout_dir() -> PathBuf {
 fn run(folder: Option<PathBuf>) {
     let app = coqo_ui::application().with_quit_mode(QuitMode::LastWindowClosed);
     app.run(move |cx| {
-        coqo_ui::init(Appearance::System, cx);
+        // The theme from the user's file, before the daemon answers.
+        settings::load(&settings::path(), cx);
+        coqo_ui::init(settings::get(cx).theme(), cx);
         let daemon = match daemon::DaemonConfig::from_env() {
             Ok(config) => Some(daemon::init(config, cx)),
             Err(err) => {
@@ -134,8 +136,8 @@ fn run(folder: Option<PathBuf>) {
         let last_seen = agents::away::FileLastSeen::new(ui_dir().join("presence.json"));
         agents::away::init(Rc::new(last_seen), cx);
         workspace::init(folder, cx);
-        settings::load(&settings::path(), cx);
         shell::init(cx);
+        settings::init(cx);
         commands::use_files(
             commands::CommandFiles {
                 keybindings: Some(commands::keyfile::path()),

@@ -68,6 +68,7 @@ pub mod provenance;
 pub mod questions;
 pub mod routes;
 pub mod search;
+pub mod settings;
 pub mod syntax;
 pub mod terminal;
 pub mod threads;

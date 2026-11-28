@@ -26,7 +26,8 @@ use std::sync::Arc;
 
 use crate::contrib::{
     AgentProviderInfo, AlertSource, Command, ContextProvider, DebugAdapter, Keybinding, Language,
-    LspServer, McpTool, MenuItem, Setting, SlashCommand, StatusItem, Theme, View, ViewLocation,
+    LspServer, McpTool, MenuItem, Setting, SettingsSection, SlashCommand, StatusItem, Theme, View,
+    ViewLocation,
 };
 use crate::id::ContributionPointId;
 use crate::{CommandHandler, McpToolHandler};
@@ -88,6 +89,10 @@ points! {
     Menus = "menus" => MenuItem;
     /// Settings schema: `settings` takes [`Setting`].
     Settings = "settings" => Setting;
+    /// Settings page sections: `settings_sections` takes
+    /// [`SettingsSection`]. See
+    /// [`ModContext::register_settings`](crate::ModContext::register_settings).
+    SettingsSections = "settings_sections" => SettingsSection;
     /// Sidebar views: `views.sidebar` takes [`View`].
     SidebarViews = "views.sidebar" => View;
     /// Bottom panel views: `views.panel` takes [`View`].

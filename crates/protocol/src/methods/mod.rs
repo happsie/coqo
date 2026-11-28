@@ -36,6 +36,8 @@
 //! - [`search`]: `search/*`, project search and replace (the `coqo.search`
 //!   mod).
 //! - [`update`]: `update/*`, the in-app updater (ADR 0031).
+//! - [`settings`]: `settings/*`, the user's and the workspaces'
+//!   `settings.toml`, and the schema mods contribute.
 
 pub mod agents;
 pub mod alerts;
@@ -47,6 +49,7 @@ pub mod git;
 pub mod mcp;
 pub mod questions;
 pub mod search;
+pub mod settings;
 pub mod syntax;
 pub mod terminal;
 pub mod threads;
@@ -180,4 +183,14 @@ pub mod codes {
     /// The update could not be installed: none is ready, the install is not
     /// the caller's, or the swap failed. The message says why.
     pub const UPDATE_FAILED: i64 = 2101;
+    /// No settings section has a field with the given key (its mod was
+    /// disabled, say).
+    pub const UNKNOWN_SETTING: i64 = 2201;
+    /// The value is not valid for the setting (wrong type, not one of the
+    /// choices, out of bounds), or the setting is user-only and was written
+    /// to a workspace; the message says why.
+    pub const INVALID_SETTING: i64 = 2202;
+    /// The settings file is not valid TOML, so it was not written over: fix
+    /// it by hand first. The message names the line.
+    pub const SETTINGS_FILE_INVALID: i64 = 2203;
 }

@@ -1672,6 +1672,10 @@
       },
       "type": "object"
     },
+    "ChangesParams9": {
+      "description": "Params of [`Changes`].",
+      "type": "object"
+    },
     "CloseParams": {
       "description": "Params of [`Close`].",
       "properties": {
@@ -3461,6 +3465,114 @@
       },
       "type": "object"
     },
+    "FieldInfo": {
+      "description": "One setting of a section.",
+      "properties": {
+        "default": {
+          "description": "The value when nobody set it."
+        },
+        "description": {
+          "description": "What it does.",
+          "type": "string"
+        },
+        "key": {
+          "description": "The full key, such as `files.auto_reveal`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/FieldKind",
+          "description": "The kind of value."
+        },
+        "maximum": {
+          "description": "Upper bound of a number.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "minimum": {
+          "description": "Lower bound of a number.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/FieldScope",
+          "description": "Who may set it."
+        },
+        "title": {
+          "description": "Title shown on its row.",
+          "type": "string"
+        },
+        "values": {
+          "description": "The allowed values of an `enum`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "title",
+        "kind",
+        "default"
+      ],
+      "type": "object"
+    },
+    "FieldKind": {
+      "description": "What kind of value a field holds, and so how the settings page edits it.",
+      "oneOf": [
+        {
+          "const": "boolean",
+          "description": "`true` or `false`: a switch.",
+          "type": "string"
+        },
+        {
+          "const": "string",
+          "description": "Free text: a text field.",
+          "type": "string"
+        },
+        {
+          "const": "integer",
+          "description": "A whole number: a text field.",
+          "type": "string"
+        },
+        {
+          "const": "number",
+          "description": "Any number: a text field.",
+          "type": "string"
+        },
+        {
+          "const": "enum",
+          "description": "One of [`FieldInfo::values`]: a choice.",
+          "type": "string"
+        },
+        {
+          "const": "string_list",
+          "description": "A list of strings: a text field, comma-separated.",
+          "type": "string"
+        }
+      ]
+    },
+    "FieldScope": {
+      "description": "Who may set a field.",
+      "oneOf": [
+        {
+          "const": "workspace",
+          "description": "The user's file, and each workspace's over it.",
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "description": "The user's file only.",
+          "type": "string"
+        }
+      ]
+    },
     "FileChange": {
       "description": "How a path changed on one side.",
       "oneOf": [
@@ -3679,6 +3791,35 @@
         "path",
         "outcome",
         "replaced"
+      ],
+      "type": "object"
+    },
+    "FileSettings": {
+      "description": "One settings file: where it is, its valid values and its problems.",
+      "properties": {
+        "exists": {
+          "description": "Whether the file exists.",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "The file's absolute path (it may not exist yet).",
+          "type": "string"
+        },
+        "problems": {
+          "description": "What is wrong in it: invalid TOML, invalid values, unknown keys.",
+          "items": {
+            "$ref": "#/$defs/SettingsProblem"
+          },
+          "type": "array"
+        },
+        "values": {
+          "additionalProperties": true,
+          "description": "The valid values it sets, by full key. While the file is not valid\nTOML, the values it had when it last was.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "path"
       ],
       "type": "object"
     },
@@ -4041,6 +4182,54 @@
       },
       "required": [
         "workspace"
+      ],
+      "type": "object"
+    },
+    "GetParams": {
+      "description": "Params of [`Get`].",
+      "properties": {
+        "workspaces": {
+          "description": "Workspaces whose own files to include too. The daemon follows each\none asked for from then on, and [`Changes`] reports when it changes.",
+          "items": {
+            "$ref": "#/$defs/WorkspaceId"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "GetResult": {
+      "description": "Result of [`Get`].",
+      "properties": {
+        "generation": {
+          "description": "How many times the settings changed since the daemon started, as in\n[`Changes`].",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sections": {
+          "description": "The settings page's sections, in display order.",
+          "items": {
+            "$ref": "#/$defs/SectionInfo"
+          },
+          "type": "array"
+        },
+        "user": {
+          "$ref": "#/$defs/FileSettings",
+          "description": "The user's `settings.toml`."
+        },
+        "workspaces": {
+          "description": "The workspaces asked for that are known, in the order asked.",
+          "items": {
+            "$ref": "#/$defs/WorkspaceSettings"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sections",
+        "user",
+        "generation"
       ],
       "type": "object"
     },
@@ -7681,6 +7870,52 @@
       ],
       "type": "object"
     },
+    "SectionInfo": {
+      "description": "A section of the settings page, with its fields.",
+      "properties": {
+        "description": {
+          "description": "A line under the title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fields": {
+          "description": "Its fields, in the order they were contributed.",
+          "items": {
+            "$ref": "#/$defs/FieldInfo"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Section id, the key prefix of its fields (`files`).",
+          "type": "string"
+        },
+        "mod": {
+          "description": "The mod that contributes the section (the first field's, for a\nsection no mod declared).",
+          "type": "string"
+        },
+        "order": {
+          "description": "Its position as the mod gave it (lowest first); the list is already\nin order, this places the UI's own pages among the sections.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Title in the section list.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "mod",
+        "fields"
+      ],
+      "type": "object"
+    },
     "Selection": {
       "description": "A selection or cursor in a tab.",
       "properties": {
@@ -8757,6 +8992,48 @@
       ],
       "type": "object"
     },
+    "SetParams": {
+      "description": "Params of [`Set`].",
+      "properties": {
+        "key": {
+          "description": "The full key, such as `files.auto_reveal`.",
+          "type": "string"
+        },
+        "value": {
+          "description": "The new value; `null` (or absent) removes the key from the file, so\nthe next layer's value applies."
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Write the workspace's `.coqo/settings.toml` instead of the user's\nfile."
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "SetResult": {
+      "description": "Result of [`Set`].",
+      "properties": {
+        "generation": {
+          "description": "The generation after the write.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "generation"
+      ],
+      "type": "object"
+    },
     "SetSettingsParams": {
       "description": "Params of [`SetSettings`]: what to change.",
       "properties": {
@@ -8866,6 +9143,50 @@
         "id",
         "step",
         "state"
+      ],
+      "type": "object"
+    },
+    "SettingsChanged": {
+      "description": "One event of [`Changes`]: something changed; [`Get`] again.",
+      "properties": {
+        "generation": {
+          "description": "The new generation.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "generation"
+      ],
+      "type": "object"
+    },
+    "SettingsProblem": {
+      "description": "Something wrong in a settings file.",
+      "properties": {
+        "key": {
+          "description": "The setting it is about; absent for the whole file (not valid TOML,\ncannot be read).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "line": {
+          "description": "The 1-based line, when known.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "What is wrong, for the user: \"`appearance.theme`: `blue` is not one\nof system, dark, light\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
       ],
       "type": "object"
     },
@@ -12255,6 +12576,24 @@
       ],
       "type": "object"
     },
+    "WorkspaceSettings": {
+      "description": "A workspace's own settings file.",
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/FileSettings",
+          "description": "Its `.coqo/settings.toml`, in its first root."
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId",
+          "description": "The workspace."
+        }
+      },
+      "required": [
+        "workspace",
+        "file"
+      ],
+      "type": "object"
+    },
     "WorkspaceState": {
       "description": "A workspace's persisted state document, e.g. `tabs`, `layout`,\n`settings`. The keys and values belong to the UI; the daemon only stores\nthem.",
       "properties": {
@@ -12383,6 +12722,7 @@
     "INVALID_PARAMS": -32602,
     "INVALID_QUERY": 2001,
     "INVALID_REQUEST": -32600,
+    "INVALID_SETTING": 2202,
     "INVALID_WALKTHROUGH": 1702,
     "IO_ERROR": 1009,
     "METHOD_NOT_FOUND": -32601,
@@ -12405,6 +12745,7 @@
     "SESSION_BUSY": 1103,
     "SESSION_CLOSED": 1104,
     "SESSION_ENDED": 1110,
+    "SETTINGS_FILE_INVALID": 2203,
     "SPAWN_FAILED": 1302,
     "STALE_SELECTION": 1602,
     "STORAGE_ERROR": 1109,
@@ -12417,6 +12758,7 @@
     "UNKNOWN_PROVIDER": 1102,
     "UNKNOWN_ROOT": 1002,
     "UNKNOWN_SESSION": 1101,
+    "UNKNOWN_SETTING": 2201,
     "UNKNOWN_SUBSCRIPTION": -32004,
     "UNKNOWN_THREAD": 1801,
     "UNKNOWN_TOOL": 1401,
@@ -13506,6 +13848,39 @@
       "kind": "topic",
       "params": {
         "$ref": "#/$defs/SessionParams"
+      }
+    },
+    "settings/changes": {
+      "description": "The settings changed (a file, a write, the schema); get them again (live only).",
+      "direction": "server→client",
+      "event": {
+        "$ref": "#/$defs/SettingsChanged"
+      },
+      "kind": "topic",
+      "params": {
+        "$ref": "#/$defs/ChangesParams9"
+      }
+    },
+    "settings/get": {
+      "description": "The settings schema (sections and fields), the user's file and workspaces' files.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/GetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/GetResult"
+      }
+    },
+    "settings/set": {
+      "description": "Write one setting to the user's or a workspace's settings.toml, keeping comments.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SetResult"
       }
     },
     "syntax/folding": {

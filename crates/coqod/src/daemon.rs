@@ -94,6 +94,10 @@ pub struct DaemonContext {
     /// Whether the daemon checks for updates: only when it runs from an
     /// install location (ADR 0031). In-process daemons never do.
     pub updates: UpdatesConfig,
+    /// Coqo's per-user config directory, with the user's `settings.toml`
+    /// ([`settings::config_dir`](crate::settings::config_dir); tests pass a
+    /// temporary one).
+    pub config_dir: PathBuf,
 }
 
 /// Why the daemon could not start.
@@ -308,16 +312,16 @@ pub async fn serve(
         idle_policy,
         lock,
         listener,
-        Trash::System,
+        (Trash::System, crate::settings::config_dir()),
         UpdatesConfig::detect(),
         AcceptFaults::default(),
     )
     .await
 }
 
-/// [`serve`], with `fs/delete` putting deleted entries in `trash` (tests
-/// pass a folder, so they never touch the user's trash). It never checks
-/// for updates.
+/// [`serve`], with `fs/delete` putting deleted entries in `trash` and the
+/// user's settings in `config_dir` (tests pass folders, so they never touch
+/// the user's trash or settings). It never checks for updates.
 pub async fn serve_with(
     paths: DaemonPaths,
     data: DataDirs,
@@ -325,6 +329,7 @@ pub async fn serve_with(
     lock: InstanceLock,
     listener: UnixListener,
     trash: Trash,
+    config_dir: PathBuf,
 ) -> Result<()> {
     serve_inner(
         paths,
@@ -332,7 +337,7 @@ pub async fn serve_with(
         idle_policy,
         lock,
         listener,
-        trash,
+        (trash, config_dir),
         UpdatesConfig::Off(coqo_protocol::methods::update::OffReason::DevBuild),
         AcceptFaults::default(),
     )
@@ -346,7 +351,7 @@ async fn serve_inner(
     idle_policy: IdlePolicy,
     lock: InstanceLock,
     listener: UnixListener,
-    trash: Trash,
+    (trash, config_dir): (Trash, PathBuf),
     updates: UpdatesConfig,
     faults: AcceptFaults,
 ) -> Result<()> {
@@ -360,7 +365,13 @@ async fn serve_inner(
     let agent_fs = coqo_acp_host::FsHandle::new();
     let agent_terminals = coqo_acp_host::TerminalHandle::new();
     let _unlink = UnlinkAgentHandles(agent_fs.clone(), agent_terminals.clone());
-    let mods = Mods::load(mods::builtins(&data, &agent_fs, &agent_terminals));
+    let startup_settings = crate::settings::startup_values(&config_dir);
+    let mods = Mods::load(mods::builtins(
+        &data,
+        &agent_fs,
+        &agent_terminals,
+        &startup_settings,
+    ));
     mods.start().await;
     let ctx = DaemonContext {
         paths: paths.clone(),
@@ -377,6 +388,7 @@ async fn serve_inner(
         agent_terminals,
         trash,
         updates,
+        config_dir,
     };
     let router = routes::router(&ctx)?;
     tracing::debug!(?router, "routes registered");
@@ -527,7 +539,10 @@ mod tests {
             policy,
             lock,
             listener,
-            Trash::Folder(tmp.path().join("trash")),
+            (
+                Trash::Folder(tmp.path().join("trash")),
+                tmp.path().join("config"),
+            ),
             UpdatesConfig::Off(coqo_protocol::methods::update::OffReason::DevBuild),
             faults.clone(),
         ));

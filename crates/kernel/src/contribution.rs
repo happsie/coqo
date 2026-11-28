@@ -222,6 +222,7 @@ impl ContributionRegistry {
         self.declare::<points::Keybindings>()?;
         self.declare::<points::Menus>()?;
         self.declare::<points::Settings>()?;
+        self.declare::<points::SettingsSections>()?;
         self.declare::<points::SidebarViews>()?;
         self.declare::<points::PanelViews>()?;
         self.declare::<points::TabViews>()?;
