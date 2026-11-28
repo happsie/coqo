@@ -10,6 +10,7 @@
 
 pub mod chrome;
 pub mod diff;
+pub mod draft;
 pub mod model;
 pub mod pane;
 
@@ -19,21 +20,47 @@ use coqo_ui::{
     slots::{SidebarPane, SidebarPanes, Slot, Slots},
 };
 
-/// Register the Git pane (with its tab's badge), the status bar's branch
-/// and the `git-diff` tab kind.
+#[allow(unused_imports)]
+use coqo_ui::gpui; // The action derive spells its paths `gpui::…`.
+
+coqo_ui::gpui::actions!(
+    git,
+    [
+        /// Show the Git pane and ask an agent to draft the commit message
+        /// for what is staged (#224).
+        DraftCommitMessage,
+    ]
+);
+
+/// The Git pane's id in the sidebar.
+pub const PANE: &str = "git";
+
+/// Register the Git pane (with its tab's badge), the status bar's branch,
+/// the `git-diff` tab kind and the git commands.
 pub fn init(cx: &mut App) {
     register_tab_kind(cx, diff::KIND, |state, window, cx| {
         diff::restore(state, window, cx)
     });
     SidebarPanes::register(
         cx,
-        SidebarPane::new("git", "Git", 10, |dock, window, cx| {
+        SidebarPane::new(PANE, "Git", 10, |dock, window, cx| {
             cx.new(|cx| pane::GitPane::new(dock, window, cx)).into()
         })
         .with_badge(chrome::badge),
     );
     Slots::register(cx, Slot::StatusBarStart, "branch", 0, chrome::status_branch);
+    crate::commands::register(
+        cx,
+        [crate::commands::Command::new(
+            "git.draft_message",
+            "Draft commit message",
+            "Git",
+            DraftCommitMessage,
+        )],
+    );
 }
 
+#[cfg(test)]
+mod draft_tests;
 #[cfg(test)]
 mod tests;

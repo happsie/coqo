@@ -60,6 +60,7 @@ use crate::{
         context::{ContextPublisher, PublishContext, RevealHub, RevealRequest},
         editor::{self as file_editor, FileEditor},
     },
+    git,
     layout::{DaemonLayoutStore, LAYOUT_KEY},
     questions::{self, QuestionsEvent, navigate, popover::OpenQuestionChat},
     welcome,
@@ -925,6 +926,11 @@ impl Render for Shell {
                     this.show_agents(window, cx)
                 }),
             )
+            .on_action(
+                cx.listener(|this, _: &git::DraftCommitMessage, window, cx| {
+                    this.draft_commit_message(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &commands::OpenCommands, window, cx| {
                 this.toggle_palette(commands::COMMANDS_PREFIX, window, cx)
             }))
@@ -1129,6 +1135,38 @@ impl ShellWindows {
 }
 
 impl Shell {
+    /// Sidebar pane `id`'s view in this window, built the first time (and
+    /// again when the pane is registered again).
+    fn pane_view(
+        &mut self,
+        id: &SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyView> {
+        let pane = SidebarPanes::all(cx).into_iter().find(|p| &p.id == id)?;
+        let fresh = self
+            .pane_views
+            .get(id)
+            .is_some_and(|(build, _)| Rc::ptr_eq(build, &pane.build));
+        if !fresh {
+            let view = (pane.build)(self.dock.downgrade(), window, cx);
+            self.pane_views.insert(id.clone(), (pane.build, view));
+        }
+        self.pane_views.get(id).map(|(_, view)| view.clone())
+    }
+
+    /// "Draft commit message": show the Git pane and start a draft there.
+    fn draft_commit_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let id = SharedString::from(git::PANE);
+        self.select_pane(id.clone(), cx);
+        let pane = self
+            .pane_view(&id, window, cx)
+            .and_then(|view| view.downcast::<git::pane::GitPane>().ok());
+        if let Some(pane) = pane {
+            pane.update(cx, |pane, cx| pane.draft(cx));
+        }
+    }
+
     fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.tokens();
         let (p, m) = (t.palette.clone(), t.metrics.clone());
@@ -1161,19 +1199,7 @@ impl Shell {
             );
         }
 
-        let content = active.and_then(|id| {
-            let pane = panes.iter().find(|p| p.id == id)?;
-            let fresh = self
-                .pane_views
-                .get(&id)
-                .is_some_and(|(build, _)| Rc::ptr_eq(build, &pane.build));
-            if !fresh {
-                let view = (pane.build)(self.dock.downgrade(), window, cx);
-                self.pane_views
-                    .insert(id.clone(), (pane.build.clone(), view));
-            }
-            self.pane_views.get(&id).map(|(_, view)| view.clone())
-        });
+        let content = active.and_then(|id| self.pane_view(&id, window, cx));
 
         panel(p.panel_raised, cx)
             .id("sidebar")

@@ -6,7 +6,8 @@
 //!
 //! Clicking a file opens its diff tab (staged: `HEAD` → index; unstaged:
 //! index → work tree). With several roots that are repositories, chips at
-//! the top pick which one the pane shows.
+//! the top pick which one the pane shows. "Draft" beside Commit asks an
+//! agent for the message ([`super::draft`]).
 
 use coqo_protocol::methods::{
     git::{FileChange, StatusEntry},
@@ -16,18 +17,20 @@ use coqo_ui::{
     ActiveTokens as _, Rgb,
     dock::{AnyTab, Dock},
     gpui::{
-        AnyElement, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _,
-        IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-        Styled as _, Subscription, WeakEntity, Window, div, px,
+        AnyElement, AnyView, App, AppContext as _, Context, Entity, FontWeight,
+        InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+        StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div, px,
     },
     input::{PromptInput, PromptInputEvent},
     widgets::{
-        FluentBuilder as _, Icon, TestSupportExt as _, icon, primary, raised, section_label,
+        FluentBuilder as _, Icon, TestSupportExt as _, icon, popover, primary, raised,
+        section_label,
     },
 };
 
 use super::{
     diff::{self, DiffTab},
+    draft::{CommitDrafter, DraftEvent, DraftRequest, DraftState},
     model::{GitModel, GitModelEvent, RootGit, StashAction},
 };
 
@@ -56,6 +59,8 @@ pub struct GitPane {
     dock: WeakEntity<Dock>,
     model: Entity<GitModel>,
     message: Entity<PromptInput>,
+    /// Drafts the commit message with an agent (#224).
+    drafter: Entity<CommitDrafter>,
     new_branch: Entity<PromptInput>,
     picker_open: bool,
     _subscriptions: Vec<Subscription>,
@@ -86,8 +91,18 @@ impl GitPane {
         let model = GitModel::for_window(window, cx);
         let message = cx.new(|cx| PromptInput::new("Commit message", 2, 8, window, cx));
         let new_branch = cx.new(|cx| PromptInput::new("New branch name", 1, 1, window, cx));
+        let drafter = cx.new(CommitDrafter::new);
         let subscriptions = vec![
             cx.observe(&model, |_, _, cx| cx.notify()),
+            cx.observe(&drafter, |_, _, cx| cx.notify()),
+            // The draft fills the commit box, to edit before committing.
+            cx.subscribe_in(&drafter, window, |this, _, event, window, cx| {
+                let DraftEvent::Drafted { root, message } = event;
+                if Some(*root) == this.root(cx) {
+                    this.message
+                        .update(cx, |m, cx| m.set_text(message, window, cx));
+                }
+            }),
             cx.subscribe_in(&model, window, |this, _, event, window, cx| {
                 if let GitModelEvent::Committed { root, .. } = event
                     && Some(*root) == this.root(cx)
@@ -126,6 +141,7 @@ impl GitPane {
             dock,
             model,
             message,
+            drafter,
             new_branch,
             picker_open: false,
             _subscriptions: subscriptions,
@@ -140,6 +156,11 @@ impl GitPane {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn message_input(&self) -> &Entity<PromptInput> {
         &self.message
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn drafter(&self) -> &Entity<CommitDrafter> {
+        &self.drafter
     }
 
     /// The root shown ([`GitModel::shown_root`]).
@@ -397,6 +418,23 @@ impl GitPane {
         } else {
             raised(button, cx).text_color(p.text_subtle.hsla())
         };
+        let draft = self.render_draft(repo, cx);
+        let draft_error = match self.drafter.read(cx).state() {
+            DraftState::Failed(err) => Some(
+                div()
+                    .id("git-draft-error")
+                    .test_support()
+                    .px_1()
+                    .text_size(m.text_xs)
+                    .text_color(p.rose.hsla())
+                    .cursor_pointer()
+                    .child(format!("Couldn't draft a message: {err}"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.drafter.update(cx, |d, cx| d.cancel(cx));
+                    })),
+            ),
+            _ => None,
+        };
         div()
             .flex()
             .flex_col()
@@ -416,22 +454,119 @@ impl GitPane {
                     .child(self.message.clone()),
             )
             .child(
-                button
-                    .id("git-commit")
-                    .test_support()
-                    .child(icon(
-                        Icon::Check,
-                        px(13.),
-                        if enabled {
-                            p.ground.hsla()
-                        } else {
-                            p.text_subtle.hsla()
-                        },
-                    ))
-                    .child(label)
-                    .on_click(cx.listener(|this, _, _, cx| this.commit(cx))),
+                div()
+                    .flex()
+                    .gap_1()
+                    .child(
+                        button
+                            .id("git-commit")
+                            .test_support()
+                            .flex_1()
+                            .child(icon(
+                                Icon::Check,
+                                px(13.),
+                                if enabled {
+                                    p.ground.hsla()
+                                } else {
+                                    p.text_subtle.hsla()
+                                },
+                            ))
+                            .child(label)
+                            .on_click(cx.listener(|this, _, _, cx| this.commit(cx))),
+                    )
+                    .child(draft),
             )
+            .children(draft_error)
             .into_any_element()
+    }
+
+    /// The "Draft" button beside Commit: asks an agent for a message
+    /// (#224). While it drafts it reads "Drafting…" and a click stops it.
+    fn render_draft(&self, repo: &RootGit, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let drafter = self.drafter.read(cx);
+        let drafting = drafter.is_drafting();
+        let unavailable = drafter.unavailable(repo.staged().count(), cx);
+        let provider = drafter.provider().map(|p| p.name.clone());
+        let base = raised(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(6.))
+                .px(px(10.))
+                .py(px(6.))
+                .rounded(m.radius_control)
+                .text_size(m.text_sm),
+            cx,
+        )
+        .id("git-draft")
+        .test_support();
+        let (tip, button): (SharedString, _) = if drafting {
+            (
+                "Stop drafting".into(),
+                base.cursor_pointer()
+                    .text_color(p.sand.hsla())
+                    .child(icon(Icon::LoaderCircle, px(13.), p.sand.hsla()))
+                    .child("Drafting…")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.drafter.update(cx, |d, cx| d.cancel(cx));
+                    })),
+            )
+        } else if let Some(why) = unavailable {
+            (
+                why.into(),
+                base.text_color(p.text_subtle.hsla())
+                    .child(icon(Icon::Sparkles, px(13.), p.text_subtle.hsla()))
+                    .child("Draft"),
+            )
+        } else {
+            (
+                format!(
+                    "Ask {} to draft a message from the staged changes",
+                    provider.as_deref().unwrap_or("the agent")
+                )
+                .into(),
+                base.cursor_pointer()
+                    .text_color(p.text.hsla())
+                    .child(icon(Icon::Sparkles, px(13.), p.text_muted.hsla()))
+                    .child("Draft")
+                    .on_click(cx.listener(|this, _, _, cx| this.draft(cx))),
+            )
+        };
+        button
+            .tooltip(move |_, cx| tooltip(tip.clone(), cx))
+            .into_any_element()
+    }
+
+    /// Ask the agent for a message for what the shown root has staged.
+    pub fn draft(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.root(cx) else {
+            return;
+        };
+        let model = self.model.read(cx);
+        let staged = model.root(root).map_or(0, |r| r.staged().count());
+        if !self.drafter.read(cx).can_start(staged, cx) {
+            return;
+        }
+        let Some(workspace) = model.workspace() else {
+            return;
+        };
+        let Some(cwd) = workspace
+            .roots
+            .iter()
+            .find(|r| r.id == root)
+            .map(|r| r.path.clone())
+        else {
+            return;
+        };
+        let request = DraftRequest {
+            workspace: workspace.id.clone(),
+            root,
+            cwd,
+        };
+        self.drafter.update(cx, |d, cx| d.start(request, cx));
     }
 
     fn render_group(
@@ -739,6 +874,26 @@ impl GitPane {
             .text_color(t.palette.text_subtle.hsla())
             .child(text.into())
             .into_any_element()
+    }
+}
+
+fn tooltip(text: SharedString, cx: &mut App) -> AnyView {
+    cx.new(|_| Tip(text)).into()
+}
+
+struct Tip(SharedString);
+
+impl Render for Tip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.tokens();
+        popover(cx)
+            .px(px(10.))
+            .py(px(6.))
+            .max_w(px(320.))
+            .text_size(t.metrics.text_sm)
+            .text_color(t.palette.text.hsla())
+            .font_family(t.metrics.font_ui.clone())
+            .child(self.0.clone())
     }
 }
 
