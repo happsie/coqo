@@ -105,10 +105,24 @@ The body's own keys also work: arrows and page keys scroll, `Ctrl C` / `Cmd C` c
 - **Layout:** the last one chosen, per workspace (`ui.diff.mode`).
 - **Viewed:** per workspace and diff (for example "this root's unstaged changes"). A mark holds the file's change: when the change differs (new edits, or a hunk staged out of it), the file is no longer viewed. The tab label shows `viewed/total`.
 
+## In file tabs (#258)
+
+![A pending review thread open in the file's own tab](screenshots/file-threads-dark.png)
+
+Light: [file tab](screenshots/file-threads-light.png). Offscreen renders from `file_threads_screenshots`: `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored file_threads_screenshots`.
+
+A thread is visible where the code is edited, not only in the diff.
+
+- **Which threads:** those pinned to the **work tree** version of the open file (`version: worktree`, the new side of the unstaged diff), whose code was found. Threads pinned to the **index** or a **revision** are not shown in file tabs: their text is not what the tab edits, and their lines may not exist in it. The staged diff and the PR view show them. Orphaned threads ("Outdated") show in the diff only.
+- **Marker:** a 13 px `MessageCircle` in the gutter gap on the thread's first line, as in the diff: `sand` while it has pending comments, `blue` when open, `sage` once resolved, with the 3 px strip over its lines and, while pending, the `sand` 10% band. **Resolved threads are hidden** unless "Toggle resolved review threads in files" (command palette, Review category) shows them; the choice is per workspace, for the session.
+- **Where:** the daemon resolves a thread's anchor against the saved file. The marker follows edits in the tab while the daemon's lines stay what they were when it was placed; saving the file lists the threads again, and the new lines win.
+- **Click:** opens the thread's card in place, under its lines (the same card as in the diff: comments, the reply field, **Reply**, **Resolve** / **Reopen**, **Discard** of pending comments, **Edit** of the user's own; a resolved thread does not fold), with the keyboard in the reply field, plus **Open in diff** (the root's unstaged diff, at the thread) and **Close**. `Esc` closes it (outside the field). A reply is pending, as in the diff, and shows there at once: both follow the workspace's `WorkspaceThreads`.
+- **Stacking:** a review thread ranks below an agent's question and above a walkthrough step; a resolved one below everything (see [Markers on one line](walkthrough.md#markers-on-one-line)).
+- **Not yet:** starting a thread from a file tab (#311).
+
 ## Not yet (later issues)
 
 These parts of board 4 come with the issues that give them meaning:
 
-- Thread markers in the file editor's gutter (#258).
 - The **Walkthrough overlay** button. The walkthrough player (#100, [walkthrough.md](walkthrough.md)) shows its change in a `DiffView` of its own instead, with its steps as an overlay.
 - Provenance ("made by Claude in …") in the header, and defaulting the send target to the session that made the change after its chat is closed (#286).

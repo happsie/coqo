@@ -19,6 +19,10 @@
 //!   threads the agent resolves stay open until then. The agent's replies
 //!   come on the feed like any change.
 //! - [`OpenReviewDiff`]: the chat's "Review sent" card opens the diff.
+//! - **File tabs** (#258): `files::editor` marks the threads on a file's
+//!   work-tree version and opens [`overlay::ThreadCard`] in place.
+//!   "Toggle resolved review threads in files" ([`ToggleResolvedThreads`])
+//!   shows the resolved ones too (per workspace, for the session).
 //!
 //! Every call goes to the daemon (`threads/*`, `review/*`); the store takes
 //! in the thread each returns, and the feed brings the rest.
@@ -63,6 +67,40 @@ pub struct OpenReviewDiff {
     pub workspace: String,
     /// The diff source's identity (`git:0:index..worktree`).
     pub diff: String,
+    /// The file to show in it (root-relative), if any (#258).
+    pub path: Option<String>,
+}
+
+/// Show or hide resolved review threads in file tabs (#258).
+#[derive(Clone, Debug, PartialEq, Eq, Default, Action)]
+#[action(namespace = threads, no_json)]
+pub struct ToggleResolvedThreads;
+
+/// Register the threads' commands and keys.
+pub fn init(cx: &mut App) {
+    overlay::init(cx);
+    crate::commands::register(
+        cx,
+        [crate::commands::Command::new(
+            "threads.toggle_resolved_in_files",
+            "Toggle resolved review threads in files",
+            "Review",
+            ToggleResolvedThreads,
+        )],
+    );
+    cx.on_action(|_: &ToggleResolvedThreads, cx| {
+        let Some(ws) = crate::workspace::Workspaces::global(cx)
+            .and_then(|w| w.read(cx).current().map(|ws| ws.id.clone()))
+        else {
+            return;
+        };
+        if let Some(store) = threads_for(&ws, cx) {
+            store.update(cx, |store, cx| {
+                let shown = store.shows_resolved();
+                store.set_show_resolved(!shown, cx);
+            });
+        }
+    });
 }
 
 /// The root and side of a git diff source's identity:
@@ -93,10 +131,20 @@ pub fn open_review_diff(
     let workspace = WorkspaceId(action.workspace.clone());
     let key = diff_tab::key(&workspace, root, staged);
     if let Some(open) = dock.read(cx).find_tab(diff_tab::KIND, &key, cx) {
+        let tab = dock
+            .read(cx)
+            .tab(open)
+            .and_then(|t| t.downcast::<DiffTab>());
+        if let (Some(tab), Some(path)) = (tab, &action.path) {
+            let view = tab.read(cx).view().clone();
+            view.update(cx, |view, cx| view.select_file(path, cx));
+        }
         dock.update(cx, |dock, cx| dock.activate_tab(open, window, cx));
         return;
     }
-    let tab: Entity<DiffTab> = cx.new(|cx| DiffTab::new(workspace, root, staged, None, window, cx));
+    let select = action.path.clone();
+    let tab: Entity<DiffTab> =
+        cx.new(|cx| DiffTab::new(workspace, root, staged, select, window, cx));
     dock.update(cx, |dock, cx| dock.open_tab(AnyTab::new(tab), window, cx));
 }
 
@@ -161,6 +209,8 @@ pub struct WorkspaceThreads {
     sent: Vec<SentReview>,
     /// Provider names by id, for agents' replies.
     providers: HashMap<String, String>,
+    /// File tabs show resolved threads too (#258).
+    show_resolved: bool,
     _feed: Entity<Resumable<ThreadList, ThreadEvent>>,
     _relist: Option<Task<()>>,
     _providers: Option<Task<()>>,
@@ -228,6 +278,7 @@ impl WorkspaceThreads {
             loaded: false,
             sent: Vec::new(),
             providers: HashMap::new(),
+            show_resolved: false,
             _feed: feed,
             _relist: None,
             _providers: None,
@@ -324,6 +375,7 @@ impl WorkspaceThreads {
                 loaded: true,
                 sent: Vec::new(),
                 providers: [("claude-acp".to_owned(), "Claude".to_owned())].into(),
+                show_resolved: false,
                 _feed: feed,
                 _relist: None,
                 _providers: None,
@@ -335,6 +387,20 @@ impl WorkspaceThreads {
 
     pub fn workspace(&self) -> &WorkspaceId {
         &self.workspace
+    }
+
+    /// Whether file tabs show resolved threads (#258).
+    pub fn shows_resolved(&self) -> bool {
+        self.show_resolved
+    }
+
+    /// Show or hide resolved threads in file tabs.
+    pub fn set_show_resolved(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.show_resolved != shown {
+            self.show_resolved = shown;
+            cx.emit(ThreadsEvent::Changed);
+            cx.notify();
+        }
     }
 
     /// Whether the first list arrived.

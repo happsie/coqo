@@ -726,6 +726,7 @@ impl ChatTab {
             .map(|diff| crate::threads::OpenReviewDiff {
                 workspace: link.workspace.0.clone(),
                 diff,
+                path: None,
             });
         let focus = self.focus.clone();
         div()

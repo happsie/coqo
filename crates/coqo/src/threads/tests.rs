@@ -724,6 +724,207 @@ fn typing_in_a_comment_never_fires_the_diff_keys() {
 
 // ---- offscreen --------------------------------------------------------------
 
+/// A file tab's review-thread markers (#258): the thread started in the
+/// diff on line 8 shows in `src/lib.rs`'s own tab; a click opens its card
+/// there with the keyboard in the reply field; a reply there is in the
+/// diff's card too; resolved, the marker goes once the card closes, and
+/// "Toggle resolved review threads in files" brings it back; an agent's
+/// question on the line stacks over it; "Open in diff" shows the diff.
+#[test]
+fn a_review_thread_shows_in_its_file_tab_and_a_reply_there_is_in_the_diff() {
+    use coqo_protocol::methods::{
+        editor::LineRange as EditorLines,
+        questions::{self as qm, NewAnchor, QuestionKind},
+    };
+    use coqo_ui::{editor::OverlayAnchor, gpui::ElementId};
+
+    use crate::files::editor::{FileEditor, threads::THREAD_MARKER_BASE};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = Repo::init(&tmp.path().join("demo-repo"));
+    let lines: String = (1..=12).map(|i| format!("line {i}\n")).collect();
+    repo.write("src/lib.rs", &lines);
+    repo.commit_all("Twelve lines");
+    repo.write("src/lib.rs", &lines.replace("line 8\n", "eight\n"));
+    let mut ui = open_ui(repo.path().to_owned(), tmp);
+    let (diff, review) = open_review(&mut ui, "src/lib.rs");
+
+    // A thread on line 8, from the diff.
+    let range = LineRange::lines("src/lib.rs", Side::New, 8, 8);
+    ui.frame(|window, cx| {
+        review.update(cx, |s, cx| s.open_composer(&range, window, cx));
+    });
+    ui.type_into(|s| s.composer_input().cloned(), &review, "Why eight?");
+    ui.click("thread-composer-add");
+    ui.wait_for("the thread", |ui| ui.threads(&review).len() == 1);
+    let t = ui.threads(&review).remove(0);
+    let (id, ix) = (t.id, t.id.0 as usize);
+    let marker = THREAD_MARKER_BASE + id.0;
+
+    // The file's own tab marks it, on line 8 (0-based 7), pending.
+    let (ws, root) = (t.workspace.clone(), t.anchor.root);
+    let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
+    let tab: Entity<FileEditor> = ui
+        .frame(|window, cx| {
+            crate::questions::navigate::open_file(&dock, &ws, root, "src/lib.rs", window, cx)
+        })
+        .unwrap();
+    let markers = |ui: &mut Ui| {
+        ui.cx.read(|cx| {
+            tab.read(cx)
+                .editor()
+                .map(|code| code.read(cx).marker_lines(cx))
+                .unwrap_or_default()
+        })
+    };
+    ui.wait_for("the thread's marker", |ui| {
+        markers(ui).contains(&(marker, 7..8))
+    });
+    let mark = ui.cx.read(|cx| tab.read(cx).thread_marks()[0].clone());
+    let sand = ui.cx.read(|cx| {
+        use coqo_ui::ActiveTokens as _;
+        cx.tokens().palette.sand.hsla()
+    });
+    assert_eq!((mark.thread, mark.color), (id, sand), "pending: sand");
+    assert!(ui.has(ElementId::NamedInteger("code-marker".into(), marker)));
+
+    // A click opens the card in place, the keyboard in its reply field.
+    ui.click(ElementId::NamedInteger("code-marker".into(), marker));
+    ui.wait_for("the card", |ui| {
+        ui.cx.read(|cx| {
+            tab.read(cx).thread_card().is_some()
+                && tab.read(cx).editor().unwrap().read(cx).overlay_anchor()
+                    == Some(OverlayAnchor::Marker(marker))
+        })
+    });
+    assert!(ui.has("thread-open-diff"));
+    assert!(ui.has(("thread-reply", ix)));
+    let card = ui.cx.read(|cx| tab.read(cx).thread_card().unwrap().clone());
+    let state = ui.cx.read(|cx| card.read(cx).state().clone());
+    let focused = ui.frame(|window, cx| {
+        let input = state.read(cx).reply_input(id).unwrap().clone();
+        input.read(cx).focus_handle(cx).contains_focused(window, cx)
+    });
+    assert!(focused, "the keyboard is in the reply field");
+
+    // Reply there: the diff's card has it too (one store).
+    ui.type_into(|s| s.reply_input(id).cloned(), &state, "And rename it");
+    ui.click(("thread-reply", ix));
+    ui.wait_for("the reply", |ui| {
+        ui.threads(&review)
+            .first()
+            .is_some_and(|t| t.comments.len() == 2)
+    });
+    let reply = ui.threads(&review)[0].comments[1].clone();
+    assert_eq!(reply.body, "And rename it");
+    assert!(reply.pending);
+
+    // An agent's question on the same line stacks over the thread.
+    let params = qm::CreateParams {
+        workspace: ws.clone(),
+        session: "s-test".into(),
+        kind: QuestionKind::Clarification,
+        body: "Is eight right?".into(),
+        options: Vec::new(),
+        severity: None,
+        anchors: vec![NewAnchor {
+            root,
+            path: "src/lib.rs".into(),
+            lines: EditorLines { start: 7, end: 7 },
+        }],
+    };
+    let q = ui
+        .full()
+        .with_client(async move |client| client.request::<qm::Create>(params).await.unwrap());
+    let question = q.id.0 * 16;
+    ui.wait_for("the stack", |ui| {
+        ui.cx.read(|cx| {
+            tab.read(cx)
+                .editor()
+                .unwrap()
+                .read(cx)
+                .marker_stacks(cx)
+                .contains(&vec![question, marker])
+        })
+    });
+
+    // Resolve from the card: it stays while open; closed, the resolved
+    // thread is hidden until the toggle shows it.
+    ui.click(("thread-resolve", ix));
+    ui.wait_for("the resolve", |ui| {
+        ui.threads(&review)
+            .first()
+            .is_some_and(|t| t.status == ThreadStatus::Resolved)
+    });
+    ui.wait_for("the sage marker", |ui| {
+        ui.cx.read(|cx| {
+            let tab = tab.read(cx);
+            tab.thread_marks().len() == 1
+                && tab.thread_marks()[0].resolved
+                && tab.thread_card().is_some()
+        })
+    });
+    ui.click("thread-card-close");
+    ui.wait_for("the marker hidden", |ui| {
+        ui.cx.read(|cx| {
+            tab.read(cx).thread_marks().is_empty() && tab.read(cx).thread_card().is_none()
+        })
+    });
+    let toggle = || Box::new(super::ToggleResolvedThreads);
+    ui.frame(|window, cx| window.dispatch_action(toggle(), cx));
+    ui.wait_for("the resolved marker shown", |ui| {
+        markers(ui).contains(&(marker, 7..8))
+    });
+    let registered = ui.cx.update(|cx| {
+        crate::commands::registry::registry(cx)
+            .get("threads.toggle_resolved_in_files")
+            .map(|c| c.title.to_string())
+    });
+    assert_eq!(
+        registered.as_deref(),
+        Some("Toggle resolved review threads in files")
+    );
+
+    // Typing above moves the marker with the code.
+    let code = ui.cx.read(|cx| tab.read(cx).editor().cloned()).unwrap();
+    ui.frame(|window, cx| {
+        code.update(cx, |code, cx| {
+            code.focus(window, cx);
+            code.set_selections(std::slice::from_ref(&(0..0)), cx);
+            code.type_text("// a note\n", window, cx);
+        })
+    });
+    ui.wait_for("the marker moved", |ui| {
+        markers(ui).contains(&(marker, 8..9))
+    });
+
+    // Open in diff: the card closes and the diff tab is in front.
+    ui.click(ElementId::NamedInteger("code-marker".into(), question));
+    ui.wait_for("the question", |ui| {
+        ui.cx.read(|cx| {
+            tab.read(cx).editor().unwrap().read(cx).overlay_anchor()
+                == Some(OverlayAnchor::Marker(question))
+        })
+    });
+    // Its face open, a click goes to the next in the stack: the thread.
+    ui.click(ElementId::NamedInteger("code-marker".into(), question));
+    ui.wait_for("the card again", |ui| {
+        ui.cx.read(|cx| tab.read(cx).thread_card().is_some())
+    });
+    ui.click("thread-open-diff");
+    ui.wait_for("the diff in front", |ui| {
+        ui.cx.read(|cx| {
+            tab.read(cx).thread_card().is_none()
+                && dock
+                    .read(cx)
+                    .active_tab()
+                    .and_then(|t| dock.read(cx).tab(t)?.downcast::<DiffTab>())
+                    == Some(diff.clone())
+        })
+    });
+    assert!(ui.has(("thread", ix)), "the diff shows the thread");
+}
+
 fn sample_thread(
     id: u64,
     path: &str,
@@ -949,6 +1150,184 @@ fn threads_screenshots() {
         })
         .expect("offscreen render");
         let path = dir.join(format!("coqo-threads-{name}.png"));
+        image.save(&path).expect("save png");
+        println!("wrote {}", path.display());
+    }
+}
+
+/// Offscreen screenshots of review threads in an ordinary file tab (#258):
+/// `src/cart.rs` with a pending thread's card open and an open thread
+/// further down, as `coqo-file-threads-{dark,light}.png` in
+/// `$COQO_SHOT_DIR` (default: the system temp dir).
+#[test]
+#[ignore = "needs a GPU; run manually"]
+fn file_threads_screenshots() {
+    use std::sync::Arc;
+
+    use coqo_ui::{
+        CoqoAssets,
+        editor::OverlayAnchor,
+        gpui::{HeadlessAppContext, platform},
+    };
+
+    use crate::{files::editor::threads::THREAD_MARKER_BASE, workspace::Workspaces};
+
+    const BEFORE: &str = "\
+use crate::money::Cents;
+
+/// A line of the cart.
+pub struct Line {
+    pub price: Cents,
+    pub quantity: u32,
+}
+
+/// The cart's total before tax.
+pub fn subtotal(lines: &[Line]) -> Cents {
+    lines.iter().map(|l| l.price * l.quantity).sum()
+}
+
+/// The total with `discount` (a fraction) taken off.
+pub fn total(lines: &[Line], discount: f64) -> Cents {
+    let sub = subtotal(lines);
+    sub - sub * discount
+}
+";
+    let after = BEFORE
+        .replace(
+            "    sub - sub * discount\n",
+            "    let off = (sub as f64 * discount.clamp(0.0, 0.5)).round() as Cents;\n    sub - off\n",
+        )
+        .replace(
+            "    lines.iter().map(|l| l.price * l.quantity).sum()\n",
+            "    lines\n        .iter()\n        .map(|l| l.price * Cents::from(l.quantity))\n        .sum()\n",
+        );
+
+    let dir = std::env::var_os("COQO_SHOT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = Repo::init(&tmp.path().join("shop"));
+    repo.write("src/cart.rs", BEFORE);
+    repo.commit_all("Cart");
+    repo.write("src/cart.rs", &after);
+    let project = repo.path().canonicalize().unwrap();
+    let daemon = TestDaemon::start(tmp.path().join("run"), tmp.path().join("data"));
+    let mut threads: Option<(ThreadId, ThreadId)> = None;
+    for (name, appearance) in [("dark", Appearance::Dark), ("light", Appearance::Light)] {
+        let mut cx = HeadlessAppContext::with_platform(
+            platform::current_platform(true).text_system(),
+            Arc::new(CoqoAssets),
+            platform::current_headless_renderer,
+        );
+        cx.allow_parking();
+        let (paths, folder) = (daemon.paths.clone(), project.clone());
+        let (handle, shell) = cx
+            .update(|cx| {
+                coqo_ui::init(appearance, cx);
+                let mut config = DaemonConfig::at(paths);
+                config.spawn = false;
+                daemon::init(config, cx);
+                workspace::init(Some(folder), cx);
+                crate::shell::init(cx);
+                coqo_ui::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds {
+                            origin: Point::default(),
+                            size: size(px(1440.), px(900.)),
+                        })),
+                        focus: false,
+                        show: false,
+                        ..Default::default()
+                    },
+                    cx,
+                    |window, cx| {
+                        let store = Rc::new(MemoryLayoutStore::default());
+                        cx.new(|cx| Shell::new(store, DEFAULT_WORKSPACE, window, cx))
+                    },
+                )
+            })
+            .expect("open window");
+        let settle = |cx: &mut HeadlessAppContext, done: &dyn Fn(&App) -> bool| {
+            let deadline = Instant::now() + TIMEOUT;
+            loop {
+                cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+                    .unwrap();
+                cx.run_until_parked();
+                if cx.update(|cx| done(cx)) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "timed out");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let place = |cx: &App| {
+            let current = Workspaces::global(cx)?.read(cx).current()?.clone();
+            Some((current.id.clone(), current.roots[0].id))
+        };
+        settle(&mut cx, &|cx| place(cx).is_some());
+        let (ws, root) = cx.update(|cx| place(cx)).unwrap();
+        let (pending, _open) = *threads.get_or_insert_with(|| {
+            let create = |lines: (u32, u32), body: &str, pending: bool| tm::CreateParams {
+                workspace: ws.clone(),
+                root,
+                path: "src/cart.rs".into(),
+                side: ThreadSide::New,
+                version: DiffSide::Worktree,
+                lines: Some(ThreadLines {
+                    start: lines.0,
+                    end: lines.1,
+                }),
+                diff: Some(format!("git:{}:index..worktree", root.0)),
+                body: body.into(),
+                pending,
+            };
+            let first = create(
+                (11, 14),
+                "Can this overflow for a big quantity? `Cents` is an `i64`, but the \
+                 product isn't checked.",
+                true,
+            );
+            let second = create(
+                (19, 20),
+                "Why cap the discount at 50%? Worth a comment, or a constant.",
+                false,
+            );
+            daemon.with_client(async move |client| {
+                let a = client.request::<tm::Create>(first).await.unwrap().id;
+                let b = client.request::<tm::Create>(second).await.unwrap().id;
+                (a, b)
+            })
+        });
+        let dock = cx.update(|cx| shell.read(cx).dock().clone());
+        let tab = cx
+            .update_window(handle, |_, window, cx| {
+                crate::questions::navigate::open_file(&dock, &ws, root, "src/cart.rs", window, cx)
+            })
+            .unwrap()
+            .unwrap();
+        settle(&mut cx, &|cx| {
+            let tab = tab.read(cx);
+            tab.thread_marks().len() == 2
+                && tab
+                    .editor()
+                    .is_some_and(|code| code.read(cx).markers().len() == 2)
+        });
+        cx.update_window(handle, |_, window, cx| {
+            tab.update(cx, |tab, cx| tab.open_thread_card(pending, window, cx))
+        })
+        .unwrap();
+        let marker = THREAD_MARKER_BASE + pending.0;
+        settle(&mut cx, &|cx| {
+            tab.read(cx).editor().is_some_and(|code| {
+                code.read(cx).overlay_anchor() == Some(OverlayAnchor::Marker(marker))
+            })
+        });
+        for _ in 0..20 {
+            settle(&mut cx, &|_| true);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let image = cx.capture_screenshot(handle).expect("screenshot");
+        let path = dir.join(format!("coqo-file-threads-{name}.png"));
         image.save(&path).expect("save png");
         println!("wrote {}", path.display());
     }
