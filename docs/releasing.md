@@ -106,3 +106,26 @@ Gatekeeper quarantine flag, so the ad-hoc signed app opens), and to
   same place as the archive, so that only catches corruption, not tampering.
 - While the public key is still the placeholder the script refuses to install.
 - The app is ad-hoc signed, not notarized (issue #124).
+
+## Updating
+
+An installed Coqo updates itself from this repository's GitHub Releases ([ADR 0031](adr/0031-in-app-updater.md), issue #349). A development build (run from a checkout, `target/…`) never updates; the popover says "Running a development build".
+
+- **Where:** macOS `~/Applications/Coqo.app` (or `/Applications/Coqo.app` when you can write there); Linux `~/.local/share/coqo/bin` (also when started through the `~/.local/bin` symlinks or the .desktop entry, which keep working after an update because the whole folder is swapped). Install there once by hand (`scripts/install.sh`, #348); after that, updates arrive in place.
+- **When:** the daemon checks shortly after it starts, every 6 hours, and on **Check for updates** in the palette. It asks `api.github.com/repos/happsie/coqo/releases/latest` with only `User-Agent: coqo-updater/<version>` (and `If-None-Match`), and downloads the release's `manifest.json`, `.minisig` files and the archive for this machine's target (`aarch64-apple-darwin` on Apple Silicon).
+- **Trust:** `manifest.json.minisig` must verify against the public key compiled in from `crates/updater/release.pub`; the archive's sha256 and size must match the manifest, and its own `.minisig` must verify too. Downgrades and the same version are refused; pre-releases only with `channel = "pre"`. While `release.pub` is the placeholder, no build updates.
+- **Install:** the status bar shows **Update to vX.Y.Z**; its popover has the release notes and **Update and restart**. The daemon swaps the verified app in (the previous one is kept as `Coqo.app.old`, or `bin.old`), Coqo relaunches, and the daemon restarts once no agent turn is running ("Restarting the daemon when agents are idle (N running)"; **Restart now** asks first). Chats resume on the new daemon.
+- **Rollback:** if the new daemon exits during start-up, Coqo moves the previous version back once, relaunches it, and shows why. That version is not offered again; the next release is.
+- **Settings** (`settings.toml` in the config folder):
+
+  ```toml
+  [updates]
+  check = true        # false: never contact GitHub
+  channel = "stable"  # "pre": offer pre-releases too
+  ```
+
+### Before the first release
+
+1. Do the one-time key setup above. Builds made before the real `release.pub` is committed can't verify anything, so the first updatable version is the first one built with the real key.
+2. Install that version once with `scripts/install.sh`, so Coqo runs from an install location rather than a checkout.
+3. Archives must hold only regular files and folders under `Coqo.app/` (or `coqo/bin/`): no symlinks, and `COPYFILE_DISABLE=1` so macOS tar adds no `._*` files (`scripts/release/package-macos.sh` does both).

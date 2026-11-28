@@ -1499,6 +1499,12 @@ export type InputParams = {
   id: TerminalId;
 };
 
+/** Params of `update/install`. */
+export type InstallParams = {
+  /** The install folder the UI runs from (`…/Coqo.app`, or the bin folder). The daemon refuses if it runs from another one, so a UI never swaps an install it does not relaunch from. */
+  install: string;
+};
+
 /** The file's line-ending convention, detected from its first line break.  The buffer text keeps line breaks exactly as they are on disk (mixed files round-trip unchanged); this tells the editor which break to insert. */
 export type LineEnding = "lf" | "crlf";
 
@@ -1696,6 +1702,9 @@ export type NoteOrigin = {
   /** The message: the seq of its first `sessions/updates` chunk. */
   message: number;
 };
+
+/** Why the updater is off. */
+export type OffReason = "setting" | "devBuild" | "noReleaseKey" | "unsupported";
 
 /** Params of [`Open`]. Give exactly one of `path` and `id`. */
 export type OpenParams = {
@@ -2172,6 +2181,18 @@ export type ReadResult = {
   text?: string | null;
 };
 
+/** A release, as the updater offers it. */
+export type ReleaseInfo = {
+  /** The release notes (Markdown). */
+  notes: string;
+  /** When it was published (RFC 3339). */
+  publishedAt?: string | null;
+  /** Its page on GitHub. */
+  url?: string | null;
+  /** Its version, `X.Y.Z`. */
+  version: string;
+};
+
 /** Params of [`RemoveRoot`]. */
 export type RemoveRootParams = {
   /** The workspace. */
@@ -2322,6 +2343,26 @@ export type RespondPermissionParams = {
   session: SessionId;
 };
 
+/** Params of `daemon/restartWhenIdle`. */
+export type RestartParams = {
+  /** Restart now, stopping running agent turns (the UI warns first). */
+  now?: boolean;
+};
+
+/** The daemon is waiting to restart. */
+export type RestartPending = {
+  /** Agent turns still running; it restarts when this reaches 0. */
+  running: number;
+};
+
+/** Result of `daemon/restartWhenIdle`. */
+export type RestartResult = {
+  /** Whether it is exiting now. */
+  restarting: boolean;
+  /** Agent turns running now. The daemon restarts when this reaches 0. */
+  running: number;
+};
+
 /** Params of [`Restore`]. */
 export type RestoreParams = {
   /** Where the entry was: the path [`Delete`] was given. */
@@ -2414,6 +2455,16 @@ export type Risk = {
 
 /** How bad it would be if a risk came true. */
 export type RiskSeverity = "low" | "med" | "high";
+
+/** An update that was rolled back. */
+export type RolledBack = {
+  /** Why: what its daemon wrote before it exited. */
+  reason: string;
+  /** The version restored. */
+  restored: string;
+  /** The version that did not start. */
+  version: string;
+};
 
 /** Identifies a root within its workspace. Stable for the root's lifetime and never reused within the workspace. */
 export type RootId = number;
@@ -3566,6 +3617,53 @@ export type UnsubscribeParams = {
   subscription: SubscriptionId;
 };
 
+/** Where the updater is. */
+export type UpdateState = {
+  kind: "off";
+  /** The same, for people. */
+  message: string;
+  /** Why. */
+  reason: OffReason;
+} | {
+  /** When the last check answered, in ms since the Unix epoch. */
+  checkedAtMs?: number | null;
+  kind: "upToDate";
+} | {
+  kind: "checking";
+} | {
+  kind: "downloading";
+  /** Its version. */
+  version: string;
+} | {
+  kind: "ready";
+  /** The release. */
+  release: ReleaseInfo;
+} | {
+  kind: "installed";
+  /** The version installed. */
+  version: string;
+} | {
+  /** When, in ms since the Unix epoch. */
+  checkedAtMs: number;
+  kind: "failed";
+  /** Why, for people. */
+  message: string;
+  /** The release it was about, if one was found. */
+  version?: string | null;
+};
+
+/** Result of `update/status`, `update/check` and `update/install`. */
+export type UpdateStatus = {
+  /** The daemon's version. */
+  current: string;
+  /** Set while the daemon waits to restart (after an install, or `daemon/restartWhenIdle`). */
+  restart?: RestartPending | null;
+  /** The last update that was rolled back, and why. */
+  rolledBack?: RolledBack | null;
+  /** Where the updater is. */
+  state: UpdateState;
+};
+
 /** Context and cost usage (ACP `usage_update`). */
 export type Usage = {
   /** The model's context size in tokens. */
@@ -3936,6 +4034,14 @@ export interface Requests {
   "daemon/status": { params: null; result: DaemonStatus };
   /** Stop the daemon. Refused while work is busy unless `force` is set. (client→server) */
   "daemon/shutdown": { params: ShutdownParams; result: ShutdownResult };
+  /** Exit once no agent turn runs (or now), so the next client starts the installed daemon. (client→server) */
+  "daemon/restartWhenIdle": { params: RestartParams; result: RestartResult };
+  /** Where the in-app updater is. (client→server) */
+  "update/status": { params: null; result: UpdateStatus };
+  /** Check GitHub Releases now; download and verify a newer release. (client→server) */
+  "update/check": { params: null; result: UpdateStatus };
+  /** Swap the verified release in and restart the daemon once agents are idle. (client→server) */
+  "update/install": { params: InstallParams; result: UpdateStatus };
   /** Open (creating if needed) the workspace for a folder, or reopen one by id. (client→server) */
   "workspace/open": { params: OpenParams; result: WorkspaceInfo };
   /** Every known workspace, with the event-log seq the snapshot reflects. (client→server) */

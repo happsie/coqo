@@ -24,6 +24,7 @@ mod settings;
 mod shell;
 mod terminal;
 mod threads;
+mod update;
 mod walkthrough;
 mod welcome;
 mod windows;

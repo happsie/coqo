@@ -24,6 +24,8 @@
 //! - [`threads`]: comment threads on diff lines and the pending review
 //!   (`threads/*`, `review/*`), anchored to the file version a diff shows.
 //! - [`terminal`]: daemon-owned PTYs (`terminal/*`).
+//! - [`updates`]: the in-app updater (`update/*`) and
+//!   `daemon/restartWhenIdle` (ADR 0031).
 //! - [`cli`]: command-line arguments.
 //! - [`commands`]: the commands mods contribute (`commands/*`), for the
 //!   UI's command palette and keybindings.
@@ -67,6 +69,7 @@ pub mod search;
 pub mod syntax;
 pub mod terminal;
 pub mod threads;
+pub mod updates;
 pub mod walkthroughs;
 pub mod workspace;
 

@@ -31,6 +31,7 @@ use crate::auth::{self, Auth};
 use crate::lifecycle::{Activity, IdlePhase, IdlePolicy, idle_monitor};
 use crate::mods::{self, Mods};
 use crate::routes;
+use crate::updates::UpdatesConfig;
 use crate::workspace::Trash;
 
 /// The daemon's version.
@@ -90,6 +91,9 @@ pub struct DaemonContext {
     /// Where `fs/delete` puts deleted entries: the OS trash, or a folder
     /// (tests).
     pub trash: Trash,
+    /// Whether the daemon checks for updates: only when it runs from an
+    /// install location (ADR 0031). In-process daemons never do.
+    pub updates: UpdatesConfig,
 }
 
 /// Why the daemon could not start.
@@ -298,11 +302,22 @@ pub async fn serve(
     lock: InstanceLock,
     listener: UnixListener,
 ) -> Result<()> {
-    serve_with(paths, data, idle_policy, lock, listener, Trash::System).await
+    serve_inner(
+        paths,
+        data,
+        idle_policy,
+        lock,
+        listener,
+        Trash::System,
+        UpdatesConfig::detect(),
+        AcceptFaults::default(),
+    )
+    .await
 }
 
 /// [`serve`], with `fs/delete` putting deleted entries in `trash` (tests
-/// pass a folder, so they never touch the user's trash).
+/// pass a folder, so they never touch the user's trash). It never checks
+/// for updates.
 pub async fn serve_with(
     paths: DaemonPaths,
     data: DataDirs,
@@ -318,11 +333,13 @@ pub async fn serve_with(
         lock,
         listener,
         trash,
+        UpdatesConfig::Off(coqo_protocol::methods::update::OffReason::DevBuild),
         AcceptFaults::default(),
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_inner(
     paths: DaemonPaths,
     data: DataDirs,
@@ -330,6 +347,7 @@ async fn serve_inner(
     lock: InstanceLock,
     listener: UnixListener,
     trash: Trash,
+    updates: UpdatesConfig,
     faults: AcceptFaults,
 ) -> Result<()> {
     // Nobody can have swapped the directory (it is ours and 0700, and so
@@ -358,6 +376,7 @@ async fn serve_inner(
         agent_fs,
         agent_terminals,
         trash,
+        updates,
     };
     let router = routes::router(&ctx)?;
     tracing::debug!(?router, "routes registered");
@@ -509,6 +528,7 @@ mod tests {
             lock,
             listener,
             Trash::Folder(tmp.path().join("trash")),
+            UpdatesConfig::Off(coqo_protocol::methods::update::OffReason::DevBuild),
             faults.clone(),
         ));
 

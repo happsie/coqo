@@ -139,7 +139,7 @@ Honest notes:
 - **Reattach:** the UI asks for a snapshot (workspaces, sessions, open questions, alerts, buffer state), then subscribes to the **event log** from the last sequence number it saw. Unsaved edits and chat history are all there.
 - **Several clients:** more than one window, plus the `coqo` CLI (`coqo status`, `coqo agents`, `coqo open <ws>`), can attach at the same time.
 - **Idle policy:** with no UI attached and no busy agent or trace, language servers shut down after N minutes (default 30) and the daemon exits after M minutes (default 60). There is an "always on" setting. Socket, lock, spawn and idle details are in [ADR 0007](adr/0007-daemon-lifecycle.md).
-- **Updates:** a new UI with an older daemon keeps working if the protocol is compatible. Otherwise it offers to restart the daemon once agents are idle. Sessions resume after a restart through ACP `session/load` or Claude Code session resume, where supported.
+- **Updates:** a new UI with an older daemon keeps working if the protocol is compatible. Otherwise it offers to restart the daemon once agents are idle. Sessions resume after a restart through ACP `session/load` or Claude Code session resume, where supported. The daemon checks GitHub Releases, verifies them with minisign against a compiled-in key and swaps the install; the UI relaunches, and the daemon restarts once no agent turn runs, rolling back once if the new daemon does not start ([ADR 0031](adr/0031-in-app-updater.md), #349).
 - **Crash safety:** agents run in their own process groups, and the event log and transcripts are persisted to SQLite. After a daemon crash the supervisor restarts it and resumes sessions where the agent supports that.
 - **Sessions the agent can't resume** are marked ended ("Can't resume"), never silently restarted behind their transcript. "Start a new chat with this context" carries the old transcript into a new session, and forks work the same way, from a chosen prompt. Retry sends the last prompt again, and closed chats reopen from the CHATS history ([ADR 0026](adr/0026-session-resume-and-forks.md)).
 
@@ -526,7 +526,7 @@ Each milestone becomes a GitHub milestone. Each bullet becomes an epic issue wit
 
 **M9 · Live trace:** trace service + storage + redaction, DAP client, probe planner (JVM + JS), `dap-jvm` (or `coqo-jvm-probe`), `dap-js`, scenario MCP tools, trace explorer, trace walkthrough with inline values, `trace_query`.
 
-**M10 · Ship v1:** packaging (notarized universal dmg, AppImage/deb/rpm/Flatpak), auto-update (UI + daemon handoff), onboarding (detect `claude`/`gh`/JDK/Node/Maven), docs site, mod SDK docs + example mods, confirming the Claude integration with Anthropic.
+**M10 · Ship v1:** packaging (notarized universal dmg, AppImage/deb/rpm/Flatpak), auto-update (UI + daemon handoff; the GitHub Releases updater landed early with #349, ADR 0031), onboarding (detect `claude`/`gh`/JDK/Node/Maven), docs site, mod SDK docs + example mods, confirming the Claude integration with Anthropic.
 
 Dependencies: M1 → M2 → M3 → M4 → M5 → (M6 ∥ M7) → M8. M9 depends on M5 and M6, and its JS part can start after M3. Spike S2 runs early because trace is the riskiest feature.
 

@@ -4367,6 +4367,19 @@
       ],
       "type": "object"
     },
+    "InstallParams": {
+      "description": "Params of `update/install`.",
+      "properties": {
+        "install": {
+          "description": "The install folder the UI runs from (`…/Coqo.app`, or the bin\nfolder). The daemon refuses if it runs from another one, so a UI\nnever swaps an install it does not relaunch from.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "install"
+      ],
+      "type": "object"
+    },
     "LineEnding": {
       "description": "The file's line-ending convention, detected from its first line break.\n\nThe buffer text keeps line breaks exactly as they are on disk (mixed\nfiles round-trip unchanged); this tells the editor which break to insert.",
       "oneOf": [
@@ -4928,6 +4941,31 @@
         "message"
       ],
       "type": "object"
+    },
+    "OffReason": {
+      "description": "Why the updater is off.",
+      "oneOf": [
+        {
+          "const": "setting",
+          "description": "`updates.check = false` in `settings.toml`.",
+          "type": "string"
+        },
+        {
+          "const": "devBuild",
+          "description": "Coqo does not run from an install location.",
+          "type": "string"
+        },
+        {
+          "const": "noReleaseKey",
+          "description": "The build has no release key, so it cannot verify updates.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "There are no releases for this platform.",
+          "type": "string"
+        }
+      ]
     },
     "OpenParams": {
       "description": "Params of [`Open`]. Give exactly one of `path` and `id`.",
@@ -6388,6 +6426,38 @@
       ],
       "type": "object"
     },
+    "ReleaseInfo": {
+      "description": "A release, as the updater offers it.",
+      "properties": {
+        "notes": {
+          "description": "The release notes (Markdown).",
+          "type": "string"
+        },
+        "publishedAt": {
+          "description": "When it was published (RFC 3339).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "Its page on GitHub.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "description": "Its version, `X.Y.Z`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "notes"
+      ],
+      "type": "object"
+    },
     "RemoveRootParams": {
       "description": "Params of [`RemoveRoot`].",
       "properties": {
@@ -6774,6 +6844,52 @@
       ],
       "type": "object"
     },
+    "RestartParams": {
+      "description": "Params of `daemon/restartWhenIdle`.",
+      "properties": {
+        "now": {
+          "default": false,
+          "description": "Restart now, stopping running agent turns (the UI warns first).",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "RestartPending": {
+      "description": "The daemon is waiting to restart.",
+      "properties": {
+        "running": {
+          "description": "Agent turns still running; it restarts when this reaches 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "running"
+      ],
+      "type": "object"
+    },
+    "RestartResult": {
+      "description": "Result of `daemon/restartWhenIdle`.",
+      "properties": {
+        "restarting": {
+          "description": "Whether it is exiting now.",
+          "type": "boolean"
+        },
+        "running": {
+          "description": "Agent turns running now. The daemon restarts when this reaches 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "running",
+        "restarting"
+      ],
+      "type": "object"
+    },
     "RestoreParams": {
       "description": "Params of [`Restore`].",
       "properties": {
@@ -7031,6 +7147,29 @@
           "type": "string"
         }
       ]
+    },
+    "RolledBack": {
+      "description": "An update that was rolled back.",
+      "properties": {
+        "reason": {
+          "description": "Why: what its daemon wrote before it exited.",
+          "type": "string"
+        },
+        "restored": {
+          "description": "The version restored.",
+          "type": "string"
+        },
+        "version": {
+          "description": "The version that did not start.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "restored",
+        "reason"
+      ],
+      "type": "object"
     },
     "RootId": {
       "description": "Identifies a root within its workspace. Stable for the root's lifetime and\nnever reused within the workspace.",
@@ -10975,6 +11114,195 @@
       ],
       "type": "object"
     },
+    "UpdateState": {
+      "description": "Where the updater is.",
+      "oneOf": [
+        {
+          "description": "Not checking, and why.",
+          "properties": {
+            "kind": {
+              "const": "off",
+              "type": "string"
+            },
+            "message": {
+              "description": "The same, for people.",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/OffReason",
+              "description": "Why."
+            }
+          },
+          "required": [
+            "kind",
+            "reason",
+            "message"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Up to date (or not checked yet).",
+          "properties": {
+            "checkedAtMs": {
+              "description": "When the last check answered, in ms since the Unix epoch.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "upToDate",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Asking GitHub.",
+          "properties": {
+            "kind": {
+              "const": "checking",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Downloading and verifying a release.",
+          "properties": {
+            "kind": {
+              "const": "downloading",
+              "type": "string"
+            },
+            "version": {
+              "description": "Its version.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "version"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A verified release is unpacked beside the install, ready to swap in.",
+          "properties": {
+            "kind": {
+              "const": "ready",
+              "type": "string"
+            },
+            "release": {
+              "$ref": "#/$defs/ReleaseInfo",
+              "description": "The release."
+            }
+          },
+          "required": [
+            "kind",
+            "release"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Swapped in; the daemon restarts once agents are idle.",
+          "properties": {
+            "kind": {
+              "const": "installed",
+              "type": "string"
+            },
+            "version": {
+              "description": "The version installed.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "version"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The last check, download or verification failed.",
+          "properties": {
+            "checkedAtMs": {
+              "description": "When, in ms since the Unix epoch.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "failed",
+              "type": "string"
+            },
+            "message": {
+              "description": "Why, for people.",
+              "type": "string"
+            },
+            "version": {
+              "description": "The release it was about, if one was found.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "message",
+            "checkedAtMs"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UpdateStatus": {
+      "description": "Result of `update/status`, `update/check` and `update/install`.",
+      "properties": {
+        "current": {
+          "description": "The daemon's version.",
+          "type": "string"
+        },
+        "restart": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RestartPending"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set while the daemon waits to restart (after an install, or\n`daemon/restartWhenIdle`)."
+        },
+        "rolledBack": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RolledBack"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The last update that was rolled back, and why."
+        },
+        "state": {
+          "$ref": "#/$defs/UpdateState",
+          "description": "Where the updater is."
+        }
+      },
+      "required": [
+        "current",
+        "state"
+      ],
+      "type": "object"
+    },
     "Usage": {
       "description": "Context and cost usage (ACP `usage_update`).",
       "properties": {
@@ -12360,6 +12688,17 @@
         "type": "boolean"
       }
     },
+    "daemon/restartWhenIdle": {
+      "description": "Exit once no agent turn runs (or now), so the next client starts the installed daemon.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/RestartParams"
+      },
+      "result": {
+        "$ref": "#/$defs/RestartResult"
+      }
+    },
     "daemon/shutdown": {
       "description": "Stop the daemon. Refused while work is busy unless `force` is set.",
       "direction": "client→server",
@@ -13359,6 +13698,39 @@
       },
       "result": {
         "$ref": "#/$defs/Thread"
+      }
+    },
+    "update/check": {
+      "description": "Check GitHub Releases now; download and verify a newer release.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "type": "null"
+      },
+      "result": {
+        "$ref": "#/$defs/UpdateStatus"
+      }
+    },
+    "update/install": {
+      "description": "Swap the verified release in and restart the daemon once agents are idle.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/InstallParams"
+      },
+      "result": {
+        "$ref": "#/$defs/UpdateStatus"
+      }
+    },
+    "update/status": {
+      "description": "Where the in-app updater is.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "type": "null"
+      },
+      "result": {
+        "$ref": "#/$defs/UpdateStatus"
       }
     },
     "walkthroughs/changes": {

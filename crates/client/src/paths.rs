@@ -94,6 +94,28 @@ pub fn default_data_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|base| base.join(name))
 }
 
+/// Overrides Coqo's per-user config directory (`settings.toml`,
+/// `keybindings.toml`).
+pub const CONFIG_DIR_ENV: &str = "COQO_CONFIG_DIR";
+
+/// Coqo's per-user config directory: `$COQO_CONFIG_DIR` if set, otherwise
+/// `$XDG_CONFIG_HOME/coqo` on Linux and `~/Library/Application Support/Coqo`
+/// on macOS. The UI and the daemon both read `settings.toml` there.
+pub fn config_dir() -> PathBuf {
+    std::env::var_os(CONFIG_DIR_ENV)
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            let name = if cfg!(target_os = "macos") {
+                "Coqo"
+            } else {
+                "coqo"
+            };
+            dirs::config_dir().map(|d| d.join(name))
+        })
+        .unwrap_or_else(|| std::env::temp_dir().join("coqo-config"))
+}
+
 /// No runtime directory could be determined.
 #[derive(Debug, thiserror::Error)]
 #[error("cannot determine the Coqo runtime directory (no home directory?); set {RUNTIME_DIR_ENV}")]
