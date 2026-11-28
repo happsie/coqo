@@ -2,7 +2,7 @@
 
 //! The file finder in a workbench window against a real `coqod`: `Ctrl P`,
 //! typing, Enter, `path:line`, recently opened files and `Ctrl Enter` into a
-//! split (#162).
+//! split (#162). The harness serves the file commands' tests too.
 
 use std::{
     rc::Rc,
@@ -31,13 +31,13 @@ use crate::{
     workspace,
 };
 
-struct Ui {
-    cx: TestAppContext,
-    window: AnyWindowHandle,
-    shell: Entity<Shell>,
+pub(super) struct Ui {
+    pub(super) cx: TestAppContext,
+    pub(super) window: AnyWindowHandle,
+    pub(super) shell: Entity<Shell>,
 }
 
-fn open_ui(fixture: &Fixture) -> Ui {
+pub(super) fn open_ui(fixture: &Fixture) -> Ui {
     let cx = TestAppContext::single();
     cx.executor().allow_parking();
     let paths = fixture.daemon.paths.clone();
@@ -72,7 +72,7 @@ fn open_ui(fixture: &Fixture) -> Ui {
 }
 
 impl Ui {
-    fn frame<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
+    pub(super) fn frame<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
         self.cx
             .update_window(self.window, |_, window, cx| {
                 window.render_frame(cx);
@@ -81,14 +81,14 @@ impl Ui {
             .unwrap()
     }
 
-    fn settle(&mut self) {
+    pub(super) fn settle(&mut self) {
         for _ in 0..3 {
             self.cx.run_until_parked();
             self.frame(|_, _| ());
         }
     }
 
-    fn wait_for(&mut self, what: &str, done: impl Fn(&mut Self) -> bool) {
+    pub(super) fn wait_for(&mut self, what: &str, done: impl Fn(&mut Self) -> bool) {
         let deadline = Instant::now() + TIMEOUT;
         loop {
             self.settle();
@@ -100,7 +100,7 @@ impl Ui {
         }
     }
 
-    fn press(&mut self, keys: &str) {
+    pub(super) fn press(&mut self, keys: &str) {
         for k in keys.split_whitespace() {
             self.frame(|window, cx| window.press(k, cx));
             self.cx.run_until_parked();
@@ -108,16 +108,16 @@ impl Ui {
         self.settle();
     }
 
-    fn type_text(&mut self, text: &str) {
+    pub(super) fn type_text(&mut self, text: &str) {
         self.cx.simulate_input(self.window, text);
         self.settle();
     }
 
-    fn palette_open(&mut self) -> bool {
+    pub(super) fn palette_open(&mut self) -> bool {
         self.cx.read(|cx| self.shell.read(cx).palette().is_some())
     }
 
-    fn items(&mut self) -> Vec<PaletteItem> {
+    pub(super) fn items(&mut self) -> Vec<PaletteItem> {
         self.cx.read(|cx| {
             self.shell
                 .read(cx)
@@ -127,12 +127,12 @@ impl Ui {
         })
     }
 
-    fn titles(&mut self) -> Vec<String> {
+    pub(super) fn titles(&mut self) -> Vec<String> {
         self.items().iter().map(|i| i.title.to_string()).collect()
     }
 
     /// Wait until the first row is `title`.
-    fn wait_for_first(&mut self, title: &str) -> PaletteItem {
+    pub(super) fn wait_for_first(&mut self, title: &str) -> PaletteItem {
         self.wait_for(&format!("{title} first"), |ui| {
             ui.items().first().is_some_and(|i| i.title == title)
         });
@@ -140,7 +140,7 @@ impl Ui {
     }
 
     /// The active tab, if it's a file tab.
-    fn active_file(&mut self) -> Option<Entity<FileEditor>> {
+    pub(super) fn active_file(&mut self) -> Option<Entity<FileEditor>> {
         let dock = self.cx.read(|cx| self.shell.read(cx).dock().clone());
         self.cx.read(|cx| {
             let dock = dock.read(cx);
@@ -149,12 +149,12 @@ impl Ui {
         })
     }
 
-    fn active_path(&mut self) -> Option<String> {
+    pub(super) fn active_path(&mut self) -> Option<String> {
         let tab = self.active_file()?;
         Some(self.cx.read(|cx| tab.read(cx).path().to_owned()))
     }
 
-    fn file_tabs(&mut self) -> usize {
+    pub(super) fn file_tabs(&mut self) -> usize {
         let dock = self.cx.read(|cx| self.shell.read(cx).dock().clone());
         self.cx.read(|cx| {
             dock.read(cx)
@@ -166,7 +166,7 @@ impl Ui {
         })
     }
 
-    fn groups(&mut self) -> usize {
+    pub(super) fn groups(&mut self) -> usize {
         let dock = self.cx.read(|cx| self.shell.read(cx).dock().clone());
         self.cx.read(|cx| dock.read(cx).tree().groups().len())
     }
