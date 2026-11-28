@@ -75,10 +75,18 @@ impl Env {
         connect(&self.paths(), config()).await.unwrap().0
     }
 
-    /// What spawned (`--detached`) daemons logged, for failure messages.
+    /// What spawned (`--detached`) daemons logged and wrote to stderr, for
+    /// failure messages.
     fn detached_log(&self) -> String {
-        std::fs::read_to_string(self.data.join("logs/coqod.log"))
-            .unwrap_or_else(|e| format!("(no log: {e})"))
+        let read = |name: &str| {
+            std::fs::read_to_string(self.data.join("logs").join(name))
+                .unwrap_or_else(|e| format!("(no {name}: {e})"))
+        };
+        format!(
+            "{}\ncoqod stderr:\n{}",
+            read("coqod.log"),
+            read("coqod.stderr")
+        )
     }
 
     fn connect_options(&self, idle_exit: &str) -> ConnectOptions {
@@ -400,6 +408,69 @@ async fn bare_coqod_starts_it_in_the_background() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("already running"), "{stdout}");
 
+    let client = env.client().await;
+    client
+        .request::<Shutdown>(ShutdownParams { force: true })
+        .await
+        .unwrap();
+    client.closed().await;
+}
+
+/// A spawned daemon that fails at start-up leaves why on disk, and the
+/// launcher (here `coqod`, starting it) says why. The next daemon that
+/// starts keeps that as the previous stderr.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_that_fails_at_startup_says_why() {
+    let env = Env::new();
+    // The global database cannot be opened: the daemon takes the lock and
+    // binds, then fails before it serves (the window #262's daemon may die in).
+    let db = env.data.join("coqo.db");
+    std::fs::create_dir_all(&db).unwrap();
+    let output = env
+        .command(&["--idle-exit", "30s"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let printed = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        printed.contains("coqod exited during startup (exit status: 1): "),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("unable to open database file"),
+        "{printed}"
+    );
+    assert!(printed.contains(&*db.to_string_lossy()), "{printed}");
+
+    // On disk: the tagged reason in coqod.stderr, and the error in the log.
+    let stderr_file = env.data.join("logs/coqod.stderr");
+    let stderr = std::fs::read_to_string(&stderr_file).unwrap();
+    let line = stderr
+        .lines()
+        .find(|l| l.contains("unable to open database file"))
+        .unwrap_or_else(|| panic!("no reason in coqod.stderr:\n{stderr}"));
+    assert!(line.starts_with("coqod["), "{line}");
+    let log = std::fs::read_to_string(env.data.join("logs/coqod.log")).unwrap();
+    assert!(
+        log.lines()
+            .any(|l| l.contains("coqod failed") && l.contains("unable to open database file")),
+        "{log}"
+    );
+
+    // Fixed: the next daemon starts, and keeps the failure as the previous
+    // stderr.
+    std::fs::remove_dir(&db).unwrap();
+    let output = env
+        .command(&["--idle-exit", "30s"])
+        .stdout(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", env.detached_log());
+    let previous = std::fs::read_to_string(env.data.join("logs/coqod.stderr.1")).unwrap();
+    assert!(previous.contains(line), "{previous}");
+    assert_eq!(std::fs::read_to_string(&stderr_file).unwrap(), "");
     let client = env.client().await;
     client
         .request::<Shutdown>(ShutdownParams { force: true })

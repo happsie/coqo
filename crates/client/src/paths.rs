@@ -7,6 +7,11 @@
 //!   coqod.sock                 the Coqo Protocol socket (0600)
 //!   coqod.lock                 single-instance lock (flock), holds the daemon's pid
 //!   coqod.token                the running daemon's session token (0600)
+//!
+//! <data dir>/logs/             $COQO_DATA_DIR, else the platform data dir (PLAN §8)
+//!   coqod.log                  a detached daemon's log
+//!   coqod.stderr               a detached daemon's stderr: start-up errors, panics
+//!   coqod.stderr.1             the previous non-empty coqod.stderr
 //! ```
 //!
 //! Both sides verify the directory before using it ([`RuntimeDir`]): it
@@ -16,6 +21,7 @@
 //! `COQO_RUNTIME_DIR` overrides the directory, for tests and for running
 //! more than one daemon side by side.
 
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -44,6 +50,49 @@ pub const LOCK_FILE: &str = "coqod.lock";
 /// File name of the daemon's session token, which clients send in
 /// `coqo/hello`.
 pub const TOKEN_FILE: &str = "coqod.token";
+
+/// The daemon's log directory, under its data directory.
+pub const LOG_DIR: &str = "logs";
+/// A detached daemon's log, in [`LOG_DIR`].
+pub const LOG_FILE: &str = "coqod.log";
+/// A detached daemon's stderr, in [`LOG_DIR`]. Launchers point a spawned
+/// daemon's stderr here, and the daemon points its own stderr here too, so
+/// an error before logging is set up, or a panic, is not lost. Each line
+/// the daemon writes starts with [`stderr_prefix`], so a launcher can find
+/// the lines of the daemon it spawned.
+pub const STDERR_FILE: &str = "coqod.stderr";
+/// The previous [`STDERR_FILE`]: a daemon that takes the lock renames a
+/// non-empty one to this, so the last crash's panic survives the restart.
+pub const STDERR_PREVIOUS_FILE: &str = "coqod.stderr.1";
+
+/// How a detached daemon starts each line it writes to stderr:
+/// `coqod[<pid>]: `.
+pub fn stderr_prefix(pid: u32) -> String {
+    format!("coqod[{pid}]: ")
+}
+
+/// The data directory `coqod` uses: `dir` if given and not empty (the value
+/// of `$COQO_DATA_DIR` the daemon gets), else [`default_data_dir`]. `coqod`
+/// resolves its own the same way; launchers use this to find its logs.
+pub fn data_dir(dir: Option<&OsStr>) -> Option<PathBuf> {
+    match dir {
+        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
+        _ => default_data_dir(),
+    }
+}
+
+/// The platform data directory (PLAN §8): `~/Library/Application
+/// Support/Coqo` on macOS, `$XDG_DATA_HOME/coqo` (default
+/// `~/.local/share/coqo`) on Linux. The same as
+/// `coqo_storage::DataDirs::platform` (a `coqod` test checks).
+pub fn default_data_dir() -> Option<PathBuf> {
+    let name = if cfg!(target_os = "linux") {
+        "coqo"
+    } else {
+        "Coqo"
+    };
+    dirs::data_dir().map(|base| base.join(name))
+}
 
 /// No runtime directory could be determined.
 #[derive(Debug, thiserror::Error)]
@@ -151,6 +200,17 @@ mod tests {
             let name = dir.file_name().unwrap().to_string_lossy();
             assert!(name.starts_with("coqo"), "{}", dir.display());
         }
+    }
+
+    #[test]
+    fn data_dir_prefers_the_given_one() {
+        assert_eq!(
+            data_dir(Some(OsStr::new("/data/coqo"))),
+            Some(PathBuf::from("/data/coqo"))
+        );
+        assert_eq!(data_dir(Some(OsStr::new(""))), default_data_dir());
+        assert_eq!(data_dir(None), default_data_dir());
+        assert_eq!(stderr_prefix(42), "coqod[42]: ");
     }
 
     #[test]
