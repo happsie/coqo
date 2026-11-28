@@ -47,8 +47,8 @@ use coqo_ui::{
 };
 
 use super::{
-    Collapse, Confirm, DeleteEntry, Dismiss, Expand, NewFile, NewFolder, RenameEntry, SelectNext,
-    SelectPrev,
+    Collapse, Confirm, CopyPath, CopyRelativePath, DeleteEntry, Dismiss, Expand, NewFile,
+    NewFolder, RenameEntry, RevealInFileManager, SelectNext, SelectPrev,
     editor::{self, FileEditor},
     history::{FileOp, History},
     ops::{FileEvent, FileEvents, is_at_or_under, moved_path},
@@ -290,9 +290,9 @@ fn op_message(error: &DaemonError, name: &str) -> String {
 
 /// "Reveal in Finder" and the like.
 #[cfg(target_os = "macos")]
-const REVEAL_LABEL: &str = "Reveal in Finder";
+pub(crate) const REVEAL_LABEL: &str = "Reveal in Finder";
 #[cfg(not(target_os = "macos"))]
-const REVEAL_LABEL: &str = "Reveal in File Manager";
+pub(crate) const REVEAL_LABEL: &str = "Reveal in File Manager";
 
 #[cfg(target_os = "macos")]
 const DELETE_KEY_LABEL: &str = "⌘⌫";
@@ -1397,6 +1397,34 @@ impl FileTree {
         }
     }
 
+    fn copy_selected(&mut self, relative: bool, cx: &mut Context<Self>) {
+        if let Some(target) = self.selected_target() {
+            self.copy_path(&target, relative, cx);
+        }
+    }
+
+    /// Show `path` under `root`: expand the folders it is in (listing the
+    /// ones not listed yet), then select it and scroll to it, now or once
+    /// it's listed. Whether it shows now.
+    pub(crate) fn reveal_entry(
+        &mut self,
+        root: RootId,
+        path: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.menu = None;
+        let folders = std::iter::once("").chain(path.match_indices('/').map(|(ix, _)| &path[..ix]));
+        for folder in folders {
+            let key = (root, folder.to_owned());
+            if self.expanded.insert(key.clone()) && !self.dirs.contains_key(&key) {
+                self.load(key, cx);
+            }
+        }
+        self.pending_select = Some((root, path.to_owned()));
+        self.rebuild(cx);
+        self.pending_select.is_none()
+    }
+
     fn reveal(&mut self, target: &Target, cx: &mut Context<Self>) {
         self.close_menu(cx);
         if let Some(path) = self.absolute(target.root, &target.path) {
@@ -2002,6 +2030,15 @@ impl Render for FileTree {
             .on_action(cx.listener(Self::new_folder))
             .on_action(cx.listener(Self::rename_selected))
             .on_action(cx.listener(Self::delete_selected))
+            .on_action(cx.listener(|this, _: &CopyPath, _, cx| this.copy_selected(false, cx)))
+            .on_action(
+                cx.listener(|this, _: &CopyRelativePath, _, cx| this.copy_selected(true, cx)),
+            )
+            .on_action(cx.listener(|this, _: &RevealInFileManager, _, cx| {
+                if let Some(target) = this.selected_target() {
+                    this.reveal(&target, cx);
+                }
+            }))
             .on_action(cx.listener(Self::dismiss))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))

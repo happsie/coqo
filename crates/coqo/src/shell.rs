@@ -39,7 +39,10 @@ use coqo_ui::{
         deferred, div, hsla, point, px,
     },
     slots::{PaneBuilder, SidebarPanes, Slot, Slots},
-    widgets::{Icon, TestSupportExt as _, icon, kbd, panel, raised, status_dot, tab_frame},
+    widgets::{
+        FluentBuilder as _, Icon, TestSupportExt as _, icon, kbd, panel, raised, status_dot,
+        tab_frame,
+    },
 };
 
 use crate::{
@@ -983,6 +986,7 @@ impl Render for Shell {
                     this.toggle_palette("", window, cx)
                 }),
             )
+            .map(|el| files::actions::on_active_file(el, cx))
             .on_action(cx.listener(|this, _: &chat::NewChat, window, cx| {
                 chat::new_chat(this.dock.downgrade(), window, cx)
             }))

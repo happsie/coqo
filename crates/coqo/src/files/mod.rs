@@ -13,10 +13,13 @@
 //! Folder, Rename, Delete, Copy Path, Copy Relative Path and Reveal; drag a
 //! row onto a folder to move it ([`ops`]). `Ctrl Z` / `Cmd Z` undoes the
 //! last of those, `Ctrl Shift Z` / `Cmd Shift Z` (also `Ctrl Y` off macOS)
-//! redoes it, while the tree itself has focus ([`history`]). In a file tab: `Ctrl S`
+//! redoes it, while the tree itself has focus ([`history`]). The same
+//! operations are file commands in the palette, on the selection or a file
+//! tab's file ([`actions`]). In a file tab: `Ctrl S`
 //! (`Cmd S`) saves, `Ctrl F` finds, `Ctrl Z` / `Ctrl Y` undo and redo this
 //! tab's own edits. `Ctrl P` (`Cmd P`) finds a file by name ([`finder`]).
 
+pub mod actions;
 pub mod context;
 pub mod editor;
 pub mod finder;
@@ -63,6 +66,14 @@ coqo_ui::gpui::actions!(
         UndoFileOp,
         /// Redo the file operation undone last.
         RedoFileOp,
+        /// Copy the selected entry's absolute path.
+        CopyPath,
+        /// Copy the selected entry's path relative to its root.
+        CopyRelativePath,
+        /// Show the selected entry in the OS file manager.
+        RevealInFileManager,
+        /// Show the active file tab's file in the tree.
+        RevealInTree,
     ]
 );
 
@@ -78,12 +89,8 @@ const REDO_KEYS: &[&str] = &["cmd-shift-z"];
 #[cfg(not(target_os = "macos"))]
 const REDO_KEYS: &[&str] = &["ctrl-shift-z", "ctrl-y"];
 
-#[cfg(target_os = "macos")]
-const DELETE_KEYS: &[&str] = &["delete", "cmd-backspace"];
-#[cfg(not(target_os = "macos"))]
-const DELETE_KEYS: &[&str] = &["delete"];
-
-/// Register the Files pane, the `file` tab kind and the tree's keys.
+/// Register the Files pane, the `file` tab kind and the tree's keys. Its
+/// file commands (and their keys, `F2` and `Delete`) are in [`actions`].
 pub fn init(cx: &mut App) {
     let context = Some("FileTree");
     cx.bind_keys([
@@ -92,14 +99,8 @@ pub fn init(cx: &mut App) {
         keys::binding("right", Expand, context),
         keys::binding("left", Collapse, context),
         keys::binding("enter", Confirm, context),
-        keys::binding("f2", RenameEntry, context),
         keys::binding("escape", Dismiss, context),
     ]);
-    cx.bind_keys(
-        DELETE_KEYS
-            .iter()
-            .map(|&stroke| keys::binding(stroke, DeleteEntry, context)),
-    );
     use crate::commands::Command;
     let undo = UNDO_KEYS.iter().fold(
         Command::new("files.undo", "Undo file operation", "Files", UndoFileOp),
@@ -111,6 +112,7 @@ pub fn init(cx: &mut App) {
     );
     crate::commands::register(cx, [undo.context(UNDO_CONTEXT), redo.context(UNDO_CONTEXT)]);
     ops::FileEvents::init(cx);
+    actions::init(cx);
     editor::init(cx);
     finder::init(cx);
     register_tab_kind(cx, editor::KIND, |state, window, cx| {
@@ -124,6 +126,8 @@ pub fn init(cx: &mut App) {
     );
 }
 
+#[cfg(test)]
+mod actions_tests;
 #[cfg(test)]
 mod finder_tests;
 #[cfg(test)]

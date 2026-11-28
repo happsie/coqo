@@ -29,6 +29,7 @@ The command palette opens from the top bar's command search (design board 1). Ev
 ## What it lists
 
 - **Only what works where the focus was.** A command's key context (`DiffReview`, `FileEditor`, `Dock`, `ChatTab`) has to match the focus path, and something on that path has to handle the command's action. Diff commands appear in a diff, Save in a file tab, and the split and close commands when the focus is in the tab area.
+- **File commands** (category File) act on the tree's selection with the focus in the tree, and on the tab's file from a file tab. From a tab, the Files pane comes up with the file revealed and the operation runs there: Rename names it in its row, Delete asks above the rows, New file and New folder name the new entry in the file's folder. Rename and Delete are a command each in the tree (with `F2` and `Delete`) and in a file tab (without keys: those keys edit text there).
 - **Mods' commands always appear**, under their category (the sample mod's **Hello: Say hello**). They run in the daemon.
 - **Ranking:**
   - With an empty query, the recently used commands come first (the last 30, kept in `<data dir>/ui/recent-commands.json`), then the rest by category and title.
@@ -94,6 +95,12 @@ commands::register(cx, [
 | `questions.next` / `questions.previous` | Next / Previous question | `F8` / `Shift F8` | anywhere |
 | `questions.ask_about_code` | Ask an agent about the selection | `Ctrl Shift /`, `Ctrl ?` | `FileEditor` |
 | `file.save` | Save | `Ctrl S` | `FileEditor` |
+| `files.new_file` / `files.new_folder` | New file… / New folder… | | `FileTree`, `FileEditor` |
+| `files.rename` / `files.delete` | Rename… / Delete… | `F2` / `Delete` (also `Cmd Backspace` on macOS) | `FileTree` |
+| `files.rename_active` / `files.delete_active` | Rename… / Delete… (the tab's file) | | `FileEditor` |
+| `files.copy_path` / `files.copy_relative_path` | Copy path / Copy relative path | | `FileTree`, `FileEditor` |
+| `files.reveal` | Reveal in File Manager (Finder on macOS) | | `FileTree`, `FileEditor` |
+| `files.reveal_in_tree` | Reveal active file in tree | | `FileEditor` |
 | `dock.split_right` / `dock.split_down` | Split right / down | `Ctrl \` / `Ctrl Alt \` | `Dock` |
 | `dock.close_tab` / `dock.close_group` | Close tab / group | `Ctrl W` / `Ctrl Alt W` | `Dock` |
 | `diff.next_hunk` / `diff.previous_hunk` | Next / Previous change | `J` / `K` | `DiffReview` |
