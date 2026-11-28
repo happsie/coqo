@@ -105,6 +105,10 @@ pub mod codes {
     pub const PROVIDER_ERROR: i64 = 1108;
     /// Reading or writing the session store failed.
     pub const STORAGE_ERROR: i64 = 1109;
+    /// The agent's session can't be resumed, so the session takes no more
+    /// prompts (its `ended` update says why). Start a new chat with its
+    /// context: `sessions/create` with `from`.
+    pub const SESSION_ENDED: i64 = 1110;
 
     /// No open buffer has the given id (it was unloaded, or the daemon
     /// restarted): open it again by path.

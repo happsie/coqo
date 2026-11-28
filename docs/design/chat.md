@@ -62,9 +62,22 @@ Popovers and dropdowns share one card: `surface`, a `border_strong` hairline, a 
 
 When the provider needs a login, a sand banner says how to sign in to the agent's own tool (for Claude Code: run `claude` in a terminal and use `/login`). Coqo never handles the login.
 
+## Resume, retry, forks and reopening (#67)
+
+No board covers these, so they follow board 1's chat language ([ADR 0026](../adr/0026-session-resume-and-forks.md)).
+
+- **Retry:** when the last turn failed or was stopped, its notice ends with a small raised **Retry** button (a `RotateCw` glyph, `text_muted`). It sends the last prompt again as a new turn. The palette's "Retry the last prompt" does the same.
+- **Fork from here:** under each prompt bubble, right-aligned, a `text_subtle` "Fork from here" with a `GitBranch` glyph. It shows while the prompt is hovered. It opens a new chat with the transcript before that prompt as context, and the prompt in its composer to edit and send. The palette's "Fork chat" forks the whole chat.
+- **A new chat from another** starts with an `Info` notice (a `History` glyph in `text_subtle`): "Continues “<title>”: its transcript goes to the agent with your first message".
+- **Ended:** when the agent can't resume a chat after a restart, the transcript gets a rose notice "The agent can't resume this chat: <reason>". The composer gives way to "The agent can't resume this chat. Its transcript stays here to read." and a primary **Start a new chat with this context** button, which takes the composer's text along. The tab and row show the rose error dot, with "Can't resume: …" as the reason.
+- **Closed:** in place of the composer, "This chat is closed. Its transcript stays here to read." and a primary **Reopen** button. A reopened chat gets a "Reopened" `Info` notice.
+
+![A chat whose agent lost its session after a restart, dark](screenshots/ended-dark.png)
+![A failed turn with Retry, and the History list under CHATS, light](screenshots/history-light.png)
+
 ## Sidebar
 
-The CHATS section lists the current workspace's open sessions, newest first, with a 7 px status dot: sage for idle and done, sand when it needs input or permission or is blocked, rose on error, and a pulsing blue while working. Under the title, in `text_subtle` at label size, the agent's status line with its progress ("Running the tests · 2 of 5"), or why the session waits; rows without one stay one line. The row of the active chat tab is `surface_selected`. The **+** next to CHATS and `Ctrl Shift N` (`Cmd Shift N` on macOS) start a chat in the workspace with the first available provider. Problems (no folder open, no provider installed, sign-in needed) show under the list in sand.
+The CHATS section lists the current workspace's open sessions, newest first, with a 7 px status dot: sage for idle and done, sand when it needs input or permission or is blocked, rose on error, and a pulsing blue while working. Under the title, in `text_subtle` at label size, the agent's status line with its progress ("Running the tests · 2 of 5"), or why the session waits; rows without one stay one line. The row of the active chat tab is `surface_selected`. The **+** next to CHATS and `Ctrl Shift N` (`Cmd Shift N` on macOS) start a chat in the workspace with the first available provider. Under the open chats, a collapsed **History** line (a chevron, `text_label` in `text_subtle`) lists the workspace's closed chats: the 10 newest, titled ones only, each with a `History` glyph and its title in `text_subtle`. A click reopens the chat and shows it; the palette's "Reopen closed chat" reopens the newest. Problems (no folder open, no provider installed, sign-in needed) show under the list in sand.
 
 Below a problem go the provider's buttons, in the primary style:
 

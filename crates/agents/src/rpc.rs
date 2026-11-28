@@ -7,8 +7,8 @@
 use coqo_protocol::methods::agents::CriterionAuthor;
 use coqo_protocol::methods::agents::{
     Cancel, Changes, Close, Create, DeletePermissionRule, Get, List, PermissionRules, Prompt,
-    Providers, Rename, RespondPermission, RunAction, SetConfigOption, SetCriteria, SetMode,
-    SetStatus, Updates,
+    Providers, Rename, Reopen, RespondPermission, Retry, RunAction, SetConfigOption, SetCriteria,
+    SetMode, SetStatus, Updates,
 };
 use coqo_protocol::{Access, Router, Scope};
 
@@ -36,6 +36,8 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
     let set_status = m.clone();
     let set_criteria = m.clone();
     let rename = m.clone();
+    let reopen = m.clone();
+    let retry = m.clone();
     let close = m.clone();
     let rules = m.clone();
     let delete_rule = m.clone();
@@ -108,6 +110,14 @@ pub fn register(router: Router, manager: SessionManager) -> Router {
         .method_with::<Rename, _, _>(Access::daemon(), move |_, p| {
             let r = rename.rename(&p.session, &p.title).map_err(Into::into);
             async move { r }
+        })
+        .method_with::<Reopen, _, _>(Access::daemon(), move |_, p| {
+            let r = reopen.reopen(&p.session).map_err(Into::into);
+            async move { r }
+        })
+        .method_with::<Retry, _, _>(Access::daemon(), move |_, p| {
+            let m = retry.clone();
+            async move { m.retry(&p.session).await.map_err(Into::into) }
         })
         .method_with::<Close, _, _>(Access::daemon(), move |_, p| {
             let m = close.clone();

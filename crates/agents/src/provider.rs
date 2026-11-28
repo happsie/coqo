@@ -94,6 +94,12 @@ pub enum ProviderError {
     /// The provider does not support this.
     #[error("not supported: {0}")]
     Unsupported(String),
+    /// The agent can't take a session back
+    /// ([`resume_session`](AgentProvider::resume_session)): it no longer has
+    /// it, or refused it. Trying again won't help, unlike
+    /// [`Failed`](Self::Failed).
+    #[error("{0}")]
+    SessionLost(String),
     /// Anything else (process died, protocol error, …).
     #[error("{0}")]
     Failed(String),
@@ -141,8 +147,12 @@ pub trait AgentProvider: Send + Sync + 'static {
     ///
     /// Coqo keeps its own transcript, so updates sent **before this returns**
     /// are treated as history replay and dropped when the transcript is not
-    /// empty. The default says it is unsupported; the manager then starts a
-    /// fresh session.
+    /// empty. The default says it is unsupported. If the session has a
+    /// transcript, the manager then marks it ended rather than start a
+    /// fresh agent session that knows none of it. Return
+    /// [`ProviderError::SessionLost`] when the agent refused the session (it
+    /// ends too), and [`ProviderError::Failed`] when it could not be asked
+    /// (the next prompt tries again).
     fn resume_session(
         &self,
         request: ResumeRequest,

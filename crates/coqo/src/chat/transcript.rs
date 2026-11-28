@@ -14,8 +14,8 @@ use std::collections::HashMap;
 use coqo_protocol::methods::agents::{
     AgentState, AuthKind, AuthStatus, AvailableCommand, ContentBlock, PermissionOutcome,
     PermissionRequest, PermissionRequestId, PermissionRule, PlanEntry, SessionConfigOption,
-    SessionModes, SessionUpdate, StopReason, ToolCall, ToolCallContent, ToolCallId, ToolCallUpdate,
-    Usage, config_category, follow_mode,
+    SessionModes, SessionOrigin, SessionUpdate, StopReason, ToolCall, ToolCallContent, ToolCallId,
+    ToolCallUpdate, Usage, config_category, follow_mode,
 };
 use coqo_protocol::methods::questions::{Question, QuestionId};
 use coqo_protocol::methods::walkthroughs::{WalkthroughId, WalkthroughSummary};
@@ -107,6 +107,9 @@ pub enum NoticeKind {
     Error,
     /// The session was closed.
     Closed,
+    /// Something happened to the chat itself (reopened, started from
+    /// another chat).
+    Info,
 }
 
 /// One row of the transcript.
@@ -207,6 +210,14 @@ pub struct Transcript {
     /// A turn is running.
     pub running: bool,
     pub closed: bool,
+    /// Why the agent's session can't be resumed, once it couldn't: the
+    /// chat takes no more prompts.
+    pub ended: Option<String>,
+    /// The chat this one started from.
+    pub started_from: Option<SessionOrigin>,
+    /// The seq of each prompt's `user_message`, by entry index (to fork
+    /// before it).
+    prompt_seqs: HashMap<usize, u64>,
     /// The provider needs the user to sign in, with its message.
     pub sign_in: Option<String>,
     /// The walkthroughs the agent published, oldest first.
@@ -235,6 +246,7 @@ impl Transcript {
         self.head = seq;
         match update {
             SessionUpdate::UserMessage { content } => {
+                self.prompt_seqs.insert(self.entries.len(), seq);
                 self.push(Entry::User { content }, changes);
             }
             SessionUpdate::UserMessageChunk { content } => {
@@ -474,7 +486,59 @@ impl Transcript {
                     changes,
                 );
             }
+            SessionUpdate::Reopened => {
+                self.closed = false;
+                changes.meta = true;
+                self.push(
+                    Entry::Notice {
+                        kind: NoticeKind::Info,
+                        text: "Reopened".into(),
+                    },
+                    changes,
+                );
+            }
+            SessionUpdate::Ended { reason } => {
+                self.running = false;
+                changes.meta = true;
+                self.push(
+                    Entry::Notice {
+                        kind: NoticeKind::Error,
+                        text: format!("The agent can't resume this chat: {reason}"),
+                    },
+                    changes,
+                );
+                self.ended = Some(reason);
+            }
+            SessionUpdate::StartedFrom(origin) => {
+                changes.meta = true;
+                let text = match &origin.title {
+                    Some(title) => format!(
+                        "Continues \u{201c}{title}\u{201d}: its transcript goes to the agent with your first message"
+                    ),
+                    None => "Continues an earlier chat: its transcript goes to the agent with your first message".into(),
+                };
+                self.push(
+                    Entry::Notice {
+                        kind: NoticeKind::Info,
+                        text,
+                    },
+                    changes,
+                );
+                self.started_from = Some(origin);
+            }
         }
+    }
+
+    /// The seq just before the prompt at entry `ix`: a fork from there
+    /// leaves that prompt out.
+    pub fn before_prompt(&self, ix: usize) -> Option<u64> {
+        self.prompt_seqs.get(&ix).map(|seq| seq - 1)
+    }
+
+    /// Whether the last prompt can be sent again: there is one, no turn
+    /// runs, and the chat is open.
+    pub fn can_retry(&self) -> bool {
+        !self.running && !self.closed && self.ended.is_none() && !self.prompt_seqs.is_empty()
     }
 
     /// Record an error, once: the daemon reports a failed turn both as the

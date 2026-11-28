@@ -423,6 +423,7 @@ fn send_the_review_and_the_agents_reply_lands_in_the_thread() {
                 workspace: Some(ws_id),
                 title: Some("Volume discount".into()),
                 mode: None,
+                from: None,
             })
             .await
             .unwrap()

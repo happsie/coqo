@@ -70,6 +70,7 @@ impl Env {
             workspace: Some("ws-1".into()),
             title: Some("Fix the build".into()),
             mode: None,
+            from: None,
         };
         self.manager.create(params).await.unwrap().id
     }

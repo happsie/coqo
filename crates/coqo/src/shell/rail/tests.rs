@@ -108,6 +108,7 @@ impl Fixture {
                     workspace: Some(workspace),
                     title: None,
                     mode: None,
+                    from: None,
                 })
                 .await
                 .unwrap();

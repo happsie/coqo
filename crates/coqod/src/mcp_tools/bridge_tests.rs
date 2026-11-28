@@ -559,6 +559,7 @@ async fn a_review_goes_to_the_agent_and_its_replies_land_in_the_threads() {
             workspace: Some(a.id.0.clone()),
             title: Some("Circle area".into()),
             mode: None,
+            from: None,
         })
         .await
         .unwrap()
@@ -805,6 +806,7 @@ async fn set_status_reaches_the_session_and_the_ui() {
         workspace: Some(a.id.0.clone()),
         title: Some("Fix the tests".into()),
         mode: None,
+        from: None,
     };
     let session = ui.request::<agm::Create>(create()).await.unwrap().id;
     let other = ui.request::<agm::Create>(create()).await.unwrap().id;
@@ -938,6 +940,7 @@ async fn acceptance_criteria_reach_the_session_and_the_ui() {
         workspace: Some(a.id.0.clone()),
         title: Some("Volume discount".into()),
         mode: None,
+        from: None,
     };
     let session = ui.request::<agm::Create>(create()).await.unwrap().id;
     let other = ui.request::<agm::Create>(create()).await.unwrap().id;
@@ -1082,6 +1085,7 @@ async fn publish_walkthrough_end_to_end() {
         workspace: Some(a.id.0.clone()),
         title: Some("Circle area".into()),
         mode: None,
+        from: None,
     };
     let session = ui.request::<agm::Create>(create()).await.unwrap().id;
     let other = ui.request::<agm::Create>(create()).await.unwrap().id;
@@ -1237,6 +1241,7 @@ async fn publish_walkthrough_lists_uncovered_hunks() {
             workspace: Some(a.id.0.clone()),
             title: Some("Perimeter".into()),
             mode: None,
+            from: None,
         })
         .await
         .unwrap()

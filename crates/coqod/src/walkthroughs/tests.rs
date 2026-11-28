@@ -115,6 +115,7 @@ async fn session(ui: &Client, dir: &TempDir, ws: &WorkspaceInfo) -> String {
             workspace: Some(ws.id.0.clone()),
             title: Some("Volume discount".into()),
             mode: None,
+            from: None,
         })
         .await
         .unwrap()

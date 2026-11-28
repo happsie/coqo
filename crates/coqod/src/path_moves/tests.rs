@@ -290,6 +290,7 @@ async fn every_anchored_item_follows_a_rename_and_keeps_it_across_a_restart() {
             workspace: Some(ws.id.0.clone()),
             title: None,
             mode: None,
+            from: None,
         })
         .await
         .unwrap()

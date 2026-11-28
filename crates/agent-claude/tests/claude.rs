@@ -126,6 +126,7 @@ impl Env {
             workspace: Some("ws-1".into()),
             title: None,
             mode: None,
+            from: None,
         }
     }
 

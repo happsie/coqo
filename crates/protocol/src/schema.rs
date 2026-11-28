@@ -264,6 +264,16 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "Give a session the user's title (kept across restarts; the agent's title no longer replaces it).",
         ),
+        request::<agents::Reopen>(
+            g,
+            "client→server",
+            "Reopen a closed session; its next prompt resumes the agent's session.",
+        ),
+        request::<agents::Retry>(
+            g,
+            "client→server",
+            "Send the session's last prompt again, as a new turn.",
+        ),
         request::<agents::Close>(
             g,
             "client→server",
@@ -639,6 +649,7 @@ fn error_codes() -> Value {
         ("AUTH_REQUIRED", methods::codes::AUTH_REQUIRED),
         ("PROVIDER_ERROR", methods::codes::PROVIDER_ERROR),
         ("STORAGE_ERROR", methods::codes::STORAGE_ERROR),
+        ("SESSION_ENDED", methods::codes::SESSION_ENDED),
         ("UNKNOWN_BUFFER", methods::codes::UNKNOWN_BUFFER),
         ("UNSUPPORTED_ENCODING", methods::codes::UNSUPPORTED_ENCODING),
         ("REVISION_GONE", methods::codes::REVISION_GONE),
@@ -989,6 +1000,8 @@ fn schema_covers_every_builtin_method() {
         agents::SetStatus::NAME,
         agents::SetCriteria::NAME,
         agents::Rename::NAME,
+        agents::Reopen::NAME,
+        agents::Retry::NAME,
         agents::PermissionRules::NAME,
         agents::DeletePermissionRule::NAME,
         agents::Updates::NAME,

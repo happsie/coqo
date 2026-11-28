@@ -682,6 +682,7 @@ async fn session(ui: &Client, dir: &tempfile::TempDir, ws: &WorkspaceInfo) -> Se
         workspace: Some(ws.id.0.clone()),
         title: Some("Run the tests".into()),
         mode: None,
+        from: None,
     })
     .await
     .unwrap()

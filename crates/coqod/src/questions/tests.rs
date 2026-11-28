@@ -589,6 +589,7 @@ async fn a_session_needs_input_while_its_question_is_open() {
             workspace: Some(ws.id.0.clone()),
             title: None,
             mode: None,
+            from: None,
         })
         .await
         .unwrap();
@@ -726,6 +727,7 @@ async fn a_thread_the_user_starts_prompts_the_session_with_the_code() {
             workspace: Some(ws.id.0.clone()),
             title: None,
             mode: None,
+            from: None,
         })
         .await
         .unwrap();

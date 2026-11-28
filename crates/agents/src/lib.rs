@@ -56,6 +56,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod context;
 mod criteria;
 mod error;
 mod feed;

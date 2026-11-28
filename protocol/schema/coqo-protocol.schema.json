@@ -2215,6 +2215,17 @@
           "description": "The agent's working directory (absolute; the workspace root).",
           "type": "string"
         },
+        "from": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StartFrom"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Start from another session's transcript: \"Start a new chat with\nthis context\", and forks. The new session's first prompt carries\nthat transcript to the agent as context."
+        },
         "mode": {
           "description": "Initial mode id, if the provider has modes.",
           "type": [
@@ -7209,6 +7220,33 @@
       ],
       "type": "object"
     },
+    "SessionOrigin": {
+      "description": "Where a session started from: another session's transcript, through\none update.",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The session."
+        },
+        "through": {
+          "description": "The seq of its last update the context includes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "title": {
+          "description": "Its title then, if it had one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "session",
+        "through"
+      ],
+      "type": "object"
+    },
     "SessionParams": {
       "description": "Params naming one session.",
       "properties": {
@@ -7716,10 +7754,55 @@
           "type": "object"
         },
         {
-          "description": "The session was closed. Nothing follows.",
+          "description": "The session was closed. Nothing follows, unless it is reopened.",
           "properties": {
             "update": {
               "const": "closed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A closed session was reopened (`sessions/reopen`): prompts are taken\nagain, and the next one resumes the agent's session.",
+          "properties": {
+            "update": {
+              "const": "reopened",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The agent's session can't be resumed (after a daemon or agent\nrestart): the agent no longer has it, or can't resume sessions. The\ntranscript stays readable, but nothing more can be sent; start a new\nchat with its context (`sessions/create` with `from`).",
+          "properties": {
+            "reason": {
+              "description": "Why, from the agent.",
+              "type": "string"
+            },
+            "update": {
+              "const": "ended",
+              "type": "string"
+            }
+          },
+          "required": [
+            "update",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/SessionOrigin",
+          "description": "The session starts from another one's transcript (a new chat with\nits context, or a fork): its first prompt carries that transcript\nto the agent as context.",
+          "properties": {
+            "update": {
+              "const": "started_from",
               "type": "string"
             }
           },
@@ -8064,6 +8147,28 @@
         "workspace",
         "root",
         "paths"
+      ],
+      "type": "object"
+    },
+    "StartFrom": {
+      "description": "The transcript a new session starts from.",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The session (open, closed or ended)."
+        },
+        "through": {
+          "description": "The seq of its last update to include; all of it if absent. To fork\nbefore a prompt, give the seq just before that prompt's\n`user_message`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "session"
       ],
       "type": "object"
     },
@@ -11091,6 +11196,7 @@
     "SEARCH_UNAVAILABLE": 2002,
     "SESSION_BUSY": 1103,
     "SESSION_CLOSED": 1104,
+    "SESSION_ENDED": 1110,
     "SPAWN_FAILED": 1302,
     "STALE_SELECTION": 1602,
     "STORAGE_ERROR": 1109,
@@ -12018,6 +12124,17 @@
         "$ref": "#/$defs/SessionInfo"
       }
     },
+    "sessions/reopen": {
+      "description": "Reopen a closed session; its next prompt resumes the agent's session.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionInfo"
+      }
+    },
     "sessions/respondPermission": {
       "description": "Answer a pending permission request.",
       "direction": "client→server",
@@ -12027,6 +12144,17 @@
       },
       "result": {
         "type": "null"
+      }
+    },
+    "sessions/retry": {
+      "description": "Send the session's last prompt again, as a new turn.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/SessionParams"
+      },
+      "result": {
+        "$ref": "#/$defs/PromptResult"
       }
     },
     "sessions/setConfigOption": {

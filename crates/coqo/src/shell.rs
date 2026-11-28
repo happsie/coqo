@@ -1008,6 +1008,14 @@ impl Render for Shell {
             .on_action(cx.listener(|this, action: &chat::AskAgent, window, cx| {
                 chat::ask_agent(&this.dock, action, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, action: &chat::StartFromChat, window, cx| {
+                    chat::start_from(this.dock.downgrade(), action, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &chat::ReopenLastChat, window, cx| {
+                chat::reopen_last(this.dock.downgrade(), window, cx)
+            }))
             .on_action(cx.listener(|this, _: &chat::SessionSwitched, _, cx| this.schedule_save(cx)))
             .on_action(
                 cx.listener(|this, _: &crate::search::ShowSearch, window, cx| {

@@ -41,9 +41,9 @@ pub mod transcript;
 
 use coqo_protocol::methods::{
     agents::{
-        AgentState, CLAUDE_PROVIDER_ID, Create, CreateSessionParams, ProviderAction,
-        ProviderActionRun, ProviderInfo, Providers, RunAction, RunActionParams, SessionId,
-        SessionInfo,
+        AgentState, CLAUDE_PROVIDER_ID, Create, CreateSessionParams, Get, ProviderAction,
+        ProviderActionRun, ProviderInfo, Providers, Reopen, RunAction, RunActionParams, SessionId,
+        SessionInfo, SessionParams, StartFrom,
     },
     codes as app_codes,
     editor::{Position, Range},
@@ -93,8 +93,26 @@ coqo_ui::gpui::actions!(
         RejectPermission,
         /// Rename the focused chat in place, on its tab label.
         RenameChat,
+        /// Start a new chat with the focused chat's whole transcript as
+        /// context.
+        ForkChat,
+        /// Send the focused chat's last prompt again.
+        RetryPrompt,
+        /// Reopen the workspace's most recently closed chat.
+        ReopenLastChat,
     ]
 );
+
+/// Start a chat from chat `session`'s transcript, through seq `through`
+/// (all of it if absent), with `prompt` in its composer: "Start a new chat
+/// with this context", and forks.
+#[derive(Clone, Debug, PartialEq, Eq, Action)]
+#[action(namespace = chat, no_json)]
+pub struct StartFromChat {
+    pub session: String,
+    pub through: Option<u64>,
+    pub prompt: Option<String>,
+}
 
 /// Open a file a tool call or a criterion's evidence names (absolute path)
 /// in a file tab, at `line` (0-based) if given, selecting through line
@@ -154,6 +172,21 @@ pub fn init(cx: &mut App) {
             crate::commands::Command::new("chat.rename", "Rename chat", "Chat", RenameChat)
                 .key("f2")
                 .context("ChatTab"),
+            crate::commands::Command::new("chat.fork", "Fork chat", "Chat", ForkChat)
+                .context("ChatTab"),
+            crate::commands::Command::new(
+                "chat.retry",
+                "Retry the last prompt",
+                "Chat",
+                RetryPrompt,
+            )
+            .context("ChatTab"),
+            crate::commands::Command::new(
+                "chat.reopen",
+                "Reopen closed chat",
+                "Chat",
+                ReopenLastChat,
+            ),
         ],
     );
     cx.bind_keys([
@@ -487,6 +520,7 @@ pub fn new_chat(dock: WeakEntity<Dock>, window: &mut Window, cx: &mut App) {
                             workspace: Some(workspace.0),
                             title: None,
                             mode: None,
+                            from: None,
                         })
                     })
                     .map_err(|e| Problem::from(e.to_string()))?;
@@ -524,6 +558,114 @@ pub fn new_chat(dock: WeakEntity<Dock>, window: &mut Window, cx: &mut App) {
             .ok();
         })
         .detach();
+}
+
+/// [`StartFromChat`]: create the chat (with the same provider, in the same
+/// workspace) and show it, with the prompt in its composer.
+pub fn start_from(
+    dock: WeakEntity<Dock>,
+    action: &StartFromChat,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(daemon) = Daemon::global(cx).filter(|d| d.read(cx).is_connected()) else {
+        list_error(Some("coqod isn't connected".into()), cx);
+        return;
+    };
+    list_error(None, cx);
+    let source = SessionId(action.session.clone());
+    let (through, prompt) = (action.through, action.prompt.clone());
+    let get = daemon.read(cx).request::<Get>(SessionParams {
+        session: source.clone(),
+    });
+    window
+        .spawn(cx, async move |cx| {
+            let result = async {
+                let info = get.await.map_err(|e| e.to_string())?.info;
+                let create = cx
+                    .update(|_, cx| {
+                        daemon.read(cx).request::<Create>(CreateSessionParams {
+                            provider: info.provider,
+                            cwd: info.cwd,
+                            workspace: info.workspace,
+                            title: None,
+                            mode: None,
+                            from: Some(StartFrom {
+                                session: source,
+                                through,
+                            }),
+                        })
+                    })
+                    .map_err(|e| e.to_string())?;
+                create.await.map_err(|e| e.to_string())
+            }
+            .await;
+            cx.update(|window, cx| match result {
+                Ok(info) => {
+                    let id = info.id.clone();
+                    if let Some(list) = list::ChatList::global(cx) {
+                        list.update(cx, |l, cx| l.upsert(info, cx));
+                    }
+                    open_session(dock.clone(), id.clone(), window, cx);
+                    if let Some(prompt) = prompt
+                        && let Some(tab) = chat_tab(&dock, &id, cx)
+                    {
+                        tab.update(cx, |t, cx| t.set_draft(prompt, window, cx));
+                    }
+                }
+                Err(e) => list_error(Some(format!("Couldn't start the chat: {e}")), cx),
+            })
+            .ok();
+        })
+        .detach();
+}
+
+/// Reopen closed chat `session` and show it.
+pub fn reopen_chat(dock: WeakEntity<Dock>, session: SessionId, window: &mut Window, cx: &mut App) {
+    let Some(daemon) = Daemon::global(cx).filter(|d| d.read(cx).is_connected()) else {
+        list_error(Some("coqod isn't connected".into()), cx);
+        return;
+    };
+    let reopen = daemon.read(cx).request::<Reopen>(SessionParams { session });
+    window
+        .spawn(cx, async move |cx| {
+            let result = reopen.await;
+            cx.update(|window, cx| match result {
+                Ok(info) => {
+                    let id = info.id.clone();
+                    if let Some(list) = list::ChatList::global(cx) {
+                        list.update(cx, |l, cx| l.upsert(info, cx));
+                    }
+                    open_session(dock, id, window, cx);
+                }
+                Err(e) => list_error(Some(format!("Couldn't reopen the chat: {e}")), cx),
+            })
+            .ok();
+        })
+        .detach();
+}
+
+/// [`ReopenLastChat`]: reopen the workspace's most recently closed chat.
+pub fn reopen_last(dock: WeakEntity<Dock>, window: &mut Window, cx: &mut App) {
+    let last =
+        list::ChatList::global(cx).and_then(|l| l.read(cx).closed().first().map(|s| s.id.clone()));
+    match last {
+        Some(id) => reopen_chat(dock, id, window, cx),
+        None => list_error(Some("No closed chat to reopen".into()), cx),
+    }
+}
+
+/// The open chat tab of `session`.
+fn chat_tab(
+    dock: &WeakEntity<Dock>,
+    session: &SessionId,
+    cx: &App,
+) -> Option<Entity<tab::ChatTab>> {
+    let dock = dock.upgrade()?;
+    let dock = dock.read(cx);
+    dock.find_tab(KIND, &session.0, cx)
+        .and_then(|id| dock.tab(id))
+        .and_then(AnyTab::downcast::<tab::ChatTab>)
 }
 
 /// Open the file at an absolute `path` (from a tool call) in a file tab, if

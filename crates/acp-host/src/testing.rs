@@ -54,6 +54,8 @@
 //! - `FAKE_ACP_SIGNED_OUT=1`: `session/new`, `session/resume` and
 //!   `session/load` fail with `auth_required`.
 //! - `FAKE_ACP_NO_RESUME=1`: no `session/resume` (only `session/load`).
+//! - `FAKE_ACP_FORGETS=1`: `session/resume` and `session/load` fail with
+//!   "Session not found", as an agent that lost its session files.
 //! - `FAKE_ACP_NO_SYSTEM_PROMPT=1`: no `sessionCapabilities.systemPrompt`.
 //! - `FAKE_ACP_CONFIG=1`: sessions have config options, like Claude's:
 //!   `model` (`opus`, `sonnet`), `effort` (`low`, `medium`, `high`;
@@ -78,6 +80,11 @@ use agent_client_protocol::{ByteStreams, Client};
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+/// The error for a session the agent doesn't have.
+fn not_found() -> agent_client_protocol::Error {
+    agent_client_protocol::Error::internal_error().data("Session not found")
+}
 
 fn flag(name: &str) -> bool {
     std::env::var_os(name).is_some_and(|v| v == "1")
@@ -755,6 +762,9 @@ pub async fn run_fake_agent() -> Result<(), agent_client_protocol::Error> {
                 if flag("FAKE_ACP_SIGNED_OUT") {
                     return responder.respond_with_error(signed_out());
                 }
+                if flag("FAKE_ACP_FORGETS") {
+                    return responder.respond_with_error(not_found());
+                }
                 let id = req.session_id.clone();
                 notify(
                     &cx,
@@ -782,6 +792,9 @@ pub async fn run_fake_agent() -> Result<(), agent_client_protocol::Error> {
                 );
                 if flag("FAKE_ACP_SIGNED_OUT") {
                     return responder.respond_with_error(signed_out());
+                }
+                if flag("FAKE_ACP_FORGETS") {
+                    return responder.respond_with_error(not_found());
                 }
                 responder.respond(
                     acp::ResumeSessionResponse::new()

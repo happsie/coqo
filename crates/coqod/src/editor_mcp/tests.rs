@@ -310,6 +310,7 @@ async fn a_session_bridge_reaches_its_own_workspace_until_the_session_closes() {
             workspace: Some(a.id.0.clone()),
             title: None,
             mode: None,
+            from: None,
         })
         .await
         .unwrap();
@@ -437,6 +438,7 @@ async fn sessions_without_a_workspace_get_no_server() {
             workspace: None,
             title: None,
             mode: None,
+            from: None,
         })
         .await
         .unwrap();
@@ -471,6 +473,7 @@ async fn every_start_and_resume_gets_the_server_with_its_own_single_use_token() 
             workspace: Some(ws.id.0.clone()),
             title: None,
             mode: None,
+            from: None,
         })
         .await
         .unwrap();
@@ -485,14 +488,27 @@ async fn every_start_and_resume_gets_the_server_with_its_own_single_use_token() 
         .await
         .unwrap();
     assert_eq!(resumed.calls()[0], Call::Resume("fake-1".into()));
+    // A second session, not prompted yet.
+    let fresh = h
+        .manager()
+        .create(CreateSessionParams {
+            provider: "fake".into(),
+            cwd: dir.path().to_str().unwrap().to_owned(),
+            workspace: Some(ws.id.0.clone()),
+            title: None,
+            mode: None,
+            from: None,
+        })
+        .await
+        .unwrap();
 
-    // Another restart, and the resume fails: the fresh start that follows
-    // gets a token of its own, not the failed resume's.
+    // Another restart, and its resume fails: having no turns, it starts
+    // afresh, with a token of its own, not the failed resume's.
     let failing = ScriptedProvider::new().fail_resume(ProviderError::Failed("gone".into()));
     h.manager().shutdown().await;
     h.manager = Some(h.manager_on(SessionStore::open(&db).unwrap(), failing.clone()));
     h.manager()
-        .prompt(&session.id, vec![ContentBlock::text("again")])
+        .prompt(&fresh.id, vec![ContentBlock::text("again")])
         .await
         .unwrap();
     assert!(
@@ -505,16 +521,17 @@ async fn every_start_and_resume_gets_the_server_with_its_own_single_use_token() 
         .into_iter()
         .flat_map(editor_specs)
         .collect();
-    assert_eq!(specs.len(), 4, "start, resume, failed resume, start");
+    assert_eq!(specs.len(), 5, "start, resume, start, failed resume, start");
     assert_eq!(specs, *h.specs.lock().unwrap());
     let mut tokens = Vec::new();
     for spec in &specs {
         assert_eq!(spec.name, "coqo-editor");
         assert_eq!(spec.command.to_str(), Some(PROGRAM));
         assert_eq!(
-            spec.args,
-            ["mcp", "--workspace", &ws.id.0, "--session", &session.id.0]
+            spec.args[..4],
+            ["mcp", "--workspace", &ws.id.0, "--session"]
         );
+        assert!([&session.id.0, &fresh.id.0].contains(&&spec.args[4]));
         let token = env(spec, SESSION_TOKEN_ENV).to_owned();
         assert!(!tokens.contains(&token), "a token handed out twice");
         tokens.push(token);

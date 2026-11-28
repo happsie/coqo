@@ -141,6 +141,7 @@ Honest notes:
 - **Idle policy:** with no UI attached and no busy agent or trace, language servers shut down after N minutes (default 30) and the daemon exits after M minutes (default 60). There is an "always on" setting. Socket, lock, spawn and idle details are in [ADR 0007](adr/0007-daemon-lifecycle.md).
 - **Updates:** a new UI with an older daemon keeps working if the protocol is compatible. Otherwise it offers to restart the daemon once agents are idle. Sessions resume after a restart through ACP `session/load` or Claude Code session resume, where supported.
 - **Crash safety:** agents run in their own process groups, and the event log and transcripts are persisted to SQLite. After a daemon crash the supervisor restarts it and resumes sessions where the agent supports that.
+- **Sessions the agent can't resume** are marked ended ("Can't resume"), never silently restarted behind their transcript. "Start a new chat with this context" carries the old transcript into a new session, and forks work the same way, from a chosen prompt. Retry sends the last prompt again, and closed chats reopen from the CHATS history ([ADR 0026](adr/0026-session-resume-and-forks.md)).
 
 ### 4.4 Coqo Protocol
 - JSON-RPC 2.0 with length-prefixed frames over the Unix socket. MessagePack encoding is negotiable for hot paths (buffer ops, trace streams). Supports request/response, notifications, and **subscriptions** with sequence numbers.

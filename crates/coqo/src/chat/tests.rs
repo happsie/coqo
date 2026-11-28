@@ -1804,7 +1804,51 @@ fn chat_screenshots() {
         ("settings-light", Appearance::Light, false),
         ("rename-tab-dark", Appearance::Dark, false),
         ("rename-row-light", Appearance::Light, false),
+        ("ended-dark", Appearance::Dark, false),
+        ("history-light", Appearance::Light, false),
     ];
+    // A short chat whose turn failed: with Retry, or, after a daemon
+    // restart, ended because the agent lost its session.
+    let short = |ended: bool| {
+        let mut u = vec![
+            SessionUpdate::UserMessage {
+                content: vec![ContentBlock::text(
+                    "Add a free-shipping threshold to the cart totals.",
+                )],
+            },
+            SessionUpdate::TurnStarted { turn: 1 },
+            SessionUpdate::AgentMessageChunk {
+                content: ContentBlock::text(
+                    "I'll keep the threshold in `ShippingPolicy` and use it in `Cart::totals`.",
+                ),
+            },
+        ];
+        if ended {
+            u.push(SessionUpdate::TurnEnded {
+                turn: 1,
+                stop_reason: StopReason::Interrupted,
+                error: Some("interrupted: the daemon stopped during the turn".into()),
+            });
+            u.push(SessionUpdate::Ended {
+                reason: "Session not found".into(),
+            });
+            u.push(SessionUpdate::State {
+                state: AgentState::Error,
+                reason: Some("Can't resume: Session not found".into()),
+            });
+        } else {
+            u.push(SessionUpdate::TurnEnded {
+                turn: 1,
+                stop_reason: StopReason::Error,
+                error: Some("Overloaded: try again in a moment".into()),
+            });
+            u.push(SessionUpdate::State {
+                state: AgentState::Error,
+                reason: Some("Overloaded: try again in a moment".into()),
+            });
+        }
+        u
+    };
     for (name, appearance, composing) in shots {
         let setup = name.starts_with("setup");
         let mut updates = updates.clone();
@@ -1816,6 +1860,26 @@ fn chat_screenshots() {
             });
         }
         let settings = name.starts_with("settings");
+        let (ended, history) = (name == "ended-dark", name == "history-light");
+        if ended || history {
+            updates = short(ended);
+        }
+        // The chat's info: the shipping chat, or for the short one, its
+        // error.
+        let s1 = move || {
+            let mut i = shipping();
+            if ended || history {
+                i.state = AgentState::Error;
+                i.state_reason = Some(if ended {
+                    "Can't resume: Session not found".into()
+                } else {
+                    "Overloaded: try again in a moment".into()
+                });
+                i.status = None;
+                i.criteria.clear();
+            }
+            i
+        };
         let renaming = match name {
             "rename-tab-dark" => Some(("s1", "Free shipping threshold", super::rename::Place::Tab)),
             "rename-row-light" => {
@@ -1857,7 +1921,18 @@ fn chat_screenshots() {
                     ),
                     cx,
                 );
-                l.upsert(shipping(), cx);
+                l.upsert(s1(), cx);
+                if history {
+                    for (id, title, at) in [
+                        ("s4", "Upgrade to the 2024 edition", 0),
+                        ("s5", "Why is checkout slow?", -1),
+                    ] {
+                        let mut i = info(id, title, AgentState::Done, at);
+                        i.closed = true;
+                        l.upsert(i, cx);
+                    }
+                    l.toggle_history(cx);
+                }
             });
             let store = Rc::new(MemoryLayoutStore::default());
             let shell = cx.new(|cx| {
@@ -1867,7 +1942,7 @@ fn chat_screenshots() {
                 }
                 let chat = cx.new(|cx| {
                     let mut chat = ChatTab::new(SessionId("s1".into()), window, cx);
-                    chat.set_preview(shipping(), "Claude Code", cx);
+                    chat.set_preview(s1(), "Claude Code", cx);
                     chat.apply((1..).zip(updates).collect(), cx);
                     chat.set_preview_rules(rules, cx);
                     if settings {
@@ -2394,4 +2469,149 @@ fn features_prefer_the_claude_code_provider() {
     let claude_down = [provider("codex", true), provider("claude-acp", false)];
     assert_eq!(pick(&claude_down).as_deref(), Some("codex"));
     assert_eq!(pick(&[provider("claude-acp", false)]), None);
+}
+
+// ---- retry, fork, reopen, ended chats (#67) ---------------------------------------
+
+fn closed_listed(ui: &mut Ui) -> Vec<SessionInfo> {
+    ui.cx
+        .read(|cx| ChatList::global(cx).unwrap().read(cx).closed().to_vec())
+}
+
+fn close_session(fixture: &Fixture, session: &coqo_agents::model::SessionId) {
+    let manager = fixture.daemon.manager.clone();
+    let session = session.clone();
+    fixture
+        .daemon
+        ._runtime
+        .block_on(async move { manager.close(&session).await.unwrap() });
+}
+
+fn first_text(content: &[ContentBlock]) -> &str {
+    match content.first() {
+        Some(ContentBlock::Text { text }) => text,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_failed_turn_retries_and_a_prompt_forks_into_a_new_chat() {
+    let provider = ScriptedProvider::new()
+        .turn([Step::Fail("Overloaded".into())])
+        .turn([chunk("Fixed"), Step::Stop(StopReason::EndTurn)])
+        .turn([chunk("Forked"), Step::Stop(StopReason::EndTurn)]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.send(&chat, "Fix the login test");
+    ui.wait_for("Retry", |ui| !running(ui, &chat) && ui.shows("chat-retry"));
+    ui.frame(|window, cx| window.click("chat-retry", cx));
+    ui.wait_for("the retried turn", |ui| {
+        ui.agent_text(&chat) == "Fixed" && !running(ui, &chat)
+    });
+    assert!(
+        !ui.shows("chat-retry"),
+        "only after a failed or stopped turn"
+    );
+    let prompt = vec![ContentBlock::text("Fix the login test")];
+    assert_eq!(prompts(&fixture.provider), [prompt.clone(), prompt.clone()]);
+
+    // "Fork from here" on the retried prompt: a new chat with what came
+    // before it, and the prompt in its composer.
+    let users: Vec<usize> = ui
+        .entries(&chat)
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, Entry::User { .. }))
+        .map(|(ix, _)| ix)
+        .collect();
+    assert_eq!(users.len(), 2);
+    // It shows while the prompt is hovered.
+    ui.frame(|window, cx| window.hover(ElementId::from(("chat-user", users[1])), cx));
+    ui.frame(|window, cx| window.click(ElementId::from(("chat-fork", users[1])), cx));
+    ui.wait_for("the fork", |ui| {
+        ui.chats().len() == 2 && ui.listed().len() == 2
+    });
+    let fork = ui
+        .chats()
+        .into_iter()
+        .find(|c| c != &chat)
+        .expect("the fork's tab");
+    ui.wait_for("the fork's draft", |ui| {
+        ui.composer_text(&fork) == "Fix the login test"
+    });
+    assert!(matches!(
+        &ui.entries(&fork)[0],
+        Entry::Notice { kind: NoticeKind::Info, text } if text.starts_with("Continues \u{201c}Fix the login test\u{201d}")
+    ));
+    ui.send(&fork, "Fix the login test, and the signup one");
+    ui.wait_for("the fork's answer", |ui| ui.agent_text(&fork) == "Forked");
+    let sent = prompts(&fixture.provider);
+    let context = first_text(&sent[2]);
+    assert!(context.contains("User: Fix the login test"), "{context}");
+    assert_eq!(
+        context.matches("User: ").count(),
+        1,
+        "before the fork point only"
+    );
+    assert_eq!(
+        sent[2][1],
+        ContentBlock::text("Fix the login test, and the signup one")
+    );
+}
+
+#[test]
+fn a_closed_chat_reopens_from_history_and_an_ended_one_continues_in_a_new_chat() {
+    use coqo_agents::ProviderError;
+
+    let provider = ScriptedProvider::new()
+        .fail_resume(ProviderError::SessionLost("Session not found".into()))
+        .turn([chunk("One"), Step::Stop(StopReason::EndTurn)])
+        .turn([chunk("Two"), Step::Stop(StopReason::EndTurn)]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    let session = ui.cx.read(|cx| chat.read(cx).session().clone());
+    ui.send(&chat, "Remember the code word");
+    ui.wait_for("the answer", |ui| {
+        ui.agent_text(&chat) == "One" && !running(ui, &chat)
+    });
+
+    // Closed: it moves to HISTORY, and the tab offers Reopen.
+    close_session(&fixture, &session);
+    ui.wait_for("HISTORY", |ui| {
+        ui.listed().is_empty() && closed_listed(ui).len() == 1 && ui.shows("chat-history")
+    });
+    assert!(ui.shows("chat-reopen"));
+    let row = format!("chat-closed-{session}");
+    assert!(!ui.shows(&row), "collapsed");
+    ui.frame(|window, cx| window.click("chat-history", cx));
+    assert!(ui.shows(&row));
+    ui.frame(|window, cx| window.click(name(&row), cx));
+    ui.wait_for("the reopened chat", |ui| {
+        ui.listed().len() == 1 && closed_listed(ui).is_empty() && !ui.shows("chat-reopen")
+    });
+    assert!(ui.shows("chat-composer"));
+
+    // The agent lost the session (as after a daemon restart): the chat
+    // ends, and offers a new chat with its context, taking the text along.
+    ui.send(&chat, "What was it?");
+    ui.wait_for("the ended chat", |ui| ui.shows("chat-continue"));
+    assert!(ui.shows("chat-ended"));
+    assert!(!ui.shows("chat-error"), "the ended notice says it");
+    assert_eq!(ui.composer_text(&chat).trim(), "What was it?");
+    ui.frame(|window, cx| window.click("chat-continue", cx));
+    ui.wait_for("the new chat", |ui| ui.chats().len() == 2);
+    let next = ui
+        .chats()
+        .into_iter()
+        .find(|c| c != &chat)
+        .expect("the new chat's tab");
+    ui.wait_for("its draft", |ui| ui.composer_text(&next) == "What was it?");
+    ui.press("enter");
+    ui.wait_for("its answer", |ui| ui.agent_text(&next) == "Two");
+    let sent = prompts(&fixture.provider);
+    let last = sent.last().unwrap();
+    assert!(first_text(last).contains("User: Remember the code word\n\nAssistant: One"));
+    assert_eq!(last[1], ContentBlock::text("What was it?"));
 }

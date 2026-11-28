@@ -366,6 +366,7 @@ pub fn start_chat(workspace: &WorkspaceId, cx: &mut App) -> Task<Result<SessionI
                     workspace: Some(workspace.0),
                     title: None,
                     mode: None,
+                    from: None,
                 })
             })
             .map_err(|e| e.to_string())?;
