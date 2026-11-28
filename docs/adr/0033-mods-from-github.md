@@ -2,7 +2,7 @@
 
 - **Status:** Accepted, revised 2026-11-28 (see below)
 - **Date:** 2026-11-28
-- **Spike:** S10, issue #355. Prototype in [`spikes/s10-mods-from-github/`](../../spikes/s10-mods-from-github/), with recorded runs in its [`results.md`](../../spikes/s10-mods-from-github/results.md). Builds on PLAN §5 (the mod system), §7.3 (the Claude policy), [ADR 0005](0005-claude-integration.md) (Claude through ACP), and the release format of #348 and #349 (GitHub Releases, `manifest.json`, minisign; [ADR 0031](0031-in-app-updater.md)).
+- **Spike:** S10, issue #355. Prototype in [`docs/spikes/s10-mods-from-github/`](../spikes/s10-mods-from-github/), with recorded runs in its [`results.md`](../spikes/s10-mods-from-github/results.md). Builds on PLAN §5 (the mod system), §7.3 (the Claude policy), [ADR 0005](0005-claude-integration.md) (Claude through ACP), and the release format of #348 and #349 (GitHub Releases, `manifest.json`, minisign; [ADR 0031](0031-in-app-updater.md)).
 
 ## Revision 2026-11-28
 

@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-28
-- **Spike:** S9, issue #340. Prototype in [`spikes/s9-skill-questions/`](../../spikes/s9-skill-questions/). Builds on [ADR 0016](0016-anchored-questions.md) (questions), [ADR 0013](0013-anchors.md) (anchors) and the chat question card of #339.
+- **Spike:** S9, issue #340. Prototype in [`docs/spikes/s9-skill-questions/`](../spikes/s9-skill-questions/). Builds on [ADR 0016](0016-anchored-questions.md) (questions), [ADR 0013](0013-anchors.md) (anchors) and the chat question card of #339.
 
 ## Context
 
@@ -34,7 +34,7 @@ The constraints:
 ## What we tested
 
 - **The adapter, read statically.** We read the code of claude-agent-acp 0.113.0, the pinned version, and of the Claude Agent SDK 0.3.331 under it. It is installed in Coqo's data directory, and we read it there. We traced `AskUserQuestion`, `ExitPlanMode` and elicitations. This needed no prompts.
-- **The prototype.** `spikes/s9-skill-questions` is a standalone crate, outside the workspace and CI. Its parts:
+- **The prototype.** `docs/spikes/s9-skill-questions` is a standalone crate, outside the workspace and CI. Its parts:
   - `refs.rs`: a `file:line` detector. It knows these forms: `path:12`, `path:12-14`, `path:12:5`, `path#L12`, GitHub blob links, `path (line 12)` and `line 12 of path`. It checks each reference against the workspace: an exact path, or the unique file the name ends with, narrowed by the turn's files, and the line must exist.
   - `anchor.rs`: an anchor resolver for a question in #339's provider-neutral shape (text, header, options with description and preview). It also takes the turn's tool calls (path, plus lines for edits) and the selection.
   - `findings.rs`: turns a message into gutter notes.
@@ -45,7 +45,7 @@ The constraints:
   - 5 review outputs, written in each review skill's published output format.
   - 18 turn endings.
   - The heuristics were tuned once on these samples after a first pass, so the samples are training data. The first-pass numbers are given too.
-- **Real runs: 2 prompts.** They ran on the user's own Claude Code, unmodified, in a temporary Coqo session (`coqo-evals` with a private `coqod` and data directory, patch in `spikes/s9-skill-questions/evals-skill-runs.patch`). Each skill was copied into the temporary workspace's `.claude/skills/`, which was then deleted. Nothing was installed into the user's Claude Code configuration, and nothing under `~/.claude` was read.
+- **Real runs: 2 prompts.** They ran on the user's own Claude Code, unmodified, in a temporary Coqo session (`coqo-evals` with a private `coqod` and data directory, patch in `docs/spikes/s9-skill-questions/evals-skill-runs.patch`). Each skill was copied into the temporary workspace's `.claude/skills/`, which was then deleted. Nothing was installed into the user's Claude Code configuration, and nothing under `~/.claude` was read.
   - superpowers `brainstorming` on the eval's shop fixture.
   - superpowers `requesting-code-review` on the eval's tax-rate change.
 - **A real corpus.** We took 156 review comments that Claude wrote on 30 public GitHub pull requests: claude-code-action reviews and the official code-review plugin. Each came with its repository's file list at the PR head and the line counts of the files it names. `fetch-corpus.py` collects them. The comments belong to their authors and are not committed. Only the counts below are.

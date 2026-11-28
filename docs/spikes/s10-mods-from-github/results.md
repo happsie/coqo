@@ -1,6 +1,6 @@
 # Spike S10: recorded runs
 
-Output of `spikes/s10-mods-from-github` on 2026-11-28, pinned to the commits below so the runs can be repeated. Each GitHub run costs two api.github.com calls (resolve the ref, list the tree) plus one raw fetch per file read. Nothing was downloaded beyond the files read, and nothing was executed.
+Output of `docs/spikes/s10-mods-from-github` on 2026-11-28, pinned to the commits below so the runs can be repeated. Each GitHub run costs two api.github.com calls (resolve the ref, list the tree) plus one raw fetch per file read. Nothing was downloaded beyond the files read, and nothing was executed.
 
 ## The official Claude Code marketplace, listed
 

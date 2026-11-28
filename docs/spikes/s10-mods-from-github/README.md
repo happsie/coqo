@@ -1,6 +1,6 @@
 # Spike S10: mods from GitHub repositories
 
-Throwaway prototype for issue #355. The findings and the decision are in [`docs/adr/0033-mods-from-github.md`](../../docs/adr/0033-mods-from-github.md).
+Throwaway prototype for issue #355. The findings and the decision are in [`docs/adr/0033-mods-from-github.md`](../../adr/0033-mods-from-github.md).
 
 This directory is its own Cargo workspace, so the Coqo workspace and CI don't build it. It depends on `crates/mod-api` by path, so manifests are checked by the real `coqo_mod_api::Manifest`.
 

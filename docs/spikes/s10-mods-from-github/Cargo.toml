@@ -11,7 +11,7 @@ description = "Throwaway prototype for spike S10 (issue #355): resolving mods on
 
 [dependencies]
 # The real manifest parser and validator, so the plan checks what Coqo would.
-coqo-mod-api = { path = "../../crates/mod-api" }
+coqo-mod-api = { path = "../../../crates/mod-api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"

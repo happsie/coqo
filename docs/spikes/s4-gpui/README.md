@@ -1,6 +1,6 @@
 # Spike S4: GPUI + gpui-component editor (issue #11)
 
-Throwaway prototype behind [ADR 0002](../../docs/adr/0002-ui-editor-component.md). It isn't part of the Coqo workspace and CI doesn't build it.
+Throwaway prototype behind [ADR 0002](../../adr/0002-ui-editor-component.md). It isn't part of the Coqo workspace and CI doesn't build it.
 
 ## Run
 

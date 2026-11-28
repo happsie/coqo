@@ -1,7 +1,7 @@
 # Spike S6: UI↔daemon buffer replication
 
 Throwaway prototype for issue #13. The findings and the decision are in
-[`docs/adr/0006-buffer-replication.md`](../../docs/adr/0006-buffer-replication.md).
+[`docs/adr/0006-buffer-replication.md`](../../adr/0006-buffer-replication.md).
 
 This directory is its own Cargo workspace, so the Coqo workspace and CI don't build it.
 

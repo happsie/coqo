@@ -13,7 +13,7 @@ We record architecturally significant decisions as Architecture Decision Records
 
 - ADRs live in `docs/adr/` and are named `NNNN-<kebab-case-topic>.md`, numbered in order and never reused.
 - Each ADR has a title, **Status** (Proposed, Accepted, Deprecated, or Superseded by ADR-NNNN), **Date**, and the sections **Context**, **Decision** and **Consequences**.
-- Spikes (`type:spike` issues) end with an ADR that includes their findings, measurements and a clear **go / fallback** decision. Prototype code goes in `spikes/<id>/`.
+- Spikes (`type:spike` issues) end with an ADR that includes their findings, measurements and a clear **go / fallback** decision. Prototype code goes in `docs/spikes/<id>/`.
 - When an implementation has to differ from `docs/PLAN.md`, the same PR adds or updates an ADR and updates PLAN.md.
 - Accepted ADRs are not rewritten. To change a decision, write a new ADR that supersedes the old one and update the old one's status.
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Concurrent edits converge and never lose characters (issue #40's
-//! acceptance test, ported from `spikes/s6-buffers/tests/convergence.rs`).
+//! acceptance test, ported from `docs/spikes/s6-buffers/tests/convergence.rs`).
 //!
 //! Three replicas, an agent editing at the head, and the file changing on
 //! disk under the buffer all edit the same buffer. Messages sit in per-link

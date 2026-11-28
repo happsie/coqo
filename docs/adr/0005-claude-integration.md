@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-27
-- **Spike:** S3, issue #10. Prototype in [`spikes/s3-acp/`](../../spikes/s3-acp/).
+- **Spike:** S3, issue #10. Prototype in [`docs/spikes/s3-acp/`](../spikes/s3-acp/).
 
 ## Context
 
@@ -21,7 +21,7 @@ The planned fallback (PLAN §11) is terminal mode only for subscription users.
 
 ## What we tested
 
-`spikes/s3-acp` is a standalone Rust binary (not in the workspace) with three subcommands:
+`docs/spikes/s3-acp` is a standalone Rust binary (not in the workspace) with three subcommands:
 
 - **`acp`:** a client on `agent-client-protocol` 5.6.1 that spawns the adapter over stdio. It runs `initialize`, then `session/new`, `session/load` or `session/resume`, each with a stub stdio MCP server injected in `mcpServers`. It can also run `session/set_mode` and one `session/prompt`. It answers permission requests with *allow once*, serves `fs/*`, and logs every update with a timestamp.
 - **`mcp-echo`:** that stub MCP server. It has one `echo` tool and logs what it receives.

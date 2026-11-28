@@ -12,7 +12,7 @@
 //! offset jump, so a keystroke in a 100k-line file costs
 //! `O(components · log n)` on the rope.
 //!
-//! Ported from the S6 prototype (`spikes/s6-buffers/src/ot.rs`), with
+//! Ported from the S6 prototype (`docs/spikes/s6-buffers/src/ot.rs`), with
 //! validation so a malformed operation is an error instead of a panic.
 
 use coqo_protocol::methods::buffer::TextEdit;
