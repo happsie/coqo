@@ -14,6 +14,7 @@ Teams that work 100% agentically ship faster, but over time they lose their grip
 
 | Problem in agentic teams | Coqo answer |
 |---|---|
+| The plan is prose in chat, and the structure gets decided without you | **Skeleton** (Coqo's plan mode): the agent proposes the change's shape and flow in the code itself, you edit and approve it, and the result is checked against it |
 | Agent questions arrive as plain text with no code context | **Anchored questions**: the question is pinned to the exact lines it is about |
 | "It's done": a 40-file diff nobody really reads | **Code walkthroughs**: changes in a logical order, with reasoning and risks |
 | Review feedback gets typed into chat by hand | **Native diff with comment threads** that go straight back to the agent |
@@ -26,7 +27,7 @@ Teams that work 100% agentically ship faster, but over time they lose their grip
 1. **Everything is a mod.** The core is a small kernel. The editor, file tree, chat, git, and language support are all mods registered through the same contribution API.
 2. **Chat sits next to code as an equal.** A chat session is a tab like a file. It can be split, docked, and kept around.
 3. **Any provider, within the rules.** Claude comes first, then OpenAI and any OpenAI-compatible or ACP agent. Coqo never handles Claude subscription credentials (§7.3).
-4. **Anchor everything to code.** Questions, walkthrough steps, review comments, and trace values all use one anchor model.
+4. **Anchor everything to code.** Questions, skeleton steps, walkthrough steps, review comments, and trace values all use one anchor model.
 5. **The UI can go away; the work goes on.** Agents, language servers, and traces live in the daemon, not in the window.
 6. **Local-first and private.** No telemetry by default. Secrets go in the OS keychain. Trace data stays on the machine.
 7. **Calm by default ("zen").** Floating rounded panels with breathing room, raised (tactile) buttons, and a relaxed, warm, low-contrast-but-accessible palette. Attention colours appear only when something actually needs you.
@@ -199,6 +200,7 @@ Rules:
 | `editor-mcp` | `coqod mcp` endpoint + MCP tool registry (§7.4) |
 | `annotations` | Anchor engine + anchored questions (§7.5) |
 | `walkthrough` | Walkthrough schema, skill, coverage guard, player (§7.6) |
+| `skeleton` | Skeleton proposals, the skeleton review, the contract and the drift guard (§7.11) |
 | `workspaces` | Workspace rail, worktree workspaces (§7.9) |
 | `alerts` | Alert engine, center, badges, OS notifications (§7.9) |
 | `github` | PR inbox and review (§7.8) |
@@ -286,6 +288,7 @@ Hard rules, documented in `agent-claude` and in CONTRIBUTING: no claude.ai OAuth
 | `annotate` | Non-blocking anchored info or warning note ([ADR 0016](adr/0016-anchored-questions.md)) |
 | `set_status` | A short status line, optional progress, and `working \| blocked \| done`, which feeds alerts (`needs_input` comes from questions; [ADR 0015](adr/0015-agent-state-and-status.md)) |
 | `set_acceptance_criteria` | Registers the task's acceptance criteria (`AC1`, …) and, as the agent verifies them, each one's status (`pending \| met \| failed \| unknown`) and evidence; shown in the chat's session panel, where the user can mark them too ([ADR 0017](adr/0017-acceptance-criteria.md)) |
+| `propose_skeleton` | Proposes the change's skeleton before it is written and blocks until the user approves it or sends it back (§7.11); not offered when `skeleton.mode` is `never` |
 | `publish_walkthrough` | Publishes a walkthrough (§7.6) |
 | `request_review` | Asks the user to review the diff |
 | `trace_launch` / `trace_plan` / `scenario_begin` / `scenario_end` / `trace_query` | Live trace (§7.10) |
@@ -368,13 +371,70 @@ Blocking calls send MCP progress notifications so they don't time out. Agents wi
 
 **Safety:** dev runs only, a clear "tracing active" indicator, and no attaching to processes Coqo didn't launch unless the user explicitly allows it.
 
+### 7.11 Skeleton (Coqo's plan mode)
+
+**Idea:** before the agent writes a change, it proposes the change's **skeleton**: where the pieces go and in what order things happen, without the details. The user reads it in the code where it will live, edits it, and approves it. The agent then fills it in, and Coqo checks the result against what was approved. This is Coqo's plan mode. A plan in chat is prose that gets skimmed; a skeleton is the structure itself, and a user who chose the names, the placement and the order of operations still knows them afterwards. It also catches a wrong direction before forty files exist.
+
+**Two kinds of element** in one proposal:
+
+| Kind | For | Form | Checked afterwards by |
+|---|---|---|---|
+| **Shape** | New or changed files, types and signatures | Stub code: the declarations, a one-line doc comment each, and bodies left unimplemented (`todo!()`, `throw new UnsupportedOperationException()`), plus empty tests named after the acceptance criteria | Comparing files, public symbols and signatures |
+| **Flow** | Logic added inside existing code | Ordered **intent steps**, one line each, anchored between the existing statements where the code will go | Every step has a hunk, and every hunk belongs to an element |
+
+```
+fn process_refund(order_id, amount) {
+    let order = load(order_id)?;
+  ┆ 1. Reject if amount > remaining refundable (paid − already refunded)
+  ┆ 2. Partial refunds allowed, but the currency must match the order's
+    let tx = gateway.refund(&order, amount)?;
+  ┆ 3. Record the refund in the same DB transaction as the status change
+    notify(order.customer);
+}
+```
+
+- A flow step names a branch, an ordering constraint, a side effect, an error path or a boundary: something the user could disagree with. "Loop over the line items" is a detail and does not belong.
+- Flow steps are anchors (§7.5), drawn as ghost lines. They are never written into the file as comments: there is nothing to clean up, and where a step sits ("before the gateway call", "inside the transaction") is part of what is approved.
+- Only the public surface is shape. Private helpers are the agent's business, or the skeleton becomes the implementation written twice.
+
+**Nothing is written before approval.** The proposal carries the stubs, and Coqo shows them as a diff against the worktree (the diff view takes any source, [ADR 0021](adr/0021-diff-view.md)). On approval Coqo writes the approved stubs, with the user's edits, into the worktree, and the agent continues from them. A skeleton that is sent back or abandoned leaves the worktree as it was. Where the provider has a read-only mode (Claude Code's `plan`), a session that starts with a skeleton runs in it until approval, so this holds by the harness's own rule and not by the agent's good behaviour (spike S8).
+
+**Schema** (generated from the Rust types and served as an MCP resource, like the walkthrough's):
+```
+Skeleton { id, revision, title, summary, criteria_refs[], elements[], decisions[],
+           state: proposed|changes_requested|approved|superseded, created_by, created_at }
+Element  { id, role (one line: what this piece is for), kind: shape|flow,
+           shape: { path, change: add|modify|remove|move, moved_from?, stub },
+           flow:  { anchor (the insertion point), steps[{ id, text }] } }
+Decision { id, question, options[], element_refs[] }
+```
+
+**Flow:**
+1. **Propose:** the agent explores, then calls `propose_skeleton`. It blocks with progress like `ask_question` (or `wait: false`), the session is `needs_input`, and an alert is raised (§7.9).
+2. **Skeleton review** (board 9): an outline of the elements (files → symbols, marked new, changed, removed or moved, with each function's flow steps under it) beside the stub diff, with the flow steps as ghost lines and each decision as an anchored question (§7.5) on its element. The user edits stubs and steps directly (rename, move, change a signature, reword, reorder, add or delete a step), comments on lines through review threads (§7.7), and then **approves** or **sends it back**. Sending back returns the comments and edits as the tool result, and the agent's next revision is shown as a change against the last one.
+3. **Contract:** on approval Coqo records what was agreed: the files, the public symbols and their signatures (from the approved stubs, with `coqo-syntax`) and the flow steps.
+4. **Build:** the agent fills the skeleton in. If the shape turns out wrong, it proposes a new revision instead of drifting.
+5. **Drift guard:** at `publish_walkthrough` and `request_review`, Coqo compares the change with the contract and lists public symbols and files that were added, are missing or were renamed, changed signatures, flow steps with no hunk, and hunks outside every element. Drift is **flagged, not blocked**, like the coverage guard (§7.6): the tool result leads with it so the agent explains it or proposes a revision, and the reader sees a banner. Coqo checks that the mapping is complete, not that the code does what a step says; that stays with the reader and the walkthrough.
+6. **Walkthrough:** steps name the skeleton elements they implement (`skeleton_refs`), and the player groups them that way: "you approved this; here is how it was filled in".
+
+**When** (`skeleton.mode`: a global default, a per-repo default in `.coqo/settings.toml`, and a per-session choice beside the composer's mode chip):
+- `always`: every task that changes code starts with a skeleton, and the session starts in the provider's read-only mode where it has one.
+- `auto` (default): the agent decides, following Coqo's guide (§7.4). It proposes one when the change adds files or public symbols, changes signatures, or adds logic with more than one decision point, and skips it for a bug fix, a one-branch edit, a rename or formatting. A skeleton of one step is an anchored question, so it asks that instead.
+- `never`: `propose_skeleton` is not offered, so it costs no context.
+
+**Session panel:** a stage line, Skeleton → Build → Walkthrough, with the skeleton's state, a link to its review, and the drift count once there is a change to compare.
+
+**Providers:** ACP and terminal agents get the tool through MCP and a `coqo-skeleton` skill in Coqo's Claude Code plugin (`/coqo:skeleton`, beside `/coqo:walkthrough`). The native loop enforces the read-only phase itself.
+
+**Storage:** in `coqo.db` with the session, every revision kept. Committing a skeleton next to its walkthrough (§7.6) can follow.
+
 ---
 
 ## 8. Data and storage
 
 | Location | Contents |
 |---|---|
-| Daemon data (`~/Library/Application Support/Coqo`, `$XDG_DATA_HOME/coqo`) | `coqo.db` (workspaces, sessions, transcripts, **event log**, alerts, anchored questions and notes, walkthroughs, review threads), per-workspace: `traces.db`, PR worktrees; installed mods |
+| Daemon data (`~/Library/Application Support/Coqo`, `$XDG_DATA_HOME/coqo`) | `coqo.db` (workspaces, sessions, transcripts, **event log**, alerts, anchored questions and notes, skeletons, walkthroughs, review threads), per-workspace: `traces.db`, PR worktrees; installed mods |
 | UI data (`<data dir>/ui/`) | Workbench layouts saved while `coqod` was unreachable, and a window's no-workspace layout; the daemon keeps each workspace's layout in its state (`ui.layout`, [ADR 0004](adr/0004-workbench-layout.md)) |
 | Config (`~/.config/coqo`, macOS equivalent) | `settings.toml`, keymaps, themes |
 | OS keychain | API keys, GitHub token |
@@ -424,6 +484,7 @@ docs/                    PLAN.md, ADRs, protocol docs
 | **S5** | Packaging and notifications | Notarized `.app` with daemon helper + notifications; AppImage/deb/rpm/Flatpak; Wayland + X11 | Per-platform workarounds |
 | **S6** | UI↔daemon buffer replication | Op-log vs `yrs` CRDT: typing latency under 1 ms locally, concurrent agent + user edits, reattach with unsaved changes. **Decided ([ADR 0006](adr/0006-buffer-replication.md)): daemon-authoritative op-log with optimistic local apply** | `yrs` CRDT replicas behind the same `buffer/*` messages |
 | **S7** | WASM mod API ergonomics | WIT world for commands + MCP tool + declarative view; author one mod in Rust and one in TS via `jco` | Process mods as the primary third-party tier |
+| **S8** | The skeleton as plan mode on a provider's read-only mode (§7.11; runs before the skeleton epic, not with M1) | Claude Code over ACP in `plan` mode: can it call `propose_skeleton`, can the skeleton's approval and Claude Code's own plan exit be one approval, does the turn continue after `session/set_mode`. In `auto`: does Claude stop at the proposal instead of writing code (measured with `coqo-evals`). Signatures from tree-sitter queries for Rust, TypeScript, Java and Kotlin. Proposed stubs as a diff source or as unsaved buffers | The agent writes the stubs into the worktree in a normal mode and stops (guide and skill), and Coqo restores the files when the skeleton is sent back; where signatures can't be extracted the drift guard compares files and symbol names only |
 
 Other risks:
 - **GPUI churn:** pin the exact `gpui-kit` release (which pins its `gpui-pre` snapshot), keep the `coqo-ui` facade, and keep the vendored `gpui-base` patch additive (ADR 0008).
@@ -453,7 +514,7 @@ Each milestone becomes a GitHub milestone. Each bullet becomes an epic issue wit
 
 **M6 · JVM:** `lang-java`, `lang-kotlin`, `jvm-mixed` (routing + compile-on-save), `maven` mod + mixed-project doctor, `dap-jvm` interactive debugging (adapter chosen by S2).
 
-**M7 · Git, diff, walkthrough:** git mod, worktrees, diff view, comment threads → agent, walkthrough schema + skill + coverage guard + player + storage modes.
+**M7 · Git, diff, walkthrough:** git mod, worktrees, diff view, comment threads → agent, walkthrough schema + skill + coverage guard + player + storage modes; skeleton (§7.11, after spike S8): schema + `propose_skeleton` + skill, skeleton review, contract + drift guard, `skeleton.mode`.
 
 **M8 · PR Inbox:** GitHub auth (`gh` reuse + device flow), daemon poller, inbox, PR view, threads, review submit, PR worktrees, PR walkthrough, review-skill drafts.
 
@@ -492,3 +553,4 @@ Screens:
 6. Agents overview + alert center + OS notification (including the "UI was closed" reattach state)
 7. Live trace explorer + trace walkthrough with inline values
 8. Mod manager + settings (providers/auth modes, review skill, daemon settings)
+9. Skeleton review: element outline · stub diff with flow steps as ghost lines · decisions · approve / send back (to be drawn)
