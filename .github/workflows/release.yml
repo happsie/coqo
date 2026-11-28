@@ -1,0 +1,224 @@
+name: Release
+
+# Pushing a tag vX.Y.Z publishes a signed GitHub Release. A manual run with
+# dry_run=true builds, signs and installs the same artifacts but uploads them
+# as workflow artifacts instead of publishing. See docs/releasing.md.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and test only; upload workflow artifacts, do not publish
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # A tag build publishes; anything else is a dry run.
+  PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Native on the arm64 macos-latest runner, no cross-compiling.
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Work out the version
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [ "$PUBLISH" = true ]; then
+            tag=${GITHUB_REF_NAME#v}
+            if [ "$tag" != "$version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match workspace version $version"
+              exit 1
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install toolchain
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+          rustc --version
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin coqo --bin coqod
+
+      - name: Package Coqo.app
+        run: |
+          scripts/release/package-macos.sh "${{ steps.version.outputs.version }}" "${{ matrix.target }}" \
+            "target/${{ matrix.target }}/release" dist
+
+      - name: Check the architecture and version
+        run: |
+          mkdir check && tar -xzf dist/*.tar.gz -C check
+          for b in coqo coqod; do
+            lipo -info check/Coqo.app/Contents/MacOS/$b
+            lipo -info check/Coqo.app/Contents/MacOS/$b | grep -q "arm64"
+          done
+          [ "$(check/Coqo.app/Contents/MacOS/coqod --version)" = "coqod ${{ steps.version.outputs.version }}" ] \
+            || { check/Coqo.app/Contents/MacOS/coqod --version; exit 1; }
+          check/Coqo.app/Contents/MacOS/coqo --version
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: archive-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  sign:
+    name: manifest and signatures
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      unsigned_test_build: ${{ steps.key.outputs.unsigned }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: archive-*
+          merge-multiple: true
+          path: dist
+
+      - name: Install minisign (pinned, checksum-verified)
+        run: scripts/release/install-minisign.sh "$HOME/.local/bin" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Choose the signing key
+        id: key
+        env:
+          SECRET_KEY: ${{ secrets.COQO_RELEASE_MINISIGN_KEY }}
+        run: |
+          umask 077
+          placeholder=false
+          grep -q PLACEHOLDER crates/updater/release.pub && placeholder=true
+          if [ -n "$SECRET_KEY" ] && [ "$placeholder" = false ]; then
+            printf '%s\n' "$SECRET_KEY" > "$RUNNER_TEMP/release.key"
+            cp crates/updater/release.pub "$RUNNER_TEMP/release.pub"
+            echo "unsigned=false" >> "$GITHUB_OUTPUT"
+            echo "Signing with the real release key."
+          elif [ "$PUBLISH" = true ]; then
+            [ -z "$SECRET_KEY" ] && echo "::error::secret COQO_RELEASE_MINISIGN_KEY is not set (see docs/releasing.md)"
+            [ "$placeholder" = true ] && echo "::error::crates/updater/release.pub is still the placeholder (see docs/releasing.md)"
+            exit 1
+          else
+            minisign -G -W -f -p "$RUNNER_TEMP/release.pub" -s "$RUNNER_TEMP/release.key" > /dev/null
+            echo "unsigned=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Dry run with a throwaway key: unsigned test build."
+          fi
+
+      - name: Write the manifest
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          scripts/release/make-manifest.sh "$version" dist
+
+      - name: Sign and verify
+        run: |
+          cd dist
+          comment="coqo release"
+          [ "${{ steps.key.outputs.unsigned }}" = true ] && comment="UNSIGNED TEST BUILD (throwaway key)"
+          for f in coqo-*.tar.gz manifest.json; do
+            minisign -S -s "$RUNNER_TEMP/release.key" -m "$f" -x "$f.minisig" -t "$comment" < /dev/null
+            minisign -Vm "$f" -p "$RUNNER_TEMP/release.pub" -x "$f.minisig"
+          done
+          # Archives must match the manifest.
+          for f in coqo-*.tar.gz; do
+            want=$(jq -r --arg f "$f" '.assets[] | select(.file == $f) | .sha256' manifest.json)
+            [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$want" ]
+          done
+          if [ "${{ steps.key.outputs.unsigned }}" = true ]; then
+            echo "Throwaway key: this is an unsigned test build, not for installing for real." > UNSIGNED-TEST-BUILD.txt
+          fi
+          rm -f "$RUNNER_TEMP/release.key"
+          cp "$RUNNER_TEMP/release.pub" release.pub
+          ls -l
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ needs.build.outputs.version }}${{ steps.key.outputs.unsigned == 'true' && '-unsigned-test-build' || '' }}
+          path: dist
+          if-no-files-found: error
+
+  install-test:
+    name: install.sh on macOS
+    needs: [build, sign]
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Install minisign (pinned, checksum-verified)
+        run: scripts/release/install-minisign.sh "$HOME/.local/bin" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run install.sh against the build
+        run: |
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          COQO_BASE_URL="file://$GITHUB_WORKSPACE/dist" \
+          COQO_PUBKEY_FILE="$GITHUB_WORKSPACE/dist/release.pub" \
+            sh scripts/install.sh
+          app="$HOME/Applications/Coqo.app/Contents/MacOS"
+          "$app/coqod" --version
+          "$app/coqo" --version
+          lipo -info "$app/coqod"
+          codesign --verify --deep --strict "$HOME/Applications/Coqo.app"
+          # A tampered manifest must be refused.
+          echo ' ' >> dist/manifest.json
+          if COQO_BASE_URL="file://$GITHUB_WORKSPACE/dist" COQO_PUBKEY_FILE="$GITHUB_WORKSPACE/dist/release.pub" \
+               sh scripts/install.sh; then
+            echo "tampered manifest was accepted"; exit 1
+          fi
+
+  release:
+    name: publish GitHub Release
+    needs: [build, sign, install-test]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          [ ! -e dist/UNSIGNED-TEST-BUILD.txt ] || { echo "::error::refusing to publish a test build"; exit 1; }
+          pre=""
+          case "$TAG" in *-*) pre="--prerelease" ;; esac
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "Coqo ${TAG#v}" --generate-notes $pre \
+            dist/coqo-*.tar.gz dist/coqo-*.tar.gz.minisig dist/manifest.json dist/manifest.json.minisig
