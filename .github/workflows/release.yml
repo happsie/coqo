@@ -6,6 +6,13 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Changes to the release machinery rehearse it (a dry run, never published).
+  # This also lets the workflow run from a PR before it exists on main.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/release/**
+      - scripts/install.sh
   workflow_dispatch:
     inputs:
       dry_run:
