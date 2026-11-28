@@ -81,6 +81,13 @@ impl FsHandle {
         *self.0.write().unwrap_or_else(PoisonError::into_inner) = Some(fs);
     }
 
+    /// Empties the slot: files come from disk again. What was set usually
+    /// reaches back to the provider holding this handle, an `Arc` cycle
+    /// that only this breaks.
+    pub fn clear(&self) {
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
     pub(crate) fn get(&self) -> Option<Arc<dyn AgentFs>> {
         self.0
             .read()
@@ -166,6 +173,21 @@ pub(crate) fn slice(text: String, line: Option<u32>, limit: Option<u32>) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clearing_the_handle_lets_go_of_what_was_set() {
+        struct Nothing;
+        impl AgentFs for Nothing {}
+        let fs = Arc::new(Nothing);
+        let handle = FsHandle::new();
+        handle.set(Arc::clone(&fs) as Arc<dyn AgentFs>);
+        let clone = handle.clone();
+        assert!(clone.get().is_some());
+        assert_eq!(Arc::strong_count(&fs), 2);
+        clone.clear();
+        assert!(handle.get().is_none());
+        assert_eq!(Arc::strong_count(&fs), 1);
+    }
 
     #[test]
     fn slices_lines() {

@@ -79,6 +79,17 @@ impl RootGit {
         }))
     }
 
+    /// Whether `HEAD` is on local branch `branch`, for the branch picker.
+    /// The status decides once it is in, as for the branch button: the
+    /// branch list and the status load separately, so after a switch the
+    /// list's `current` can still name the old branch for a while.
+    pub fn is_current(&self, branch: &Branch) -> bool {
+        match &self.status {
+            Some(s) => !branch.remote && s.head.branch.as_deref() == Some(branch.name.as_str()),
+            None => branch.current,
+        }
+    }
+
     /// `↑n ↓m` against the upstream, or `None` when level with it.
     pub fn tracking_label(&self) -> Option<String> {
         let head = &self.status.as_ref()?.head;
@@ -330,12 +341,18 @@ impl GitModel {
             })
             .collect();
         self.subscribe(info.id.clone(), cx);
-        for root in info.roots.iter().map(|r| r.id) {
+        self.reload(cx);
+        cx.notify();
+    }
+
+    /// Load every part of every root.
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        let roots: Vec<RootId> = self.roots.iter().map(|r| r.root).collect();
+        for root in roots {
             for part in [Part::Status, Part::Branches, Part::Stashes] {
                 self.load(root, part, cx);
             }
         }
-        cx.notify();
     }
 
     fn subscribe(&mut self, workspace: WorkspaceId, cx: &mut Context<Self>) {
@@ -349,6 +366,16 @@ impl GitModel {
             let Ok(mut stream) = changes.await else {
                 return;
             };
+            // The first loads raced the subscription: a change made before
+            // the daemon's watch was up is in no event. Now that every
+            // later change is, treat everything as changed once, so the
+            // model and whatever follows it (the diff tabs) catch up.
+            if this
+                .update(cx, |this, cx| this.everything_changed(cx))
+                .is_err()
+            {
+                return;
+            }
             while let Some(Ok(changes)) = stream.next().await {
                 if this
                     .update(cx, |this, cx| this.changed(changes, cx))
@@ -358,6 +385,15 @@ impl GitModel {
                 }
             }
         }));
+    }
+
+    fn everything_changed(&mut self, cx: &mut Context<Self>) {
+        use GitChangeKind as K;
+        let roots: Vec<RootId> = self.roots.iter().map(|r| r.root).collect();
+        for root in roots {
+            let kinds = vec![K::Worktree, K::Index, K::Head, K::Refs, K::Stash];
+            self.changed(GitChanges { root, kinds }, cx);
+        }
     }
 
     fn changed(&mut self, changes: GitChanges, cx: &mut Context<Self>) {
