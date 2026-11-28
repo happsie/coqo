@@ -177,27 +177,26 @@ async fn reports_rss_for_a_live_child_and_stops_it() {
 #[tokio::test]
 async fn tree_usage_includes_the_children() {
     timeout(LIMIT, async {
-        let me = std::process::id();
-        let alone = tree_usage(me).await.unwrap().expect("this process");
-        assert!(alone.rss_bytes > 0, "{alone:?}");
+        // A shell that starts a grandchild: a tree of its own, which other
+        // tests running in this process don't change.
         let supervisor = Supervisor::new();
         let mut child = supervisor
-            .spawn(
-                ChildSpec::new("sleeper", "sleep")
-                    .arg("5")
-                    .restart(RestartPolicy::never()),
-            )
+            .spawn(sh("tree", "sleep 5 & wait").restart(RestartPolicy::never()))
             .unwrap();
         events_until(&mut child, |e| matches!(e, ChildEvent::Started { .. })).await;
-        let with_child = tree_usage(me).await.unwrap().expect("this process");
-        assert!(
-            with_child.processes > alone.processes,
-            "{alone:?} then {with_child:?}"
-        );
         let pid = child.pid().unwrap();
-        let child_only = tree_usage(pid).await.unwrap().expect("the child");
-        assert_eq!(child_only.processes, 1);
-        assert!(child_only.rss_bytes > 0);
+        let tree = loop {
+            let usage = tree_usage(pid).await.unwrap().expect("the shell");
+            if usage.processes == 2 {
+                break usage;
+            }
+            sleep(Duration::from_millis(10)).await;
+        };
+        assert!(tree.rss_bytes > 0, "{tree:?}");
+        // This process's tree holds it too.
+        let me = tree_usage(std::process::id()).await.unwrap().expect("me");
+        assert!(me.processes >= 3, "{me:?}");
+        assert!(me.rss_bytes > tree.rss_bytes, "{me:?} {tree:?}");
         child.stop().await;
         assert_eq!(tree_usage(pid).await.unwrap(), None);
     })
