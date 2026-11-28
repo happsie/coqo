@@ -1774,16 +1774,16 @@ impl Ui {
     }
 }
 
-/// Whether `replica` is still in the daemon's buffer of `path`: it made
-/// edits (see [`edit_as`]), and the daemon forgets a replica's edits when it
-/// closes. The file must be on disk.
-fn replica_joined(
+/// The last edit of `replica` the daemon's buffer of `path` committed (0
+/// once the replica closed: the daemon forgets its edits). The file must
+/// be on disk.
+fn replica_seq(
     fixture: &Fixture,
     other: &OtherWindow,
     place: &Place,
     path: &str,
     replica: &ReplicaId,
-) -> bool {
+) -> u64 {
     let params = OpenParams {
         workspace: place.0.clone(),
         root: place.1,
@@ -1791,40 +1791,35 @@ fn replica_joined(
         replica: Some(replica.clone()),
     };
     let client = other.client.clone();
-    let open = fixture
+    fixture
         .daemon
         .runtime
         .block_on(async move { client.request::<buffer::Open>(params).await })
-        .unwrap();
-    open.last_seq > 0
+        .unwrap()
+        .last_seq
 }
 
-/// Two edits by `replica` that cancel out, so the daemon knows the replica
-/// (its last seq) and the buffer stays clean.
+/// Edit `buffer` as `replica`, against `base_rev`.
 fn edit_as(
     fixture: &Fixture,
     other: &OtherWindow,
-    buffer: BufferId,
-    replica: &ReplicaId,
-    rev: u64,
+    (buffer, replica): (BufferId, &ReplicaId),
+    (base_rev, client_seq): (u64, u64),
+    edit: TextEdit,
 ) {
     let client = other.client.clone();
-    let edits = [
-        (rev, 1, TextEdit::insert(0, "x")),
-        (rev + 1, 2, TextEdit::delete(0..1)),
-    ]
-    .map(|(base_rev, client_seq, edit)| EditParams {
+    let params = EditParams {
         buffer,
         replica: replica.clone(),
         base_rev,
         client_seq,
         edits: vec![edit],
-    });
-    fixture.daemon.runtime.block_on(async move {
-        for params in edits {
-            client.notify::<buffer::Edit>(params).await.unwrap();
-        }
-    });
+    };
+    fixture
+        .daemon
+        .runtime
+        .block_on(async move { client.notify::<buffer::Edit>(params).await })
+        .unwrap();
 }
 
 /// A tab whose file is deleted while it loads (#312): the open in flight
@@ -1842,10 +1837,14 @@ fn a_tab_deleted_while_it_loads_says_the_file_is_gone() {
     let (tab, buffer, replica) = ui.open_held("lib.rs", "src/lib.rs");
     let other = OtherWindow::connect(&fixture);
     let rev = other.open(&fixture, &place, "src/lib.rs").rev;
-    edit_as(&fixture, &other, buffer, &replica, rev);
-    ui.wait_for("the replica's edits", |_| {
-        replica_joined(&fixture, &other, &place, "src/lib.rs", &replica)
-    });
+    // Two edits that cancel out, one after the other: the daemon knows the
+    // replica (its last seq), and the buffer stays clean.
+    let seq = || replica_seq(&fixture, &other, &place, "src/lib.rs", &replica);
+    let at = (buffer, &replica);
+    edit_as(&fixture, &other, at, (rev, 1), TextEdit::insert(0, "x"));
+    ui.wait_for("the replica's edit", |_| seq() == 1);
+    edit_as(&fixture, &other, at, (rev + 1, 2), TextEdit::delete(0..1));
+    ui.wait_for("the replica's edit undone", |_| seq() == 2);
 
     ui.delete_row(&fixture, "lib.rs");
     ui.wait_for("the tab told", |ui| ui.content(&tab) == Content::Missing);
@@ -1872,9 +1871,7 @@ fn a_tab_deleted_while_it_loads_says_the_file_is_gone() {
     assert!(!ui.dirty(&tab));
     // The stale open's replica left the buffer (the file can be opened by
     // path again to ask).
-    ui.wait_for("the stale replica closed in the daemon", |_| {
-        !replica_joined(&fixture, &other, &place, "src/lib.rs", &replica)
-    });
+    ui.wait_for("the stale replica closed in the daemon", |_| seq() == 0);
     assert_ne!(ui.cx.read(|cx| tab.read(cx).replica()), Some(replica));
 }
 
