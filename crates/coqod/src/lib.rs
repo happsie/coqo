@@ -39,6 +39,8 @@
 //!   `fs/rename`, `fs/delete`); open buffers follow a rename.
 //! - [`path_moves`]: everything else keyed by a path (questions, review
 //!   threads, walkthroughs, the editor context) follows a rename too.
+//! - [`search`]: project search and replace (`search/*`), from the
+//!   `coqo.search` mod; open buffers are searched and edited in place.
 //!
 //! Clients reach the daemon through `coqo-client`, never this crate.
 
@@ -60,6 +62,7 @@ pub mod mods;
 pub mod path_moves;
 pub mod questions;
 pub mod routes;
+pub mod search;
 pub mod syntax;
 pub mod terminal;
 pub mod threads;

@@ -47,6 +47,8 @@ coqo-mod-api = { path = "../mod-api" }
 coqo-mod-hello = { path = "../../mods/hello" }
 # `git/*` runs on its `coqo.git@1` service.
 coqo-mod-git = { path = "../../mods/git" }
+# `search/*` runs on its `coqo.search@1` service.
+coqo-mod-search = { path = "../../mods/search" }
 coqo-protocol = { path = "../protocol" }
 coqo-storage = { path = "../storage" }
 # The always-on syntax layer: `syntax/*` and the built-in `coqo.syntax` mod.

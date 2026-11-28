@@ -1,0 +1,10 @@
+# The search mod (PLAN §6, §7.1). Built in: it provides the `coqo.search@1`
+# service at startup, which the daemon's `search/*` methods run on.
+id = "coqo.search"
+name = "Search"
+version = "0.1.0"
+description = "Project search and replace: regex, case, whole word, include and exclude globs."
+engine = "^0.0"
+tier = "core"
+activation = ["startup"]
+provides = ["coqo.search@1.0"]

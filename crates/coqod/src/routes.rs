@@ -27,6 +27,7 @@ use crate::git::{self, GitService};
 use crate::mcp_tools::{self, McpToolService};
 use crate::path_moves::{FollowsMoves, PathMoves};
 use crate::questions::{self, QuestionService};
+use crate::search::{self, SearchService};
 use crate::syntax::{self, SyntaxService};
 use crate::threads::{self, ThreadService};
 use crate::walkthroughs::{self, WalkthroughService};
@@ -90,6 +91,14 @@ pub fn router(ctx: &DaemonContext) -> Result<Router> {
     )?;
     moves.follow(Arc::clone(&walkthrough_service) as Arc<dyn FollowsMoves>);
     let router = walkthroughs::register(router, walkthrough_service);
+    let router = search::register(
+        router,
+        SearchService::new(
+            Arc::clone(&workspaces),
+            Arc::clone(&buffers),
+            ctx.mods.clone(),
+        ),
+    );
     path_moves::follow_outside_renames(&workspaces, Arc::clone(&moves));
     let router = file_ops::register(router, workspaces, Arc::clone(&buffers), moves);
     let router = syntax::register(router, SyntaxService::new(Arc::clone(&buffers)));

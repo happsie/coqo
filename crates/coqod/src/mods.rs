@@ -67,6 +67,10 @@ pub fn builtins(
         )
         .with(coqo_mod_git::MANIFEST, coqo_mod_git::GitMod::default())
         .with(
+            coqo_mod_search::MANIFEST,
+            coqo_mod_search::SearchMod::new(),
+        )
+        .with(
             coqo_agent_claude::MANIFEST,
             coqo_agent_claude::ClaudeMod::new(claude),
         )

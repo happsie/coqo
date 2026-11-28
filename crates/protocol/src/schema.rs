@@ -24,8 +24,8 @@ use crate::handshake::{IncompatibleProtocol, PROTOCOL_VERSION};
 use crate::message::{ErrorObject, codes};
 use crate::method::{Method, NotificationMethod, Topic, builtin};
 use crate::methods::{
-    self, agents, alerts, buffer, commands, editor, fs, git, mcp, questions, syntax, terminal,
-    threads, walkthroughs, workspace,
+    self, agents, alerts, buffer, commands, editor, fs, git, mcp, questions, search, syntax,
+    terminal, threads, walkthroughs, workspace,
 };
 use crate::subscription::ResumeGap;
 
@@ -575,6 +575,15 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             g,
             "Threads whose state changed, as their latest state, and deleted ones (resumable).",
         ),
+        topic::<search::Run>(
+            g,
+            "Search a workspace: batches of files with matches as they are searched, then a summary; unsubscribe to cancel.",
+        ),
+        request::<search::Replace>(
+            g,
+            "client→server",
+            "Replace a search's matches in chosen files: open buffers are edited, other files written.",
+        ),
     ]
 }
 
@@ -638,6 +647,8 @@ fn error_codes() -> Value {
         ("NOT_YOUR_COMMENT", methods::codes::NOT_YOUR_COMMENT),
         ("UNKNOWN_COMMAND", methods::codes::UNKNOWN_COMMAND),
         ("COMMAND_FAILED", methods::codes::COMMAND_FAILED),
+        ("INVALID_QUERY", methods::codes::INVALID_QUERY),
+        ("SEARCH_UNAVAILABLE", methods::codes::SEARCH_UNAVAILABLE),
     ];
     Value::Object(
         all.iter()

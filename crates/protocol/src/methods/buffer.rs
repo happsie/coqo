@@ -221,6 +221,8 @@ pub enum OriginKind {
     Revert,
     /// The buffer was saved: no edits, `dirty` becomes false.
     Save,
+    /// Project search and replace (`search/replace`) by the user.
+    Replace,
 }
 
 /// Who made a change, with an id whose meaning depends on the kind.

@@ -1269,6 +1269,58 @@ impl FileEditor {
         }));
     }
 
+    /// The open buffer, once the file is open as text.
+    pub fn buffer(&self) -> Option<buffer::BufferId> {
+        self.session.as_ref().map(|s| s.replica.buffer())
+    }
+
+    /// The selected text, if there is exactly one non-empty selection.
+    pub fn selected_text(&self, cx: &App) -> Option<String> {
+        let session = self.session.as_ref()?;
+        let selections = session.editor.read(cx).selections(cx);
+        let [range] = selections.as_slice() else {
+            return None;
+        };
+        let text = session.replica.text();
+        (!range.is_empty() && range.end <= text.len())
+            .then(|| text.slice(range.clone()).to_string())
+    }
+
+    /// Apply a project replace's `edits` (`search/replace` held them for
+    /// this tab) as one undoable edit of this tab, if the tab is at `rev`
+    /// with nothing in flight, so they fit its text. Returns whether they
+    /// were applied; if not, the caller has the daemon apply them.
+    pub fn apply_replace(
+        &mut self,
+        rev: u64,
+        edits: &[TextEdit],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        if session.replica.rev() != rev || !session.replica.is_synced() || edits.is_empty() {
+            return false;
+        }
+        match session.replica.local_edit(edits, UndoGrouping::NewGroup) {
+            Ok(out) => {
+                let editor = session.editor.clone();
+                editor.update(cx, |editor, cx| apply_own(editor, edits, window, cx));
+                if let Some(out) = out {
+                    Self::send(out, cx);
+                }
+                self.last_typed = None;
+                cx.notify();
+                true
+            }
+            Err(e) => {
+                eprintln!("coqo: cannot replace in {}: {e}", self.path);
+                false
+            }
+        }
+    }
+
     /// Replace the whole text as one undoable edit of this tab.
     fn replace_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.session.as_mut() else {
