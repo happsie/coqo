@@ -2,21 +2,24 @@
 
 //! The workspace rail (design boards 1 and 6, PLAN §7.9).
 //!
-//! One 42 px button per known workspace, in the order they were added, with
-//! the workspace's initials. The window's current workspace is lit in sage.
-//! A badge in the top-right corner counts the workspace's agent sessions
-//! that wait for the user (`sand`), or shows `!` when one failed (`rose`); a
-//! dot in the bottom-right corner shows an agent working (`blue`, pulsing)
-//! or done (`sage`). Background workspaces keep running in the daemon, so
-//! their badges stay live ([`AgentActivity`]). The tooltip lists the busy
-//! sessions with the agent's status line.
+//! One 42 px button per **project** (ADR 0028): a repository with the
+//! workspaces of all its worktrees, or a workspace in no repository
+//! ([`RailProject`]), in the order they were added, with the project's
+//! initials. The window's current project is lit in sage. A badge in the
+//! top-right corner counts the project's agent sessions, across all its
+//! worktrees, that wait for the user (`sand`), or shows `!` when one
+//! failed (`rose`); a dot in the bottom-right corner shows an agent working
+//! (`blue`, pulsing) or done (`sage`). Background workspaces keep running
+//! in the daemon, so their badges stay live ([`AgentActivity`]). The
+//! tooltip lists the busy sessions with the agent's status line. The
+//! worktrees themselves are switched in the sidebar (`crate::worktrees`).
 //!
-//! - **Click** (or `Ctrl/Cmd+1..9`): switch the window to the workspace,
-//!   saving this one's layout and restoring that one's, or focus the window
-//!   that already shows it.
-//! - **Right-click:** open in a new window, rename, reveal the folder, or
-//!   remove it from the list (`workspace/remove`, which never touches its
-//!   folders).
+//! - **Click** (or `Ctrl/Cmd+1..9`): switch the window to the project's
+//!   most recently opened worktree, saving this one's layout and restoring
+//!   that one's, or focus the window that already shows it.
+//! - **Right-click:** open in a new window, rename (the main worktree's
+//!   workspace), reveal the folder, or remove the project's workspaces from
+//!   the list (`workspace/remove`, which never touches their folders).
 //! - **+** opens a folder as a new workspace.
 //! - The **bell** shows the unread alerts (a `sand` count when one needs
 //!   you, `rose` when one failed) and opens the alert center
@@ -56,7 +59,7 @@ use crate::{
     shell::Shell,
     welcome::shortcut,
     windows,
-    workspace::{self, KnownWorkspaces, Workspaces, initials, prompt_open_folder_in},
+    workspace::{self, KnownWorkspaces, RailProject, Workspaces, initials, prompt_open_folder_in},
 };
 
 /// What a rail button's top-right badge says.
@@ -183,18 +186,18 @@ impl Rail {
         }
     }
 
-    /// The workspaces on the rail, top to bottom: every known one, and the
-    /// window's current one even before the list has it.
-    pub fn list(&self, cx: &App) -> Vec<WorkspaceInfo> {
-        let mut list = KnownWorkspaces::global(cx)
-            .map(|known| known.read(cx).in_rail_order())
+    /// The projects on the rail, top to bottom: every known workspace's,
+    /// and the window's current one's even before the list has it.
+    pub fn list(&self, cx: &App) -> Vec<RailProject> {
+        let mut list: Vec<WorkspaceInfo> = KnownWorkspaces::global(cx)
+            .map(|known| known.read(cx).all().to_vec())
             .unwrap_or_default();
         if let Some(current) = self.workspaces.read(cx).current()
             && !list.iter().any(|w| w.id == current.id)
         {
             list.push(current.clone());
         }
-        list
+        RailProject::group(&list)
     }
 
     /// The workspace whose context menu is open.
@@ -209,11 +212,22 @@ impl Rail {
         self.renaming.as_ref().map(|r| &r.input)
     }
 
-    /// Switch the window to the `index`th workspace on the rail (from 0).
+    /// Switch the window to the `index`th project on the rail (from 0).
     pub fn switch_to_index(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(info) = self.list(cx).into_iter().nth(index) {
-            self.switch_to(info.id, cx);
+        if let Some(project) = self.list(cx).into_iter().nth(index) {
+            self.switch_to_project(&project, cx);
         }
+    }
+
+    /// Switch to `project`'s most recently opened worktree, unless the
+    /// window shows one of its worktrees already.
+    fn switch_to_project(&mut self, project: &RailProject, cx: &mut Context<Self>) {
+        let current = self.workspaces.read(cx).current().map(|w| w.id.clone());
+        if current.as_ref().is_some_and(|id| project.contains(id)) {
+            self.close_menu(cx);
+            return;
+        }
+        self.switch_to(project.latest().id.clone(), cx);
     }
 
     fn switch_to(&mut self, id: WorkspaceId, cx: &mut Context<Self>) {
@@ -333,9 +347,11 @@ impl Rail {
         cx.reveal_path(&path);
     }
 
-    fn remove(&mut self, id: WorkspaceId, cx: &mut Context<Self>) {
+    fn remove(&mut self, ids: Vec<WorkspaceId>, cx: &mut Context<Self>) {
         self.close_menu(cx);
-        workspace::remove(id, cx);
+        for id in ids {
+            workspace::remove(id, cx);
+        }
     }
 }
 
@@ -347,12 +363,21 @@ impl Render for Rail {
         let buttons: Vec<AnyElement> = list
             .iter()
             .enumerate()
-            .map(|(ix, info)| {
+            .map(|(ix, project)| {
+                // Summed over every worktree of the project.
                 let activity = activity
                     .as_ref()
-                    .map(|a| a.read(cx).of(&info.id.0))
+                    .map(|a| {
+                        let a = a.read(cx);
+                        project
+                            .workspaces
+                            .iter()
+                            .map(|w| a.of(&w.id.0))
+                            .fold(WorkspaceActivity::default(), WorkspaceActivity::sum)
+                    })
                     .unwrap_or_default();
-                self.render_workspace(ix, info, current.as_ref() == Some(&info.id), activity, cx)
+                let selected = current.as_ref().is_some_and(|id| project.contains(id));
+                self.render_workspace(ix, project, selected, activity, cx)
             })
             .collect();
         let open_folder = self.workspaces.downgrade();
@@ -509,7 +534,7 @@ impl Rail {
     fn render_workspace(
         &self,
         ix: usize,
-        info: &WorkspaceInfo,
+        project: &RailProject,
         selected: bool,
         activity: WorkspaceActivity,
         cx: &mut Context<Self>,
@@ -517,10 +542,11 @@ impl Rail {
         let t = cx.tokens();
         let (p, m) = (t.palette.clone(), t.metrics.clone());
         let light = t.appearance == Appearance::Light;
-        let id = info.id.clone();
-        let menu_id = info.id.clone();
-        let tooltip_id = info.id.clone();
-        let name: SharedString = info.name.clone().into();
+        let target = project.clone();
+        let menu_id = project.latest().id.clone();
+        let tooltip_ids: Vec<WorkspaceId> =
+            project.workspaces.iter().map(|w| w.id.clone()).collect();
+        let name: SharedString = project.name.clone().into();
         let key = (ix < 9).then(|| shortcut(&format!("Ctrl {}", ix + 1)));
         let button = div()
             .id(("workspace", ix))
@@ -534,8 +560,8 @@ impl Rail {
             .text_size(px(13.))
             .font_weight(FontWeight::BOLD)
             .cursor_pointer()
-            .child(initials(&info.name))
-            .on_click(cx.listener(move |this, _, _, cx| this.switch_to(id.clone(), cx)))
+            .child(initials(&project.name))
+            .on_click(cx.listener(move |this, _, _, cx| this.switch_to_project(&target, cx)))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, _: &MouseDownEvent, _, cx| {
@@ -546,7 +572,13 @@ impl Rail {
             .tooltip(move |_, cx| {
                 let (name, key) = (name.clone(), key.clone());
                 let sessions = AgentActivity::global(cx)
-                    .map(|a| TooltipSession::list(a.read(cx).busy_in(&tooltip_id.0)))
+                    .map(|a| {
+                        let a = a.read(cx);
+                        TooltipSession::list(crate::activity::busy_in_any(
+                            a.sessions(),
+                            &tooltip_ids,
+                        ))
+                    })
                     .unwrap_or_default();
                 cx.new(|_| RailTooltip {
                     name,
@@ -565,20 +597,22 @@ impl Rail {
             .child(button)
             .children(Badge::of(activity).map(|badge| render_badge(ix, badge, &p, light)))
             .children(Dot::of(activity).map(|dot| render_dot(ix, dot, &p)));
-        if self.menu.as_ref() == Some(&info.id) {
-            slot = slot.child(self.render_menu(info, cx));
+        if self.menu.as_ref().is_some_and(|id| project.contains(id)) {
+            slot = slot.child(self.render_menu(project, cx));
         }
-        if let Some(renaming) = self.renaming.as_ref().filter(|r| r.id == info.id) {
+        if let Some(renaming) = self.renaming.as_ref().filter(|r| project.contains(&r.id)) {
             slot = slot.child(render_rename(renaming, cx));
         }
         slot.into_any_element()
     }
 
-    fn render_menu(&self, info: &WorkspaceInfo, cx: &mut Context<Self>) -> AnyElement {
+    fn render_menu(&self, project: &RailProject, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.tokens();
         let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let info = project.latest();
         let shown = Workspaces::window_showing(&info.id, cx).is_some();
-        let path = info.roots.first().map(|r| PathBuf::from(&r.path));
+        let path = project.folder();
+        let several = project.workspaces.len() > 1;
         let item = |id: &'static str, glyph: Icon, label: &'static str, color: Rgb| {
             div()
                 .id(id)
@@ -598,9 +632,13 @@ impl Rail {
         };
         let (new_window, rename, reveal, remove) = (
             info.id.clone(),
-            info.id.clone(),
+            project.main().map(|w| w.id.clone()),
             path.clone(),
-            info.id.clone(),
+            project
+                .workspaces
+                .iter()
+                .map(|w| w.id.clone())
+                .collect::<Vec<_>>(),
         );
         let mut card = popover(cx)
             .id("workspace-menu")
@@ -622,7 +660,7 @@ impl Rail {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(p.text.hsla())
                             .truncate()
-                            .child(info.name.clone()),
+                            .child(project.name.clone()),
                     )
                     .children(path.as_ref().map(|path| {
                         div()
@@ -658,13 +696,13 @@ impl Rail {
             )
         };
         card = card
-            .child(
+            .children(rename.map(|rename| {
                 item("workspace-menu-rename", Icon::FilePen, "Rename…", p.text).on_click(
                     cx.listener(move |this, _, window, cx| {
                         this.start_rename(rename.clone(), window, cx)
                     }),
-                ),
-            )
+                )
+            }))
             .children(reveal.map(|path| {
                 item(
                     "workspace-menu-reveal",
@@ -685,7 +723,11 @@ impl Rail {
                 item(
                     "workspace-menu-remove",
                     Icon::Trash,
-                    "Remove from list",
+                    if several {
+                        "Remove its worktrees from list"
+                    } else {
+                        "Remove from list"
+                    },
                     p.rose,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| this.remove(remove.clone(), cx))),
@@ -697,7 +739,11 @@ impl Rail {
                     .pb(px(4.))
                     .text_size(m.text_xs)
                     .text_color(p.text_subtle.hsla())
-                    .child("Removing never touches the folder."),
+                    .child(if several {
+                        "Removing never touches the folders."
+                    } else {
+                        "Removing never touches the folder."
+                    }),
             );
         popup(card.into_any_element(), cx)
     }
@@ -914,7 +960,7 @@ pub struct TooltipSession {
 
 impl TooltipSession {
     /// The first [`TOOLTIP_SESSIONS`] of `sessions`, as
-    /// [`AgentActivity::busy_in`] orders them.
+    /// [`crate::activity::busy_in_any`] orders them.
     pub fn list<'a>(sessions: impl IntoIterator<Item = &'a SessionInfo>) -> Vec<Self> {
         sessions
             .into_iter()
@@ -995,8 +1041,9 @@ impl Render for RailTooltip {
 #[cfg(test)]
 mod tests;
 
-/// Renders the shell with four workspaces offscreen to PNGs, for visual
-/// review against boards 1 and 6. Needs a GPU:
+/// Renders the shell with four projects (one with three worktrees)
+/// offscreen to PNGs, for visual review against boards 1 and 6: the rail,
+/// its menu, and the sidebar's worktree switcher open. Needs a GPU:
 /// `cargo test -p coqo -- --ignored rail_screenshots`. Writes to
 /// `$COQO_SHOT_DIR` (default: the system temp dir).
 #[cfg(test)]
@@ -1005,7 +1052,8 @@ mod screenshots {
 
     use coqo_protocol::methods::{
         agents::{AgentState, SessionId, SessionInfo},
-        workspace::{RootId, WorkspaceId, WorkspaceInfo, WorkspaceRoot},
+        git::{Head, RepoInfo, StatusResult, Worktree, WorktreesResult},
+        workspace::{ProjectInfo, RootId, WorkspaceId, WorkspaceInfo, WorkspaceRoot},
     };
     use coqo_ui::{
         Appearance,
@@ -1016,9 +1064,12 @@ mod screenshots {
 
     use crate::{
         activity::AgentActivity,
+        git::model::{GitModel, RootGit},
         shell::{DEFAULT_WORKSPACE, Shell},
         workspace::{self, KnownWorkspaces},
     };
+
+    const MAIN: &str = "/home/you/code/checkout-service";
 
     fn workspace(ix: i64, name: &str) -> WorkspaceInfo {
         WorkspaceInfo {
@@ -1032,6 +1083,31 @@ mod screenshots {
             created_at: ix,
             last_opened_at: ix,
             open: true,
+            project: Some(ProjectInfo::from_common_dir(&format!(
+                "/home/you/code/{name}/.git"
+            ))),
+        }
+    }
+
+    /// A linked worktree of checkout-service.
+    fn worktree(ix: i64, branch: &str) -> WorkspaceInfo {
+        let folder = branch.replace('/', "-");
+        let mut info = workspace(ix, &folder);
+        info.roots[0].path = format!("{MAIN}-worktrees/{folder}");
+        info.project = Some(ProjectInfo::from_common_dir(&format!("{MAIN}/.git")));
+        info.last_opened_at = 100 + ix;
+        info
+    }
+
+    fn row(path: &str, branch: &str, main: bool, changes: u32) -> Worktree {
+        Worktree {
+            path: path.into(),
+            branch: Some(branch.into()),
+            head: Some("4f1c2ab".into()),
+            main,
+            locked: false,
+            prunable: false,
+            changes: Some(changes),
         }
     }
 
@@ -1061,7 +1137,11 @@ mod screenshots {
         let dir = std::env::var_os("COQO_SHOT_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
-        for menu in [false, true] {
+        for (suffix, menu, switcher) in [
+            ("", false, false),
+            ("-menu", true, false),
+            ("-worktrees", false, true),
+        ] {
             for (name, appearance) in [("dark", Appearance::Dark), ("light", Appearance::Light)] {
                 let image = render_offscreen(appearance, size(1440., 900.), |window, cx| {
                     workspace::init(None, cx);
@@ -1071,6 +1151,8 @@ mod screenshots {
                         workspace(2, "web-storefront"),
                         workspace(3, "payments-gateway"),
                         workspace(4, "inventory-api"),
+                        worktree(5, "feature/volume-discount"),
+                        worktree(6, "fix-flaky-it"),
                     ];
                     let known = KnownWorkspaces::global(cx).unwrap();
                     known.update(cx, |k, cx| k.set_for_tests(list.clone(), cx));
@@ -1082,6 +1164,8 @@ mod screenshots {
                                 session(2, AgentState::Working),
                                 session(3, AgentState::Done),
                                 session(4, AgentState::Error),
+                                session(5, AgentState::Working),
+                                session(6, AgentState::NeedsInput),
                             ],
                             cx,
                         )
@@ -1089,9 +1173,36 @@ mod screenshots {
                     let store = Rc::new(MemoryLayoutStore::default());
                     cx.new(|cx| {
                         let shell = Shell::new(store, DEFAULT_WORKSPACE, window, cx);
+                        let current = list[4].clone();
                         shell
                             .workspaces()
-                            .update(cx, |w, cx| w.set_current_for_tests(list[0].clone(), cx));
+                            .update(cx, |w, cx| w.set_current_for_tests(current.clone(), cx));
+                        let status = StatusResult {
+                            repo: RepoInfo {
+                                workdir: current.roots[0].path.clone(),
+                                prefix: String::new(),
+                            },
+                            head: Head {
+                                branch: Some("feature/volume-discount".into()),
+                                ..Head::default()
+                            },
+                            entries: Vec::new(),
+                        };
+                        let mut root = RootGit::new(RootId(0));
+                        root.status = Some(status);
+                        GitModel::for_window(window, cx)
+                            .update(cx, |m, cx| m.set_for_tests(current.clone(), vec![root], cx));
+                        let rows = WorktreesResult {
+                            worktrees: vec![
+                                row(MAIN, "main", true, 0),
+                                row(&current.roots[0].path, "feature/volume-discount", false, 3),
+                                row(&list[5].roots[0].path, "fix-flaky-it", false, 1),
+                            ],
+                            worktrees_dir: format!("{MAIN}-worktrees"),
+                        };
+                        shell
+                            .switcher()
+                            .update(cx, |s, cx| s.set_for_tests(rows, switcher, cx));
                         if menu {
                             shell
                                 .rail()
@@ -1101,7 +1212,6 @@ mod screenshots {
                     })
                 })
                 .expect("offscreen render");
-                let suffix = if menu { "-menu" } else { "" };
                 let path = dir.join(format!("coqo-rail{suffix}-{name}.png"));
                 image.save(&path).expect("save png");
                 println!("wrote {}", path.display());

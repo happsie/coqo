@@ -28,6 +28,7 @@ mod walkthrough;
 mod welcome;
 mod windows;
 mod workspace;
+mod worktrees;
 
 #[cfg(test)]
 mod attach_tests;

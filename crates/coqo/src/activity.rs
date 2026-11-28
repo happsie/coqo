@@ -10,9 +10,12 @@
 
 use std::collections::HashMap;
 
-use coqo_protocol::methods::agents::{
-    AgentState, Changes, ChangesParams, List, ListSessionsParams, SessionId, SessionInfo,
-    SessionList,
+use coqo_protocol::methods::{
+    agents::{
+        AgentState, Changes, ChangesParams, List, ListSessionsParams, SessionId, SessionInfo,
+        SessionList,
+    },
+    workspace::WorkspaceId,
 };
 use coqo_ui::gpui::{App, AppContext as _, Context, Entity, Global, Subscription};
 
@@ -126,19 +129,31 @@ impl AgentActivity {
     pub fn info(&self, id: &SessionId) -> Option<&SessionInfo> {
         self.sessions.get(id)
     }
-
-    /// The open sessions of `workspace` that are doing something or wait
-    /// (not idle), those that need the user first, then by most recent
-    /// change.
-    pub fn busy_in(&self, workspace: &str) -> Vec<&SessionInfo> {
-        busy_in(self.sessions.values(), workspace)
-    }
 }
 
-/// See [`AgentActivity::busy_in`].
+/// The open sessions of `workspace` among `sessions` that are doing
+/// something or wait (not idle), those that need the user first, then by
+/// most recent change.
+#[cfg(test)]
 pub fn busy_in<'a>(
     sessions: impl IntoIterator<Item = &'a SessionInfo>,
     workspace: &str,
+) -> Vec<&'a SessionInfo> {
+    busy_where(sessions, |w| w == workspace)
+}
+
+/// The busy sessions (see `busy_in`) of several workspaces: a project's
+/// worktrees (ADR 0028).
+pub fn busy_in_any<'a>(
+    sessions: impl IntoIterator<Item = &'a SessionInfo>,
+    workspaces: &[WorkspaceId],
+) -> Vec<&'a SessionInfo> {
+    busy_where(sessions, |w| workspaces.iter().any(|id| id.0 == w))
+}
+
+fn busy_where<'a>(
+    sessions: impl IntoIterator<Item = &'a SessionInfo>,
+    in_workspace: impl Fn(&str) -> bool,
 ) -> Vec<&'a SessionInfo> {
     let rank = |state: AgentState| match state {
         AgentState::NeedsInput | AgentState::NeedsPermission | AgentState::Blocked => 0,
@@ -149,7 +164,9 @@ pub fn busy_in<'a>(
     let mut busy: Vec<_> = sessions
         .into_iter()
         .filter(|s| {
-            !s.closed && s.state != AgentState::Idle && s.workspace.as_deref() == Some(workspace)
+            !s.closed
+                && s.state != AgentState::Idle
+                && s.workspace.as_deref().is_some_and(&in_workspace)
         })
         .collect();
     busy.sort_by(|a, b| {
@@ -162,6 +179,16 @@ pub fn busy_in<'a>(
 }
 
 impl WorkspaceActivity {
+    /// Both added up (a project's worktrees on one rail button).
+    pub fn sum(self, other: Self) -> Self {
+        Self {
+            waiting: self.waiting + other.waiting,
+            errors: self.errors + other.errors,
+            working: self.working + other.working,
+            done: self.done + other.done,
+        }
+    }
+
     /// Sum up the sessions of `workspace` among `sessions`.
     pub fn of<'a>(sessions: impl IntoIterator<Item = &'a SessionInfo>, workspace: &str) -> Self {
         let mut activity = Self::default();

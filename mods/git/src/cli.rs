@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Writes, through the user's `git`: staging and discarding whole files,
-//! commits, branches and the stash. (Lines are in `patch.rs`.)
+//! commits, branches and the stash. (Lines are in `patch.rs`, worktrees in
+//! `worktree.rs`.)
 
 use std::ffi::OsStr;
 use std::io::Write as _;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::status::Change;
@@ -39,9 +41,26 @@ impl Repo {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        self.git_at(self.workdir(), args, stdin)
+    }
+
+    /// Run `git args…` in `dir` (another worktree of the repository, say).
+    pub(crate) fn git_in<I, S>(&self, dir: &Path, args: I) -> Result<Vec<u8>>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.git_at(dir, args, None)
+    }
+
+    fn git_at<I, S>(&self, dir: &Path, args: I, stdin: Option<&[u8]>) -> Result<Vec<u8>>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
         let mut cmd = Command::new(&self.options.program);
         cmd.args(args)
-            .current_dir(self.workdir())
+            .current_dir(dir)
             .env("LC_ALL", "C")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_EDITOR", ":")
@@ -269,7 +288,7 @@ impl Repo {
 
 /// A branch name or revision passed to `git`: not empty, not an option,
 /// no whitespace or control characters. git checks the rest.
-fn check_ref_arg(name: &str) -> Result<()> {
+pub(crate) fn check_ref_arg(name: &str) -> Result<()> {
     if name.is_empty()
         || name.starts_with('-')
         || name.chars().any(|c| c.is_whitespace() || c.is_control())

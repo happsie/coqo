@@ -511,6 +511,21 @@ fn entries(g: &mut SchemaGenerator) -> Vec<Entry> {
             "client→server",
             "Commits newest first, a page at a time, with graph lanes.",
         ),
+        request::<git::Worktrees>(
+            g,
+            "client→server",
+            "Every worktree of a root's repository, with its branch and change count.",
+        ),
+        request::<git::AddWorktree>(
+            g,
+            "client→server",
+            "Check a branch out in a new worktree and open a workspace on it.",
+        ),
+        request::<git::RemoveWorktree>(
+            g,
+            "client→server",
+            "Remove a worktree (never forced, never the main one) and forget its workspaces.",
+        ),
         topic::<git::Changes>(
             g,
             "A root's repository may have changed: work tree, index, HEAD, refs or stash (live only).",

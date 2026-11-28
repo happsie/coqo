@@ -1118,11 +1118,16 @@ pub fn register(router: Router, svc: Arc<GitService>) -> Router {
         .stash_op(p, StashOp::Drop));
     let router = route!(router, svc, gm::Blame, |s, p| s.blame(p));
     let router = route!(router, svc, gm::Log, |s, p| s.log(p));
+    let router = route!(router, svc, gm::Worktrees, |s, p| s.worktrees(p));
+    let router = route!(router, svc, gm::AddWorktree, |s, p| s.add_worktree(p));
+    let router = route!(router, svc, gm::RemoveWorktree, |s, p| s.remove_worktree(p));
     router.topic_with::<gm::Changes, _, _>(Access::daemon(), move |_ctx, p, since| {
         let s = Arc::clone(&svc);
         async move { s.changes(p, since).await }
     })
 }
+
+mod worktrees;
 
 #[cfg(test)]
 mod tests;

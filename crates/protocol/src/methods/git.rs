@@ -21,6 +21,9 @@
 //!   default settings ([`FileChange::Renamed`] with an `origPath`), and
 //!   work-tree files are read through `.gitattributes` (eol, filters;
 //!   `binary` and `-diff` make a diff binary).
+//! - Worktrees (ADR 0028): [`Worktrees`], [`AddWorktree`] (which opens a
+//!   workspace on the new one) and [`RemoveWorktree`] (never forced, never
+//!   the main worktree).
 //! - [`Changes`]: what may have changed (work tree, index, `HEAD`, refs,
 //!   stash), from the workspace watcher and a watch on the git directory.
 //!   Events carry no data: fetch again what the view shows.
@@ -35,7 +38,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::workspace::{RootId, WorkspaceId};
+use super::workspace::{RootId, WorkspaceId, WorkspaceInfo};
 use crate::method::{Method, Topic};
 
 /// Params naming a workspace root, whose repository the method acts on.
@@ -944,4 +947,137 @@ impl Topic for Changes {
     const NAME: &'static str = "git/changes";
     type Params = ChangesParams;
     type Event = GitChanges;
+}
+
+// ---- worktrees (#92, ADR 0028) -----------------------------------------------
+
+/// One worktree of a root's repository ([`Worktrees`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct Worktree {
+    /// Its top folder, absolute (canonical when it exists). A workspace
+    /// whose first root is this folder shows it.
+    pub path: String,
+    /// The branch checked out (short name); absent when `HEAD` is detached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The commit checked out; absent on a branch with no commits yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// The main worktree, which is never removed.
+    pub main: bool,
+    /// Locked (`git worktree lock`): git refuses to remove it.
+    pub locked: bool,
+    /// Its folder is gone; removing it only forgets it.
+    pub prunable: bool,
+    /// Changed files, staged or not, untracked included; absent when its
+    /// status could not be read (its folder is gone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changes: Option<u32>,
+}
+
+/// Result of [`Worktrees`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreesResult {
+    /// Every worktree, the main one first (as `git worktree list`; a bare
+    /// repository's own entry is left out).
+    pub worktrees: Vec<Worktree>,
+    /// Where [`AddWorktree`] puts new ones: `<parent>/<repo>-worktrees`
+    /// beside the main worktree.
+    pub worktrees_dir: String,
+}
+
+/// Params of [`AddWorktree`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct AddWorktreeParams {
+    /// The workspace.
+    pub workspace: WorkspaceId,
+    /// The root whose repository gets the worktree.
+    pub root: RootId,
+    /// The branch to check out. One that does not exist is created from
+    /// `base`; an existing one is checked out as it is.
+    pub branch: String,
+    /// What a new branch starts from (default: `HEAD` of the root).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// Where the worktree goes, absolute (default:
+    /// [`WorktreesResult::worktrees_dir`]`/<branch>`, `/` in the branch as
+    /// `-`). It must not exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// Result of [`AddWorktree`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct AddWorktreeResult {
+    /// The new worktree.
+    pub worktree: Worktree,
+    /// The workspace opened on it (`workspace/open` of its folder).
+    pub workspace: WorkspaceInfo,
+}
+
+/// Params of [`RemoveWorktree`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct RemoveWorktreeParams {
+    /// The workspace.
+    pub workspace: WorkspaceId,
+    /// A root in the worktree's repository (any of its worktrees).
+    pub root: RootId,
+    /// The worktree's folder, as [`Worktree::path`].
+    pub path: String,
+    /// Remove it although it has commits no other branch, remote-tracking
+    /// branch or tag has. Uncommitted changes stop removal regardless:
+    /// Coqo never forces it.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// Result of [`RemoveWorktree`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct RemoveWorktreeResult {
+    /// Whether it was removed (its branch stays). `false`: it has work,
+    /// counted below; commit or stash the changes, or confirm the commits.
+    pub removed: bool,
+    /// Its changed files, staged or not, untracked included.
+    pub changes: u32,
+    /// Commits only its `HEAD` has.
+    pub unpushed: u32,
+    /// The workspaces on it, forgotten with it (`workspace/remove`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forgotten: Vec<WorkspaceId>,
+}
+
+/// `git/worktrees`: every worktree of a root's repository, with its branch
+/// and change count.
+#[derive(Debug)]
+pub enum Worktrees {}
+impl Method for Worktrees {
+    const NAME: &'static str = "git/worktrees";
+    type Params = RepoParams;
+    type Result = WorktreesResult;
+}
+
+/// `git/addWorktree`: `git worktree add`, then open a workspace on it.
+#[derive(Debug)]
+pub enum AddWorktree {}
+impl Method for AddWorktree {
+    const NAME: &'static str = "git/addWorktree";
+    type Params = AddWorktreeParams;
+    type Result = AddWorktreeResult;
+}
+
+/// `git/removeWorktree`: `git worktree remove`, never forced and never the
+/// main worktree, and forget the workspaces on it.
+#[derive(Debug)]
+pub enum RemoveWorktree {}
+impl Method for RemoveWorktree {
+    const NAME: &'static str = "git/removeWorktree";
+    type Params = RemoveWorktreeParams;
+    type Result = RemoveWorktreeResult;
 }

@@ -42,6 +42,7 @@ mod ignores;
 mod index;
 mod ops;
 mod paths;
+mod project;
 mod restore;
 mod store;
 mod watch;
@@ -68,6 +69,8 @@ use self::ignores::IgnoreCache;
 use self::index::FileIndex;
 pub(crate) use self::ops::Renamed;
 pub use self::ops::Trash;
+#[cfg(test)]
+pub(crate) use self::project::common_dir as project_of;
 pub use self::restore::COPY_LIMIT as UNDO_COPY_LIMIT;
 use self::restore::Restores;
 pub use self::watch::WatchConfig;
@@ -168,6 +171,7 @@ impl WorkspaceService {
     /// Like [`open`](Self::open), with custom watcher tuning.
     pub fn open_with(dirs: DataDirs, watch_config: WatchConfig) -> Result<Self, StorageError> {
         let db = GlobalDb::open(&dirs)?;
+        Self::refresh_projects(db.connection());
         let head = db.events().head()?.0;
         Ok(Self {
             db: Mutex::new(db),
@@ -259,6 +263,39 @@ impl WorkspaceService {
             self.head.send_replace(seq.0);
         }
         Ok(out)
+    }
+
+    /// Look again at which project every workspace is in (a folder may
+    /// have become a repository, or a worktree, while the daemon was off).
+    /// A workspace whose folder is not there keeps what it had.
+    fn refresh_projects(conn: &rusqlite::Connection) {
+        let roots = match store::first_roots(conn) {
+            Ok(roots) => roots,
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot list workspaces to find their projects");
+                return;
+            }
+        };
+        for (id, root) in roots {
+            if let Some(project) = project::stored(Path::new(&root))
+                && let Err(e) = store::set_project(conn, &id, &project)
+            {
+                tracing::warn!(workspace = id, error = %e, "cannot store the project");
+            }
+        }
+    }
+
+    /// Look again at which project `id` is in, from its first root.
+    fn refresh_project(conn: &rusqlite::Connection, id: &WorkspaceId) -> Result<(), ErrorObject> {
+        let info = Self::load(conn, id)?;
+        if let Some(project) = info
+            .roots
+            .first()
+            .and_then(|r| project::stored(Path::new(&r.path)))
+        {
+            store::set_project(conn, &id.0, &project).map_err(error::storage)?;
+        }
+        Ok(())
     }
 
     fn load(conn: &rusqlite::Connection, id: &WorkspaceId) -> Result<WorkspaceInfo, ErrorObject> {
@@ -423,6 +460,7 @@ impl WorkspaceService {
                                 WorkspaceId(id)
                             }
                         };
+                        Self::refresh_project(conn, &id)?;
                         let info = Self::load(conn, &id)?;
                         let ev = WorkspaceEvent::Opened {
                             workspace: info.clone(),
@@ -441,6 +479,7 @@ impl WorkspaceService {
                         if let Some(name) = &name {
                             store::rename(conn, &id.0, name).map_err(error::storage)?;
                         }
+                        Self::refresh_project(conn, &id)?;
                         let info = Self::load(conn, &id)?;
                         let ev = WorkspaceEvent::Opened {
                             workspace: info.clone(),
@@ -544,6 +583,7 @@ impl WorkspaceService {
                     let name = name.unwrap_or_else(|| folder_name(&root));
                     let (_, added) = store::add_root(conn, &p.id.0, path_str(&root), &name)
                         .map_err(error::storage)?;
+                    Self::refresh_project(conn, &p.id)?;
                     let info = Self::load(conn, &p.id)?;
                     let evs = if added {
                         vec![(
@@ -582,6 +622,7 @@ impl WorkspaceService {
                         ));
                     }
                     store::remove_root(conn, &p.id.0, p.root).map_err(error::storage)?;
+                    Self::refresh_project(conn, &p.id)?;
                     let info = Self::load(conn, &p.id)?;
                     let ev = WorkspaceEvent::Changed {
                         workspace: info.clone(),

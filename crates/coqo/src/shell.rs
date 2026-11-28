@@ -71,6 +71,7 @@ use crate::{
         KnownWorkspaces, OpenFolder, SwitchToWorkspace, Workspaces, WorkspacesEvent,
         prompt_open_folder_in,
     },
+    worktrees::{self, WorktreeSwitcher},
 };
 
 pub mod rail;
@@ -96,6 +97,7 @@ pub fn init(cx: &mut App) {
     questions::init(cx);
     activity::init(cx);
     crate::git::init(cx);
+    worktrees::init(cx);
     crate::search::init(cx);
     alerts::init(cx);
     crate::diff::init(cx);
@@ -114,6 +116,8 @@ pub struct Shell {
     store: Rc<dyn LayoutStore>,
     workspaces: Entity<Workspaces>,
     rail: Entity<Rail>,
+    /// The worktree switcher at the top of the sidebar (ADR 0028).
+    switcher: Entity<WorktreeSwitcher>,
     /// The key the layout is saved under: the workspace id, or `local_key`.
     layout_key: SharedString,
     /// The key while no workspace is open.
@@ -246,6 +250,7 @@ impl Shell {
         window.focus(&focus, cx);
         let sidebar = saved.map(|l| l.sidebar);
         let rail = cx.new(|cx| Rail::new(workspaces.clone(), cx));
+        let switcher = cx.new(|cx| WorktreeSwitcher::new(workspaces.clone(), window, cx));
         subscriptions.push(cx.subscribe_in(
             &rail,
             window,
@@ -263,6 +268,7 @@ impl Shell {
             store,
             workspaces,
             rail,
+            switcher,
             layout_key: local_key.clone(),
             local_key,
             sidebar_width: sidebar.as_ref().map_or_else(
@@ -749,6 +755,12 @@ impl Shell {
         &self.rail
     }
 
+    /// The window's worktree switcher.
+    #[allow(dead_code)] // Tests use it.
+    pub fn switcher(&self) -> &Entity<WorktreeSwitcher> {
+        &self.switcher
+    }
+
     /// The key the layout is saved under now.
     #[allow(dead_code)] // Used by tests.
     pub fn layout_key(&self) -> &SharedString {
@@ -989,6 +1001,12 @@ impl Render for Shell {
                     this.show_agents(window, cx)
                 }),
             )
+            .on_action(cx.listener(|this, _: &worktrees::SwitchWorktree, _, cx| {
+                this.switcher.update(cx, |s, cx| s.open_list(cx))
+            }))
+            .on_action(cx.listener(|this, _: &worktrees::NewWorktree, window, cx| {
+                this.switcher.update(cx, |s, cx| s.start_new(window, cx))
+            }))
             .on_action(
                 cx.listener(|this, _: &git::DraftCommitMessage, window, cx| {
                     this.draft_commit_message(window, cx)
@@ -1307,6 +1325,7 @@ impl Shell {
             .test_support()
             .w(self.sidebar_width)
             .flex_none()
+            .child(self.switcher.clone())
             .child(strip)
             .child(
                 div()
