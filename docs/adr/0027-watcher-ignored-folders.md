@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-28
-- **Issue:** #308 (follows #22, #288; shares its rules with #162)
+- **Issue:** #308 (follows #22, #288; shares its rules with #162 and, since #318, search)
 
 ## Context
 
@@ -18,7 +18,7 @@ With Coqo open on its own repository while six agents built in `.claude/worktree
 - holds a `CACHEDIR.TAG` file (the [cache directory tagging](https://bford.info/cachedir/) convention). Cargo tags `target/`, and other tools tag their caches too.
 - is named `node_modules`.
 
-A root itself never stands apart, so the root's own `.git` doesn't count. The rule is `stands_apart` in `coqod::workspace::ignores`. It is checked in `IgnoreChain::is_ignored` for folders and in `IgnoreCache::chain` for every ancestor, so every user of the ignore cache gets it: `fs/list` and `fs/stat` (`ignored: true`), the watcher, and the file index of #162. It costs up to two `stat`s per folder, made only for folders the ignore files keep.
+A root itself never stands apart, so the root's own `.git` doesn't count. The rule is `coqo_mod_api::workspace::stands_apart` (it was in `coqod::workspace::ignores` until #318), so the kernel and mods share one copy that can't drift. In the daemon it is checked in `IgnoreChain::is_ignored` for folders and in `IgnoreCache::chain` for every ancestor, so every user of the ignore cache gets it: `fs/list` and `fs/stat` (`ignored: true`), the watcher, and the file index of #162. It costs up to two `stat`s per folder, made only for folders the ignore files keep.
 
 **One watch per kept folder (Linux).** The watcher walks each root itself and puts a non-recursive inotify watch on each folder the rules keep. It never watches inside `.git`, an ignored folder or a folder that stands apart. An ignored folder is still an entry of a watched folder, so the tree sees it appear and go away. After each debounce window, before batching, the watcher brings the set up to date:
 - A new folder, or one moved in, is walked and watched. Its entries are reported as changed, because files written before its watch was in place made no events.
@@ -30,7 +30,7 @@ Folders inside a deeper root are left to that root, and its rules decide for the
 
 **macOS and Windows keep one recursive stream per root.** FSEvents and `ReadDirectoryChangesW` cost nothing per folder, so per-folder watches would only add work there. Events from inside ignored folders are still dropped when batching, as before.
 
-**The tree.** `fs/list` still lists ignored folders, dimmed, and they can be expanded to look inside. Nothing inside them is watched or indexed, though, so an expanded ignored folder doesn't refresh live. That was already true for gitignored folders, whose events were dropped. Search (#45, `mods/search`) walks with the `ignore` crate's own gitignore rules. As a mod, it can't call into the kernel's ignore code, so it doesn't apply these rules yet (follow-up issue).
+**The tree.** `fs/list` still lists ignored folders, dimmed, and they can be expanded to look inside. Nothing inside them is watched or indexed, though, so an expanded ignored folder doesn't refresh live. That was already true for gitignored folders, whose events were dropped. Search (#45, `mods/search`) walks with the `ignore` crate's own gitignore rules. As a mod it can't call into the kernel's ignore code, so the rule lives in `coqo-mod-api`, the one Coqo crate mods may use (#318). It is a pure function over `std::path` that adds no dependency, and the search walk applies it in `filter_entry` to every folder below a root. Search and the tree therefore leave out the same folders, and a nested repository added as a root of its own is searched under that root.
 
 ## Measurements
 

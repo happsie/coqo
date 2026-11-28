@@ -227,6 +227,95 @@ fn search_respects_gitignore_and_skips_binaries() {
 }
 
 #[test]
+fn nested_repositories_caches_and_node_modules_are_not_searched() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    // No ignore file mentions any of them.
+    write(root, ".git/HEAD", "ref: refs/heads/main\n");
+    write(root, "src/main.rs", "needle\n");
+    // A worktree (a `.git` file), a nested clone, a tagged cache and
+    // `node_modules`.
+    write(
+        root,
+        ".claude/worktrees/agent/.git",
+        "gitdir: ../../../.git/worktrees/agent\n",
+    );
+    write(root, ".claude/worktrees/agent/src/main.rs", "needle\n");
+    write(root, ".claude/settings.json", "needle\n");
+    write(root, "vendor/dep/.git/HEAD", "ref: refs/heads/main\n");
+    write(root, "vendor/dep/lib.rs", "needle\n");
+    write(
+        root,
+        "target/CACHEDIR.TAG",
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    );
+    write(root, "target/debug/out.rs", "needle\n");
+    write(root, "web/node_modules/left-pad/index.js", "needle\n");
+    write(root, "web/index.js", "needle\n");
+    // Only folders stand apart, and only by these marks.
+    write(root, "docs/node_modules.md", "needle\n");
+    write(root, "docs/CACHEDIR.TAG/x.txt", "needle\n");
+
+    let m = Search.compile(&query("needle")).unwrap();
+    let rels = |found: Found| found.into_iter().map(|(rel, _)| rel).collect::<Vec<_>>();
+    let (found, summary) = run(&m, root, &Overlay::new());
+    assert_eq!(
+        rels(found),
+        [
+            ".claude/settings.json",
+            "docs/CACHEDIR.TAG/x.txt",
+            "docs/node_modules.md",
+            "src/main.rs",
+            "web/index.js",
+        ]
+    );
+    assert_eq!(summary.searched, 5, "nothing inside them is even read");
+
+    // Added as a root of its own, a nested repository or cache is searched,
+    // since a root never stands apart.
+    for (nested, file) in [
+        ("vendor/dep", "lib.rs"),
+        (".claude/worktrees/agent", "src/main.rs"),
+        ("target", "debug/out.rs"),
+        ("web/node_modules", "left-pad/index.js"),
+    ] {
+        let (found, _) = run(&m, &root.join(nested), &Overlay::new());
+        assert_eq!(rels(found), [file], "{nested} as a root");
+    }
+
+    // With both as roots, each file is found once, under its own root.
+    let roots = [
+        Root::new(root.canonicalize().unwrap()),
+        Root::new(root.join("vendor/dep").canonicalize().unwrap()),
+    ];
+    let out = Mutex::new(Vec::new());
+    m.search(
+        &roots,
+        &Overlay::new(),
+        100,
+        &AtomicBool::new(false),
+        &|f| {
+            out.lock().unwrap().push((f.root, f.rel));
+            true
+        },
+    )
+    .unwrap();
+    let mut out = out.into_inner().unwrap();
+    out.sort();
+    assert_eq!(
+        out,
+        [
+            (0, ".claude/settings.json".to_owned()),
+            (0, "docs/CACHEDIR.TAG/x.txt".to_owned()),
+            (0, "docs/node_modules.md".to_owned()),
+            (0, "src/main.rs".to_owned()),
+            (0, "web/index.js".to_owned()),
+            (1, "lib.rs".to_owned()),
+        ]
+    );
+}
+
+#[test]
 fn include_and_exclude_globs() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

@@ -15,7 +15,7 @@ Symbol search (tree-sitter tags, LSP workspace symbols with bolt on) is split of
 **The matching lives in a mod; the daemon owns the files and buffers.**
 
 - `mods/search` (`coqo-mod-search`) provides the `coqo.search@1` service. It compiles a query into a `Matcher` with ripgrep's crates (`grep-regex`, `grep-searcher`, `ignore`; MIT/Unlicense): case, whole word, regex or literal, include and exclude globs.
-- The walk honours `.gitignore`, `.ignore` and git excludes (with or without a git repo), includes hidden files but never `.git`, skips binary files and files over 16 MiB, and runs in parallel.
+- The walk honours `.gitignore`, `.ignore` and git excludes (with or without a git repo), includes hidden files but never `.git`, skips the folders below a root that stand apart (nested repositories and worktrees, `CACHEDIR.TAG` caches, `node_modules`: `coqo_mod_api::workspace::stands_apart`, the rule of [ADR 0027](0027-watcher-ignored-folders.md), since #318), skips binary files and files over 16 MiB, and runs in parallel.
 - `Matcher::search(roots, overlay, max, cancel, sink)` takes an *overlay*: the text of each open buffer by real path. Overlaid files are searched from that text instead of the disk.
 - `Matcher::replace(text, replacement, only)` computes the edits (regex replacements expand `$1`/`${name}`).
 - Positions are 0-based lines and char columns, like the editor protocol. A match is identified by `(line, start, end)` so one match can be replaced later.

@@ -62,6 +62,10 @@ pub struct SearchService {
     /// How each walk ended, for tests.
     #[cfg(test)]
     walks: Arc<std::sync::Mutex<Vec<ms::Summary>>>,
+    /// Tests set it to hold each walk after every file it finds until the
+    /// walk is cancelled, so a cancel can't lose the race to the walk's end.
+    #[cfg(test)]
+    hold_until_cancelled: AtomicBool,
 }
 
 fn error(e: SearchError) -> ErrorObject {
@@ -126,6 +130,8 @@ impl SearchService {
             mods,
             #[cfg(test)]
             walks: Arc::default(),
+            #[cfg(test)]
+            hold_until_cancelled: AtomicBool::new(false),
         })
     }
 
@@ -173,10 +179,20 @@ impl SearchService {
         let walk_cancel = Arc::clone(&cancel);
         #[cfg(test)]
         let walks = Arc::clone(&self.walks);
+        #[cfg(test)]
+        let hold = self.hold_until_cancelled.load(Ordering::Acquire);
         tokio::task::spawn_blocking(move || {
             let tx = found_tx.clone();
             let summary = matcher.search(&folders, &overlay, max, &walk_cancel, &|file| {
-                tx.send(Found::File(file)).is_ok()
+                let sent = tx.send(Found::File(file)).is_ok();
+                #[cfg(test)]
+                if hold {
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while !walk_cancel.load(Ordering::Acquire) && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
+                sent
             });
             #[cfg(test)]
             if let Ok(s) = &summary {
