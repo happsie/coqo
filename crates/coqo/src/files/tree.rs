@@ -18,6 +18,11 @@
 //! **Undo** (issue #291, [`undo`]): `Ctrl Z` / `Cmd Z` in the focused tree
 //! undoes the window's last create, rename, move or delete, and `Ctrl Shift
 //! Z` / `Cmd Shift Z` (and `Ctrl Y` off macOS) redoes it ([`History`]).
+//!
+//! **Decorations** (issue #163, [`RowDecorations`]): rows end in what
+//! providers say about them (git's status letters), and a folder's name is
+//! tinted when something inside is. **Auto-reveal** (`files.auto_reveal`):
+//! switching to a file tab reveals its file here, without taking the focus.
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
@@ -49,6 +54,7 @@ use coqo_ui::{
 use super::{
     Collapse, Confirm, CopyPath, CopyRelativePath, DeleteEntry, Dismiss, Expand, NewFile,
     NewFolder, RenameEntry, RevealInFileManager, SelectNext, SelectPrev,
+    decorations::{RowDecoration, RowDecorations},
     editor::{self, FileEditor},
     history::{FileOp, History},
     ops::{FileEvent, FileEvents, is_at_or_under, moved_path},
@@ -57,6 +63,7 @@ use super::{
 mod undo;
 use crate::{
     daemon::{Daemon, DaemonError, DaemonEvent},
+    settings::{self, Settings},
     welcome::shortcut,
     workspace::{Workspaces, WorkspacesEvent, prompt_open_folder_in},
 };
@@ -230,6 +237,10 @@ pub struct FileTree {
     undoing: bool,
     /// What the last undo or redo did ("Undid rename of …"), shown briefly.
     toast: Option<SharedString>,
+    /// What the rows show besides their names (git's letters).
+    decorations: Entity<RowDecorations>,
+    /// The file tab auto-reveal last showed, so it reveals each switch once.
+    followed: Option<(WorkspaceId, RootId, String)>,
     _toast_timer: Option<Task<()>>,
     _op: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -344,6 +355,15 @@ impl FileTree {
                 }
             }));
         }
+        let decorations = RowDecorations::for_window(window, cx);
+        subscriptions.push(cx.observe(&decorations, |_, _, cx| cx.notify()));
+        if let Some(dock) = dock.upgrade() {
+            subscriptions.push(cx.observe(&dock, |this, _, cx| this.follow_active_tab(cx)));
+        }
+        subscriptions.push(cx.observe_global::<Settings>(|this, cx| {
+            this.followed = None;
+            this.follow_active_tab(cx);
+        }));
         let current = workspaces
             .as_ref()
             .and_then(|w| w.read(cx).current().cloned());
@@ -368,12 +388,78 @@ impl FileTree {
             history: History::default(),
             undoing: false,
             toast: None,
+            decorations,
+            followed: None,
             _toast_timer: None,
             _op: None,
             _subscriptions: subscriptions,
         };
         this.set_workspace(current, cx);
+        this.follow_active_tab(cx);
         this
+    }
+
+    /// What row `ix` shows besides its name.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn decoration(&self, ix: usize, cx: &App) -> RowDecoration {
+        self.rows
+            .get(ix)
+            .map(|row| self.decoration_of(row, cx))
+            .unwrap_or_default()
+    }
+
+    fn decoration_of(&self, row: &Row, cx: &App) -> RowDecoration {
+        if row.ignored || row.editing {
+            return RowDecoration::default();
+        }
+        let mut d = self.decorations.read(cx).row(row.root, &row.path);
+        if !row.is_dir() {
+            // Only folders are tinted; a file has its letter.
+            d.tint = None;
+        }
+        d
+    }
+
+    /// Scroll so that row `ix` is at the top (benchmarks).
+    #[cfg(test)]
+    pub fn scroll_to_row(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.scroll.scroll_to_item(ix, ScrollStrategy::Top);
+        cx.notify();
+    }
+
+    /// With `files.auto_reveal` on, reveal the active file tab's file once
+    /// per switch, leaving the focus where it is. Not while a name is typed
+    /// or a delete waits in the tree.
+    fn follow_active_tab(&mut self, cx: &mut Context<Self>) {
+        if !settings::get(cx).files.auto_reveal {
+            self.followed = None;
+            return;
+        }
+        let Some(dock) = self.dock.upgrade() else {
+            return;
+        };
+        let active = {
+            let dock = dock.read(cx);
+            dock.active_tab()
+                .and_then(|id| dock.tab(id)?.downcast::<FileEditor>())
+                .map(|tab| {
+                    let tab = tab.read(cx);
+                    (tab.workspace().clone(), tab.root(), tab.path().to_owned())
+                })
+        };
+        let Some(active) = active else {
+            self.followed = None;
+            return;
+        };
+        if self.followed.as_ref() == Some(&active)
+            || self.workspace.as_ref().map(|w| &w.id) != Some(&active.0)
+            || self.editing.is_some()
+            || self.pending_delete.is_some()
+        {
+            return;
+        }
+        self.reveal_entry(active.1, &active.2, cx);
+        self.followed = Some(active);
     }
 
     /// The visible rows, top to bottom.
@@ -439,6 +525,7 @@ impl FileTree {
             self.op_error = None;
             self.history.clear();
             self.toast = None;
+            self.followed = None;
         }
         self.loading.clear();
         self.stale.clear();
@@ -1439,10 +1526,14 @@ impl FileTree {
         let (p, m) = (t.palette.clone(), t.metrics.clone());
         let selected = self.selected_index();
         let multi_root = self.multi_root();
+        let decorations: Vec<RowDecoration> =
+            range.clone().map(|ix| self.decoration(ix, cx)).collect();
         range
-            .filter_map(|ix| {
+            .zip(decorations)
+            .filter_map(|(ix, decoration)| {
                 let row = self.rows.get(ix)?;
                 let is_selected = selected == Some(ix);
+                let name_color = decoration.tint.map(|tone| tone.rgb(&p));
                 let color = if row.ignored {
                     p.text_subtle
                 } else if is_selected {
@@ -1523,6 +1614,7 @@ impl FileTree {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
+                            .when_some(name_color, |d, c| d.text_color(c.hsla()))
                             .child(row.name.clone()),
                     )
                     .when(row.loading, |d| {
@@ -1531,6 +1623,19 @@ impl FileTree {
                                 .text_size(m.text_xs)
                                 .text_color(p.text_subtle.hsla())
                                 .child("…"),
+                        )
+                    })
+                    .when_some(decoration.badge, |d, badge| {
+                        d.child(
+                            div()
+                                .id(("file-row-badge", ix))
+                                .test_support()
+                                .flex_none()
+                                .min_w(px(10.))
+                                .flex()
+                                .justify_end()
+                                .text_color(badge.tone.rgb(&p).hsla())
+                                .child(badge.letter.to_string()),
                         )
                     })
                     .on_click(

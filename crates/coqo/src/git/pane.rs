@@ -76,14 +76,7 @@ impl std::fmt::Debug for GitPane {
 
 /// A status letter's colour (board 1: `M` sand, `A` green).
 fn letter_color(letter: char, cx: &App) -> Rgb {
-    let p = &cx.tokens().palette;
-    match letter {
-        'M' => p.sand,
-        'A' => p.green,
-        'D' | 'U' => p.rose,
-        'T' => p.lavender,
-        _ => p.text_subtle,
-    }
+    super::decorations::tone(letter).rgb(&cx.tokens().palette)
 }
 
 impl GitPane {

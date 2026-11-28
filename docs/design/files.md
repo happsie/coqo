@@ -11,9 +11,29 @@ The Files sidebar pane and the `file` tab kind (design board 1, PLAN §6 `files`
 - **Folders:** a 12 px Lucide chevron (`chevron-right` / `chevron-down`) in `text_subtle`, then the name. Folders come first, then files, each sorted by name (the daemon's order).
 - **Files:** a 16 px glyph slot, then the name. Source files get a coloured language letter as on the board: `K` Kotlin in `lavender`, `J` Java and `R` Rust in `peach`, `TS`/`Py`/`Go`/`C` in `blue`, `JS` in `sand`, and so on (`files/glyph.rs`). Other files get a muted Lucide icon: `file-text` for docs and config, `image` for images, `file-code` for other code, `file` otherwise.
 - **Ignored entries** (`.gitignore`, `.git/info/exclude`, global excludes, `.git`, and folders that stand apart: nested repositories and worktrees, `CACHEDIR.TAG` caches such as `target/`, `node_modules`) are listed but dimmed: `text_subtle` at 75% opacity. They can be expanded, but nothing inside them is watched, so they don't refresh live ([ADR 0027](../adr/0027-watcher-ignored-folders.md)).
+- **Git status:** a changed file's row ends in its `git status` letter, right-aligned in the row's font: `M` in `sand`, `A` in `green`, `D` in `rose`, `?` (untracked) in `text_subtle`, `U` (conflict) in `rose` and `T` (type change) in `lavender`. The work tree's change wins over the staged one, and a rename is a `D` and an `A` (git's status, ADR 0018). A folder with changes inside has its name tinted in the colour of the strongest one: a conflict, then a modification, a deletion, a type change, then new files (added or untracked) in `green`. A deleted file has no row, so its folder's tint is what shows it. In a multi-root workspace each root has its own letters, and a root's row is tinted too. The letters follow `git/changes`, so a commit or a checkout made anywhere updates them.
 - **No folder:** "No folder open" and a raised **Open Folder…** button with its shortcut.
 
+![Git status letters and tinted folders](screenshots/files-status-dark.png)
+
+**Row decorations.** The tree doesn't know about git: it draws what row decoration providers give it (`files/decorations.rs`), a letter and a colour (a palette role) per path and a tint per folder, per root. The git status letters are one provider (`git/decorations.rs`), fed by the window's `GitModel`. When the mod API carries UI contributions (#147), this becomes the files mod's contribution point.
+
+**Reveal.** **Reveal active file in tree** (palette) expands the file's folders, selects and scrolls to its row and moves the keyboard to the tree. With **auto-reveal** on, switching to a file tab does the same without moving the focus (not while a name is typed or a delete waits in the tree). It's off by default: `auto_reveal = true` under `[files]` in `settings.toml` (Coqo's config directory, PLAN §8, read at start until the settings service, #26) turns it on, and the palette's **Toggle auto-reveal active file in tree** flips it for the running app.
+
 The tree is virtualised (`uniform_list`): only the rows on screen are laid out, so a folder with tens of thousands of entries scrolls like a small one. Folders are listed with `fs/list` the first time they're expanded. `fs/changes` re-lists the loaded folders it touches (all of them on `rescan`), and the tree re-lists everything it shows after a daemon reconnect.
+
+### 200k entries
+
+`files_scroll_benchmark` (an ignored test, `cargo test -p coqo -- --ignored files_scroll_benchmark --nocapture`) makes 200 folders of 1,000 empty files under `target/` (deleted afterwards), expands them all (200,200 rows) and times whole-window frames (`render_frame`, offscreen, no GPU raster) while scrolling three rows a frame like a wheel and while jumping across the list like a scrollbar drag. On a Ryzen 5 7600, debug build:
+
+| | p50 | p95 | max |
+|---|---|---|---|
+| 200 rows (folders collapsed), wheel, 600 frames | 6.74 ms | 6.82 ms | 7.73 ms |
+| 200,200 rows, wheel, 600 frames | 6.81 ms | 6.88 ms | 8.77 ms |
+| 200,200 rows, jumps, 300 frames | 6.80 ms | 6.91 ms | 7.62 ms |
+| Rebuilding the 200,200-row list (a folder collapsed or expanded, a listing landing) | 44.1 ms | 46.0 ms | 46.0 ms |
+
+A frame costs the same with 1,000 times the rows, well inside 16.7 ms (60 Hz), so scrolling is smooth. What grows with the tree is the flat row list, rebuilt on each change: 44 ms in a debug build for 200k expanded rows (expanding the 200 folders one by one took 7.3 s, as each listing rebuilds it). The test fails if a 200k-row frame costs more than 1.5× a 200-row one, and, in a release build, if the p95 is over 16.7 ms.
 
 ## Keyboard
 
@@ -60,4 +80,6 @@ Remote changes wait while an IME composition is in progress and apply when it en
 
 ![File operations in the light appearance](screenshots/files-ops-light.png)
 
-To regenerate these screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored files_screenshots` (offscreen, needs a GPU) and downscale the 2× PNGs to 1440×900 as `files-<appearance>.png` (and `coqo-editor-dark.png` as `editor-dark.png`, `coqo-files-menu-dark.png` as `files-menu-dark.png`, `coqo-files-ops-<appearance>.png` as `files-ops-<appearance>.png`).
+![Git status letters in the light appearance](screenshots/files-status-light.png)
+
+To regenerate these screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored files_screenshots` (offscreen, needs a GPU) and downscale the 2× PNGs to 1440×900 as `files-<appearance>.png` (and `coqo-editor-dark.png` as `editor-dark.png`, `coqo-files-menu-dark.png` as `files-menu-dark.png`, `coqo-files-ops-<appearance>.png` as `files-ops-<appearance>.png`). The git status screenshots come from `files_status_screenshots` the same way (`coqo-files-status-<appearance>.png` as `files-status-<appearance>.png`).
