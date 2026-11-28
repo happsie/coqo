@@ -23,7 +23,7 @@
 use std::collections::HashSet;
 
 use coqo_protocol::methods::agents::{
-    DeletePermissionRule, PermissionOptionKind, PermissionOutcome, PermissionRequest,
+    ContentBlock, DeletePermissionRule, PermissionOptionKind, PermissionOutcome, PermissionRequest,
     PermissionRequestId, PermissionRule, PermissionRuleId, PermissionRuleSpec, PermissionRules,
     RuleDecision, RuleParams, SessionUpdate, ToolCallContent, ToolKind, WorkspaceRulesParams,
 };
@@ -35,11 +35,15 @@ use coqo_ui::{
         StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
     },
     serde_json::Value,
+    text::markdown,
     widgets::{Icon, TestSupportExt as _, icon, kbd, primary, raised, section_label},
 };
 
 use super::{ChatTab, kind_icon, option_rank};
 use crate::chat::{AllowPermission, RejectPermission, transcript::diffs_of};
+
+/// The tallest a plan gets in its approval card before it scrolls.
+const PLAN_MAX_HEIGHT: f32 = 360.;
 
 /// Where focus goes on the next frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +141,14 @@ impl ChatTab {
         cx.notify();
     }
 
+    /// Permission requests (not the agent's questions) still waiting,
+    /// oldest first.
+    fn pending_asks(&self) -> impl Iterator<Item = &PermissionRequest> {
+        self.transcript
+            .pending_permissions()
+            .filter(|r| !r.is_question())
+    }
+
     /// Call with each batch before it is applied: answers carrying a rule
     /// mean the workspace's rules changed or were used.
     pub(super) fn note_permission_updates(
@@ -159,7 +171,7 @@ impl ChatTab {
 
     /// After a batch: jump to a new pending request.
     pub(super) fn jump_to_pending(&mut self) {
-        let Some(request) = self.transcript.pending_permissions().next() else {
+        let Some(request) = self.pending_asks().next() else {
             return;
         };
         let id = request.id;
@@ -186,7 +198,7 @@ impl ChatTab {
                 // Don't take a message being typed: Enter would answer.
                 let typing =
                     composer.is_focused(window) && !self.composer.read(cx).text(cx).is_empty();
-                if !typing && self.transcript.pending_permissions().next().is_some() {
+                if !typing && self.pending_asks().next().is_some() {
                     window.focus(&self.permissions.focus, cx);
                 }
             }
@@ -200,10 +212,7 @@ impl ChatTab {
 
     /// Where focus goes once a request is answered.
     pub(super) fn after_answer(&mut self, answered: PermissionRequestId) {
-        let more = self
-            .transcript
-            .pending_permissions()
-            .any(|r| r.id != answered);
+        let more = self.pending_asks().any(|r| r.id != answered);
         self.permissions.focus_next = Some(if more {
             FocusTarget::Permission
         } else {
@@ -215,7 +224,7 @@ impl ChatTab {
     /// Answer the oldest pending request with its option of the first of
     /// `kinds` it has. `false` if it has none.
     fn answer_by_kind(&mut self, kinds: &[PermissionOptionKind], cx: &mut Context<Self>) -> bool {
-        let Some(request) = self.transcript.pending_permissions().next() else {
+        let Some(request) = self.pending_asks().next() else {
             return false;
         };
         let Some(option) = kinds
@@ -300,6 +309,32 @@ impl ChatTab {
         .detach();
     }
 
+    /// The plan a plan-mode approval (`switch_mode`, Claude's
+    /// `ExitPlanMode`) asks to approve: its text content.
+    fn plan_of(&self, request: &PermissionRequest) -> Option<String> {
+        let tc = request.tool_call.as_ref()?;
+        let earlier = self.transcript.tool(&tc.id).map(|t| &t.call);
+        let kind = tc.kind.or(earlier.map(|c| c.kind))?;
+        if kind != ToolKind::SwitchMode {
+            return None;
+        }
+        let content = tc
+            .content
+            .as_deref()
+            .or(earlier.map(|c| c.content.as_slice()))?;
+        let text: Vec<&str> = content
+            .iter()
+            .filter_map(|c| match c {
+                ToolCallContent::Content {
+                    content: ContentBlock::Text { text },
+                } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let text = text.join("\n\n");
+        (!text.trim().is_empty()).then_some(text)
+    }
+
     fn ask_of(&self, request: &PermissionRequest) -> Ask {
         let tc = request.tool_call.as_ref();
         let earlier = tc
@@ -379,7 +414,7 @@ impl ChatTab {
         let (p, m) = (t.palette.clone(), t.metrics.clone());
         let ask = self.ask_of(request);
         let pending = outcome.is_none() && !self.is_closed();
-        let first = self.transcript.pending_permissions().next().map(|r| r.id) == Some(request.id);
+        let first = self.pending_asks().next().map(|r| r.id) == Some(request.id);
         let title = div()
             .flex()
             .flex_wrap()
@@ -398,7 +433,10 @@ impl ChatTab {
                     .text_size(px(12.5))
                     .child(s)
             }));
-        let subtitle = if pending {
+        let plan = self.plan_of(request);
+        let subtitle = if pending && plan.is_some() {
+            format!("{} asks you to approve its plan", self.provider_label())
+        } else if pending {
             format!("{} asks for permission", self.provider_label())
         } else {
             let mut label = super::resolved_label(request, outcome);
@@ -484,6 +522,20 @@ impl ChatTab {
                     .font_family(m.font_mono.clone())
                     .text_size(px(12.))
                     .child(self.render_diff(diff, cx)),
+            );
+        }
+        if let Some(plan) = plan {
+            card = card.child(
+                div()
+                    .id(("chat-permission-plan", ix))
+                    .test_support()
+                    .max_h(px(PLAN_MAX_HEIGHT))
+                    .overflow_y_scroll()
+                    .px(px(14.))
+                    .py(px(10.))
+                    .rounded(px(10.))
+                    .bg(p.panel.hsla())
+                    .child(markdown(("chat-permission-plan-md", ix), plan)),
             );
         }
         let mut options = request.options.clone();

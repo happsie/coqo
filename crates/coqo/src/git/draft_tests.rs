@@ -231,6 +231,7 @@ fn a_draft_fills_the_commit_box_and_commits_nothing() {
                         kind: PermissionOptionKind::RejectOnce,
                     },
                 ],
+                questions: Vec::new(),
             }),
             reply("```\ndocs(readme): describe the demo\n\n"),
             reply("Say what the demo shows.\n```"),

@@ -11,6 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use coqo_agents::model::{
+    AgentQuestion, AgentQuestionKind, PermissionRequestId, QuestionAnswer, QuestionChoice,
+};
 use coqo_agents::{
     AgentUpdate, ManagerOptions, PermissionAsk, ProviderError, SessionManager, SessionStore,
     StaticProviders,
@@ -640,6 +643,7 @@ fn ask() -> PermissionAsk {
                 kind: PermissionOptionKind::AllowOnce,
             },
         ],
+        questions: Vec::new(),
     }
 }
 
@@ -706,6 +710,7 @@ fn run(id: &str, command: &str) -> Step {
             option("always", "Always allow", PermissionOptionKind::AllowAlways),
             option("allow-once", "Allow once", PermissionOptionKind::AllowOnce),
         ],
+        questions: Vec::new(),
     })
 }
 
@@ -1748,6 +1753,7 @@ fn chat_screenshots() {
             }),
             options: ask().options,
             suggested_rule: None,
+            questions: Vec::new(),
         }),
         SessionUpdate::PermissionResolved {
             request_id: PermissionRequestId(1),
@@ -1788,6 +1794,7 @@ fn chat_screenshots() {
                 tool: ToolKind::Edit,
                 pattern: "tests/**".into(),
             }),
+            questions: Vec::new(),
         }),
         SessionUpdate::State {
             state: AgentState::NeedsPermission,
@@ -1806,7 +1813,125 @@ fn chat_screenshots() {
         ("rename-row-light", Appearance::Light, false),
         ("ended-dark", Appearance::Dark, false),
         ("history-light", Appearance::Light, false),
+        ("question-dark", Appearance::Dark, false),
+        ("question-light", Appearance::Light, false),
+        ("plan-dark", Appearance::Dark, false),
+        ("plan-light", Appearance::Light, false),
     ];
+    // A chat where the agent asks with its own tool (AskUserQuestion), or
+    // asks to approve its plan (ExitPlanMode).
+    let asking = |plan: bool| {
+        let mut u = vec![
+            SessionUpdate::UserMessage {
+                content: vec![ContentBlock::text(
+                    "Add a free-shipping threshold to the cart totals.",
+                )],
+            },
+            SessionUpdate::TurnStarted { turn: 1 },
+            SessionUpdate::AgentMessageChunk {
+                content: ContentBlock::text(if plan {
+                    "Here's how I'd do it."
+                } else {
+                    "Two things before I start."
+                }),
+            },
+        ];
+        if plan {
+            u.push(SessionUpdate::PermissionRequested(PermissionRequest {
+                id: PermissionRequestId(1),
+                title: "Approve Plan".into(),
+                tool_call: Some(ToolCallUpdate {
+                    id: ToolCallId("plan-1".into()),
+                    kind: Some(ToolKind::SwitchMode),
+                    content: Some(vec![ToolCallContent::Content {
+                        content: ContentBlock::text(
+                            "## Free shipping threshold\n\n\
+                             1. Add `free_from` to `ShippingPolicy` (default 50 EUR).\n\
+                             2. Use `policy.fee(subtotal)` in `Cart::totals`.\n\
+                             3. Show the saving as its own totals line.\n\
+                             4. Tests: below, at and above the threshold.",
+                        ),
+                    }]),
+                    ..ToolCallUpdate::default()
+                }),
+                options: vec![
+                    PermissionOption {
+                        id: "exit-plan-default".into(),
+                        name: "Yes, manually approve edits".into(),
+                        kind: PermissionOptionKind::AllowOnce,
+                    },
+                    PermissionOption {
+                        id: "exit-plan-auto".into(),
+                        name: "Yes, and auto-accept edits".into(),
+                        kind: PermissionOptionKind::AllowAlways,
+                    },
+                    PermissionOption {
+                        id: "reject".into(),
+                        name: "No, keep planning".into(),
+                        kind: PermissionOptionKind::RejectOnce,
+                    },
+                ],
+                suggested_rule: None,
+                questions: Vec::new(),
+            }));
+            u.push(SessionUpdate::State {
+                state: AgentState::NeedsPermission,
+                reason: None,
+            });
+        } else {
+            let mut threshold = agent_question(
+                "question_0",
+                "Where should the free-shipping threshold live?",
+                AgentQuestionKind::Single,
+                &[],
+                true,
+                false,
+            );
+            threshold.header = Some("Threshold".into());
+            threshold.options = vec![
+                QuestionChoice {
+                    value: "Policy".into(),
+                    label: "In ShippingPolicy".into(),
+                    description: Some("One place for every shipping rule".into()),
+                    preview: Some(
+                        "pub struct ShippingPolicy {\n    pub flat: Money,\n    pub free_from: Money,\n}"
+                            .into(),
+                    ),
+                },
+                QuestionChoice {
+                    value: "Config".into(),
+                    label: "In the shop config".into(),
+                    description: Some("Editable without a release".into()),
+                    preview: None,
+                },
+            ];
+            let mut tests = agent_question(
+                "question_1",
+                "Which cases should the tests cover?",
+                AgentQuestionKind::Multi,
+                &["Below the threshold", "Exactly at it", "Above it"],
+                false,
+                false,
+            );
+            tests.header = Some("Tests".into());
+            u.push(SessionUpdate::PermissionRequested(PermissionRequest {
+                id: PermissionRequestId(1),
+                title: "Question".into(),
+                tool_call: None,
+                options: Vec::new(),
+                suggested_rule: None,
+                questions: vec![threshold, tests],
+            }));
+            u.push(SessionUpdate::State {
+                state: AgentState::NeedsInput,
+                reason: Some(
+                    "Waiting for your answer: Where should the free-shipping threshold live?"
+                        .into(),
+                ),
+            });
+        }
+        u
+    };
     // A short chat whose turn failed: with Retry, or, after a daemon
     // restart, ended because the agent lost its session.
     let short = |ended: bool| {
@@ -1864,6 +1989,10 @@ fn chat_screenshots() {
         if ended || history {
             updates = short(ended);
         }
+        let (question, plan) = (name.starts_with("question"), name.starts_with("plan"));
+        if question || plan {
+            updates = asking(plan);
+        }
         // The chat's info: the shipping chat, or for the short one, its
         // error.
         let s1 = move || {
@@ -1875,6 +2004,15 @@ fn chat_screenshots() {
                 } else {
                     "Overloaded: try again in a moment".into()
                 });
+                i.status = None;
+                i.criteria.clear();
+            }
+            if question || plan {
+                i.state = if plan {
+                    AgentState::NeedsPermission
+                } else {
+                    AgentState::NeedsInput
+                };
                 i.status = None;
                 i.criteria.clear();
             }
@@ -2642,4 +2780,468 @@ fn a_thread_message_is_summed_up_in_its_first_line() {
         summary.ends_with('…') && summary.chars().count() < 160,
         "{summary}"
     );
+}
+
+// ---- agent questions (#339) ---------------------------------------------------
+
+fn agent_question(
+    id: &str,
+    question: &str,
+    kind: AgentQuestionKind,
+    options: &[&str],
+    other: bool,
+    required: bool,
+) -> AgentQuestion {
+    AgentQuestion {
+        id: id.into(),
+        header: None,
+        question: question.into(),
+        kind,
+        options: options
+            .iter()
+            .map(|v| QuestionChoice {
+                value: (*v).into(),
+                label: (*v).into(),
+                description: Some(format!("About {v}")),
+                preview: None,
+            })
+            .collect(),
+        other,
+        required,
+        anchor: None,
+    }
+}
+
+fn colour() -> AgentQuestion {
+    agent_question(
+        "question_0",
+        "Which colour?",
+        AgentQuestionKind::Single,
+        &["Red", "Blue"],
+        false,
+        false,
+    )
+}
+
+fn questions(questions: Vec<AgentQuestion>) -> Step {
+    Step::Permission(PermissionAsk {
+        title: "Question".into(),
+        tool_call: None,
+        options: Vec::new(),
+        questions,
+    })
+}
+
+fn answer(id: &str, picks: &[&str], text: Option<&str>) -> QuestionAnswer {
+    QuestionAnswer {
+        id: id.into(),
+        picks: picks.iter().map(|p| (*p).to_owned()).collect(),
+        text: text.map(str::to_owned),
+    }
+}
+
+/// The waiting question card's entry and request.
+fn question_card(ui: &mut Ui, chat: &Entity<ChatTab>) -> Option<(usize, PermissionRequestId)> {
+    ui.entries(chat)
+        .iter()
+        .enumerate()
+        .find_map(|(ix, e)| match e {
+            Entry::Permission {
+                request,
+                outcome: None,
+                ..
+            } if request.is_question() => Some((ix, request.id)),
+            _ => None,
+        })
+}
+
+fn outcome_at(ui: &mut Ui, chat: &Entity<ChatTab>, ix: usize) -> Option<PermissionOutcome> {
+    match &ui.entries(chat)[ix] {
+        Entry::Permission { outcome, .. } => outcome.clone(),
+        _ => None,
+    }
+}
+
+fn wait_card_focus(ui: &mut Ui, chat: &Entity<ChatTab>) {
+    ui.wait_for("the focus on the question card", |ui| {
+        let chat = chat.clone();
+        ui.frame(|window, cx| chat.read(cx).question_focused(window))
+    });
+}
+
+fn wait_field_focus(ui: &mut Ui, chat: &Entity<ChatTab>, id: PermissionRequestId, q: &str) {
+    ui.wait_for("the focus in the answer field", |ui| {
+        let chat = chat.clone();
+        ui.frame(|window, cx| {
+            chat.read(cx)
+                .question_input(id, q)
+                .is_some_and(|i| i.read(cx).focus_handle(cx).is_focused(window))
+        })
+    });
+}
+
+fn picks(ui: &mut Ui, chat: &Entity<ChatTab>, id: PermissionRequestId, q: &str) -> Vec<String> {
+    ui.cx.read(|cx| chat.read(cx).question_picks(id, q))
+}
+
+fn question_error(ui: &mut Ui, chat: &Entity<ChatTab>, id: PermissionRequestId) -> Option<String> {
+    ui.cx.read(|cx| chat.read(cx).question_error(id))
+}
+
+#[test]
+fn a_question_card_is_answered_with_keys_picks_and_typed_text() {
+    let provider = ScriptedProvider::new().turn([
+        questions(vec![
+            agent_question(
+                "question_0",
+                "Which colour?",
+                AgentQuestionKind::Single,
+                &["Red", "Blue"],
+                true,
+                false,
+            ),
+            agent_question(
+                "question_1",
+                "Which pets?",
+                AgentQuestionKind::Multi,
+                &["Cat", "Dog", "Axolotl"],
+                false,
+                false,
+            ),
+        ]),
+        chunk("Thanks"),
+        Step::Stop(StopReason::EndTurn),
+    ]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.send(&chat, "Ask me");
+    ui.wait_for("the question card", |ui| question_card(ui, &chat).is_some());
+    let (ix, id) = question_card(&mut ui, &chat).unwrap();
+
+    // The session waits for input, with the question as the reason, in the
+    // list and on the tab.
+    ui.wait_for("waiting for input", |ui| {
+        ui.listed()[0].state == AgentState::NeedsInput
+    });
+    assert_eq!(
+        ui.listed()[0].state_reason.as_deref(),
+        Some("Waiting for your answer: Which colour?")
+    );
+    ui.frame(|window, _| {
+        assert!(
+            window.try_find("chat-tab-badge").is_some(),
+            "the tab says it needs you"
+        );
+        assert!(window.try_find(("chat-agent-question", ix)).is_some());
+        assert!(
+            window.try_find(("chat-permission", ix)).is_none(),
+            "not a permission card"
+        );
+    });
+    assert!(ui.shows(&format!("chat-agent-question-{ix}-question_0-Red")));
+    assert!(ui.shows(&format!("chat-agent-question-{ix}-question_0-other")));
+    assert!(!ui.shows(&format!("chat-agent-question-{ix}-question_1-other")));
+    wait_card_focus(&mut ui, &chat);
+
+    // Enter with nothing picked says what's missing.
+    ui.press("enter");
+    ui.wait_for("the error", |ui| question_error(ui, &chat, id).is_some());
+    assert_eq!(
+        question_error(&mut ui, &chat, id).as_deref(),
+        Some("Pick an answer, or skip the question")
+    );
+    assert!(fixture.provider.outcomes().is_empty());
+
+    // A number picks; Down goes on into the "Other" field, where digits are
+    // text, not picks (#266).
+    ui.press("2");
+    assert_eq!(picks(&mut ui, &chat, id, "question_0"), ["Blue"]);
+    ui.press("down");
+    wait_field_focus(&mut ui, &chat, id, "question_0");
+    ui.frame(|window, cx| window.input("Teal 1", cx));
+    ui.cx.run_until_parked();
+    assert_eq!(picks(&mut ui, &chat, id, "question_0"), ["Blue"]);
+    let field = ui
+        .cx
+        .read(|cx| chat.read(cx).question_input(id, "question_0").unwrap());
+    assert_eq!(ui.cx.read(|cx| field.read(cx).text(cx)), "Teal 1");
+
+    // Down leaves the field for the next question; Space and numbers tick.
+    ui.press("down");
+    wait_card_focus(&mut ui, &chat);
+    ui.press("space");
+    ui.press("3");
+    assert_eq!(picks(&mut ui, &chat, id, "question_1"), ["Cat", "Axolotl"]);
+    ui.press("enter");
+    ui.wait_for("the agent's thanks", |ui| ui.agent_text(&chat) == "Thanks");
+    assert_eq!(
+        fixture.provider.outcomes(),
+        [PermissionOutcome::Answered {
+            answers: vec![
+                answer("question_0", &["Blue"], Some("Teal 1")),
+                answer("question_1", &["Cat", "Axolotl"], None),
+            ]
+        }]
+    );
+    assert!(matches!(
+        outcome_at(&mut ui, &chat, ix),
+        Some(PermissionOutcome::Answered { .. })
+    ));
+    ui.wait_for("the focus back in the composer", |ui| {
+        let chat = chat.clone();
+        ui.frame(|window, cx| {
+            let composer = chat.read(cx).composer().read(cx).focus_handle(cx);
+            composer.is_focused(window)
+        })
+    });
+}
+
+#[test]
+fn a_question_card_checks_numbers_and_required_answers() {
+    let provider = ScriptedProvider::new().turn([
+        questions(vec![
+            agent_question(
+                "question_0",
+                "How many?",
+                AgentQuestionKind::Number,
+                &[],
+                false,
+                true,
+            ),
+            agent_question(
+                "question_1",
+                "Which colour?",
+                AgentQuestionKind::Single,
+                &["Red", "Blue"],
+                false,
+                true,
+            ),
+        ]),
+        chunk("Noted"),
+        Step::Stop(StopReason::EndTurn),
+    ]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.send(&chat, "Ask me");
+    ui.wait_for("the question card", |ui| question_card(ui, &chat).is_some());
+    let (_, id) = question_card(&mut ui, &chat).unwrap();
+
+    // A card that starts with a typed answer puts the focus in its field.
+    wait_field_focus(&mut ui, &chat, id, "question_0");
+    ui.frame(|window, cx| window.input("abc", cx));
+    ui.press("enter");
+    ui.wait_for("the number error", |ui| {
+        question_error(ui, &chat, id).is_some()
+    });
+    assert_eq!(
+        question_error(&mut ui, &chat, id).as_deref(),
+        Some("“How many?” takes a number")
+    );
+    let field = ui
+        .cx
+        .read(|cx| chat.read(cx).question_input(id, "question_0").unwrap());
+    ui.frame(|window, cx| field.update(cx, |f, cx| f.set_text("3", window, cx)));
+    ui.cx.run_until_parked();
+    assert_eq!(
+        question_error(&mut ui, &chat, id),
+        None,
+        "an edit clears it"
+    );
+    ui.press("enter");
+    ui.wait_for("the required error", |ui| {
+        question_error(ui, &chat, id).is_some()
+    });
+    assert_eq!(
+        question_error(&mut ui, &chat, id).as_deref(),
+        Some("Answer “Which colour?” first")
+    );
+
+    ui.press("down");
+    wait_card_focus(&mut ui, &chat);
+    ui.press("1");
+    ui.press("enter");
+    ui.wait_for("the agent's note", |ui| ui.agent_text(&chat) == "Noted");
+    assert_eq!(
+        fixture.provider.outcomes(),
+        [PermissionOutcome::Answered {
+            answers: vec![
+                answer("question_0", &[], Some("3")),
+                answer("question_1", &["Red"], None),
+            ]
+        }]
+    );
+}
+
+#[test]
+fn esc_skips_a_question_and_a_stopped_one_is_answered_as_a_message() {
+    let provider = ScriptedProvider::new()
+        .turn([
+            questions(vec![colour()]),
+            chunk("Skipped"),
+            Step::Stop(StopReason::EndTurn),
+        ])
+        .turn([
+            questions(vec![colour()]),
+            chunk("Never said"),
+            Step::Stop(StopReason::EndTurn),
+        ])
+        .turn([chunk("Blue it is"), Step::Stop(StopReason::EndTurn)]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+
+    // Esc on the card skips: the agent is told, and goes on.
+    ui.send(&chat, "Ask me");
+    ui.wait_for("the question card", |ui| question_card(ui, &chat).is_some());
+    let (ix, _) = question_card(&mut ui, &chat).unwrap();
+    wait_card_focus(&mut ui, &chat);
+    ui.press("escape");
+    ui.wait_for("the agent going on", |ui| ui.agent_text(&chat) == "Skipped");
+    assert_eq!(fixture.provider.outcomes(), [PermissionOutcome::Declined]);
+    assert_eq!(
+        outcome_at(&mut ui, &chat, ix),
+        Some(PermissionOutcome::Declined)
+    );
+    turns_ended(&mut ui, &chat);
+
+    // Stopping the turn while a question waits leaves the card answerable:
+    // the answer goes as the next message.
+    ui.send(&chat, "Ask again");
+    ui.wait_for("the second card", |ui| question_card(ui, &chat).is_some());
+    let (ix, _) = question_card(&mut ui, &chat).unwrap();
+    ui.frame(|window, cx| window.click("chat-stop", cx));
+    ui.wait_for("the question cancelled", |ui| {
+        outcome_at(ui, &chat, ix) == Some(PermissionOutcome::Cancelled) && !running(ui, &chat)
+    });
+    assert!(ui.shows(&format!("chat-agent-question-{ix}-send")));
+    assert!(!ui.shows(&format!("chat-agent-question-{ix}-skip")));
+    let blue = format!("chat-agent-question-{ix}-question_0-Blue");
+    ui.frame(|window, cx| window.click(name(&blue), cx));
+    let send = format!("chat-agent-question-{ix}-send");
+    ui.frame(|window, cx| window.click(name(&send), cx));
+    ui.wait_for("the agent's reply", |ui| {
+        ui.agent_text(&chat).ends_with("Blue it is")
+    });
+    assert_eq!(
+        prompts(&fixture.provider).last().unwrap(),
+        &[ContentBlock::text(
+            "My answer to your question from before:\n\n- Which colour?: Blue"
+        )]
+    );
+    assert!(
+        !ui.shows(&format!("chat-agent-question-{ix}-send")),
+        "answered once"
+    );
+}
+
+#[test]
+fn a_restarted_ui_shows_a_waiting_question_and_answers_it() {
+    let provider = ScriptedProvider::new().turn([
+        questions(vec![colour()]),
+        chunk("Red it is"),
+        Step::Stop(StopReason::EndTurn),
+    ]);
+    let fixture = Fixture::new(provider);
+    let store = MemoryLayoutStore::default();
+    let mut first = open_ui(&fixture, store.clone());
+    let chat = first.new_chat();
+    first.send(&chat, "Ask me");
+    first.wait_for("the question card", |ui| question_card(ui, &chat).is_some());
+    first
+        .shell
+        .update(&mut first.cx, |shell, cx| shell.save_now(cx));
+    drop(first);
+
+    let mut second = open_ui(&fixture, store);
+    let chat = second.chat();
+    second.wait_for("the waiting card", |ui| question_card(ui, &chat).is_some());
+    second.wait_for("waiting for input", |ui| {
+        ui.listed()[0].state == AgentState::NeedsInput
+    });
+    wait_card_focus(&mut second, &chat);
+    second.press("1");
+    second.press("enter");
+    second.wait_for("the agent's reply", |ui| {
+        ui.agent_text(&chat) == "Red it is"
+    });
+    assert_eq!(
+        fixture.provider.outcomes(),
+        [PermissionOutcome::Answered {
+            answers: vec![answer("question_0", &["Red"], None)]
+        }]
+    );
+}
+
+/// Claude Code's plan approval (`ExitPlanMode`), as claude-agent-acp asks it.
+fn plan_approval() -> Step {
+    let option = |id: &str, name: &str, kind| PermissionOption {
+        id: id.into(),
+        name: name.into(),
+        kind,
+    };
+    Step::Permission(PermissionAsk {
+        title: "Approve Plan".into(),
+        tool_call: Some(ToolCallUpdate {
+            id: ToolCallId("plan-1".into()),
+            kind: Some(ToolKind::SwitchMode),
+            content: Some(vec![ToolCallContent::Content {
+                content: ContentBlock::text("## Plan\n\n1. Write `hello.txt`\n2. Run the tests"),
+            }]),
+            ..ToolCallUpdate::default()
+        }),
+        options: vec![
+            option(
+                "exit-plan-default",
+                "Yes, manually approve edits",
+                PermissionOptionKind::AllowOnce,
+            ),
+            option(
+                "exit-plan-auto",
+                "Yes, and auto-accept edits",
+                PermissionOptionKind::AllowAlways,
+            ),
+            option(
+                "reject",
+                "No, keep planning",
+                PermissionOptionKind::RejectOnce,
+            ),
+        ],
+        questions: Vec::new(),
+    })
+}
+
+#[test]
+fn a_plan_approval_shows_the_plan_and_is_answered_like_a_permission() {
+    let provider = ScriptedProvider::new().turn([
+        plan_approval(),
+        chunk("Still planning"),
+        Step::Stop(StopReason::EndTurn),
+    ]);
+    let fixture = Fixture::new(provider);
+    let mut ui = open_ui(&fixture, MemoryLayoutStore::default());
+    let chat = ui.new_chat();
+    ui.send(&chat, "Plan it");
+    ui.wait_for("the plan card", |ui| pending(ui, &chat).is_some());
+    let ix = pending(&mut ui, &chat).unwrap();
+    ui.wait_for("the needs-permission dot", |ui| {
+        ui.listed()[0].state == AgentState::NeedsPermission
+    });
+    ui.frame(|window, _| {
+        assert!(
+            window.try_find(("chat-permission-plan", ix)).is_some(),
+            "the plan is shown"
+        );
+        assert!(window.try_find(("chat-agent-question", ix)).is_none());
+    });
+    ui.wait_for("the focus on the card", |ui| {
+        let chat = chat.clone();
+        ui.frame(|window, cx| chat.read(cx).permission_focused(window))
+    });
+    ui.press("escape");
+    ui.wait_for("the agent going on", |ui| {
+        ui.agent_text(&chat) == "Still planning"
+    });
+    assert_eq!(fixture.provider.outcomes(), [selected("reject")]);
 }

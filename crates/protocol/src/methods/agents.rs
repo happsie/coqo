@@ -823,6 +823,119 @@ pub struct PermissionRequest {
     /// files inside the workspace's roots), and only in a workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_rule: Option<PermissionRuleSpec>,
+    /// Questions the agent asks with its own tooling (ACP form
+    /// elicitation, such as Claude Code's `AskUserQuestion`). A request
+    /// with questions is a question, not a permission: the session is
+    /// `needs_input`, `options` is empty, and it is answered with
+    /// [`PermissionOutcome::Answered`] or [`PermissionOutcome::Declined`].
+    /// Rules never answer it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<AgentQuestion>,
+}
+
+impl PermissionRequest {
+    /// Whether this asks questions rather than permission.
+    pub fn is_question(&self) -> bool {
+        !self.questions.is_empty()
+    }
+}
+
+/// How an [`AgentQuestion`] is answered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum AgentQuestionKind {
+    /// Pick one option (or, with `other`, type an answer instead).
+    #[default]
+    Single,
+    /// Pick any number of options (and, with `other`, add a typed one).
+    Multi,
+    /// Type an answer.
+    Text,
+    /// Type a number.
+    Number,
+}
+
+/// One option of an [`AgentQuestion`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionChoice {
+    /// What is sent back when it is picked.
+    pub value: String,
+    /// What it says.
+    pub label: String,
+    /// A line under the label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Shown while the option is focused, such as a mockup or a code
+    /// snippet (Claude's `preview`). Plain text, often several lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+}
+
+/// Where in the code a question is about, when the agent says so. No
+/// provider fills it yet; spike #340 explores pinning these questions to
+/// code like `ask_question` does.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionAnchorHint {
+    /// The file, absolute or relative to the session's cwd.
+    pub path: String,
+    /// The first line, 1-based.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    /// The last line, 1-based, inclusive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+}
+
+/// A question an agent asks with its own tooling, provider-neutral: the
+/// chat shows it as a question card and the answer goes back through the
+/// request that asked it, in the shape the agent expects.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQuestion {
+    /// Identifies the question within its request; [`QuestionAnswer::id`].
+    pub id: String,
+    /// A short label, such as `Auth method`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    /// The question.
+    pub question: String,
+    /// How it is answered.
+    #[serde(default)]
+    pub kind: AgentQuestionKind,
+    /// The options, for `single` and `multi`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<QuestionChoice>,
+    /// Whether a typed answer ("Other") is taken besides the options.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub other: bool,
+    /// Whether it must be answered for the answers to be taken.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
+    /// Where in the code it is about, if the agent said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<QuestionAnchorHint>,
+}
+
+/// The answer to one [`AgentQuestion`]. A question left out, or with no
+/// picks and no text, was skipped.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionAnswer {
+    /// The question's id.
+    pub id: String,
+    /// The values of the picked options.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub picks: Vec<String>,
+    /// The typed answer: "Other", or a `text` or `number` question's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// Whether a permission rule allows or rejects what it matches.
@@ -900,7 +1013,16 @@ pub enum PermissionOutcome {
         /// The option's id.
         option_id: String,
     },
-    /// The turn was cancelled (or the session closed) before an answer.
+    /// The user answered a request's questions.
+    Answered {
+        /// One per question answered.
+        answers: Vec<QuestionAnswer>,
+    },
+    /// The user skipped a request's questions (Esc, "Skip"): the agent is
+    /// told so and goes on.
+    Declined,
+    /// The turn was cancelled (or the session closed, the daemon stopped,
+    /// the agent withdrew the request) before an answer.
     Cancelled,
 }
 
@@ -1958,6 +2080,26 @@ mod tests {
         })
         .unwrap();
         assert_eq!(v, json!({"outcome": "selected", "optionId": "allow-once"}));
+        let v = serde_json::to_value(PermissionOutcome::Answered {
+            answers: vec![QuestionAnswer {
+                id: "question_0".into(),
+                picks: vec!["Red".into()],
+                text: None,
+            }],
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            json!({"outcome": "answered", "answers": [{"id": "question_0", "picks": ["Red"]}]})
+        );
+        assert_eq!(
+            serde_json::to_value(PermissionOutcome::Declined).unwrap(),
+            json!({"outcome": "declined"})
+        );
+        let q: AgentQuestion =
+            serde_json::from_value(json!({"id": "q", "question": "Which?"})).unwrap();
+        assert_eq!(q.kind, AgentQuestionKind::Single);
+        assert!(!q.other && q.options.is_empty() && q.anchor.is_none());
         let v = serde_json::to_value(ContentBlock::ResourceLink {
             uri: "file:///a.rs".into(),
             name: "a.rs".into(),

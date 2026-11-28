@@ -46,6 +46,14 @@
 //!   - `read <path>`: `fs/read_text_file`, then says what it read;
 //!   - `config <id> <value>`: the agent changes a config option itself
 //!     (`true`/`false` for a toggle) and sends `config_option_update`;
+//!   - `ask <question>|<a>,<b>,…`: as the Claude adapter asks
+//!     `AskUserQuestion`: a `tool_call` (`_meta.claudeCode.toolName`
+//!     `AskUserQuestion`), then an `elicitation/create` form scoped to it,
+//!     with the question as a `oneOf` select (`question_0`) and its "Other"
+//!     box (`question_0_custom`), and says `answer <response JSON>` (or
+//!     `error: <message>`). A client that did not advertise
+//!     `elicitation.form` gets `no question tool` instead, as the adapter
+//!     then disables the tool;
 //!   - `wait`: waits for `session/cancel` and ends the turn as cancelled;
 //!   - `crash`: exits with status 3.
 //!
@@ -122,6 +130,8 @@ struct State {
     cancels: Mutex<HashMap<String, Arc<Notify>>>,
     /// The client takes boolean config options.
     booleans: std::sync::atomic::AtomicBool,
+    /// The client shows form elicitations.
+    forms: std::sync::atomic::AtomicBool,
     /// Each session's config options (`FAKE_ACP_CONFIG=1`).
     config: Mutex<HashMap<String, Vec<acp::SessionConfigOption>>>,
 }
@@ -294,6 +304,43 @@ async fn ask(
         acp::RequestPermissionOutcome::Selected(s) => Some(s.option_id.0.starts_with("allow")),
         _ => None,
     })
+}
+
+/// `ask`: the Claude adapter's `AskUserQuestion` as a form elicitation.
+async fn ask_question(
+    cx: &ConnectionTo<Client>,
+    id: &acp::SessionId,
+    n: usize,
+    rest: &str,
+) -> String {
+    let (question, options) = rest.split_once('|').unwrap_or((rest, "Yes,No"));
+    let call_id = format!("ask-{n}");
+    let mut call = acp::ToolCall::new(acp::ToolCallId::new(call_id.clone()), question);
+    call.meta = json!({"claudeCode": {"toolName": "AskUserQuestion"}})
+        .as_object()
+        .cloned();
+    notify(cx, id, acp::SessionUpdate::ToolCall(call));
+    let one_of: Vec<Value> = options
+        .split(',')
+        .map(|o| json!({"const": o.trim(), "title": o.trim(), "description": format!("Pick {}", o.trim())}))
+        .collect();
+    let request: acp::CreateElicitationRequest = match serde_json::from_value(json!({
+        "mode": "form",
+        "sessionId": id.0,
+        "toolCallId": call_id,
+        "message": question,
+        "requestedSchema": {"type": "object", "properties": {
+            "question_0": {"type": "string", "title": "Question", "oneOf": one_of},
+            "question_0_custom": {"type": "string", "title": "Other"},
+        }},
+    })) {
+        Ok(r) => r,
+        Err(e) => return format!("error: {e}"),
+    };
+    match cx.send_request(request).block_task().await {
+        Ok(r) => format!("answer {}", serde_json::to_string(&r).unwrap_or_default()),
+        Err(e) => format!("error: {}", e.message),
+    }
 }
 
 fn text(t: impl Into<String>) -> acp::ContentChunk {
@@ -618,6 +665,14 @@ async fn turn(
                 }
             }
             "terminal" => run_terminal(&cx, &id, n, rest).await?,
+            "ask" => {
+                let said = if state.forms.load(Ordering::Relaxed) {
+                    ask_question(&cx, &id, n, rest).await
+                } else {
+                    "no question tool".to_owned()
+                };
+                notify(&cx, &id, acp::SessionUpdate::AgentMessageChunk(text(said)));
+            }
             "wait" => {
                 state.cancel_signal(&id.0).notified().await;
                 return Ok(acp::StopReason::Cancelled);
@@ -683,6 +738,12 @@ pub async fn run_fake_agent() -> Result<(), agent_client_protocol::Error> {
                     .and_then(|s| s.config_options.as_ref())
                     .is_some_and(|c| c.boolean.is_some());
                 s4.booleans.store(booleans, Ordering::Relaxed);
+                let forms = req
+                    .client_capabilities
+                    .elicitation
+                    .as_ref()
+                    .is_some_and(|e| e.form.is_some());
+                s4.forms.store(forms, Ordering::Relaxed);
                 let mut sessions =
                     acp::SessionCapabilities::new().close(acp::SessionCloseCapabilities::new());
                 if !flag("FAKE_ACP_NO_RESUME") {

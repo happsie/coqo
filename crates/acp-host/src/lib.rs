@@ -11,8 +11,10 @@
 //!   supervisor (its own process group, stdio as a protocol channel,
 //!   restarts with backoff) and stops when its last session closes.
 //! - **Lifecycle:** `initialize` advertises `fs`, `plan`, boolean config
-//!   options (`session.configOptions.boolean`) and, with a terminal
-//!   backend, `terminal` (never `auth.terminal`: Coqo runs no login flow);
+//!   options (`session.configOptions.boolean`), form elicitation
+//!   (`elicitation.form`, which turns on Claude's `AskUserQuestion`; no
+//!   `url` mode) and, with a terminal backend, `terminal` (never
+//!   `auth.terminal`: Coqo runs no login flow);
 //!   `session/new` with the session's `cwd` and MCP servers;
 //!   `session/prompt` streams `session/update`s into the session manager;
 //!   `session/cancel`, `session/set_mode`, `session/set_config_option` and
@@ -49,6 +51,7 @@
 //! [`testing`] has a scripted fake ACP agent (binary `coqo-fake-acp-agent`).
 
 mod convert;
+mod elicit;
 mod fs;
 mod host;
 mod provider;

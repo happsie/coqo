@@ -40,11 +40,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use coqo_mod_api::BoxFuture;
 use coqo_protocol::methods::agents::{
-    AgentState, AgentStatus, ConfigValue, ContentBlock, CreateSessionParams, CriterionAuthor,
-    ListSessionsParams, PermissionOutcome, PermissionRequest, PermissionRequestId, PermissionRule,
-    PermissionRuleId, PromptResult, ProviderInfo, SessionId, SessionInfo, SessionList,
-    SessionOrigin, SessionSnapshot, SessionUpdate, SetCriteriaParams, SetStatusParams, StartFrom,
-    StatusProgress, StopReason, ToolCallUpdate,
+    AgentQuestionKind, AgentState, AgentStatus, ConfigValue, ContentBlock, CreateSessionParams,
+    CriterionAuthor, ListSessionsParams, PermissionOutcome, PermissionRequest, PermissionRequestId,
+    PermissionRule, PermissionRuleId, PromptResult, ProviderInfo, QuestionAnswer, SessionId,
+    SessionInfo, SessionList, SessionOrigin, SessionSnapshot, SessionUpdate, SetCriteriaParams,
+    SetStatusParams, StartFrom, StatusProgress, StopReason, ToolCallUpdate,
 };
 use coqo_protocol::methods::questions::Question;
 use coqo_protocol::methods::walkthroughs::WalkthroughSummary;
@@ -336,10 +336,36 @@ impl Inner {
     /// Resolves every pending permission request as cancelled.
     fn cancel_pending(&self, s: &Session, st: &mut SessionState) -> Result<()> {
         let pending: Vec<_> = st.fold.pending.keys().copied().collect();
-        for id in pending {
+        for &id in &pending {
             self.resolve(s, st, id, PermissionOutcome::Cancelled, None)?;
         }
+        if !pending.is_empty() {
+            self.settle(s, st)?;
+        }
         Ok(())
+    }
+
+    /// Brings the state in step with the requests still pending:
+    /// `needs_permission` while a permission request waits, else
+    /// `needs_input` while questions do, else back to work.
+    fn settle(&self, s: &Session, st: &mut SessionState) -> Result<()> {
+        let event = waiting_event(&st.fold).unwrap_or(Event::PermissionsSettled);
+        self.transition(s, st, event)
+    }
+
+    /// The agent took request `id` back before an answer: resolve it as
+    /// cancelled, if it still waits.
+    fn withdraw(&self, s: &Session, id: PermissionRequestId) {
+        let mut st = lock(&s.state);
+        if self.stopped.load(Ordering::SeqCst) || !st.fold.pending.contains_key(&id) {
+            return;
+        }
+        let result = self
+            .resolve(s, &mut st, id, PermissionOutcome::Cancelled, None)
+            .and_then(|()| self.settle(s, &mut st));
+        if let Err(e) = result {
+            tracing::error!(session = %s.id, error = %e, "cannot record a withdrawn request");
+        }
     }
 
     /// Ends a turn the daemon can no longer finish.
@@ -595,6 +621,11 @@ impl Inner {
         if state == AgentState::NeedsPermission {
             tracing::warn!(session = %s.id, "only the session manager reports needs_permission");
         }
+        // The agent's own questions keep it waiting, whatever is reported.
+        if state != AgentState::Error && st.fold.pending.values().any(|r| r.is_question()) {
+            tracing::debug!(session = %s.id, ?state, "ignoring a report while questions wait");
+            return Ok(());
+        }
         let running = st.turn.is_some();
         self.transition(
             s,
@@ -703,7 +734,11 @@ impl EventSink for Sink {
         }
     }
 
-    fn request_permission(&self, ask: PermissionAsk) -> BoxFuture<'static, PermissionOutcome> {
+    fn request_permission(
+        &self,
+        ask: PermissionAsk,
+        withdrawn: Option<BoxFuture<'static, ()>>,
+    ) -> BoxFuture<'static, PermissionOutcome> {
         let cancelled = || -> BoxFuture<'static, PermissionOutcome> {
             Box::pin(std::future::ready(PermissionOutcome::Cancelled))
         };
@@ -714,13 +749,19 @@ impl EventSink for Sink {
         if st.replaying || st.info().closed {
             return cancelled();
         }
-        let subject = inner.rule_subject(&st, ask.tool_call.as_ref());
+        // Rules answer permissions, never the agent's questions.
+        let subject = if ask.questions.is_empty() {
+            inner.rule_subject(&st, ask.tool_call.as_ref())
+        } else {
+            None
+        };
         let request = PermissionRequest {
             id: PermissionRequestId(st.fold.last_permission + 1),
             title: ask.title,
             tool_call: ask.tool_call,
             options: ask.options,
             suggested_rule: subject.as_ref().and_then(|(_, subject)| subject.suggest()),
+            questions: ask.questions,
         };
         let id = request.id;
         let answer = subject.and_then(|(workspace, subject)| {
@@ -761,14 +802,29 @@ impl EventSink for Sink {
             .record(s, &mut st, SessionUpdate::PermissionRequested(request))
             .and_then(|_| {
                 st.waiters.insert(id, tx);
-                inner.transition(s, &mut st, Event::PermissionAsked)
+                inner.settle(s, &mut st)
             });
         if let Err(e) = result {
             tracing::error!(session = %s.id, error = %e, "cannot record a permission request");
             st.waiters.remove(&id);
             return cancelled();
         }
-        Box::pin(async move { rx.await.unwrap_or(PermissionOutcome::Cancelled) })
+        let answer = async move { rx.await.unwrap_or(PermissionOutcome::Cancelled) };
+        let Some(withdrawn) = withdrawn else {
+            return Box::pin(answer);
+        };
+        let (inner, session) = (Arc::downgrade(&inner), Arc::clone(s));
+        Box::pin(async move {
+            tokio::select! {
+                outcome = answer => outcome,
+                () = withdrawn => {
+                    if let Some(inner) = inner.upgrade() {
+                        inner.withdraw(&session, id);
+                    }
+                    PermissionOutcome::Cancelled
+                }
+            }
+        })
     }
 
     fn report_state(&self, state: AgentState, reason: Option<String>) {
@@ -786,6 +842,79 @@ impl EventSink for Sink {
 }
 
 const INTERRUPTED: &str = "interrupted: the daemon stopped during the turn";
+
+/// What the pending requests make the session wait for, if anything.
+fn waiting_event(fold: &Fold) -> Option<Event> {
+    if fold.pending.values().any(|r| !r.is_question()) {
+        return Some(Event::PermissionAsked { question: None });
+    }
+    let request = fold.pending.values().next()?;
+    let question = request
+        .questions
+        .first()
+        .map_or(request.title.as_str(), |q| q.question.as_str());
+    let line = question.lines().map(str::trim).find(|l| !l.is_empty());
+    Some(Event::PermissionAsked {
+        question: Some(match line {
+            Some(line) => format!("Waiting for your answer: {line}"),
+            None => "Waiting for your answer".to_owned(),
+        }),
+    })
+}
+
+/// Whether `answers` answer `request`'s questions: known questions, each
+/// once, picks among its options (one at most for `single`), and text
+/// only where it is taken.
+fn check_answers(
+    request: &PermissionRequest,
+    answers: &[QuestionAnswer],
+) -> std::result::Result<(), String> {
+    if !request.is_question() {
+        return Err(format!(
+            "permission request {} asks no questions; pick an option",
+            request.id.0
+        ));
+    }
+    let typed = |a: &QuestionAnswer| a.text.as_deref().is_some_and(|t| !t.trim().is_empty());
+    let mut seen = std::collections::HashSet::new();
+    for answer in answers {
+        let Some(q) = request.questions.iter().find(|q| q.id == answer.id) else {
+            return Err(format!("no question {:?}", answer.id));
+        };
+        if !seen.insert(&answer.id) {
+            return Err(format!("question {:?} is answered twice", answer.id));
+        }
+        if let Some(pick) = answer
+            .picks
+            .iter()
+            .find(|p| !q.options.iter().any(|o| &o.value == *p))
+        {
+            return Err(format!("question {:?} has no option {pick:?}", q.id));
+        }
+        match q.kind {
+            AgentQuestionKind::Single if answer.picks.len() > 1 => {
+                return Err(format!("question {:?} takes one option", q.id));
+            }
+            AgentQuestionKind::Single | AgentQuestionKind::Multi if typed(answer) && !q.other => {
+                return Err(format!("question {:?} takes no typed answer", q.id));
+            }
+            AgentQuestionKind::Text | AgentQuestionKind::Number if !answer.picks.is_empty() => {
+                return Err(format!("question {:?} has no options", q.id));
+            }
+            _ => {}
+        }
+    }
+    let unanswered = request.questions.iter().find(|q| {
+        q.required
+            && !answers
+                .iter()
+                .any(|a| a.id == q.id && (!a.picks.is_empty() || typed(a)))
+    });
+    if let Some(q) = unanswered {
+        return Err(format!("question {:?} must be answered", q.id));
+    }
+    Ok(())
+}
 
 impl SessionManager {
     /// A manager over `store`, finding providers in `providers`.
@@ -810,6 +939,10 @@ impl SessionManager {
         for id in inner.store.running()? {
             let s = inner.session(&id)?;
             let mut st = lock(&s.state);
+            let mid_turn = st.fold.open_turn.is_some() || !st.fold.pending.is_empty();
+            if st.info().state == AgentState::NeedsInput && !mid_turn {
+                continue;
+            }
             tracing::info!(session = %id, "marking a turn interrupted by a daemon restart");
             inner.interrupt(&s, &mut st, INTERRUPTED)?;
         }
@@ -1114,6 +1247,17 @@ impl SessionManager {
                     .find(|o| &o.id == option_id)
                     .ok_or_else(|| AgentError::unknown_permission(id, request_id))?,
             ),
+            PermissionOutcome::Answered { answers } => {
+                check_answers(request, answers).map_err(AgentError::InvalidParams)?;
+                None
+            }
+            PermissionOutcome::Declined if request.is_question() => None,
+            PermissionOutcome::Declined => {
+                return Err(AgentError::InvalidParams(format!(
+                    "permission request {} of session {id} asks no questions; pick an option",
+                    request_id.0
+                )));
+            }
             PermissionOutcome::Cancelled => None,
         };
         let remembered = if remember {
@@ -1133,10 +1277,7 @@ impl SessionManager {
             None
         };
         inner.resolve(&s, &mut st, request_id, outcome, remembered)?;
-        if st.fold.pending.is_empty() {
-            inner.transition(&s, &mut st, Event::PermissionsSettled)?;
-        }
-        Ok(())
+        inner.settle(&s, &mut st)
     }
 
     /// Sets the agent's status (`sessions/setStatus`, the `set_status` MCP

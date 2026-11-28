@@ -654,6 +654,7 @@ fn ask() -> PermissionAsk {
             name: "Allow once".into(),
             kind: PermissionOptionKind::AllowOnce,
         }],
+        questions: Vec::new(),
     }
 }
 

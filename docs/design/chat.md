@@ -38,6 +38,36 @@ A chat is a tab like any file (PLAN §7.3, design board 1). The code is in `crat
 - **Rules** live in the daemon, per workspace (`agents/permissionRules`), and survive restarts. The daemon answers a matching request before it reaches any UI, with the "allow once" option (else "allow always"), or "reject once" (else "reject always") for a deny rule, and the session never goes to `needs_permission`. A deny rule wins over an allow rule. It is an allowlist: anything no rule matches is asked. Rules only match what Coqo can read exactly: a simple command (no `;`, `&&`, pipes, redirections, `$`, backticks, globs, `~` or `..`, no absolute path outside the workspace, no `-c`/`-e`-style flags, and never `rm`, `sudo`, `curl`, a shell and the like), matched word by word as a prefix (`cargo test` matches `cargo test -p shop`, not `cargo testing`); or edits and reads of files that all resolve, symlinks included, inside the workspace's roots, matched by a root-relative glob (`src/**`). The tick box only appears for such requests. Suggested rules stay narrow: the program and its subcommand (`cargo test`, `npm run build`), or the edited file's folder (`src/**`).
 - **Rules panel.** The session panel's WORKSPACE RULES card lists the rules: the tool's icon, "Allow" in sage or "Deny" in rose, the pattern in mono, and an ✕ that deletes the rule (`agents/deletePermissionRule`). With no rules it says that every request is asked.
 - The tab label says "needs permission" and the sidebar dot turns sand while a request waits.
+- **Plan approval.** Claude Code's `ExitPlanMode` is a permission request ("Approve Plan", kind `switch_mode`). Its card says "<provider> asks you to approve its plan" and shows the plan as markdown in a `panel` box that scrolls past 360 px. Its options are the adapter's own ("Yes, manually approve edits", "Yes, and auto-accept edits", "No, keep planning"), with **Enter** and **Esc** as on any permission card.
+
+![A plan waiting for approval, light](screenshots/plan-light.png)
+
+## Questions from the agent (#339)
+
+The agent's own question tools show as a **question card** in the transcript: Claude Code's `AskUserQuestion`, an MCP server's form, and any provider's question that comes as a permission request with `questions`. They are not Coqo's `ask_question` (board 2's anchored questions), but the card borrows that popover's look. [ADR 0029](../adr/0029-agent-question-tools.md) has the protocol side.
+
+![A question card with a single and a multi-select question, dark](screenshots/question-dark.png)
+
+- **The card.** It has a sand tint and hairline, like the permission card. The header has a sand **QUESTION** (or **QUESTIONS**) badge, then "<provider> asks · <header>", and the status on the right: "Waiting for your answer", "Answered", "Skipped", "<provider> stopped waiting" or "Not answered". Each question shows:
+  - its header in sand label caps (on a card with several questions; a lone question's header is in the card's header line) and its text in semibold, both exactly as the agent sent them;
+  - "Pick any" under a multi-select question;
+  - one raised row per option: a number (`1`–`9`) or a tick box for a multi-select, the label in semibold and the description under it. The row under the cursor gets a blue hairline; a picked row gets a sage hairline and tint, and a single-select pick a sage check.
+  - an option's preview, in mono on `panel` (14 lines at most), under the options while it is under the cursor or picked;
+  - "Or answer in your own words" and a one-line field (up to 4 lines), when the agent takes a typed answer ("Other"), or the field alone for a text or number question.
+- **The footer.** A hint ("1–9 pick · ↑↓ move · Space tick · Enter send · Esc skip"), **Skip** (raised) and **Send answer** (sage primary). A missing answer shows a rose line above the footer: "Pick an answer, or skip the question", "Answer “…” first" or "“…” takes a number".
+- **Keys.** These work on the card, never while you type in its field (#266):
+  - `1`–`9` pick an option of the question under the cursor.
+  - `Up` and `Down` move the cursor, into a question's field and out again (on the field's first or last line).
+  - `Space` picks or unticks the option under the cursor.
+  - `Enter` sends and `Esc` skips.
+  - In the field, `Enter` sends and `Esc` goes back to the options.
+  - Focus jumps to a new card unless you are typing a message. A card that starts with a text question puts the focus in its field. Once the card is answered, focus goes back to the composer.
+- **Answers** go back through the request that asked, so the agent gets them in the shape its tool expects. **Skip** tells the agent the user skipped. Neither ever leaves the agent hanging.
+- **When the agent stopped waiting** (you stopped the turn, or the daemon restarted mid-question) and nothing was said since, the card stays answerable. Its button reads **Send as a message**, and the answers go as the next prompt ("My answer to your question from before: …"), which resumes the session.
+- **Answered cards** fade to `surface` and keep one line per question: the question, then the picked labels and the typed text.
+- **Waiting state.** While a question waits, the session is `needs_input` with "Waiting for your answer: <question>" as the reason. That shows in the tab badge ("needs input"), the sand dot under CHATS, the session panel, the Agents overview and alerts. A waiting permission request wins over a question: `needs_permission` stays until it is answered.
+
+![A question card, light](screenshots/question-light.png)
 
 ## Composer
 
@@ -99,4 +129,4 @@ A chat tab saves only its session id. When it comes back (a new window, a restar
 
 ![The settings chips with the model dropdown open, light](screenshots/settings-light.png)
 
-To regenerate the screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored chat_screenshots` (offscreen, needs a GPU) and downscale the 2× PNGs to 1440×900 as `chat-<appearance>.png`, `composer-<appearance>.png`, `settings-<appearance>.png` and `setup-dark.png`.
+To regenerate the screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored chat_screenshots` (offscreen, needs a GPU) and downscale the 2× PNGs to 1440×900 as `chat-<appearance>.png`, `composer-<appearance>.png`, `settings-<appearance>.png`, `question-<appearance>.png`, `plan-<appearance>.png` and `setup-dark.png`.

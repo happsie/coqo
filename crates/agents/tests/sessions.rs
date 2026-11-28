@@ -126,6 +126,7 @@ fn ask(title: &str) -> PermissionAsk {
                 kind: PermissionOptionKind::RejectOnce,
             },
         ],
+        questions: Vec::new(),
     }
 }
 
@@ -938,6 +939,7 @@ fn run(id: &str, command: &str) -> Step {
             ..ToolCallUpdate::default()
         }),
         options: ask("").options,
+        questions: Vec::new(),
     })
 }
 
@@ -2097,4 +2099,313 @@ async fn a_closed_session_reopens_and_resumes() {
             Call::Prompt(vec![text("second")])
         ]
     );
+}
+
+/// A question request, as the ACP host makes of an `AskUserQuestion` form.
+fn question(text: &str, kind: AgentQuestionKind, required: bool) -> PermissionAsk {
+    PermissionAsk {
+        title: "Question".into(),
+        tool_call: Some(ToolCallUpdate {
+            id: ToolCallId("q1".into()),
+            ..ToolCallUpdate::default()
+        }),
+        options: Vec::new(),
+        questions: vec![AgentQuestion {
+            id: "question_0".into(),
+            header: Some("Colour".into()),
+            question: text.into(),
+            kind,
+            options: ["Red", "Blue"]
+                .iter()
+                .map(|v| QuestionChoice {
+                    value: (*v).into(),
+                    label: (*v).into(),
+                    description: None,
+                    preview: None,
+                })
+                .collect(),
+            other: true,
+            required,
+            anchor: None,
+        }],
+    }
+}
+
+async fn respond(
+    client: &Client,
+    id: &SessionId,
+    request: PermissionRequestId,
+    outcome: PermissionOutcome,
+) -> Result<(), ProtocolError> {
+    client
+        .request::<RespondPermission>(RespondPermissionParams {
+            session: id.clone(),
+            request_id: request,
+            outcome,
+            remember: false,
+        })
+        .await
+        .map(|_| ())
+}
+
+fn answers(picks: &[&str], text: Option<&str>) -> PermissionOutcome {
+    PermissionOutcome::Answered {
+        answers: vec![QuestionAnswer {
+            id: "question_0".into(),
+            picks: picks.iter().map(|p| (*p).to_owned()).collect(),
+            text: text.map(str::to_owned),
+        }],
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn questions_wait_for_input_and_take_only_valid_answers() {
+    let provider = ScriptedProvider::new().turn([
+        Step::Permission(question(
+            "Which colour?\nPick one.",
+            AgentQuestionKind::Single,
+            true,
+        )),
+        Step::Permission(question("Which colours?", AgentQuestionKind::Multi, false)),
+        Step::Permission(ask("Run rm")),
+        Step::Stop(StopReason::EndTurn),
+    ]);
+    let d = daemon(SessionStore::open_in_memory().unwrap(), &provider);
+    let client = d.connect().await;
+    let id = create(&client).await.id;
+    let mut sub = subscribe(&client, &id, None).await;
+    prompt(&client, &id, "ask me").await.unwrap();
+
+    // A question waits for input, with the question as the reason, and keeps
+    // its questions; no rule is suggested for it.
+    let got = until(&mut sub, |u| {
+        matches!(u, SessionUpdate::PermissionRequested(_))
+    })
+    .await;
+    let SessionUpdate::PermissionRequested(single) = got.last().unwrap().event.clone() else {
+        unreachable!()
+    };
+    assert!(single.is_question());
+    assert!(single.suggested_rule.is_none());
+    let snap = snapshot(&client, &id).await;
+    assert_eq!(snap.info.state, AgentState::NeedsInput);
+    assert_eq!(
+        snap.info.state_reason.as_deref(),
+        Some("Waiting for your answer: Which colour?")
+    );
+
+    // Answers that don't fit the question are refused, and it still waits.
+    for bad in [
+        answers(&["Green"], None),
+        answers(&["Red", "Blue"], None),
+        answers(&[], None),
+        PermissionOutcome::Answered { answers: vec![] },
+        PermissionOutcome::Answered {
+            answers: vec![QuestionAnswer {
+                id: "question_9".into(),
+                ..QuestionAnswer::default()
+            }],
+        },
+    ] {
+        let err = respond(&client, &id, single.id, bad.clone()).await;
+        assert_eq!(
+            app_error(err.unwrap_err()),
+            codes::INVALID_PARAMS,
+            "{bad:?}"
+        );
+    }
+    let option = PermissionOutcome::Selected {
+        option_id: "allow-once".into(),
+    };
+    assert!(respond(&client, &id, single.id, option).await.is_err());
+    assert_eq!(
+        snapshot(&client, &id).await.info.state,
+        AgentState::NeedsInput
+    );
+    respond(&client, &id, single.id, answers(&["Red"], None))
+        .await
+        .unwrap();
+
+    // A multi-select takes several picks and an "Other" text.
+    let got = until(&mut sub, |u| {
+        matches!(u, SessionUpdate::PermissionRequested(_))
+    })
+    .await;
+    let SessionUpdate::PermissionRequested(multi) = got.last().unwrap().event.clone() else {
+        unreachable!()
+    };
+    respond(
+        &client,
+        &id,
+        multi.id,
+        answers(&["Red", "Blue"], Some("Teal")),
+    )
+    .await
+    .unwrap();
+
+    // A plain permission can't be declined like a question.
+    let got = until(&mut sub, |u| {
+        matches!(u, SessionUpdate::PermissionRequested(_))
+    })
+    .await;
+    let SessionUpdate::PermissionRequested(perm) = got.last().unwrap().event.clone() else {
+        unreachable!()
+    };
+    assert_eq!(
+        snapshot(&client, &id).await.info.state,
+        AgentState::NeedsPermission
+    );
+    let err = respond(&client, &id, perm.id, PermissionOutcome::Declined).await;
+    assert_eq!(app_error(err.unwrap_err()), codes::INVALID_PARAMS);
+    respond(&client, &id, perm.id, allow_once()).await.unwrap();
+    until(&mut sub, turn_ended).await;
+
+    assert_eq!(
+        provider.outcomes(),
+        [
+            answers(&["Red"], None),
+            answers(&["Red", "Blue"], Some("Teal")),
+            allow_once()
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_question_can_be_declined_or_withdrawn_by_the_agent() {
+    let gate = Arc::new(Notify::new());
+    let provider = ScriptedProvider::new().turn([
+        Step::Permission(question("Which colour?", AgentQuestionKind::Single, false)),
+        Step::AskUntil(
+            question("Still there?", AgentQuestionKind::Single, false),
+            Arc::clone(&gate),
+        ),
+        chunk("moving on"),
+        Step::Stop(StopReason::EndTurn),
+    ]);
+    let d = daemon(SessionStore::open_in_memory().unwrap(), &provider);
+    let client = d.connect().await;
+    let id = create(&client).await.id;
+    let mut sub = subscribe(&client, &id, None).await;
+    prompt(&client, &id, "ask me").await.unwrap();
+
+    let got = until(&mut sub, |u| {
+        matches!(u, SessionUpdate::PermissionRequested(_))
+    })
+    .await;
+    let SessionUpdate::PermissionRequested(first) = got.last().unwrap().event.clone() else {
+        unreachable!()
+    };
+    respond(&client, &id, first.id, PermissionOutcome::Declined)
+        .await
+        .unwrap();
+
+    // The agent takes its second question back: it resolves as cancelled and
+    // the session works again.
+    let got = until(&mut sub, |u| {
+        matches!(u, SessionUpdate::PermissionRequested(_))
+    })
+    .await;
+    let SessionUpdate::PermissionRequested(second) = got.last().unwrap().event.clone() else {
+        unreachable!()
+    };
+    assert_eq!(
+        snapshot(&client, &id).await.info.state,
+        AgentState::NeedsInput
+    );
+    gate.notify_one();
+    let rest = until(&mut sub, turn_ended).await;
+    let events: Vec<_> = rest.iter().map(|e| e.event.clone()).collect();
+    let resolved = events
+        .iter()
+        .position(|e| {
+            *e == SessionUpdate::PermissionResolved {
+                request_id: second.id,
+                outcome: PermissionOutcome::Cancelled,
+                by_rule: None,
+                remembered: None,
+            }
+        })
+        .expect("resolved as cancelled");
+    assert!(matches!(
+        events[resolved + 1],
+        SessionUpdate::State {
+            state: AgentState::Working,
+            ..
+        }
+    ));
+    let err = respond(&client, &id, second.id, answers(&["Red"], None)).await;
+    assert!(err.is_err(), "a withdrawn question takes no answer");
+    assert_eq!(
+        provider.outcomes(),
+        [PermissionOutcome::Declined, PermissionOutcome::Cancelled]
+    );
+}
+
+#[test]
+fn a_question_cut_off_by_a_restart_is_cancelled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("coqo.db");
+    let provider = ScriptedProvider::new()
+        .turn([
+            Step::State(AgentState::NeedsInput, Some("Tell me more".into())),
+            Step::Stop(StopReason::EndTurn),
+        ])
+        .turn([
+            Step::Permission(question("Which colour?", AgentQuestionKind::Single, false)),
+            Step::Stop(StopReason::EndTurn),
+        ]);
+    let (asked, id) = {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let d = daemon(SessionStore::open(&db).unwrap(), &provider);
+            let client = d.connect().await;
+            // The agent says it needs input, after its turn ended.
+            let asked = create(&client).await.id;
+            let mut sub = subscribe(&client, &asked, None).await;
+            prompt(&client, &asked, "hi").await.unwrap();
+            until(&mut sub, turn_ended).await;
+            let snap = snapshot(&client, &asked).await;
+            assert_eq!(snap.info.state, AgentState::NeedsInput);
+            // A question waits mid-turn.
+            let id = create(&client).await.id;
+            let mut sub = subscribe(&client, &id, None).await;
+            prompt(&client, &id, "ask me").await.unwrap();
+            until(&mut sub, |u| {
+                matches!(u, SessionUpdate::PermissionRequested(_))
+            })
+            .await;
+            (asked, id)
+        })
+    };
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let d = daemon(SessionStore::open(&db).unwrap(), &ScriptedProvider::new());
+        let client = d.connect().await;
+        let snap = snapshot(&client, &asked).await;
+        assert_eq!(snap.info.state, AgentState::NeedsInput, "left as it was");
+        assert_eq!(snap.info.state_reason.as_deref(), Some("Tell me more"));
+        let snap = snapshot(&client, &id).await;
+        assert_eq!(snap.info.state, AgentState::Error);
+        assert!(
+            snap.pending_permissions.is_empty(),
+            "{:?}",
+            snap.pending_permissions
+        );
+        let mut sub = subscribe(&client, &id, Some(0)).await;
+        let all = until(&mut sub, turn_ended).await;
+        assert!(all.iter().any(|e| matches!(
+            e.event,
+            SessionUpdate::PermissionResolved {
+                outcome: PermissionOutcome::Cancelled,
+                ..
+            }
+        )));
+    });
 }

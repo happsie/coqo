@@ -212,7 +212,12 @@ impl AgentSource {
         let permission = (info.state == AgentState::NeedsPermission)
             .then(|| self.sessions.snapshot(&info.id).ok())
             .flatten()
-            .and_then(|s| s.pending_permissions.first().map(|p| p.title.clone()));
+            .and_then(|s| {
+                s.pending_permissions
+                    .iter()
+                    .find(|p| !p.is_question())
+                    .map(|p| p.title.clone())
+            });
         let question = (info.state == AgentState::NeedsInput)
             .then(|| self.questions.as_ref()?.first_open(&info.id))
             .flatten();

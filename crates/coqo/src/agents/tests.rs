@@ -380,6 +380,7 @@ fn ask() -> PermissionAsk {
                 kind: PermissionOptionKind::RejectOnce,
             },
         ],
+        questions: Vec::new(),
     }
 }
 
@@ -961,6 +962,7 @@ fn agents_screenshots() {
         tool_call: None,
         options: ask().options,
         suggested_rule: None,
+        questions: Vec::new(),
     };
     let welcome =
         away::WelcomeBack::build(now - 134 * MIN, now, Away::Closed, &sessions, &[], 12).unwrap();

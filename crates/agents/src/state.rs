@@ -11,7 +11,9 @@
 //! |---|---|---|---|
 //! | turn started | any | `working` | cleared |
 //! | permission asked (no rule answered it) | any | `needs_permission` | kept |
-//! | permissions settled (answered or cancelled), cancel requested | `needs_permission` | `working` | kept |
+//! | questions asked (the agent's own question tool, #339) | any | `needs_input`, "Waiting for your answer: …" | kept |
+//! | permissions settled (answered or cancelled) | `needs_permission` / `needs_input` | `working` | kept |
+//! | cancel requested | `needs_permission` | `working` | kept |
 //! | reported `working` | any | `working` | kept |
 //! | reported `idle` / `done` during a turn | any | `working` | kept |
 //! | reported `idle` / `done` between turns | any | `idle` / `done` | kept |
@@ -50,8 +52,9 @@ pub(crate) struct Tracked {
 pub(crate) enum Event {
     /// A turn started.
     TurnStarted,
-    /// A permission request waits for the user.
-    PermissionAsked,
+    /// A permission request waits for the user; with `question`, the
+    /// agent's own questions do (the reason to show).
+    PermissionAsked { question: Option<String> },
     /// No permission request waits any more (all answered or cancelled).
     PermissionsSettled,
     /// The user asked to cancel the turn.
@@ -93,10 +96,15 @@ pub(crate) fn next(current: &Tracked, event: Event) -> Tracked {
     let kept = || current.status.clone();
     match event {
         Event::TurnStarted => to(S::Working, None, None),
-        Event::PermissionAsked => to(S::NeedsPermission, None, kept()),
+        Event::PermissionAsked { question: None } => to(S::NeedsPermission, None, kept()),
+        Event::PermissionAsked {
+            question: Some(reason),
+        } => to(S::NeedsInput, Some(reason), kept()),
         Event::PermissionsSettled | Event::CancelRequested if waiting => {
             to(S::Working, None, kept())
         }
+        // Only sent when a request was pending, so `needs_input` was its.
+        Event::PermissionsSettled if current.state == S::NeedsInput => to(S::Working, None, kept()),
         Event::PermissionsSettled | Event::CancelRequested => same(kept()),
 
         Event::Reported {
@@ -250,7 +258,10 @@ mod tests {
     #[test]
     fn permissions_wait_and_settle() {
         let s = status("Editing", None);
-        let asked = next(&with_status(S::Working, s.clone()), Event::PermissionAsked);
+        let asked = next(
+            &with_status(S::Working, s.clone()),
+            Event::PermissionAsked { question: None },
+        );
         assert_eq!(asked, with_status(S::NeedsPermission, s.clone()));
         assert_eq!(
             next(&asked, Event::PermissionsSettled),
@@ -260,11 +271,37 @@ mod tests {
             next(&asked, Event::CancelRequested),
             with_status(S::Working, s)
         );
-        // Settling outside needs_permission changes nothing.
-        for from in [S::Working, S::NeedsInput, S::Blocked, S::Done, S::Idle] {
+        // Settling outside a wait changes nothing.
+        for from in [S::Working, S::Blocked, S::Done, S::Idle] {
             assert_eq!(next(&at(from), Event::PermissionsSettled), at(from));
             assert_eq!(next(&at(from), Event::CancelRequested), at(from));
         }
+        assert_eq!(
+            next(&at(S::NeedsInput), Event::CancelRequested),
+            at(S::NeedsInput)
+        );
+    }
+
+    #[test]
+    fn questions_wait_for_input_and_settle() {
+        let s = status("Editing", None);
+        let asked = next(
+            &with_status(S::Working, s.clone()),
+            Event::PermissionAsked {
+                question: Some("Waiting for your answer: Which colour?".into()),
+            },
+        );
+        assert_eq!(
+            asked,
+            Tracked {
+                reason: Some("Waiting for your answer: Which colour?".into()),
+                ..with_status(S::NeedsInput, s.clone())
+            }
+        );
+        assert_eq!(
+            next(&asked, Event::PermissionsSettled),
+            with_status(S::Working, s)
+        );
     }
 
     #[test]

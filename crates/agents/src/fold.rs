@@ -119,6 +119,7 @@ mod tests {
             tool_call: Some(ToolCallUpdate::default()),
             options: vec![],
             suggested_rule: None,
+            questions: Vec::new(),
         };
         for u in [
             SessionUpdate::Modes(SessionModes {

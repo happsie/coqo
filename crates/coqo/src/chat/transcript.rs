@@ -386,7 +386,12 @@ impl Transcript {
                 self.state = state;
                 self.state_reason = reason.clone();
                 changes.meta = true;
-                if let Some(reason) = reason {
+                // The question card says it already.
+                let asking = state == AgentState::NeedsInput
+                    && self
+                        .pending_permissions()
+                        .any(PermissionRequest::is_question);
+                if let Some(reason) = reason.filter(|_| !asking) {
                     match state {
                         AgentState::NeedsInput | AgentState::Blocked => {
                             self.push(
@@ -797,6 +802,7 @@ mod tests {
                         kind: PermissionOptionKind::AllowOnce,
                     }],
                     suggested_rule: None,
+                    questions: Vec::new(),
                 }),
             ),
         ]);

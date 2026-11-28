@@ -46,6 +46,9 @@ pub enum Step {
     /// Ask for permission and wait for the answer. A cancelled answer ends
     /// the turn as cancelled.
     Permission(PermissionAsk),
+    /// Ask, and take the request back when the [`Notify`] fires first (as an
+    /// ACP agent cancels its request). The turn goes on either way.
+    AskUntil(PermissionAsk, Arc<Notify>),
     /// Wait until the [`Notify`] fires, or the turn is cancelled.
     Wait(Arc<Notify>),
     /// Report the agent's own state.
@@ -61,6 +64,7 @@ impl fmt::Debug for Step {
         match self {
             Self::Update(u) => f.debug_tuple("Update").field(u).finish(),
             Self::Permission(p) => f.debug_tuple("Permission").field(&p.title).finish(),
+            Self::AskUntil(p, _) => f.debug_tuple("AskUntil").field(&p.title).finish(),
             Self::Wait(_) => f.write_str("Wait"),
             Self::State(s, r) => f.debug_tuple("State").field(s).field(r).finish(),
             Self::Fail(e) => f.debug_tuple("Fail").field(e).finish(),
@@ -447,6 +451,11 @@ impl ProviderSession for ScriptedSession {
                         if outcome == PermissionOutcome::Cancelled {
                             return Ok(StopReason::Cancelled);
                         }
+                    }
+                    Step::AskUntil(ask, notify) => {
+                        let withdrawn = Box::pin(async move { notify.notified().await });
+                        let outcome = self.events.request_permission_until(ask, withdrawn).await;
+                        lock(&self.provider.script.outcomes).push(outcome);
                     }
                     Step::Wait(notify) => {
                         tokio::select! {
