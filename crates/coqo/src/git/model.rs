@@ -447,7 +447,14 @@ impl GitModel {
         use GitChangeKind as K;
         let roots: Vec<RootId> = self.roots.iter().map(|r| r.root).collect();
         for root in roots {
-            let kinds = vec![K::Worktree, K::Index, K::Head, K::Refs, K::Stash];
+            let kinds = vec![
+                K::Worktree,
+                K::Index,
+                K::Head,
+                K::Refs,
+                K::Stash,
+                K::Worktrees,
+            ];
             self.changed(GitChanges { root, kinds }, cx);
         }
     }

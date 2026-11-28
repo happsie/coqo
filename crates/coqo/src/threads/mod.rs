@@ -534,7 +534,7 @@ impl WorkspaceThreads {
 
 /// A provider's display name: from `names` (the daemon's), else its id
 /// capitalized, else "Agent".
-fn provider_name(provider: Option<&str>, names: &HashMap<String, String>) -> String {
+pub(crate) fn provider_name(provider: Option<&str>, names: &HashMap<String, String>) -> String {
     let Some(provider) = provider else {
         return "Agent".into();
     };

@@ -39,6 +39,53 @@ pub(crate) fn common_dir(dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// The worktree folders of the repository whose common directory is
+/// `common`, as `git worktree list` names them: the main worktree (the
+/// common directory's parent, unless the repository is bare), then each
+/// linked worktree's, read from its admin folder's `gitdir` file. Only
+/// reads files. A worktree whose folder is gone is still listed.
+pub(crate) fn worktrees(common: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    if common.file_name().is_some_and(|n| n == ".git")
+        && let Some(main) = common.parent()
+    {
+        found.push(main.to_path_buf());
+    }
+    let Ok(entries) = std::fs::read_dir(common.join("worktrees")) else {
+        return found;
+    };
+    let mut linked: Vec<PathBuf> = entries
+        .flatten()
+        .filter_map(|e| {
+            let text = std::fs::read_to_string(e.path().join("gitdir")).ok()?;
+            // `<worktree>/.git`, absolute (relative with
+            // `worktree.useRelativePaths`: to the admin folder).
+            let dot_git = e.path().join(text.trim());
+            let folder = dot_git.parent()?;
+            Some(normalize(folder))
+        })
+        .collect();
+    linked.sort();
+    found.extend(linked);
+    found
+}
+
+/// `path` without `.` and `..` components, without touching the disk.
+fn normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// The project of a workspace whose first root is `root`, as stored:
 /// the common directory, or `""` outside any repository. `None` when the
 /// folder is not there to look at (keep what was known).
@@ -119,6 +166,15 @@ mod tests {
             assert_eq!(common_dir(&dir), Some(cli(&dir)), "{}", dir.display());
         }
         assert_eq!(common_dir(&linked), common_dir(&repo));
+        // The worktrees, as `git worktree list` names them.
+        let common = common_dir(&repo).unwrap();
+        let listed: Vec<PathBuf> = git(&repo, &["worktree", "list", "--porcelain"])
+            .lines()
+            .filter_map(|l| l.strip_prefix("worktree "))
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(super::worktrees(&common), listed);
+        assert_eq!(listed.len(), 2);
         assert_eq!(
             common_dir(&repo).unwrap(),
             repo.join(".git").canonicalize().unwrap()

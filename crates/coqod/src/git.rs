@@ -715,6 +715,11 @@ fn classify(rel: &Path, in_git_dir: bool) -> Option<GitChangeKind> {
         ["logs", "HEAD"] if in_git_dir => K::Head,
         ["refs", "stash"] | ["logs", "refs", "stash"] => K::Stash,
         ["packed-refs"] | ["refs", ..] | ["logs", "refs", ..] => K::Refs,
+        // A worktree's admin folder came or went (`git worktree add`,
+        // `remove`, `prune`), or the folder holding them all did.
+        // (The main worktree's git directory is the common directory, and
+        // a linked one's has no `worktrees` of its own.)
+        ["worktrees"] | ["worktrees", _] => K::Worktrees,
         _ => return None,
     })
 }
@@ -737,7 +742,36 @@ fn targets(d: &GitDirs) -> Vec<(PathBuf, RecursiveMode)> {
     }
     targets.push((d.common_dir.join("refs"), RecursiveMode::Recursive));
     targets.push((d.common_dir.join("logs"), RecursiveMode::Recursive));
+    // Worktrees made outside Coqo (#359): one entry per worktree. Only the
+    // entries, not what is in them: each worktree's index and `HEAD` are
+    // its own workspace's business.
+    targets.push((worktrees_dir(d), RecursiveMode::NonRecursive));
     targets
+}
+
+/// The folder of a repository's worktrees' admin folders. Git makes it
+/// with the first linked worktree and may remove it with the last.
+fn worktrees_dir(d: &GitDirs) -> PathBuf {
+    d.common_dir.join("worktrees")
+}
+
+/// Watch the worktrees' folder again: it may have been made since the
+/// watch started (the first `git worktree add`), or removed and made again.
+/// Not from the watcher's callback, which runs on the watcher's own thread.
+fn rewatch_worktrees(dirs: &Mutex<Vec<GitDirs>>, watcher: &Mutex<Option<RecommendedWatcher>>) {
+    let folders: BTreeSet<PathBuf> = lock(dirs).iter().map(worktrees_dir).collect();
+    let mut watcher = lock(watcher);
+    let Some(w) = watcher.as_mut() else { return };
+    for folder in folders {
+        // A watch on a folder that went is gone too; one on a folder that
+        // is still there is replaced.
+        let _ = w.unwatch(&folder);
+        if folder.is_dir()
+            && let Err(e) = w.watch(&folder, RecursiveMode::NonRecursive)
+        {
+            tracing::debug!(path = %folder.display(), error = %e, "cannot watch the worktrees folder");
+        }
+    }
 }
 
 fn watch_dirs(w: &mut RecommendedWatcher, d: &GitDirs) {
@@ -923,11 +957,18 @@ impl GitWatch {
 
         let publish = {
             let log = Arc::clone(&log);
+            let (dirs, watcher) = (Arc::clone(&dirs), Arc::clone(&watcher));
             tokio::spawn(async move {
                 loop {
                     wake.notified().await;
                     tokio::time::sleep(debounce).await;
                     let batch = std::mem::take(&mut *lock(&pending));
+                    if batch
+                        .values()
+                        .any(|kinds| kinds.contains(&GitChangeKind::Worktrees))
+                    {
+                        rewatch_worktrees(&dirs, &watcher);
+                    }
                     for (root, kinds) in batch {
                         log.publish(GitChanges {
                             root,

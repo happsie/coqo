@@ -764,6 +764,10 @@ pub enum GitChangeKind {
     Refs,
     /// The stash.
     Stash,
+    /// The repository's worktrees: one was added, removed or pruned, by
+    /// Coqo or outside it (`git worktree add`, an agent, another tool).
+    /// `git/worktrees` lists them again.
+    Worktrees,
 }
 
 /// One event of [`Changes`]: a root's repository may have changed.
@@ -774,7 +778,8 @@ pub struct GitChanges {
     pub root: RootId,
     /// What may have changed, sorted. Status depends on `worktree`,
     /// `index` and `head`; branches on `head` and `refs`; the log on
-    /// `head` and `refs`; the stash list on `stash`.
+    /// `head` and `refs`; the stash list on `stash`; the worktree list on
+    /// `worktrees`.
     pub kinds: Vec<GitChangeKind>,
 }
 

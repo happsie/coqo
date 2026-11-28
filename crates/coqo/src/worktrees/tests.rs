@@ -4,7 +4,8 @@
 //! workspace, git and session services, with scripted agents, on a
 //! fixture repository: two agents work in two worktrees of one repository
 //! without touching each other's files, a worktree made outside Coqo shows
-//! up, and removal never forces and never takes the main worktree.
+//! up, and removal never forces and never takes the main worktree. And
+//! (#359) worktrees an agent makes appear live, with its work in them.
 
 use std::{
     path::{Path, PathBuf},
@@ -14,12 +15,16 @@ use std::{
 };
 
 use coqo_agents::{
+    AgentUpdate,
     model::{ContentBlock, Create, CreateSessionParams, Prompt, PromptParams},
     testing::{ScriptedProvider, Step},
 };
 use coqo_mod_git::testing::Fixture as Repo;
 use coqo_protocol::methods::{
-    agents::{AgentState, StopReason},
+    agents::{
+        AgentState, StopReason, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation,
+        ToolCallStatus, ToolKind,
+    },
     workspace::{WorkspaceId, WorkspaceInfo},
 };
 use coqo_ui::{
@@ -227,14 +232,20 @@ impl Ui {
 
     /// Start a session in `workspace` (folder `cwd`) and prompt it.
     fn start_turn(&self, workspace: &WorkspaceId, cwd: &Path) {
+        self.start_chat(workspace, cwd, None);
+    }
+
+    /// [`Self::start_turn`], titled `title`.
+    fn start_chat(&self, workspace: &WorkspaceId, cwd: &Path, title: Option<&str>) {
         let (workspace, cwd) = (workspace.0.clone(), cwd.to_string_lossy().into_owned());
+        let title = title.map(str::to_owned);
         self.daemon.with_client(async move |client| {
             let info = client
                 .request::<Create>(CreateSessionParams {
                     provider: "fake".into(),
                     cwd,
                     workspace: Some(workspace),
-                    title: None,
+                    title,
                     mode: None,
                     from: None,
                 })
@@ -499,4 +510,107 @@ fn removal_warns_never_forces_and_keeps_the_main_worktree() {
     );
     ui.open_list(1);
     assert!(!ui.shows(("worktree-remove", 0usize)));
+}
+
+/// What the row of the worktree in folder `name` says a chat elsewhere
+/// does there, if anything.
+fn agent_label(ui: &mut Ui, name: &str) -> Option<String> {
+    let row = ui.row_of(name);
+    if !ui.shows(("worktree-visitor", row)) {
+        return None;
+    }
+    let path = ui
+        .cx
+        .read(|cx| ui.switcher().read(cx).worktrees()[row].path.clone());
+    ui.cx.read(|cx| {
+        let activity = AgentActivity::global(cx).unwrap().read(cx);
+        super::visitor(activity.sessions(), &path).map(|v| v.label)
+    })
+}
+
+/// An edit of `path` by the agent (a subagent of it), completed.
+fn edit(id: &str, path: &Path) -> AgentUpdate {
+    let path = path.to_string_lossy().into_owned();
+    AgentUpdate::ToolCall(ToolCall {
+        id: ToolCallId(id.into()),
+        title: format!("Edit {path}"),
+        name: Some("Edit".into()),
+        kind: ToolKind::Edit,
+        status: ToolCallStatus::Completed,
+        content: vec![ToolCallContent::Diff {
+            path: path.clone(),
+            old_text: Some("pub fn price() -> u32 { 100 }\n".into()),
+            new_text: "pub fn price() -> u32 { 95 }\n".into(),
+        }],
+        locations: vec![ToolCallLocation { path, line: None }],
+        raw_input: None,
+        raw_output: None,
+    })
+}
+
+/// #359: the agent adds a worktree with git (as Claude Code does for an
+/// `isolation: worktree` subagent): the open list shows it without a
+/// reload, and nothing opens or moves. Its tool calls there mark the row
+/// "working · from <chat>" until its turn ends. Removing it with git takes
+/// the row away again.
+#[test]
+fn worktrees_an_agent_makes_appear_live_with_its_work() {
+    let (made, finish) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let provider = ScriptedProvider::new();
+    let mut ui = open(&provider);
+    let main = ui.current().unwrap();
+    let repo = ui.repo.path().canonicalize().unwrap();
+    let agent = repo.join(".claude/worktrees/agent-a1b2");
+    let agent_str = agent.to_str().unwrap().to_owned();
+    provider.push_turn([
+        // The agent makes the worktree (its shell; here, the test).
+        Step::Wait(made.clone()),
+        // Its subagent edits a file there.
+        Step::Update(edit("t1", &agent.join("src/lib.rs"))),
+        Step::Wait(finish.clone()),
+        Step::Stop(StopReason::EndTurn),
+    ]);
+    ui.start_chat(&main.id, &repo, Some("Split the pricing"));
+    ui.wait_for("the chat working", |ui| {
+        ui.states(&main.id) == [AgentState::Working]
+    });
+    ui.open_list(1);
+
+    // Made outside Coqo: the open list grows by itself.
+    ui.repo
+        .git(&["worktree", "add", "-q", "--detach", &agent_str]);
+    made.notify_one();
+    ui.wait_for("the agent's worktree in the list", |ui| {
+        ui.listed().len() == 2
+    });
+    assert!(ui.shows("worktree-popover"), "the list stayed open");
+    ui.row_of("agent-a1b2");
+    // No workspace opened on it, and the window stayed where it was.
+    assert_eq!(ui.current().unwrap().id, main.id);
+    assert_eq!(
+        ui.cx
+            .read(|cx| KnownWorkspaces::global(cx).unwrap().read(cx).all().len()),
+        1
+    );
+
+    // Its edit there marks the row with the chat that works in it.
+    ui.wait_for("the row's agent", |ui| {
+        agent_label(ui, "agent-a1b2").as_deref() == Some("Fake working · from Split the pricing")
+    });
+    // The work is the chat's: the project's button counts it.
+    assert_eq!(ui.project_badge(), (None, Some(Dot::Working)));
+
+    // The turn ends: the row goes quiet.
+    finish.notify_one();
+    ui.wait_for("the chat done", |ui| {
+        ui.states(&main.id) == [AgentState::Done]
+    });
+    ui.wait_for("the row to go quiet", |ui| {
+        agent_label(ui, "agent-a1b2").is_none()
+    });
+
+    // Removed with git: the row goes, still without a reload.
+    ui.repo.git(&["worktree", "remove", &agent_str]);
+    ui.wait_for("the row to go", |ui| ui.listed().len() == 1);
+    assert!(ui.shows("worktree-popover"));
 }

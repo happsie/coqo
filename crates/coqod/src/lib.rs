@@ -41,6 +41,8 @@
 //!   `fs/rename`, `fs/delete`); open buffers follow a rename.
 //! - [`path_moves`]: everything else keyed by a path (questions, review
 //!   threads, walkthroughs, the editor context) follows a rename too.
+//! - [`worktree_activity`]: which other worktrees of its project a
+//!   session's tool calls work in (a subagent's `.claude/worktrees/…`).
 //! - [`search`]: project search and replace (`search/*`), from the
 //!   `coqo.search` mod; open buffers are searched and edited in place.
 //!
@@ -72,6 +74,7 @@ pub mod threads;
 pub mod updates;
 pub mod walkthroughs;
 pub mod workspace;
+pub mod worktree_activity;
 
 pub use daemon::DaemonContext;
 pub use lifecycle::{Activity, BusyGuard, IdlePhase, IdlePolicy};

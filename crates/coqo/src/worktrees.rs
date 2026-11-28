@@ -20,10 +20,23 @@
 //!
 //! The palette's "Switch worktree" and "New worktree" open the list and
 //! the form.
+//!
+//! **Live** (#359): worktrees made, removed or pruned outside Coqo (an
+//! agent's `git worktree add`, Claude Code's `.claude/worktrees/*`, another
+//! tool) reach `git/changes` as `worktrees`, and an open list fetches
+//! itself again. Nothing opens or takes focus: a new worktree is a row,
+//! and a click opens it as any other. A row a session of another worktree
+//! is working in (a subagent's, [`SessionInfo::worktrees`]) says so:
+//! "Claude working · from <chat>". The work stays that chat's, so the
+//! project's rail button already counts it.
+//!
+//! [`SessionInfo::worktrees`]: coqo_protocol::methods::agents::SessionInfo::worktrees
 
 use coqo_protocol::methods::{
+    agents::{AgentState, SessionInfo},
     git::{
-        self as gm, AddWorktreeParams, RemoveWorktreeParams, RepoParams, Worktree, WorktreesResult,
+        self as gm, AddWorktreeParams, GitChangeKind, RemoveWorktreeParams, RepoParams, Worktree,
+        WorktreesResult,
     },
     workspace::WorkspaceInfo,
 };
@@ -41,7 +54,7 @@ use coqo_ui::{
 use crate::{
     activity::AgentActivity,
     daemon::Daemon,
-    git::model::GitModel,
+    git::model::{GitModel, GitModelEvent},
     shell::rail::{Badge, Dot},
     workspace::{KnownWorkspaces, Workspaces, WorkspacesEvent},
 };
@@ -134,6 +147,17 @@ impl WorktreeSwitcher {
         let git = GitModel::for_window(window, cx);
         let mut subscriptions = vec![
             cx.observe(&git, |_, _, cx| cx.notify()),
+            // Worktrees made or removed anywhere: list them again.
+            cx.subscribe(&git, |this, _, event, cx| {
+                if let GitModelEvent::Changed { root, kinds } = event
+                    && kinds.contains(&GitChangeKind::Worktrees)
+                    && this.repo(cx).is_some_and(|r| r.root == *root)
+                    && this.open
+                    && !this.busy
+                {
+                    this.refresh(cx);
+                }
+            }),
             cx.subscribe(&workspaces, |this, _, event, cx| {
                 if *event == WorkspacesEvent::CurrentChanged {
                     this.list = None;
@@ -459,6 +483,45 @@ fn same_name(branch: &str, folder: &str) -> bool {
     branch.replace('/', "-") == folder
 }
 
+/// A session of another worktree working in this one: its state, and
+/// "Claude working · from <chat>" (#359).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Visitor {
+    pub state: AgentState,
+    pub label: String,
+}
+
+/// The busy session that went to the worktree at `path` last, among
+/// `sessions`.
+pub fn visitor<'a>(
+    sessions: impl IntoIterator<Item = &'a SessionInfo>,
+    path: &str,
+) -> Option<Visitor> {
+    let (info, _) = sessions
+        .into_iter()
+        .filter(|s| !s.closed && !matches!(s.state, AgentState::Idle | AgentState::Done))
+        .filter_map(|s| {
+            let since = s.worktrees.iter().find(|w| w.path == path)?.since;
+            Some((s, since))
+        })
+        .max_by(|(a, x), (b, y)| x.cmp(y).then(b.id.cmp(&a.id)))?;
+    let agent = crate::threads::provider_name(Some(&info.provider), &Default::default());
+    let doing = match info.state {
+        AgentState::NeedsInput | AgentState::NeedsPermission | AgentState::Blocked => "waiting",
+        AgentState::Error => "failed",
+        _ => "working",
+    };
+    let title = info
+        .title
+        .clone()
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "New chat".into());
+    Some(Visitor {
+        state: info.state,
+        label: format!("{agent} {doing} · from {title}"),
+    })
+}
+
 /// An agent-state dot for a worktree's row, as the rail draws them.
 fn state_of(path: &str, cx: &App) -> (Option<Badge>, Option<Dot>) {
     let id =
@@ -586,7 +649,7 @@ impl WorktreeSwitcher {
             .id("worktree-popover")
             .occlude()
             .test_support()
-            .w(px(300.))
+            .w(px(320.))
             .py(px(6.))
             .text_size(m.text_sm)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close(cx)))
@@ -676,6 +739,18 @@ impl WorktreeSwitcher {
             (None, Some(Dot::Done)) => Some((p.sage, "done")),
             (None, None) => None,
         };
+        // A chat of another worktree working here (a subagent's), on a
+        // line of its own: "Claude working · from <chat>".
+        let visiting = AgentActivity::global(cx)
+            .and_then(|a| visitor(a.read(cx).sessions(), &wt.path))
+            .map(|v| {
+                let color = match v.state {
+                    AgentState::Error => p.rose,
+                    AgentState::Working => p.blue,
+                    _ => p.sand,
+                };
+                (color, v.label)
+            });
         let branch = wt.branch.clone().unwrap_or_else(|| match &wt.head {
             Some(oid) => format!("detached at {}", &oid[..oid.len().min(7)]),
             None => "no commits".into(),
@@ -750,7 +825,27 @@ impl WorktreeSwitcher {
                                     .child(div().size(px(7.)).rounded_full().bg(color.hsla()))
                                     .child(label)
                             })),
-                    ),
+                    )
+                    .children(visiting.map(|(color, label)| {
+                        div()
+                            .id(("worktree-visitor", ix))
+                            .test_support()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .min_w_0()
+                            .text_size(m.text_xs)
+                            .text_color(p.text_muted.hsla())
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(px(11.))
+                                    .flex()
+                                    .justify_center()
+                                    .child(div().size(px(7.)).rounded_full().bg(color.hsla())),
+                            )
+                            .child(div().min_w_0().truncate().child(label))
+                    })),
             )
             .children(wt.changes.filter(|n| *n > 0).map(|n| {
                 div()

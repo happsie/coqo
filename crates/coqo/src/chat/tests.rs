@@ -1587,6 +1587,7 @@ fn chat_screenshots() {
         status: None,
         criteria: Vec::new(),
         tool_use: Vec::new(),
+        worktrees: Vec::new(),
         mode: Some("default".into()),
         closed: false,
         created_at: at,

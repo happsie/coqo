@@ -1399,11 +1399,11 @@ export type GetContextParams = {
 };
 
 /** What may have changed, in a [`GitChanges`] event. */
-export type GitChangeKind = "worktree" | "index" | "head" | "refs" | "stash";
+export type GitChangeKind = "worktree" | "index" | "head" | "refs" | "stash" | "worktrees";
 
 /** One event of [`Changes`]: a root's repository may have changed. */
 export type GitChanges = {
-  /** What may have changed, sorted. Status depends on `worktree`, `index` and `head`; branches on `head` and `refs`; the log on `head` and `refs`; the stash list on `stash`. */
+  /** What may have changed, sorted. Status depends on `worktree`, `index` and `head`; branches on `head` and `refs`; the log on `head` and `refs`; the stash list on `stash`; the worktree list on `worktrees`. */
   kinds: Array<GitChangeKind>;
   /** The root whose repository changed. */
   root: RootId;
@@ -2746,6 +2746,8 @@ export type SessionInfo = {
   updatedAt: number;
   /** The workspace it belongs to, if any. */
   workspace?: string | null;
+  /** Other worktrees of its project its tool calls touched lately, the one it went to last first. Each goes when the turn ends or after a quiet spell there. Not stored: a restarted daemon starts with none. */
+  worktrees?: Array<WorktreeActivity>;
 };
 
 /** Result of `sessions/list`. */
@@ -4012,6 +4014,14 @@ export type Worktree = {
   path: string;
   /** Its folder is gone; removing it only forgets it. */
   prunable: boolean;
+};
+
+/** Another worktree of a session's project that its tool calls are working in: a subagent of its own in `.claude/worktrees/…`, say (ADR 0028, #359). The work stays the session's; no session is made for it. */
+export type WorktreeActivity = {
+  /** The worktree's folder, as `git/worktrees` lists it. */
+  path: string;
+  /** When the session started working there, Unix milliseconds. */
+  since: number;
 };
 
 /** Result of [`Worktrees`]. */

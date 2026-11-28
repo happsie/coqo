@@ -4071,6 +4071,11 @@
           "const": "stash",
           "description": "The stash.",
           "type": "string"
+        },
+        {
+          "const": "worktrees",
+          "description": "The repository's worktrees: one was added, removed or pruned, by\nCoqo or outside it (`git worktree add`, an agent, another tool).\n`git/worktrees` lists them again.",
+          "type": "string"
         }
       ]
     },
@@ -4078,7 +4083,7 @@
       "description": "One event of [`Changes`]: a root's repository may have changed.",
       "properties": {
         "kinds": {
-          "description": "What may have changed, sorted. Status depends on `worktree`,\n`index` and `head`; branches on `head` and `refs`; the log on\n`head` and `refs`; the stash list on `stash`.",
+          "description": "What may have changed, sorted. Status depends on `worktree`,\n`index` and `head`; branches on `head` and `refs`; the log on\n`head` and `refs`; the stash list on `stash`; the worktree list on\n`worktrees`.",
           "items": {
             "$ref": "#/$defs/GitChangeKind"
           },
@@ -8004,6 +8009,13 @@
             "string",
             "null"
           ]
+        },
+        "worktrees": {
+          "description": "Other worktrees of its project its tool calls touched lately, the\none it went to last first. Each goes when the turn ends or after a quiet\nspell there. Not stored: a restarted daemon starts with none.",
+          "items": {
+            "$ref": "#/$defs/WorktreeActivity"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -12312,6 +12324,25 @@
         "main",
         "locked",
         "prunable"
+      ],
+      "type": "object"
+    },
+    "WorktreeActivity": {
+      "description": "Another worktree of a session's project that its tool calls are\nworking in: a subagent of its own in `.claude/worktrees/…`, say\n(ADR 0028, #359). The work stays the session's; no session is made for\nit.",
+      "properties": {
+        "path": {
+          "description": "The worktree's folder, as `git/worktrees` lists it.",
+          "type": "string"
+        },
+        "since": {
+          "description": "When the session started working there, Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "since"
       ],
       "type": "object"
     },

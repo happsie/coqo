@@ -44,7 +44,7 @@ use coqo_protocol::methods::agents::{
     CriterionAuthor, ListSessionsParams, PermissionOutcome, PermissionRequest, PermissionRequestId,
     PermissionRule, PermissionRuleId, PromptResult, ProviderInfo, QuestionAnswer, SessionId,
     SessionInfo, SessionList, SessionOrigin, SessionSnapshot, SessionUpdate, SetCriteriaParams,
-    SetStatusParams, StartFrom, StatusProgress, StopReason, ToolCallUpdate,
+    SetStatusParams, StartFrom, StatusProgress, StopReason, ToolCallUpdate, WorktreeActivity,
 };
 use coqo_protocol::methods::questions::Question;
 use coqo_protocol::methods::walkthroughs::WalkthroughSummary;
@@ -1055,6 +1055,7 @@ impl SessionManager {
                 criteria: Vec::new(),
                 tool_use: Vec::new(),
                 mode: None,
+                worktrees: Vec::new(),
                 closed: false,
                 created_at: ts,
                 updated_at: ts,
@@ -1369,6 +1370,25 @@ impl SessionManager {
             .map_err(AgentError::InvalidParams)?;
         if next != st.info().criteria {
             st.stored.info.criteria = next;
+            inner.save_info(&mut st)?;
+        }
+        Ok(st.info().clone())
+    }
+
+    /// Sets the other worktrees of its project the session works in
+    /// ([`SessionInfo::worktrees`], `coqod`'s worktree activity, #359).
+    /// Not stored: a change goes out on `sessions/changes` only. Nothing
+    /// changes for a closed session.
+    pub fn set_worktree_activity(
+        &self,
+        id: &SessionId,
+        worktrees: Vec<WorktreeActivity>,
+    ) -> Result<SessionInfo> {
+        let inner = &self.inner;
+        let s = inner.session(id)?;
+        let mut st = lock(&s.state);
+        if !st.info().closed && st.info().worktrees != worktrees {
+            st.stored.info.worktrees = worktrees;
             inner.save_info(&mut st)?;
         }
         Ok(st.info().clone())
