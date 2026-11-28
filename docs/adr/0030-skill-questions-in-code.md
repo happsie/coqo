@@ -236,3 +236,13 @@ So the hook is policy-safe. It is still the wrong default, for three reasons:
   - #344: pinning structured skill questions (blocked by #339);
   - #345: findings as gutter notes (needs the maintainer's answers to questions 3 and 5);
   - #346: guide v5 (blocked by #339).
+
+## Implementation of findings as gutter notes (#345, 2026-11-28)
+
+Maintainer decisions: on by default (`questions.findings_in_gutter = true`), colour by severity words (critical/bug/error rose, warning/should sand, nit/suggestion subtle), dismiss one or all of a message's notes.
+
+- **Detector.** Ported from the spike into `crates/coqo/src/questions/findings.rs`, with the two missed forms (bare continuations, "`file` ... (line N)") and the S9 samples as tests (35 of 35, no false positives). The workspace check uses the chat's file index for paths and the daemon for lines: `questions/create` refuses a missing file or a line past the end, and the finding is dropped.
+- **Origin.** `Question.origin` (`NoteOrigin`: the message, i.e. the seq of its first chunk, and the severity level) is stored in `questions.origin` (global migration 16). Findings are not recorded as cards in the chat transcript.
+- **Marker priority 8** (`layer::FINDING`), below everything deliberate; see `docs/design/questions.md`.
+- **Scanning.** Only messages that arrive live; each once; never the user's messages.
+- **"Pin to code"** (open question 5) is not in this PR; it is a separate issue under #68.

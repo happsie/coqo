@@ -32,6 +32,7 @@
 //! threads are blue, never block an agent, and F8 skips them.
 
 pub mod ask;
+pub mod findings;
 pub mod navigate;
 pub mod panel;
 pub mod popover;
@@ -42,6 +43,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+pub use coqo_protocol::methods::questions::FindingLevel;
 use coqo_protocol::methods::{
     agents::{self as agm, SessionId},
     questions::{
@@ -265,6 +267,23 @@ impl WorkspaceQuestions {
             .collect()
     }
 
+    /// The open notes made from agent message `message` of `session`
+    /// (findings written as text, #345), oldest first.
+    pub fn message_notes(&self, session: &SessionId, message: u64) -> Vec<&Question> {
+        self.open()
+            .into_iter()
+            .filter(|q| &q.session == session && q.origin.is_some_and(|o| o.message == message))
+            .collect()
+    }
+
+    /// Whether any note, open or dismissed, was made from agent message
+    /// `message` of `session`: it is not scanned again.
+    pub fn has_message_notes(&self, session: &SessionId, message: u64) -> bool {
+        self.questions
+            .values()
+            .any(|q| &q.session == session && q.origin.is_some_and(|o| o.message == message))
+    }
+
     /// Open questions (not notes, not the user's threads): what needs the
     /// user. For badges and alerts (#76).
     #[allow(dead_code)]
@@ -395,7 +414,9 @@ impl WorkspaceQuestions {
         let mut items: Vec<NavItem> = self
             .open()
             .into_iter()
-            .filter(|q| q.author.is_agent())
+            // Findings written as text are many and automatic: F8 keeps to
+            // what an agent pinned on purpose.
+            .filter(|q| q.author.is_agent() && q.origin.is_none())
             .map(|q| {
                 let anchor = primary_anchor(q);
                 NavItem {
@@ -514,6 +535,7 @@ pub fn kind_label(q: &Question) -> &'static str {
         QuestionKind::Clarification => "CLARIFICATION",
         QuestionKind::Confirmation => "CONFIRM",
         QuestionKind::Info => "INFO",
+        QuestionKind::Annotation if q.origin.is_some() => "FINDING",
         QuestionKind::Annotation => match q.severity.unwrap_or_default() {
             Severity::Info => "NOTE",
             Severity::Warning => "WARNING",
@@ -551,6 +573,15 @@ pub fn marker_color(q: &Question, cx: &App) -> Rgb {
 
 fn note_color(q: &Question, cx: &App) -> Rgb {
     let p = &cx.tokens().palette;
+    if let Some(origin) = q.origin {
+        // A finding written as text: its severity words, not the agent's
+        // choice (docs/design/questions.md).
+        return match origin.level {
+            FindingLevel::Critical => p.rose,
+            FindingLevel::Warning => p.sand,
+            FindingLevel::Note => p.text_subtle,
+        };
+    }
     match q.severity.unwrap_or_default() {
         Severity::Info => p.blue,
         Severity::Warning => p.rose,
@@ -689,6 +720,31 @@ pub fn dismiss(
             .update(cx, |store, cx| store.merge(vec![q.clone()], cx))
             .ok();
         Ok(q)
+    })
+}
+
+/// Dismiss every open note made from agent message `message` of `session`
+/// at once (#345). Each dismissed note comes back with its task; the store
+/// takes them in.
+pub fn dismiss_message(
+    store: &Entity<WorkspaceQuestions>,
+    session: &SessionId,
+    message: u64,
+    cx: &mut App,
+) -> Task<Result<Vec<Question>, DaemonError>> {
+    let ids: Vec<QuestionId> = store
+        .read(cx)
+        .message_notes(session, message)
+        .iter()
+        .map(|q| q.id)
+        .collect();
+    let tasks: Vec<_> = ids.into_iter().map(|id| dismiss(store, id, cx)).collect();
+    cx.spawn(async move |_| {
+        let mut done = Vec::new();
+        for task in tasks {
+            done.push(task.await?);
+        }
+        Ok(done)
     })
 }
 

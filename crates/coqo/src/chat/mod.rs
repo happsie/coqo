@@ -315,6 +315,27 @@ pub fn open_session(dock: WeakEntity<Dock>, session: SessionId, window: &mut Win
     });
 }
 
+/// Show the session's chat scrolled to its agent message `message` (the
+/// seq of its first chunk): "Open in chat" on a finding's note (#345).
+pub fn reveal_message(
+    dock: &Entity<Dock>,
+    session: SessionId,
+    message: u64,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    open_session(dock.downgrade(), session.clone(), window, cx);
+    let tab = {
+        let dock = dock.read(cx);
+        dock.find_tab(KIND, &session.0, cx)
+            .and_then(|id| dock.tab(id))
+            .and_then(AnyTab::downcast::<tab::ChatTab>)
+    };
+    if let Some(tab) = tab {
+        tab.update(cx, |t, cx| t.reveal_message(message, cx));
+    }
+}
+
 /// [`AskAgent`]: show the session's chat and ask there.
 pub fn ask_agent(dock: &Entity<Dock>, action: &AskAgent, window: &mut Window, cx: &mut App) {
     let session = SessionId(action.session.clone());

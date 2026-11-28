@@ -846,6 +846,8 @@ export type CreateParams2 = {
   kind: QuestionKind;
   /** A decision's options (at least 2). Confirmation and info get theirs from the daemon; the other kinds take none. */
   options?: Array<NewOption>;
+  /** The chat message a finding was made from (the UI's findings as notes, #345); only for an annotation. */
+  origin?: NoteOrigin | null;
   /** The asking agent session. */
   session: string;
   /** A note's severity (default `info`). */
@@ -1341,6 +1343,9 @@ export type FindResult = {
   total: number;
 };
 
+/** How strongly a finding written as text is worded (ADR 0030): the severity words of its line or heading. It sets the note's colour. */
+export type FindingLevel = "critical" | "warning" | "note";
+
 /** What a fold holds (LSP's `FoldingRangeKind`). */
 export type FoldKind = "region" | "comment" | "imports";
 
@@ -1684,6 +1689,14 @@ export type NewOption = {
   label: string;
 };
 
+/** The chat message a note was made from (#345, ADR 0030): findings an agent wrote as text (`file:line - issue`), pinned by the UI as notes that link back to the message. Only the UI sets it; the message is of the note's `session`. */
+export type NoteOrigin = {
+  /** How its text words the finding. */
+  level?: FindingLevel;
+  /** The message: the seq of its first `sessions/updates` chunk. */
+  message: number;
+};
+
 /** Params of [`Open`]. Give exactly one of `path` and `id`. */
 export type OpenParams = {
   /** Reopen a known workspace. */
@@ -2025,6 +2038,8 @@ export type Question = {
   kind: QuestionKind;
   /** The answers it offers, in order (empty for a clarification or a note). */
   options?: Array<QuestionOption>;
+  /** The chat message the note was made from, for a finding written as text; absent for what an agent pinned itself. */
+  origin?: NoteOrigin | null;
   /** The `questions/changes` seq of this state. */
   seq: number;
   /** The agent session that asked (or, for a thread the user started, the session asked). */

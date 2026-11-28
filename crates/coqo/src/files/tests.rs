@@ -1434,6 +1434,7 @@ fn a_question_follows_its_file_through_a_rename() {
     let (ws, root) = ui.workspace_id();
     let agent = OtherWindow::connect(&fixture).client;
     let params = CreateParams {
+        origin: None,
         workspace: ws.clone(),
         session: "s-test".into(),
         kind: QuestionKind::Clarification,

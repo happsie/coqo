@@ -18,6 +18,7 @@
 
 pub(crate) mod composer;
 mod criteria;
+mod findings;
 mod permission;
 mod question;
 mod walkthroughs;
@@ -107,6 +108,8 @@ pub struct ChatTab {
     permissions: permission::Permissions,
     /// The agent's own questions: what is filled in, and their focus.
     questions: question::QuestionCards,
+    /// Findings in the agent's messages, pinned as notes (#345).
+    findings: findings::Findings,
     _updates: Option<Task<()>>,
     _index: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -182,6 +185,7 @@ impl ChatTab {
             switching: false,
             permissions: permission::Permissions::new(cx.focus_handle()),
             questions: question::QuestionCards::new(cx.focus_handle()),
+            findings: findings::Findings::default(),
             _updates: None,
             _index: None,
             _subscriptions: subscriptions,
@@ -311,6 +315,7 @@ impl ChatTab {
             t.commands = snapshot.available_commands;
         }
         self.info = Some(snapshot.info);
+        self.start_findings(snapshot.head, cx);
         self.ensure_rules(cx);
         cx.notify();
     }
@@ -345,6 +350,8 @@ impl ChatTab {
         for ix in changes.updated {
             self.list.remeasure_items(ix..ix + 1);
         }
+        self.scan_findings(cx);
+        self.reveal_pending();
         cx.notify();
     }
 
@@ -694,11 +701,7 @@ impl ChatTab {
                 None => self.render_user(ix, &content, cx),
             },
             Entry::TurnStart { .. } => self.render_turn_start(ix, cx),
-            Entry::Agent { text } => div()
-                .id(("chat-agent", ix))
-                .test_support()
-                .child(markdown(("chat-md", ix), text))
-                .into_any_element(),
+            Entry::Agent { text } => self.render_agent(ix, text, cx),
             Entry::Thought { text } => self.render_thought(ix, text, cx),
             Entry::Tool(tool) => self.render_tool(ix, &tool, cx),
             Entry::Permission {

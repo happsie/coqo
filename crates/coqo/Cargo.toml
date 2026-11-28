@@ -27,6 +27,8 @@ similar = "2"
 serde_json = "1"
 # The user's keybindings file.
 toml = "1"
+# Findings written as text: `file:line` references in a chat message (#345).
+regex = "1"
 # The daemon connection runs on its own tokio runtime; GPUI is not tokio.
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 

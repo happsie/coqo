@@ -878,6 +878,14 @@ impl QuestionPopover {
                 .child(label)
         };
         let id = self.id.0;
+        // The other notes made from the same chat message (#345).
+        let siblings = q.origin.map_or(0, |o| {
+            self.store
+                .read(cx)
+                .message_notes(&q.session, o.message)
+                .len()
+        });
+        let (session, message) = (q.session.clone(), q.origin.map(|o| o.message));
         div()
             .px(px(18.))
             .pt(px(12.))
@@ -891,6 +899,19 @@ impl QuestionPopover {
                     window.dispatch_action(Box::new(OpenQuestionChat { id }), cx)
                 }),
             )
+            .when(siblings > 1, |d| {
+                let store = self.store.clone();
+                d.child(
+                    link("question-dismiss-all", "Dismiss all from this message")
+                        .text_color(p.text_subtle.hsla())
+                        .on_click(move |_, _, cx| {
+                            if let Some(message) = message {
+                                crate::questions::dismiss_message(&store, &session, message, cx)
+                                    .detach();
+                            }
+                        }),
+                )
+            })
             .when(q.kind.is_question(), |d| {
                 d.child(
                     link(

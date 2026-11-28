@@ -142,3 +142,29 @@ To regenerate these screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- 
 - `QuestionsEvent::Waiting(id)` when an agent starts waiting.
 
 To regenerate the screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored questions_screenshots` (offscreen, needs a GPU) and downscale the 2× PNGs to 1440×900 as `questions-<appearance>.png`.
+
+## Findings written as text (#345)
+
+Review skills report findings as text: `src/cart.rs:42 - the sum can overflow`. Coqo shows them in the code as gutter notes, linked to the chat message they came from. The skill is never changed (ADR 0030).
+
+![The chat message with "3 notes in code"](screenshots/findings-chat-dark.png)
+
+![The notes in the gutter, one open](screenshots/findings-code-dark.png)
+
+Light: [chat](screenshots/findings-chat-light.png), [code](screenshots/findings-code-light.png).
+
+1. **When.** A completed agent message that arrives while its chat is open is scanned once. History (a chat reopened, the replay after a restart) and the user's own messages are never scanned. `questions.findings_in_gutter` in `settings.toml` turns it off; it is on by default.
+2. **What counts.** References outside fenced code: `path:12`, `path:12-14`, `path#L12`, bare continuations (`` `a.py:17`, `:32` ``), "`path` ... (line 12)", "line 12 of `path`" and GitHub blob links. Each is checked against the workspace: the file must exist under a root (an exact path, or the one file the name ends with, narrowed by the files the turn touched) and the line must be in range. Anything else (`localhost:8080`, a stale name, a line past the end) is dropped without a word.
+3. **The note.** An annotation (ADR 0016) whose origin is the message, anchored like any other, so it follows edits and renames (#288). Its badge says FINDING and its body is the message's line. F8 skips findings: there can be many and nobody waits on them.
+4. **Colour by severity words.** The nearest heading's words set the level, else the line's:
+
+   | Words | Level | Colour |
+   |---|---|---|
+   | critical, blocker, bug(s), error(s), high | critical | rose |
+   | warning(s), should, important, major, medium | warning | sand |
+   | nit(s), suggestion(s), minor, low, or none | note | subtle text |
+
+5. **Marker priority.** `layer::FINDING` = 8: below everything made on purpose (waiting question 50, question or note 40, review thread 30, step 20, the user's own thread 10) and above only a resolved review thread (5). Findings are automatic and many; they must never hide a question, a thread or a step on the same line.
+6. **Back to the message.** Under the message: "N notes in code" (shows the first note) and "Dismiss all". A note's popover has **Open in chat**, which scrolls the chat to the message and marks it for a moment, **Dismiss** for itself and **Dismiss all from this message** when it has siblings.
+
+To regenerate the screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored findings_screenshots` and downscale to 1440x900 as `findings-{chat,code}-<appearance>.png`.

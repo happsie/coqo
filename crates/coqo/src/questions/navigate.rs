@@ -177,9 +177,13 @@ pub fn open_chat(
     let Some(workspace) = current(workspaces, cx) else {
         return;
     };
-    let session = questions_for(&workspace, cx)
-        .and_then(|store| store.read(cx).get(id).map(|q| q.session.clone()));
-    if let Some(session) = session {
-        chat::open_session(dock.downgrade(), session, window, cx);
+    let question = questions_for(&workspace, cx).and_then(|store| store.read(cx).get(id).cloned());
+    let Some(question) = question else {
+        return;
+    };
+    match question.origin {
+        // A finding written as text: the message it came from.
+        Some(origin) => chat::reveal_message(dock, question.session, origin.message, window, cx),
+        None => chat::open_session(dock.downgrade(), question.session, window, cx),
     }
 }

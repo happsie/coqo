@@ -218,6 +218,9 @@ pub struct Transcript {
     /// The seq of each prompt's `user_message`, by entry index (to fork
     /// before it).
     prompt_seqs: HashMap<usize, u64>,
+    /// The seq of each agent message's first chunk, by entry index: the
+    /// message's identity (#345).
+    message_seqs: HashMap<usize, u64>,
     /// The provider needs the user to sign in, with its message.
     pub sign_in: Option<String>,
     /// The walkthroughs the agent published, oldest first.
@@ -268,6 +271,7 @@ impl Transcript {
                     t.push_str(&text);
                     changes.update(self.entries.len() - 1);
                 } else {
+                    self.message_seqs.insert(self.entries.len(), seq);
                     self.push(Entry::Agent { text }, changes);
                 }
             }
@@ -538,6 +542,45 @@ impl Transcript {
     /// leaves that prompt out.
     pub fn before_prompt(&self, ix: usize) -> Option<u64> {
         self.prompt_seqs.get(&ix).map(|seq| seq - 1)
+    }
+
+    /// The identity of the agent message at entry `ix`: the seq of its first
+    /// chunk.
+    pub fn message_seq(&self, ix: usize) -> Option<u64> {
+        self.message_seqs.get(&ix).copied()
+    }
+
+    /// The entry of the agent message `seq`.
+    pub fn message_index(&self, seq: u64) -> Option<usize> {
+        self.message_seqs
+            .iter()
+            .find_map(|(ix, s)| (*s == seq).then_some(*ix))
+    }
+
+    /// Whether the agent message at `ix` is complete: something came after
+    /// it, or the turn is over.
+    pub fn message_done(&self, ix: usize) -> bool {
+        ix + 1 < self.entries.len() || !self.running
+    }
+
+    /// The paths the tool calls of the turn that holds entry `ix` name
+    /// (absolute, as the agent reports them).
+    pub fn turn_paths(&self, ix: usize) -> Vec<String> {
+        let start = self.entries[..ix]
+            .iter()
+            .rposition(|e| matches!(e, Entry::User { .. } | Entry::TurnStart { .. }))
+            .unwrap_or(0);
+        let mut paths: Vec<String> = Vec::new();
+        for entry in &self.entries[start..ix] {
+            if let Entry::Tool(tool) = entry {
+                for l in &tool.call.locations {
+                    if !paths.contains(&l.path) {
+                        paths.push(l.path.clone());
+                    }
+                }
+            }
+        }
+        paths
     }
 
     /// Whether the last prompt can be sent again: there is one, no turn
@@ -881,6 +924,7 @@ mod tests {
             thread: vec![],
             created_at: 0,
             closed_at: None,
+            origin: None,
             seq: 1,
         };
         let answered = Question {

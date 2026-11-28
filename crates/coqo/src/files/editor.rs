@@ -106,6 +106,12 @@ pub mod layer {
     pub const REVIEW_THREAD: u8 = 30;
     /// A walkthrough step.
     pub const STEP: u8 = 20;
+    /// A finding an agent wrote as text and the chat pinned as a note
+    /// (#345). Below what anyone made on purpose, above only a resolved
+    /// thread: there can be many of them, and they must never hide a
+    /// question, a review thread, a walkthrough step or the user's own
+    /// thread on the same line.
+    pub const FINDING: u8 = 8;
     /// A thread the user started by asking about code (#229).
     pub const OWN_THREAD: u8 = 10;
     /// A resolved review thread (#258).
@@ -1619,6 +1625,8 @@ impl FileEditor {
                         };
                     let priority = if q.waiting {
                         layer::WAITING
+                    } else if q.origin.is_some() {
+                        layer::FINDING
                     } else if q.author.is_agent() {
                         layer::QUESTION
                     } else {

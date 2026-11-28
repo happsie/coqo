@@ -144,6 +144,7 @@ fn create(
     lines: (u32, u32),
 ) -> CreateParams {
     CreateParams {
+        origin: None,
         workspace: ws.id.clone(),
         session: session.into(),
         kind,
@@ -224,6 +225,7 @@ async fn questions_survive_a_restart_and_find_their_code_again() {
     assert_eq!(q.anchors[0].resolution.buffer, None);
     let note = ui
         .request::<qm::Create>(CreateParams {
+            origin: None,
             severity: Some(Severity::Warning),
             ..create(&ws, "s-1", QuestionKind::Annotation, (8, 8))
         })

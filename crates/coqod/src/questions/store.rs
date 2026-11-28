@@ -10,8 +10,8 @@ use std::path::Path;
 use coqo_anchors::Anchor;
 use coqo_protocol::methods::agents::SessionId;
 use coqo_protocol::methods::questions::{
-    QuestionAnswer, QuestionAuthor, QuestionId, QuestionKind, QuestionOption, QuestionStatus,
-    Severity, ThreadMessage,
+    NoteOrigin, QuestionAnswer, QuestionAuthor, QuestionId, QuestionKind, QuestionOption,
+    QuestionStatus, Severity, ThreadMessage,
 };
 use coqo_protocol::methods::workspace::{RootId, WorkspaceId};
 use coqo_storage::{GlobalDb, StorageError};
@@ -66,6 +66,8 @@ pub(crate) struct Record {
     pub answer: Option<QuestionAnswer>,
     pub created_at: i64,
     pub closed_at: Option<i64>,
+    /// The chat message a finding was made from.
+    pub origin: Option<NoteOrigin>,
     /// The change seq of this state.
     pub seq: u64,
 }
@@ -82,6 +84,7 @@ pub(crate) struct NewRecord {
     pub options: Vec<QuestionOption>,
     pub anchors: Vec<StoredAnchor>,
     pub created_at: i64,
+    pub origin: Option<NoteOrigin>,
 }
 
 fn i64_of(v: u64) -> i64 {
@@ -113,7 +116,7 @@ fn parse_json<T: DeserializeOwned>(col: usize, s: &str) -> rusqlite::Result<T> {
 }
 
 const SELECT: &str = "SELECT id, workspace, session, kind, severity, body, options, anchors, \
-                      status, answer, created_at, closed_at, change_seq, author, thread \
+                      status, answer, created_at, closed_at, change_seq, author, thread, origin \
                       FROM questions";
 
 fn record_row(row: &Row<'_>) -> rusqlite::Result<Record> {
@@ -125,6 +128,7 @@ fn record_row(row: &Row<'_>) -> rusqlite::Result<Record> {
     let answer: Option<String> = row.get(9)?;
     let author: String = row.get(13)?;
     let thread: Option<String> = row.get(14)?;
+    let origin: Option<String> = row.get(15)?;
     Ok(Record {
         id: QuestionId(u64_of(row.get(0)?)),
         workspace: WorkspaceId(row.get(1)?),
@@ -144,6 +148,7 @@ fn record_row(row: &Row<'_>) -> rusqlite::Result<Record> {
         answer: answer.as_deref().map(|a| parse_json(9, a)).transpose()?,
         created_at: row.get(10)?,
         closed_at: row.get(11)?,
+        origin: origin.as_deref().map(|o| parse_json(15, o)).transpose()?,
         seq: u64_of(row.get(12)?),
     })
 }
@@ -177,8 +182,8 @@ impl Store {
         let conn = self.db.connection();
         conn.execute(
             "INSERT INTO questions (workspace, session, kind, severity, body, options, anchors, \
-             status, created_at, change_seq, author) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             status, created_at, change_seq, author, origin) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 new.workspace.0,
                 new.session.0,
@@ -191,6 +196,7 @@ impl Store {
                 new.created_at,
                 i64_of(seq),
                 name_of(&new.author),
+                new.origin.as_ref().map(serde_json::to_string).transpose()?,
             ],
         )?;
         let id = QuestionId(u64_of(conn.last_insert_rowid()));
@@ -209,6 +215,7 @@ impl Store {
             answer: None,
             created_at: new.created_at,
             closed_at: None,
+            origin: new.origin,
             seq,
         })
     }
@@ -373,6 +380,7 @@ mod tests {
                 current: None,
             }],
             created_at: 10,
+            origin: None,
         }
     }
 

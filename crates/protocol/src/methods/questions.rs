@@ -147,6 +147,35 @@ pub enum Severity {
     Warning,
 }
 
+/// How strongly a finding written as text is worded (ADR 0030): the
+/// severity words of its line or heading. It sets the note's colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum FindingLevel {
+    /// critical, bug, error: shown in rose.
+    Critical,
+    /// warning, should: shown in sand.
+    Warning,
+    /// nit, suggestion, or no severity word: shown in the subtle colour.
+    #[default]
+    Note,
+}
+
+/// The chat message a note was made from (#345, ADR 0030): findings an
+/// agent wrote as text (`file:line - issue`), pinned by the UI as notes
+/// that link back to the message. Only the UI sets it; the message is of
+/// the note's `session`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct NoteOrigin {
+    /// The message: the seq of its first `sessions/updates` chunk.
+    pub message: u64,
+    /// How its text words the finding.
+    #[serde(default)]
+    pub level: FindingLevel,
+}
+
 /// Where a question is in its life.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -373,6 +402,10 @@ pub struct Question {
     /// Answered or dismissed, Unix milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<i64>,
+    /// The chat message the note was made from, for a finding written as
+    /// text; absent for what an agent pinned itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<NoteOrigin>,
     /// The `questions/changes` seq of this state.
     pub seq: u64,
 }
@@ -479,6 +512,10 @@ pub struct CreateParams {
     /// The code it is about: 1 to [`MAX_ANCHORS`] locations, the files
     /// as they are now (open buffers with their unsaved edits).
     pub anchors: Vec<NewAnchor>,
+    /// The chat message a finding was made from (the UI's findings as
+    /// notes, #345); only for an annotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<NoteOrigin>,
 }
 
 /// Params of [`Ask`].
@@ -754,6 +791,7 @@ mod tests {
             thread: vec![],
             created_at: 1,
             closed_at: Some(2),
+            origin: None,
             seq: 9,
         };
         let v = serde_json::to_value(&q).unwrap();
