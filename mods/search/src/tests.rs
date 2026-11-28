@@ -318,3 +318,55 @@ fn stops_at_the_limit_or_when_cancelled() {
     assert!(summary.cancelled);
     assert!(summary.files >= 1);
 }
+
+/// Time to the first result on a kernel-sized tree (#45: under 200 ms).
+/// Writes 75 000 files (about 150 MB) under `COQO_BENCH_DIR` (default
+/// `target/`): `cargo test -p coqo-mod-search --release -- --ignored
+/// first_result_latency --nocapture`.
+#[test]
+#[ignore = "writes ~150 MB; run manually"]
+fn first_result_latency() {
+    use std::time::Instant;
+
+    let base = std::env::var_os("COQO_BENCH_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"));
+    std::fs::create_dir_all(&base).unwrap();
+    let tmp = tempfile::tempdir_in(&base).unwrap();
+    let line = "static int probe(struct device *dev, unsigned long flags) { return 0; }\n";
+    let body = line.repeat(28);
+    for d in 0..750 {
+        for f in 0..100 {
+            let mut text = body.clone();
+            if (d * 100 + f) % 500 == 499 {
+                text.push_str("void kref_needle_put(struct kref *kref);\n");
+            }
+            write(tmp.path(), &format!("drivers/d{d:03}/f{f:03}.c"), &text);
+        }
+    }
+    let m = Matcher::new(query("kref_needle_put")).unwrap();
+    let root = Root::new(tmp.path().canonicalize().unwrap());
+    for run in 0..3 {
+        let start = Instant::now();
+        let first = Mutex::new(None);
+        let summary = m
+            .search(
+                std::slice::from_ref(&root),
+                &Overlay::new(),
+                usize::MAX,
+                &AtomicBool::new(false),
+                &|_| {
+                    first.lock().unwrap().get_or_insert_with(|| start.elapsed());
+                    true
+                },
+            )
+            .unwrap();
+        println!(
+            "run {run}: first result {:?}, all {} files in {:?} ({} searched)",
+            first.lock().unwrap().unwrap(),
+            summary.files,
+            start.elapsed(),
+            summary.searched
+        );
+    }
+}

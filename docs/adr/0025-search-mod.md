@@ -43,6 +43,15 @@ Symbol search (tree-sitter tags, LSP workspace symbols with bolt on) is split of
 - `Ctrl+Shift+F` / `Cmd+Shift+F` shows the pane; `F4` / `Shift+F4` step through the matches. All are commands in the registry (ADR 0023): `search.show`, `search.next_match`, `search.previous_match`, plus `search.replace_all` and the three toggles in the pane.
 - On macOS the code editor's component library binds `Cmd+Shift+F` to its in-file replace in the `Input` context. Coqo binds `search.show` there too, so the key means "find in files" everywhere, as in other editors.
 
+## Measurements
+
+`first_result_latency` (ignored test in `mods/search`, release build) searches a synthetic kernel-sized tree of 75 000 C files (150 MB, one match per 500 files) with a warm page cache, on a 12-thread Linux desktop:
+
+- first result: 1–10 ms (target: under 200 ms);
+- the whole tree: 95–200 ms.
+
+A cold cache is bounded by the disk; the walk still reports the first file it finds at once, since the first batch is sent without waiting for the 30 ms window.
+
 ## Consequences
 
 - Search results match what the user sees, unsaved edits included.
