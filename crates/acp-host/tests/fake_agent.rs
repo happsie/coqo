@@ -899,3 +899,162 @@ async fn tool_use_is_counted_per_session_by_name_and_group_and_persisted() {
     let listed = manager.list(&ListSessionsParams::default()).unwrap();
     assert_eq!(listed.sessions[0].tool_use, info.tool_use);
 }
+
+fn value(manager: &SessionManager, id: &SessionId, config_id: &str) -> ConfigValue {
+    let snap = manager.snapshot(id).unwrap();
+    snap.config_options
+        .iter()
+        .find(|o| o.id == config_id)
+        .unwrap_or_else(|| panic!("no {config_id}: {:?}", snap.config_options))
+        .value()
+}
+
+fn select(v: &str) -> ConfigValue {
+    ConfigValue::Value(v.into())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_options_are_shown_set_and_followed() {
+    let env = Env::new();
+    let config = [("FAKE_ACP_CONFIG", "1")];
+    let manager = env.manager(env.provider(&config));
+    let id = manager.create(env.params("ws-1")).await.unwrap().id;
+
+    // From session/new, in the agent's order; Fast mode is a toggle because
+    // Coqo takes boolean options.
+    let snap = manager.snapshot(&id).unwrap();
+    let ids: Vec<_> = snap.config_options.iter().map(|o| o.id.as_str()).collect();
+    assert_eq!(ids, ["model", "effort", "fast", "mode"]);
+    assert_eq!(snap.config_options[0].category.as_deref(), Some("model"));
+    assert_eq!(
+        snap.config_options[1].category.as_deref(),
+        Some("thought_level")
+    );
+    assert_eq!(snap.config_options[2].category.as_deref(), Some("speed"));
+    assert_eq!(value(&manager, &id, "fast"), ConfigValue::Boolean(false));
+    let caps = &env.logged("initialize")[0]["clientCapabilities"];
+    assert!(
+        caps["session"]["configOptions"]["boolean"].is_object(),
+        "{caps}"
+    );
+
+    // Coqo's changes reach the agent.
+    manager
+        .set_config_option(&id, "model".into(), select("sonnet"))
+        .await
+        .unwrap();
+    manager
+        .set_config_option(&id, "effort".into(), select("high"))
+        .await
+        .unwrap();
+    manager
+        .set_config_option(&id, "fast".into(), ConfigValue::Boolean(true))
+        .await
+        .unwrap();
+    let sets = env.logged("session/set_config_option");
+    assert_eq!(sets.len(), 3);
+    assert_eq!(
+        (&sets[0]["configId"], &sets[0]["value"]),
+        (&"model".into(), &"sonnet".into())
+    );
+    assert_eq!(sets[2]["type"], "boolean");
+    assert_eq!(sets[2]["value"], true);
+    assert_eq!(value(&manager, &id, "model"), select("sonnet"));
+    assert_eq!(value(&manager, &id, "effort"), select("high"));
+    assert_eq!(value(&manager, &id, "fast"), ConfigValue::Boolean(true));
+
+    // The agent's own change shows up.
+    let since = head(&manager, &id);
+    prompt(&manager, &id, "config effort low").await;
+    let updates = until(&manager, &id, since, turn_ended).await;
+    assert!(
+        updates
+            .iter()
+            .any(|u| matches!(u, SessionUpdate::ConfigOptions { .. })),
+        "{updates:?}"
+    );
+    assert_eq!(value(&manager, &id, "effort"), select("low"));
+
+    // With a mode option, a mode change goes through it, not set_mode.
+    manager.set_mode(&id, "plan".into()).await.unwrap();
+    assert!(env.logged("session/set_mode").is_empty());
+    assert_eq!(
+        env.logged("session/set_config_option")[3]["configId"],
+        "mode"
+    );
+    let snap = manager.snapshot(&id).unwrap();
+    assert_eq!(snap.info.mode.as_deref(), Some("plan"));
+    assert_eq!(value(&manager, &id, "mode"), select("plan"));
+    // And the mode option keeps the modes and the session's mode in step.
+    manager
+        .set_config_option(&id, "mode".into(), select("acceptEdits"))
+        .await
+        .unwrap();
+    let snap = manager.snapshot(&id).unwrap();
+    assert_eq!(snap.info.mode.as_deref(), Some("acceptEdits"));
+    assert_eq!(snap.modes.unwrap().current_mode_id, "acceptEdits");
+
+    // A value the option doesn't take never reaches the agent.
+    let err = manager
+        .set_config_option(&id, "model".into(), select("gpt"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AgentError::InvalidParams(_)), "{err:?}");
+    assert_eq!(env.logged("session/set_config_option").len(), 5);
+    manager.close(&id).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_options_are_set_again_after_a_resume_or_a_crash() {
+    let env = Env::new();
+    let config = [("FAKE_ACP_CONFIG", "1")];
+    let id = {
+        let manager = env.manager(env.provider(&config));
+        let id = manager.create(env.params("ws-1")).await.unwrap().id;
+        manager
+            .set_config_option(&id, "model".into(), select("sonnet"))
+            .await
+            .unwrap();
+        manager
+            .set_config_option(&id, "effort".into(), select("high"))
+            .await
+            .unwrap();
+        manager.shutdown().await;
+        id
+    };
+
+    // A new daemon and agent process: the agent resumes with its defaults,
+    // and Coqo sets what the session had again, in order.
+    let manager = env.manager(env.provider(&config));
+    let since = head(&manager, &id);
+    prompt(&manager, &id, "say back").await;
+    until(&manager, &id, since, turn_ended).await;
+    assert_eq!(env.logged("session/resume").len(), 1);
+    let sets: Vec<_> = env
+        .logged("session/set_config_option")
+        .iter()
+        .map(|s| (s["configId"].clone(), s["value"].clone()))
+        .collect();
+    assert_eq!(
+        sets,
+        [
+            ("model".into(), "sonnet".into()),
+            ("effort".into(), "high".into()),
+            ("model".into(), "sonnet".into()),
+            ("effort".into(), "high".into()),
+        ]
+    );
+    assert_eq!(value(&manager, &id, "model"), select("sonnet"));
+    assert_eq!(value(&manager, &id, "effort"), select("high"));
+
+    // The agent crashes: its next process gets them again too.
+    let since = head(&manager, &id);
+    prompt(&manager, &id, "crash").await;
+    until(&manager, &id, since, turn_ended).await;
+    let since = head(&manager, &id);
+    prompt(&manager, &id, "say again").await;
+    until(&manager, &id, since, turn_ended).await;
+    assert_eq!(env.logged("session/set_config_option").len(), 6);
+    assert_eq!(value(&manager, &id, "effort"), select("high"));
+    manager.shutdown().await;
+}

@@ -7,8 +7,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use coqo_protocol::methods::agents::{
-    AuthStatus, AvailableCommand, PermissionRequest, PermissionRequestId, PlanEntry, SessionModes,
-    SessionUpdate, ToolCallId, Usage,
+    AuthStatus, AvailableCommand, PermissionRequest, PermissionRequestId, PlanEntry,
+    SessionConfigOption, SessionModes, SessionUpdate, ToolCallId, Usage, follow_mode,
 };
 
 use crate::rules::ToolFacts;
@@ -25,6 +25,8 @@ pub(crate) struct Fold {
     pub last_permission: u64,
     pub plan: Vec<PlanEntry>,
     pub modes: Option<SessionModes>,
+    /// The latest config options, in the agent's order.
+    pub config_options: Vec<SessionConfigOption>,
     pub commands: Vec<AvailableCommand>,
     pub usage: Option<Usage>,
     pub auth: Option<AuthStatus>,
@@ -57,6 +59,13 @@ impl Fold {
             SessionUpdate::CurrentMode { mode_id } => {
                 if let Some(m) = &mut self.modes {
                     m.current_mode_id.clone_from(mode_id);
+                }
+                follow_mode(&mut self.config_options, mode_id);
+            }
+            SessionUpdate::ConfigOptions { config_options } => {
+                self.config_options.clone_from(config_options);
+                if let Some(m) = &mut self.modes {
+                    m.follow(config_options);
                 }
             }
             SessionUpdate::Usage(u) => self.usage = Some(u.clone()),
@@ -134,5 +143,47 @@ mod tests {
             error: None,
         });
         assert_eq!((f.turns, f.open_turn, f.pending.len()), (1, None, 0));
+    }
+
+    #[test]
+    fn a_mode_config_option_and_the_modes_stay_in_step() {
+        use coqo_protocol::methods::agents::{ConfigValue, config_category};
+
+        let mut options = crate::testing::test_config_options();
+        let mut mode = options[0].clone();
+        mode.id = "mode".into();
+        mode.category = Some(config_category::MODE.into());
+        mode.kind = coqo_protocol::methods::agents::ConfigOptionKind::Select {
+            current_value: "default".into(),
+            options: ["default", "plan"]
+                .map(|v| coqo_protocol::methods::agents::ConfigOptionValue {
+                    value: v.into(),
+                    name: v.into(),
+                    description: None,
+                    group: None,
+                })
+                .to_vec(),
+        };
+        options.push(mode);
+        let mut f = Fold::default();
+        f.apply(&SessionUpdate::Modes(crate::testing::test_modes()));
+        f.apply(&SessionUpdate::ConfigOptions {
+            config_options: options.clone(),
+        });
+        assert_eq!(f.config_options.len(), 4);
+        assert_eq!(f.mode(), Some("default"));
+
+        // The option changes: the modes follow.
+        options[3].set_value(&ConfigValue::Value("plan".into()));
+        f.apply(&SessionUpdate::ConfigOptions {
+            config_options: options,
+        });
+        assert_eq!(f.mode(), Some("plan"));
+        // The mode changes: the option follows.
+        f.apply(&SessionUpdate::CurrentMode {
+            mode_id: "default".into(),
+        });
+        assert_eq!(f.config_options[3].value_name(), "default");
+        assert_eq!(f.mode(), Some("default"));
     }
 }

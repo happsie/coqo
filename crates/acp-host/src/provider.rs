@@ -8,11 +8,14 @@ use std::fmt;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use agent_client_protocol::v1::schema as acp;
-use coqo_agents::model::{ContentBlock, ProviderCapabilities, StopReason};
+use coqo_agents::model::{
+    ConfigValue, ContentBlock, ProviderCapabilities, SessionConfigOption, StopReason,
+    config_category,
+};
 use coqo_agents::{
     AgentProvider, AgentUpdate, ProviderError, ProviderSession, ResumeRequest, SessionContext,
     SessionEvents,
@@ -22,7 +25,7 @@ use coqo_mod_api::BoxFuture;
 
 use crate::convert;
 use crate::fs::FsHandle;
-use crate::host::{Conn, Host, Replay, Route};
+use crate::host::{ConfigState, Conn, Host, Replay, Route, track_config};
 use crate::terminal::TerminalHandle;
 
 /// How to start an agent process.
@@ -211,8 +214,62 @@ impl Inner {
         }
     }
 
+    /// `session/set_config_option`; the options it leaves.
+    async fn set_config(
+        &self,
+        conn: &Conn,
+        id: &str,
+        config_id: &str,
+        value: &ConfigValue,
+    ) -> Result<Vec<SessionConfigOption>, ProviderError> {
+        let set = self
+            .request(
+                "session/set_config_option",
+                conn.cx
+                    .send_request(acp::SetSessionConfigOptionRequest::new(
+                        acp::SessionId::new(id),
+                        config_id.to_owned(),
+                        convert::to_acp_config_value(value),
+                    ))
+                    .block_task(),
+            )
+            .await?;
+        Ok(convert::config_options(&set.config_options))
+    }
+
+    /// Sets again, in order, each value of `wanted` (the options a session
+    /// had) that the reattached session reports differently in `reported`,
+    /// if its option still takes it. Returns the options it ends up with.
+    async fn restore(
+        &self,
+        conn: &Conn,
+        id: &str,
+        wanted: &[SessionConfigOption],
+        mut reported: Vec<SessionConfigOption>,
+    ) -> Vec<SessionConfigOption> {
+        for want in wanted {
+            let value = want.value();
+            let lost = reported
+                .iter()
+                .find(|o| o.id == want.id)
+                .is_some_and(|o| o.value() != value && o.accepts(&value));
+            if !lost {
+                continue;
+            }
+            match self.set_config(conn, id, &want.id, &value).await {
+                Ok(options) => reported = options,
+                Err(e) => tracing::info!(
+                    agent = %self.options.name, option = %want.id, error = %e,
+                    "cannot restore a config option"
+                ),
+            }
+        }
+        reported
+    }
+
     /// Reattaches ACP session `id` on `conn`: `session/resume` if the agent
     /// has it, else `session/load` (whose replay `replay` decides about).
+    #[allow(clippy::too_many_arguments)]
     async fn reattach(
         &self,
         host: &Host,
@@ -221,7 +278,8 @@ impl Inner {
         cx: &SessionContext,
         events: &SessionEvents,
         replay: Replay,
-    ) -> Result<Option<acp::SessionModeState>, ProviderError> {
+        config: &ConfigState,
+    ) -> Result<Attached, ProviderError> {
         let route = |replay| Route {
             coqo: cx.session.clone(),
             events: events.clone(),
@@ -229,6 +287,7 @@ impl Inner {
             cwd: cx.cwd.clone(),
             replay,
             auth_sent: None,
+            config: Arc::clone(config),
         };
         let session_id = acp::SessionId::new(id);
         let mcp: Vec<acp::McpServer> = cx.mcp_servers.iter().map(convert::to_acp_mcp).collect();
@@ -249,7 +308,7 @@ impl Inner {
                 )
                 .await;
             match resumed {
-                Ok(r) => return Ok(r.modes),
+                Ok(r) => return Ok(Attached::new(r.modes, r.config_options.as_deref())),
                 Err(e @ ProviderError::AuthRequired(_)) => {
                     host.shared.unregister(id);
                     return Err(e);
@@ -283,7 +342,7 @@ impl Inner {
         match loaded {
             Ok(r) => {
                 host.shared.set_replay(id, Replay::Live);
-                Ok(r.modes)
+                Ok(Attached::new(r.modes, r.config_options.as_deref()))
             }
             Err(e) => {
                 host.shared.unregister(id);
@@ -291,6 +350,42 @@ impl Inner {
             }
         }
     }
+}
+
+/// What a reattached session reports.
+struct Attached {
+    modes: Option<acp::SessionModeState>,
+    config_options: Vec<SessionConfigOption>,
+}
+
+impl Attached {
+    fn new(
+        modes: Option<acp::SessionModeState>,
+        config_options: Option<&[acp::SessionConfigOption]>,
+    ) -> Self {
+        Self {
+            modes,
+            config_options: config_options
+                .map(convert::config_options)
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// Records `options` as the session's and reports them, unless the
+/// session has none and had none (a provider without config options
+/// reports nothing).
+fn publish(events: &SessionEvents, config: &ConfigState, options: Vec<SessionConfigOption>) {
+    let had = !config
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .is_empty();
+    if options.is_empty() && !had {
+        return;
+    }
+    let update = AgentUpdate::ConfigOptions(options);
+    track_config(config, &update);
+    events.update(update);
 }
 
 /// The error for a failed ACP request.
@@ -394,6 +489,13 @@ impl AgentProvider for AcpProvider {
             if let Some(modes) = &created.modes {
                 events.update(AgentUpdate::Modes(convert::modes(modes)));
             }
+            let config = ConfigState::default();
+            let options = created
+                .config_options
+                .as_deref()
+                .map(convert::config_options)
+                .unwrap_or_default();
+            publish(&events, &config, options);
             host.shared.register(
                 &id,
                 Route {
@@ -403,6 +505,7 @@ impl AgentProvider for AcpProvider {
                     cwd: cx.cwd.clone(),
                     replay: Replay::Live,
                     auth_sent: None,
+                    config: Arc::clone(&config),
                 },
             );
             Ok(Arc::new(AcpSession::new(
@@ -412,6 +515,7 @@ impl AgentProvider for AcpProvider {
                 cx,
                 events,
                 conn.generation,
+                config,
             )) as Arc<dyn ProviderSession>)
         })
     }
@@ -428,14 +532,19 @@ impl AgentProvider for AcpProvider {
             let host = inner.host(&cx);
             let starting = host.starting();
             let conn = inner.connection(&host, &cx.cwd).await?;
+            let config = ConfigState::default();
             match inner
-                .reattach(&host, &conn, &id, &cx, &events, Replay::Forward)
+                .reattach(&host, &conn, &id, &cx, &events, Replay::Forward, &config)
                 .await
             {
-                Ok(modes) => {
-                    if let Some(modes) = &modes {
+                Ok(attached) => {
+                    if let Some(modes) = &attached.modes {
                         events.update(AgentUpdate::Modes(convert::modes(modes)));
                     }
+                    let options = inner
+                        .restore(&conn, &id, &request.config_options, attached.config_options)
+                        .await;
+                    publish(&events, &config, options);
                 }
                 Err(e) => {
                     drop(starting);
@@ -450,6 +559,7 @@ impl AgentProvider for AcpProvider {
                 cx,
                 events,
                 conn.generation,
+                config,
             )) as Arc<dyn ProviderSession>)
         })
     }
@@ -468,6 +578,8 @@ struct AcpSession {
     reattach: tokio::sync::Mutex<()>,
     cancelled: AtomicBool,
     closed: AtomicBool,
+    /// Its config options, as the agent last reported them.
+    config: ConfigState,
 }
 
 impl AcpSession {
@@ -478,6 +590,7 @@ impl AcpSession {
         cx: SessionContext,
         events: SessionEvents,
         generation: u64,
+        config: ConfigState,
     ) -> Self {
         Self {
             inner,
@@ -489,7 +602,12 @@ impl AcpSession {
             reattach: tokio::sync::Mutex::new(()),
             cancelled: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            config,
         }
+    }
+
+    fn config(&self) -> MutexGuard<'_, Vec<SessionConfigOption>> {
+        self.config.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn session_id(&self) -> acp::SessionId {
@@ -509,7 +627,11 @@ impl AcpSession {
         let _reattaching = self.reattach.lock().await;
         if conn.generation != self.attached.load(Ordering::SeqCst) {
             tracing::info!(agent = %self.inner.options.name, session = %self.cx.session, "the agent restarted; reattaching the session");
-            self.inner
+            // The new process starts from its defaults: what the session
+            // had is set again.
+            let wanted = self.config().clone();
+            let attached = self
+                .inner
                 .reattach(
                     &self.host,
                     &conn,
@@ -517,8 +639,14 @@ impl AcpSession {
                     &self.cx,
                     &self.events,
                     Replay::Drop,
+                    &self.config,
                 )
                 .await?;
+            let options = self
+                .inner
+                .restore(&conn, &self.id, &wanted, attached.config_options)
+                .await;
+            publish(&self.events, &self.config, options);
             self.attached.store(conn.generation, Ordering::SeqCst);
         }
         Ok(conn)
@@ -575,6 +703,22 @@ impl ProviderSession for AcpSession {
     fn set_mode(&self, mode_id: String) -> BoxFuture<'_, Result<(), ProviderError>> {
         Box::pin(async move {
             let conn = self.conn().await?;
+            // An agent with a `mode` config option as well wants that one
+            // used (ACP's guidance); `session/set_mode` is the fallback.
+            let value = ConfigValue::Value(mode_id.clone());
+            let option = self
+                .config()
+                .iter()
+                .find(|o| o.is(config_category::MODE) && o.accepts(&value))
+                .map(|o| o.id.clone());
+            if let Some(config_id) = option {
+                let options = self
+                    .inner
+                    .set_config(&conn, &self.id, &config_id, &value)
+                    .await?;
+                publish(&self.events, &self.config, options);
+                return Ok(());
+            }
             self.inner
                 .request(
                     "session/set_mode",
@@ -583,6 +727,22 @@ impl ProviderSession for AcpSession {
                         .block_task(),
                 )
                 .await?;
+            Ok(())
+        })
+    }
+
+    fn set_config_option(
+        &self,
+        config_id: String,
+        value: ConfigValue,
+    ) -> BoxFuture<'_, Result<(), ProviderError>> {
+        Box::pin(async move {
+            let conn = self.conn().await?;
+            let options = self
+                .inner
+                .set_config(&conn, &self.id, &config_id, &value)
+                .await?;
+            publish(&self.events, &self.config, options);
             Ok(())
         })
     }

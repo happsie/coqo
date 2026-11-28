@@ -12,12 +12,16 @@
 //! - **Slash commands:** `/` at the start opens the session's
 //!   `available_commands` (the agent's commands and the user's own skills).
 //!   Tab or Enter completes `/name `; it is sent as text, as ACP expects.
-//! - **Provider, mode, model:** until the first prompt the provider chip is a
-//!   dropdown, and picking another provider replaces the chat's empty session
-//!   with a new one on that provider, in the same tab. After the first prompt
-//!   it is a label: start a new chat to use another provider. The mode chip is
-//!   a dropdown (`sessions/setMode`). The model is read-only, from the
-//!   provider's usage reports: the protocol has no model list yet.
+//! - **Provider, settings, mode, model:** until the first prompt the
+//!   provider chip is a dropdown, and picking another provider replaces the
+//!   chat's empty session with a new one on that provider, in the same tab.
+//!   After the first prompt it is a label: start a new chat to use another
+//!   provider. Then one chip per session config option, in the agent's
+//!   order (`sessions/setConfigOption`): a dropdown for a select (the model
+//!   as "Opus", others as "Effort: High"), a toggle for a boolean ("Fast
+//!   mode"). The mode chip is a dropdown (`sessions/setMode`) unless a
+//!   `mode` config option stands in for it. Without a `model` option the
+//!   model is a label, from the provider's usage reports.
 //! - **Keys:** while a popover is open, Up and Down choose, Enter and Tab
 //!   accept and Esc closes it. Up in an empty composer recalls the last
 //!   prompt; Up and Down then step through the earlier ones.
@@ -30,8 +34,10 @@ use std::{
 
 use coqo_protocol::methods::{
     agents::{
-        AvailableCommand, Close, ContentBlock, Create, CreateSessionParams, Prompt, PromptParams,
-        ProviderInfo, SessionInfo, SessionParams, SetMode, SetModeParams,
+        AvailableCommand, Close, ConfigOptionKind, ConfigOptionValue, ConfigValue, ContentBlock,
+        Create, CreateSessionParams, Prompt, PromptParams, ProviderInfo, SessionConfigOption,
+        SessionInfo, SessionParams, SetConfigOption, SetConfigOptionParams, SetMode, SetModeParams,
+        config_category,
     },
     codes as app_codes,
     fs::{self, EntryKind, PathParams, ReadParams},
@@ -131,6 +137,8 @@ pub enum Popover {
     Provider { selected: usize },
     /// The mode dropdown.
     Mode { selected: usize },
+    /// The dropdown of the select config option `id` (model, effort, …).
+    Config { id: String, selected: usize },
 }
 
 impl Popover {
@@ -139,7 +147,8 @@ impl Popover {
             Self::Mention { selected, .. }
             | Self::Command { selected, .. }
             | Self::Provider { selected }
-            | Self::Mode { selected } => *selected,
+            | Self::Mode { selected }
+            | Self::Config { selected, .. } => *selected,
         }
     }
 
@@ -148,12 +157,50 @@ impl Popover {
             Self::Mention { selected, .. }
             | Self::Command { selected, .. }
             | Self::Provider { selected }
-            | Self::Mode { selected } => *selected = ix,
+            | Self::Mode { selected }
+            | Self::Config { selected, .. } => *selected = ix,
         }
     }
 
     fn is_menu(&self) -> bool {
-        matches!(self, Self::Provider { .. } | Self::Mode { .. })
+        matches!(
+            self,
+            Self::Provider { .. } | Self::Mode { .. } | Self::Config { .. }
+        )
+    }
+
+    /// Whether `self` and `other` are the same dropdown.
+    fn same_menu(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Provider { .. }, Self::Provider { .. })
+            | (Self::Mode { .. }, Self::Mode { .. }) => true,
+            (Self::Config { id: a, .. }, Self::Config { id: b, .. }) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// The entries of the select config option `id`, if the session has it.
+fn config_entries<'a>(options: &'a [SessionConfigOption], id: &str) -> &'a [ConfigOptionValue] {
+    options
+        .iter()
+        .find(|o| o.id == id)
+        .and_then(|o| match &o.kind {
+            ConfigOptionKind::Select { options, .. } => Some(options.as_slice()),
+            ConfigOptionKind::Boolean { .. } => None,
+        })
+        .unwrap_or_default()
+}
+
+/// A config option's chip label: the model by itself ("Opus", as board 1),
+/// the mode as the mode chip says it ("Mode: Plan"), anything else as
+/// "Effort: High".
+pub fn config_label(option: &SessionConfigOption) -> String {
+    let value = option.value_name();
+    if option.is(config_category::MODEL) {
+        value
+    } else {
+        format!("{}: {value}", option.name)
     }
 }
 
@@ -555,6 +602,28 @@ impl ChatTab {
             && self.providers.iter().filter(|p| p.available).count() > 1
     }
 
+    /// Open the dropdown of the select config option `id` (screenshots).
+    #[cfg(test)]
+    pub fn set_preview_config_menu(&mut self, id: &str) {
+        let selected = self
+            .transcript
+            .config_options
+            .iter()
+            .find(|o| o.id == id)
+            .and_then(|o| match &o.kind {
+                ConfigOptionKind::Select {
+                    current_value,
+                    options,
+                } => options.iter().position(|e| &e.value == current_value),
+                ConfigOptionKind::Boolean { .. } => None,
+            })
+            .unwrap_or(0);
+        self.popover = Some(Popover::Config {
+            id: id.into(),
+            selected,
+        });
+    }
+
     /// Use `paths` under `root` as the workspace's files, without a daemon
     /// (screenshots).
     #[cfg(test)]
@@ -692,6 +761,9 @@ impl ChatTab {
                 .modes
                 .as_ref()
                 .map_or(0, |m| m.available_modes.len()),
+            Some(Popover::Config { id, .. }) => {
+                config_entries(&self.transcript.config_options, id).len()
+            }
             None => 0,
         }
     }
@@ -735,6 +807,7 @@ impl ChatTab {
                     let step = if key == PromptKey::Up { len - 1 } else { 1 };
                     p.set_selected((p.selected() + step) % len);
                 }
+                self.reveal_selected();
                 cx.notify();
             }
             PromptKey::Accept | PromptKey::Complete => {
@@ -797,6 +870,14 @@ impl ChatTab {
                     .map(|m| m.id.clone());
                 if let Some(mode) = mode {
                     self.set_mode(mode, cx);
+                }
+            }
+            Popover::Config { id, .. } => {
+                let value = config_entries(&self.transcript.config_options, &id)
+                    .get(ix)
+                    .map(|e| e.value.clone());
+                if let Some(value) = value {
+                    self.set_config_option(id, ConfigValue::Value(value), cx);
                 }
             }
         }
@@ -970,6 +1051,33 @@ impl ChatTab {
         }
     }
 
+    /// Change one of the session's config options (model, effort, …).
+    pub(super) fn set_config_option(
+        &mut self,
+        config_id: String,
+        value: ConfigValue,
+        cx: &mut Context<Self>,
+    ) {
+        let unchanged = self
+            .transcript
+            .config_options
+            .iter()
+            .any(|o| o.id == config_id && o.value() == value);
+        if unchanged {
+            return;
+        }
+        if let Some(daemon) = Self::daemon(cx) {
+            let call = daemon
+                .read(cx)
+                .request::<SetConfigOption>(SetConfigOptionParams {
+                    session: self.session.clone(),
+                    config_id,
+                    value,
+                });
+            self.spawn_request(call, "Couldn't change the setting", cx);
+        }
+    }
+
     /// Replace the chat's empty session with a new one on `provider`.
     fn switch_provider(&mut self, provider: String, window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_switch_provider() {
@@ -1048,16 +1156,39 @@ impl ChatTab {
 
     /// Open (or close) a dropdown.
     fn toggle_menu(&mut self, menu: Popover, window: &mut Window, cx: &mut Context<Self>) {
-        let same = matches!(
-            (&self.popover, &menu),
-            (Some(Popover::Provider { .. }), Popover::Provider { .. })
-                | (Some(Popover::Mode { .. }), Popover::Mode { .. })
-        );
+        let same = self.popover.as_ref().is_some_and(|p| p.same_menu(&menu));
         self.popover = (!same).then_some(menu);
+        self.reveal_selected();
         self.sync_capture(cx);
         let focus = self.composer.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         cx.notify();
+    }
+
+    /// Scroll an open dropdown so its selected row shows.
+    fn reveal_selected(&self) {
+        let Some(menu) = self.popover.as_ref().filter(|p| p.is_menu()) else {
+            return;
+        };
+        let selected = menu.selected();
+        // A config option's group labels are rows of the list too.
+        let labels = match menu {
+            Popover::Config { id, .. } => {
+                let entries = config_entries(&self.transcript.config_options, id);
+                let mut group = None;
+                entries
+                    .iter()
+                    .take(selected + 1)
+                    .filter(|e| {
+                        let new = e.group.is_some() && e.group != group;
+                        group.clone_from(&e.group);
+                        new
+                    })
+                    .count()
+            }
+            _ => 0,
+        };
+        self.menu_scroll.scroll_to_item(selected + labels);
     }
 }
 
@@ -1300,7 +1431,15 @@ impl ChatTab {
                     this.close_popover(false, cx);
                 }),
             );
-        let mut list = div().flex().flex_col().px(px(6.));
+        // At most about seven rows with descriptions, then it scrolls.
+        let mut list = div()
+            .id("chat-menu-list")
+            .flex()
+            .flex_col()
+            .px(px(6.))
+            .max_h(px(360.))
+            .overflow_y_scroll()
+            .track_scroll(&self.menu_scroll);
         let row = |id: String,
                    ix: usize,
                    current: bool,
@@ -1370,6 +1509,49 @@ impl ChatTab {
                 }
                 card = card.child(list);
             }
+            Popover::Config { id, .. } => {
+                let option = self.transcript.config_options.iter().find(|o| &o.id == id);
+                let current = option.map(SessionConfigOption::value);
+                let mut group = None;
+                for (ix, entry) in config_entries(&self.transcript.config_options, id)
+                    .iter()
+                    .enumerate()
+                {
+                    // Grouped entries get their group's name above them.
+                    if entry.group.is_some() && entry.group != group {
+                        group.clone_from(&entry.group);
+                        list = list.child(
+                            div()
+                                .px(px(10.))
+                                .pt(px(if ix == 0 { 4. } else { 10. }))
+                                .pb(px(4.))
+                                .child(section_label(entry.group.clone().unwrap_or_default(), cx)),
+                        );
+                    }
+                    list = list.child(row(
+                        format!("chat-config-option-{id}-{}", entry.value),
+                        ix,
+                        current.as_ref() == Some(&ConfigValue::Value(entry.value.clone())),
+                        true,
+                        entry.name.clone(),
+                        entry.description.clone(),
+                        self,
+                        cx,
+                    ));
+                }
+                card = card.child(list);
+                if let Some(description) = option.and_then(|o| o.description.clone()) {
+                    card = card.child(
+                        div()
+                            .px(px(16.))
+                            .pt(px(4.))
+                            .pb(px(10.))
+                            .text_size(m.text_label)
+                            .text_color(p.text_subtle.hsla())
+                            .child(description),
+                    );
+                }
+            }
             _ => return None,
         }
         Some(
@@ -1389,19 +1571,18 @@ impl ChatTab {
     /// A footer chip; `menu` makes it a dropdown trigger.
     fn render_chip(
         &self,
-        id: &'static str,
+        id: impl Into<SharedString>,
         label: String,
         menu: Option<Popover>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let id: SharedString = id.into();
         let t = cx.tokens();
         let (p, m) = (t.palette.clone(), t.metrics.clone());
         let open = menu.as_ref().is_some_and(|menu| {
-            matches!(
-                (&self.popover, menu),
-                (Some(Popover::Provider { .. }), Popover::Provider { .. })
-                    | (Some(Popover::Mode { .. }), Popover::Mode { .. })
-            )
+            self.popover
+                .as_ref()
+                .is_some_and(|open| open.same_menu(menu))
         });
         let chip = raised(
             div()
@@ -1444,6 +1625,86 @@ impl ChatTab {
             .into_any_element()
     }
 
+    /// A toggle chip for a boolean config option (Fast mode): sage while on.
+    fn render_toggle(&self, option: &SessionConfigOption, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let on = option.value() == ConfigValue::Boolean(true);
+        let glyph = if option.is(config_category::SPEED) {
+            Icon::Zap
+        } else if on {
+            Icon::Check
+        } else {
+            Icon::Circle
+        };
+        let base = div()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .px(px(10.))
+            .py(px(5.))
+            .rounded(m.radius_control)
+            .text_size(m.text_sm);
+        let chip = if on {
+            base.bg(p.sage.alpha(0.16))
+                .border_1()
+                .border_color(p.sage.alpha(0.4))
+                .text_color(p.sage.hsla())
+        } else {
+            raised(base, cx).text_color(p.text_muted.hsla())
+        };
+        let color = if on {
+            p.sage.hsla()
+        } else {
+            p.text_subtle.hsla()
+        };
+        let id = option.id.clone();
+        chip.id(SharedString::from(format!("chat-config-{}", option.id)))
+            .test_support()
+            .cursor_pointer()
+            .child(icon(glyph, px(12.), color))
+            .child(option.name.clone())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _: &coqo_ui::gpui::MouseDownEvent, _, cx| {
+                    // Keep the focus in the composer.
+                    cx.stop_propagation();
+                    this.set_config_option(id.clone(), ConfigValue::Boolean(!on), cx);
+                }),
+            )
+            .into_any_element()
+    }
+
+    /// One chip per config option, in the agent's order: a dropdown for a
+    /// select, a toggle for a boolean.
+    fn render_config_chips(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let options = self.transcript.config_options.clone();
+        options
+            .iter()
+            .map(|option| match &option.kind {
+                ConfigOptionKind::Select {
+                    current_value,
+                    options: entries,
+                } => {
+                    let selected = entries
+                        .iter()
+                        .position(|e| &e.value == current_value)
+                        .unwrap_or(0);
+                    self.render_chip(
+                        format!("chat-config-{}", option.id),
+                        config_label(option),
+                        Some(Popover::Config {
+                            id: option.id.clone(),
+                            selected,
+                        }),
+                        cx,
+                    )
+                }
+                ConfigOptionKind::Boolean { .. } => self.render_toggle(option, cx),
+            })
+            .collect()
+    }
+
     pub(super) fn render_composer(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.tokens();
         let (p, m) = (t.palette.clone(), t.metrics.clone());
@@ -1456,7 +1717,6 @@ impl ChatTab {
                 .child("This chat is closed. Its transcript stays here to read.")
                 .into_any_element();
         }
-        let tr = &self.transcript;
         let provider = if self.switching {
             "Switching…".to_owned()
         } else {
@@ -1476,8 +1736,13 @@ impl ChatTab {
             .gap(px(8.))
             .text_size(m.text_sm)
             .text_color(p.text_muted.hsla())
-            .child(self.render_chip("chat-provider", provider, provider_menu, cx));
-        if let (Some(mode), Some(modes)) = (tr.mode_name(), tr.modes.as_ref()) {
+            .child(self.render_chip("chat-provider", provider, provider_menu, cx))
+            .children(self.render_config_chips(cx));
+        let tr = &self.transcript;
+        // A `mode` config option's chip stands in for the mode chip.
+        if let (Some(mode), Some(modes), false) =
+            (tr.mode_name(), tr.modes.as_ref(), tr.has_mode_option())
+        {
             let selected = modes
                 .available_modes
                 .iter()
@@ -1490,7 +1755,11 @@ impl ChatTab {
                 cx,
             ));
         }
-        if let Some(model) = tr.usage.as_ref().and_then(|u| u.model.clone()) {
+        // Without a model option the model is a label, from usage reports.
+        if let (None, Some(model)) = (
+            tr.model_option(),
+            tr.usage.as_ref().and_then(|u| u.model.clone()),
+        ) {
             row = row.child(
                 div()
                     .id("chat-model")

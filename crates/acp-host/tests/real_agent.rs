@@ -85,5 +85,52 @@ async fn a_real_agent_starts_a_session() {
     );
     eprintln!("commands: {}", snap.available_commands.len());
     eprintln!("auth: {:?}", snap.auth);
+    for option in &snap.config_options {
+        let values = match &option.kind {
+            ConfigOptionKind::Select { options, .. } => options
+                .iter()
+                .map(|e| format!("{} ({})", e.value, e.name))
+                .collect::<Vec<_>>()
+                .join(", "),
+            ConfigOptionKind::Boolean { .. } => "on/off".into(),
+        };
+        eprintln!(
+            "option {} \"{}\" [{}]: {} of {values}",
+            option.id,
+            option.name,
+            option.category.as_deref().unwrap_or("-"),
+            option.value_name(),
+        );
+    }
+    // Change the effort, if the agent offers one, to another value: a
+    // `session/set_config_option`, still no prompt.
+    let effort = snap
+        .config_options
+        .iter()
+        .find(|o| o.is(config_category::THOUGHT_LEVEL));
+    if let Some(effort) = effort
+        && let ConfigOptionKind::Select {
+            current_value,
+            options,
+        } = &effort.kind
+        && let Some(other) = options.iter().find(|e| &e.value != current_value)
+    {
+        manager
+            .set_config_option(
+                &session.id,
+                effort.id.clone(),
+                ConfigValue::Value(other.value.clone()),
+            )
+            .await
+            .unwrap();
+        let after = manager.snapshot(&session.id).unwrap();
+        let now = after
+            .config_options
+            .iter()
+            .find(|o| o.id == effort.id)
+            .map(SessionConfigOption::value_name);
+        eprintln!("set {} to {}: now {now:?}", effort.id, other.value);
+        assert_eq!(now.as_deref(), Some(other.name.as_str()));
+    }
     manager.close(&session.id).await.unwrap();
 }

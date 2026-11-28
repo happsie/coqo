@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use coqo_mod_api::BoxFuture;
 use coqo_protocol::methods::agents::{
-    AgentState, AgentStatus, CreateSessionParams, CriterionAuthor, ListSessionsParams,
+    AgentState, AgentStatus, ConfigValue, CreateSessionParams, CriterionAuthor, ListSessionsParams,
     PermissionOutcome, PermissionRequest, PermissionRequestId, PermissionRule, PermissionRuleId,
     PromptResult, ProviderInfo, SessionId, SessionInfo, SessionList, SessionSnapshot,
     SessionUpdate, SetCriteriaParams, SetStatusParams, StatusProgress, StopReason, ToolCallUpdate,
@@ -358,7 +358,7 @@ impl Inner {
     /// The live provider session, starting or resuming it if needed.
     async fn ensure_live(self: &Arc<Self>, s: &Arc<Session>) -> Result<Arc<dyn ProviderSession>> {
         let _starting = s.live_lock.lock().await;
-        let (info, provider_session, head) = {
+        let (info, provider_session, head, config_options) = {
             let st = lock(&s.state);
             if st.info().closed {
                 return Err(AgentError::Closed(s.id.clone()));
@@ -370,6 +370,7 @@ impl Inner {
                 st.info().clone(),
                 st.stored.provider_session.clone(),
                 st.head,
+                st.fold.config_options.clone(),
             )
         };
         let provider = self
@@ -400,6 +401,7 @@ impl Inner {
                     ResumeRequest {
                         context: context(),
                         provider_session,
+                        config_options,
                     },
                     events.clone(),
                 )
@@ -522,10 +524,22 @@ impl EventSink for Sink {
         };
         let s = &self.session;
         let mut st = lock(&s.state);
-        if st.replaying || st.info().closed {
+        if st.info().closed {
             return;
         }
-        let mode = matches!(update, AgentUpdate::Modes(_) | AgentUpdate::CurrentMode(_));
+        match &update {
+            // Config options are the session's state, not history: kept
+            // during a replay too, but only when they changed.
+            AgentUpdate::ConfigOptions(o) if *o == st.fold.config_options => return,
+            AgentUpdate::ConfigOptions(_) => {}
+            // History Coqo already has.
+            _ if st.replaying => return,
+            _ => {}
+        }
+        let mode = matches!(
+            update,
+            AgentUpdate::Modes(_) | AgentUpdate::CurrentMode(_) | AgentUpdate::ConfigOptions(_)
+        );
         // A tool call counts once per id (an agent may report one again).
         let new_tool = match &update {
             AgentUpdate::ToolCall(call) if !st.fold.tools.contains_key(&call.id) => {
@@ -715,6 +729,7 @@ impl SessionManager {
             pending_permissions: st.fold.pending.values().cloned().collect(),
             plan: st.fold.plan.clone(),
             modes: st.fold.modes.clone(),
+            config_options: st.fold.config_options.clone(),
             available_commands: st.fold.commands.clone(),
             usage: st.fold.usage.clone(),
             auth: st.fold.auth.clone(),
@@ -1081,6 +1096,56 @@ impl SessionManager {
         let mut st = lock(&s.state);
         if st.fold.mode() != Some(mode_id.as_str()) {
             inner.record(&s, &mut st, SessionUpdate::CurrentMode { mode_id })?;
+        }
+        inner.sync_mode(&mut st)
+    }
+
+    /// Changes one of the session's config options (`sessions/setConfigOption`).
+    /// The provider reports the options it leaves; if it reports nothing,
+    /// the new value is recorded as it was asked for.
+    pub async fn set_config_option(
+        &self,
+        id: &SessionId,
+        config_id: String,
+        value: ConfigValue,
+    ) -> Result<()> {
+        let inner = &self.inner;
+        let s = inner.session(id)?;
+        {
+            let st = lock(&s.state);
+            let option = st
+                .fold
+                .config_options
+                .iter()
+                .find(|o| o.id == config_id)
+                .ok_or_else(|| {
+                    AgentError::InvalidParams(format!(
+                        "session {id} has no config option `{config_id}`"
+                    ))
+                })?;
+            if !option.accepts(&value) {
+                return Err(AgentError::InvalidParams(format!(
+                    "config option `{config_id}` of session {id} does not take {value:?}"
+                )));
+            }
+        }
+        let live = inner.ensure_live(&s).await?;
+        live.set_config_option(config_id.clone(), value.clone())
+            .await?;
+        let mut st = lock(&s.state);
+        let mut options = st.fold.config_options.clone();
+        let changed = options
+            .iter_mut()
+            .find(|o| o.id == config_id)
+            .is_some_and(|o| o.value() != value && o.set_value(&value));
+        if changed {
+            inner.record(
+                &s,
+                &mut st,
+                SessionUpdate::ConfigOptions {
+                    config_options: options,
+                },
+            )?;
         }
         inner.sync_mode(&mut st)
     }

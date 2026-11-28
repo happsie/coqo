@@ -236,6 +236,62 @@ pub(crate) fn modes(state: &acp::SessionModeState) -> m::SessionModes {
     }
 }
 
+/// ACP session config options, in the agent's order. Kinds Coqo does not
+/// know are left out; grouped select entries are flattened, each with its
+/// group's name.
+pub(crate) fn config_options(options: &[acp::SessionConfigOption]) -> Vec<m::SessionConfigOption> {
+    options.iter().filter_map(config_option).collect()
+}
+
+fn config_option(option: &acp::SessionConfigOption) -> Option<m::SessionConfigOption> {
+    let entry = |o: &acp::SessionConfigSelectOption, group: Option<&str>| m::ConfigOptionValue {
+        value: o.value.0.to_string(),
+        name: o.name.clone(),
+        description: o.description.clone(),
+        group: group.map(str::to_owned),
+    };
+    let kind = match &option.kind {
+        acp::SessionConfigKind::Select(select) => m::ConfigOptionKind::Select {
+            current_value: select.current_value.0.to_string(),
+            options: match &select.options {
+                acp::SessionConfigSelectOptions::Ungrouped(list) => {
+                    list.iter().map(|o| entry(o, None)).collect()
+                }
+                acp::SessionConfigSelectOptions::Grouped(groups) => groups
+                    .iter()
+                    .flat_map(|g| g.options.iter().map(|o| entry(o, Some(&g.name))))
+                    .collect(),
+                _ => return None,
+            },
+        },
+        acp::SessionConfigKind::Boolean(b) => m::ConfigOptionKind::Boolean {
+            current_value: b.current_value,
+        },
+        _ => return None,
+    };
+    // The category's wire name: one of ACP's, or the agent's own.
+    let category = option
+        .category
+        .as_ref()
+        .and_then(|c| serde_json::to_value(c).ok())
+        .and_then(|v| v.as_str().map(str::to_owned));
+    Some(m::SessionConfigOption {
+        id: option.id.0.to_string(),
+        name: option.name.clone(),
+        description: option.description.clone(),
+        category,
+        kind,
+    })
+}
+
+/// A value for `session/set_config_option`.
+pub(crate) fn to_acp_config_value(value: &m::ConfigValue) -> acp::SessionConfigOptionValue {
+    match value {
+        m::ConfigValue::Boolean(b) => acp::SessionConfigOptionValue::boolean(*b),
+        m::ConfigValue::Value(v) => acp::SessionConfigOptionValue::value_id(v.clone()),
+    }
+}
+
 fn commands(items: &[acp::AvailableCommand]) -> Vec<m::AvailableCommand> {
     items
         .iter()
@@ -272,7 +328,7 @@ fn usage(u: &acp::UsageUpdate) -> m::Usage {
 }
 
 /// One ACP `session/update`, as a Coqo update. `None` for updates Coqo has
-/// no place for yet (config options, notices, compaction, …).
+/// no place for yet (notices, compaction, …).
 pub(crate) fn update(u: &acp::SessionUpdate) -> Option<AgentUpdate> {
     Some(match u {
         acp::SessionUpdate::UserMessageChunk(c) => {
@@ -304,6 +360,9 @@ pub(crate) fn update(u: &acp::SessionUpdate) -> Option<AgentUpdate> {
             AgentUpdate::CurrentMode(c.current_mode_id.0.to_string())
         }
         acp::SessionUpdate::UsageUpdate(u) => AgentUpdate::Usage(usage(u)),
+        acp::SessionUpdate::ConfigOptionUpdate(c) => {
+            AgentUpdate::ConfigOptions(config_options(&c.config_options))
+        }
         _ => return None,
     })
 }
@@ -481,6 +540,62 @@ pub(crate) fn legacy_auth_status(params: &Value) -> Option<m::AuthStatus> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn config_options_as_the_claude_adapter_sends_them() {
+        // Shaped like claude-agent-acp 0.113: a grouped model list, effort,
+        // Fast mode with the unstable `speed` category, and an option kind
+        // Coqo does not know (left out).
+        let update: acp::ConfigOptionUpdate = serde_json::from_value(json!({"configOptions": [
+            {"id": "model", "name": "Model", "category": "model", "type": "select",
+             "currentValue": "default", "options": [
+                {"group": "latest", "name": "Latest", "options": [
+                    {"value": "default", "name": "Default (recommended)", "description": "Opus"},
+                    {"value": "sonnet", "name": "Sonnet"}]}]},
+            {"id": "effort", "name": "Effort", "category": "thought_level", "type": "select",
+             "currentValue": "high", "options": [
+                {"value": "low", "name": "Low"}, {"value": "high", "name": "High"}]},
+            {"id": "fast_mode", "name": "Fast mode", "category": "speed", "type": "boolean",
+             "currentValue": false},
+            {"id": "note", "name": "Note", "type": "text", "currentValue": "x"},
+        ]}))
+        .unwrap();
+        let got = config_options(&update.config_options);
+        let ids: Vec<_> = got.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, ["model", "effort", "fast_mode"]);
+        assert_eq!(got[0].category.as_deref(), Some("model"));
+        assert_eq!(got[0].value_name(), "Default (recommended)");
+        let m::ConfigOptionKind::Select { options, .. } = &got[0].kind else {
+            panic!("a select");
+        };
+        assert_eq!(options[1].group.as_deref(), Some("Latest"));
+        assert_eq!(options[0].description.as_deref(), Some("Opus"));
+        assert_eq!(got[1].category.as_deref(), Some("thought_level"));
+        assert_eq!(got[2].category.as_deref(), Some("speed"));
+        assert_eq!(
+            got[2].kind,
+            m::ConfigOptionKind::Boolean {
+                current_value: false
+            }
+        );
+
+        let wire = |v| {
+            serde_json::to_value(acp::SetSessionConfigOptionRequest::new(
+                "s",
+                "x",
+                to_acp_config_value(&v),
+            ))
+            .unwrap()
+        };
+        assert_eq!(
+            wire(m::ConfigValue::Boolean(true)),
+            json!({"sessionId": "s", "configId": "x", "type": "boolean", "value": true})
+        );
+        assert_eq!(
+            wire(m::ConfigValue::Value("high".into())),
+            json!({"sessionId": "s", "configId": "x", "value": "high"})
+        );
+    }
 
     #[test]
     fn tool_calls_carry_the_adapters_tool_name() {

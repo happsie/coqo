@@ -1522,3 +1522,98 @@ async fn acceptance_criteria_stream_and_survive_a_daemon_restart() {
         .unwrap_err();
     assert_eq!(app_error(err), app_codes::SESSION_CLOSED);
 }
+
+fn current(snap: &SessionSnapshot, id: &str) -> ConfigValue {
+    snap.config_options
+        .iter()
+        .find(|o| o.id == id)
+        .unwrap_or_else(|| panic!("no option {id}: {:?}", snap.config_options))
+        .value()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_options_are_set_and_kept_across_a_daemon_restart() {
+    use coqo_agents::testing::{test_config_options, test_modes};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("coqo.db");
+    let set = |id: &SessionId, config_id: &str, value: ConfigValue| SetConfigOptionParams {
+        session: id.clone(),
+        config_id: config_id.into(),
+        value,
+    };
+    let start = [
+        AgentUpdate::Modes(test_modes()),
+        AgentUpdate::ConfigOptions(test_config_options()),
+    ];
+    let first = ScriptedProvider::new().on_start(start.clone());
+    let id = {
+        let d = daemon(SessionStore::open(&db).unwrap(), &first);
+        let client = d.connect().await;
+        let id = create(&client).await.id;
+        let snap = snapshot(&client, &id).await;
+        let ids: Vec<_> = snap.config_options.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, ["model", "effort", "fast"], "the agent's order");
+
+        for (config_id, value) in [
+            ("model", ConfigValue::Value("sonnet".into())),
+            ("effort", ConfigValue::Value("high".into())),
+            ("fast", ConfigValue::Boolean(true)),
+        ] {
+            client
+                .request::<SetConfigOption>(set(&id, config_id, value))
+                .await
+                .unwrap();
+        }
+        let snap = snapshot(&client, &id).await;
+        assert_eq!(current(&snap, "model"), ConfigValue::Value("sonnet".into()));
+        assert_eq!(current(&snap, "effort"), ConfigValue::Value("high".into()));
+        assert_eq!(current(&snap, "fast"), ConfigValue::Boolean(true));
+        assert!(first.calls().contains(&Call::SetConfigOption(
+            "effort".into(),
+            ConfigValue::Value("high".into())
+        )));
+
+        // Unknown options, values the option doesn't take and the wrong
+        // type are refused before they reach the agent.
+        for (config_id, value) in [
+            ("nope", ConfigValue::Boolean(true)),
+            ("model", ConfigValue::Value("gpt".into())),
+            ("fast", ConfigValue::Value("on".into())),
+        ] {
+            let err = client
+                .request::<SetConfigOption>(set(&id, config_id, value))
+                .await
+                .unwrap_err();
+            assert_eq!(app_error(err), codes::INVALID_PARAMS);
+        }
+        let sets = first
+            .calls()
+            .iter()
+            .filter(|c| matches!(c, Call::SetConfigOption(..)))
+            .count();
+        assert_eq!(sets, 3);
+        id
+    };
+
+    // A new daemon: the resume carries the chosen values, and an agent
+    // that kept them changes nothing.
+    let second = ScriptedProvider::new().on_start(start);
+    let d = daemon(SessionStore::open(&db).unwrap(), &second);
+    let client = d.connect().await;
+    let head = snapshot(&client, &id).await.head;
+    prompt(&client, &id, "hi").await.unwrap();
+    let snap = wait_for(&client, &id, |s| s.info.state == AgentState::Done).await;
+    let resumed = second.resume_options();
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0], snap.config_options);
+    assert_eq!(current(&snap, "effort"), ConfigValue::Value("high".into()));
+    let mut sub = subscribe(&client, &id, Some(head)).await;
+    let after = until(&mut sub, turn_ended).await;
+    assert!(
+        !after
+            .iter()
+            .any(|u| matches!(u.event, SessionUpdate::ConfigOptions { .. })),
+        "{after:?}"
+    );
+}

@@ -17,7 +17,7 @@ A chat is a tab like any file (PLAN §7.3, design board 1). The code is in `crat
 | Row | Look |
 |---|---|
 | Your prompt | Right-aligned bubble, sage at 16 %, 18 px radius with a 4 px bottom-right corner. Mentions show as mono chips. |
-| Turn header | A sand letter tile and "Provider · model". |
+| Turn header | A sand letter tile and "Provider · model", as board 1's "Claude Code · Opus". The model is the one chosen when the turn started (the session's `model` config option), else the one the provider's usage reports name. |
 | Agent message | Streaming Markdown (gpui-component's text view, wrapped as `coqo_ui::text::markdown`). |
 | Thinking | Collapsed by default ("▸ Thinking"); a click shows the reasoning in muted text. |
 | Tool call | A `surface` card, 12 px radius, mono 12 px: kind icon and title; on the right `+n −m` for edits, "running" in blue, "failed" in rose, or a sage check. A click expands it: locations as blue links (they open file tabs), the diff (green and rose line tints at 12 %), and up to 40 lines of output. |
@@ -35,7 +35,7 @@ A chat is a tab like any file (PLAN §7.3, design board 1). The code is in `crat
 
 ## Composer
 
-A `surface` field with an 18 px radius (`chat/tab/composer.rs`). **Enter** sends, **Shift+Enter** adds a line, **Esc** (or the **Stop** button that replaces **Send** while a turn runs) cancels the turn. The placeholder says "Message the agent. @ to mention, / for commands and skills". Below the text: the provider and mode chips, the model, the billing source from the provider's auth status, and context use. Cost appears only when it is a real charge (API key or cloud billing).
+A `surface` field with an 18 px radius (`chat/tab/composer.rs`). **Enter** sends, **Shift+Enter** adds a line, **Esc** (or the **Stop** button that replaces **Send** while a turn runs) cancels the turn. The placeholder says "Message the agent. @ to mention, / for commands and skills". Below the text: the provider chip, a chip for each of the session's settings (model, effort, Fast mode, mode, …), the billing source from the provider's auth status, and context use. Cost appears only when it is a real charge (API key or cloud billing).
 
 ![The @-mention popover over the composer, dark](screenshots/composer-dark.png)
 
@@ -44,11 +44,15 @@ A `surface` field with an 18 px radius (`chat/tab/composer.rs`). **Enter** sends
 - **Slash commands and skills.** `/` at the start of the prompt opens the session's `available_commands` (the agent's built-in commands and the user's own skills and plugins): `/name` in mono, its argument hint, and its description. Name prefixes rank first. Tab or Enter completes `/name `, and the prompt is sent as text, as ACP expects.
 - **Popover keys.** Up and Down choose (wrapping), Enter or Tab accepts, Esc closes. Esc keeps the popover closed until you leave that `@` or `/` word. With no matches the keys go back to the field, so Enter still sends.
 - **Provider.** Until the first message, the provider chip is a dropdown (a chevron shows) of the daemon's providers: name, description, a sage check on the current one, unavailable ones dimmed. Picking another provider creates a new session on it (same folder and workspace), closes the empty one, and shows the new one in the same tab. After the first message the chip is a plain label: a chat keeps its provider, so start a new chat to use another.
-- **Mode.** The mode chip is a dropdown of the session's modes with their descriptions (`sessions/setMode`), keyboard and mouse alike.
-- **Model.** Read-only, from the provider's usage reports. The protocol doesn't list a provider's models yet, so there is no model picker.
+- **Settings (session config options).** Agents that offer ACP session config options (Claude Code: Model, Effort, Fast mode, Mode, and Agent when you have custom agents) get one chip per option after the provider chip, in the agent's order. A choice from a list is a dropdown chip like board 1's "Opus ▾": the model shows only its name ("Opus"), anything else its name and value ("Effort: High", "Mode: Manual"). The dropdown is the shared card: each entry's name and description, a sage check on the current one, group names as section labels when the agent groups its entries, and the option's description as the hint line; keyboard and mouse alike. An on/off option is a toggle chip with no chevron: raised and muted while off; while on, sage text on sage at 16 % with a 40 % sage hairline. A `speed` option (Fast mode) carries the zap glyph, others a check or an empty circle. A pick calls `sessions/setConfigOption`; the chips follow the agent's `config_options` updates, so a new model that offers other efforts changes the effort chip, and a change the agent makes itself shows up too. Options stay usable during a turn; if the agent refuses a change, the error shows above the composer.
+- **Mode.** For an agent with a `mode` option, that option's chip is the mode chip. Otherwise the mode chip is a dropdown of the session's modes with their descriptions (`sessions/setMode`), keyboard and mouse alike.
+- **Model.** Without a `model` option, the model is a read-only label from the provider's usage reports.
+- **Kept across restarts.** The daemon keeps each session's options. When a session resumes (a daemon restart, an agent crash) and the agent reports a value it forgot (Claude's adapter keeps the model but not the effort), the daemon sets it again.
+
+![The settings chips with the model dropdown open, dark](screenshots/settings-dark.png)
 - **History.** Up in an empty composer recalls the last prompt you sent in this chat, with its mention chips; Up and Down step through earlier ones, and Down past the newest empties the field. Editing the recalled text ends the recall.
 
-Popovers and dropdowns share one card: `surface`, a `border_strong` hairline, a 14 px radius and the deep drop shadow of the bolt popover (`widgets::popover`). The selected row is `surface_selected` with a 10 px radius; a hint line in `text_subtle` 11 px closes the card.
+Popovers and dropdowns share one card: `surface`, a `border_strong` hairline, a 14 px radius and the deep drop shadow of the bolt popover (`widgets::popover`). The selected row is `surface_selected` with a 10 px radius; a hint line in `text_subtle` 11 px closes the card. A dropdown's list stops growing at 360 px and scrolls (Claude offers a dozen models), keeping the keyboard's choice in view.
 
 When the provider needs a login, a sand banner says how to sign in to the agent's own tool (for Claude Code: run `claude` in a terminal and use `/login`). Coqo never handles the login.
 
@@ -74,4 +78,6 @@ A chat tab saves only its session id. When it comes back (a new window, a restar
 
 ![The @-mention popover, light](screenshots/composer-light.png)
 
-To regenerate the screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored chat_screenshots` (offscreen, needs a GPU) and downscale the 2× PNGs to 1440×900 as `chat-<appearance>.png`, `composer-<appearance>.png` and `setup-dark.png`.
+![The settings chips with the model dropdown open, light](screenshots/settings-light.png)
+
+To regenerate the screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored chat_screenshots` (offscreen, needs a GPU) and downscale the 2× PNGs to 1440×900 as `chat-<appearance>.png`, `composer-<appearance>.png`, `settings-<appearance>.png` and `setup-dark.png`.
