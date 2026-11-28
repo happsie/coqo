@@ -20,9 +20,14 @@ From top to bottom:
     - a "New branch name" field; `Enter` creates the branch at `HEAD` and switches to it.
 - **Commit box:** a `PromptInput` (2–8 rows) on `surface`, with the field radius and a `border` hairline.
   - `Enter` commits and `Shift+Enter` adds a newline.
-  - Below it is the button:
-    - With something staged and a message typed, it is the sage primary button "Commit N files".
-    - Otherwise it is raised, in `text_subtle`.
+  - Below it are two buttons:
+    - **Commit** fills the row. With something staged and a message typed, it is the sage primary button "Commit N files"; otherwise it is raised, in `text_subtle`.
+    - **Draft** sits to its right (#224, ADR 0024). It is raised, with the sparkles icon, and asks an agent (the user's own Claude Code) for a conventional-commit message for what is staged. The tooltip names the agent.
+      - While it works, it reads "Drafting…" in `sand` with a loader icon. A click cancels, and the commit box keeps what it had.
+      - The reply replaces the commit box's text, to edit before committing.
+      - With nothing staged, no agent available, or coqod down, it is in `text_subtle` and does nothing; the tooltip says why.
+      - A failed draft shows under the buttons in `rose`. A click dismisses it.
+      - The command palette's "Draft commit message" (Git) shows the pane and starts a draft.
 - **Groups:** an upper-case section label with the count (`STAGED · 3`, `CHANGES · 3`, and `CONFLICTS · n` only when there are conflicts), plus a "Stage all" or "Unstage all" link in `text_subtle` on the right.
 - **File rows:**
   - Sizing: 26 px tall, `text_sm`, radius 9, with a `surface` hover.
