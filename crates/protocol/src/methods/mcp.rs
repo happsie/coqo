@@ -37,6 +37,7 @@ pub const CORE_TOOLS: &[&str] = &[
     "annotate",
     "set_acceptance_criteria",
     "publish_walkthrough",
+    "reply_to_review",
 ];
 
 /// Params of [`Tools`] and the [`ToolsChanged`] topic.

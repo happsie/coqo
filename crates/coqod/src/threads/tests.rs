@@ -59,6 +59,7 @@ async fn harness(data: &Path) -> Harness {
         &DataDirs::at(data).global_db(),
         Arc::clone(&workspaces),
         git,
+        None,
     )
     .unwrap();
     let router = workspace::register(Router::new(), workspaces);

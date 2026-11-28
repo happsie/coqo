@@ -32,29 +32,46 @@ use coqo_ui::{
     test::{TestAppContext, TestWindowExt as _},
 };
 
-use super::overlay::{ReviewState, SEND_LATER, ThreadsOverlay};
+use super::overlay::{ReviewState, ThreadsOverlay};
 use crate::{
     daemon::{self, Daemon, DaemonConfig},
     diff::{DiffView, source::SourceVersions},
     git::diff::{self as diff_tab, DiffTab},
     shell::{DEFAULT_WORKSPACE, Shell},
-    test_support::{TIMEOUT, TYPED_KEYS, TYPED_TEXT, TestDaemon, record_key_actions},
+    test_support::{AgentDaemon, TIMEOUT, TYPED_KEYS, TYPED_TEXT, TestDaemon, record_key_actions},
     workspace,
 };
+
+/// The daemon a test's UI talks to.
+enum Backing {
+    /// The real `coqod`.
+    Full(TestDaemon),
+    /// Its services with a scripted agent.
+    Agent(AgentDaemon),
+}
 
 struct Ui {
     cx: TestAppContext,
     window: AnyWindowHandle,
     shell: Entity<Shell>,
-    daemon: TestDaemon,
+    daemon: Backing,
     _tmp: tempfile::TempDir,
 }
 
 fn open_ui(folder: PathBuf, tmp: tempfile::TempDir) -> Ui {
     let daemon = TestDaemon::start(tmp.path().join("run"), tmp.path().join("data"));
+    let paths = daemon.paths.clone();
+    open_ui_on(folder, Backing::Full(daemon), paths, tmp)
+}
+
+fn open_ui_on(
+    folder: PathBuf,
+    backing: Backing,
+    paths: coqo_client::DaemonPaths,
+    tmp: tempfile::TempDir,
+) -> Ui {
     let cx = TestAppContext::single();
     cx.executor().allow_parking();
-    let paths = daemon.paths.clone();
     let (window, shell) = cx.update(|cx| {
         coqo_ui::init(Appearance::Dark, cx);
         let mut config = DaemonConfig::at(paths);
@@ -79,12 +96,26 @@ fn open_ui(folder: PathBuf, tmp: tempfile::TempDir) -> Ui {
         cx,
         window,
         shell,
-        daemon,
+        daemon: backing,
         _tmp: tmp,
     }
 }
 
 impl Ui {
+    fn full(&mut self) -> &mut TestDaemon {
+        match &mut self.daemon {
+            Backing::Full(d) => d,
+            Backing::Agent(_) => panic!("not the full daemon"),
+        }
+    }
+
+    fn agent_daemon(&self) -> &AgentDaemon {
+        match &self.daemon {
+            Backing::Agent(d) => d,
+            Backing::Full(_) => panic!("not the scripted daemon"),
+        }
+    }
+
     fn frame<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
         self.cx
             .update_window(self.window, |_, window, cx| {
@@ -229,7 +260,6 @@ fn comment_on_a_line_reply_resolve_and_find_it_after_a_restart() {
     assert!(ui.has("review-send"));
     assert_eq!(ui.cx.read(|cx| review.read(cx).pending_count(cx)), 1);
     assert!(ui.has(("thread-marker", t.id.0 as usize)));
-    assert_eq!(SEND_LATER, "Sending to the agent comes in #95");
 
     // Reply.
     let id = t.id;
@@ -275,10 +305,10 @@ fn comment_on_a_line_reply_resolve_and_find_it_after_a_restart() {
 
     // The daemon restarts: the thread is still there, resolved, with both
     // comments, and the UI follows it again.
-    ui.daemon.stop();
+    ui.full().stop();
     ui.wait_for("the drop", |ui| !ui.connected());
-    ui.daemon.serve();
-    let listed = ui.daemon.with_client(async |client| {
+    ui.full().serve();
+    let listed = ui.full().with_client(async |client| {
         client
             .request::<tm::List>(ListParams {
                 workspace: t.workspace.clone(),
@@ -314,6 +344,237 @@ fn comment_on_a_line_reply_resolve_and_find_it_after_a_restart() {
         ui.threads(&review)
             .first()
             .is_some_and(|t| t.status == ThreadStatus::Open)
+    });
+}
+
+/// Open the git pane's unstaged diff (first file row) and wait for its
+/// review state, threads listed.
+fn open_review(ui: &mut Ui, path: &str) -> (Entity<DiffTab>, Entity<ReviewState>) {
+    ui.click("sidebar-git");
+    ui.wait_for("the change", |ui| ui.has(("git-unstaged-row", 0usize)));
+    ui.click(("git-unstaged-row", 0usize));
+    ui.wait_for("the review", |ui| {
+        ui.diff_tab().is_some_and(|tab| {
+            ui.cx.read(|cx| {
+                tab.read(cx).review().is_some()
+                    && tab.read(cx).view().read(cx).file_diff(path).is_some()
+            })
+        })
+    });
+    let tab = ui.diff_tab().unwrap();
+    let review = ui.cx.read(|cx| tab.read(cx).review().unwrap().clone());
+    ui.wait_for("the threads", |ui| {
+        ui.cx
+            .read(|cx| review.read(cx).store().read(cx).is_loaded())
+    });
+    (tab, review)
+}
+
+/// #95 from the button to the reply: "Send 1 comment to …" opens the
+/// popover with the workspace's chat chosen; sending puts the comment in
+/// one prompt to that chat and clears it; the header says the agent is
+/// addressing it; the agent's reply (through `review/reply`, as its
+/// `reply_to_review` call) shows in the card under its name and keeps the
+/// resolved thread open while the turn runs; a second send mid-turn is
+/// refused and keeps its comment; the chat shows "Review sent", which opens
+/// the diff; when the turn ends the thread folds as resolved.
+#[test]
+fn send_the_review_and_the_agents_reply_lands_in_the_thread() {
+    use coqo_agents::testing::{Call, ScriptedProvider, Step};
+    use coqo_protocol::methods::agents::{
+        self as agm, ContentBlock, CreateSessionParams, StopReason,
+    };
+
+    let go = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider =
+        ScriptedProvider::new().turn([Step::Wait(go.clone()), Step::Stop(StopReason::EndTurn)]);
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = Repo::init(&tmp.path().join("demo-repo"));
+    let lines: String = (1..=12).map(|i| format!("line {i}\n")).collect();
+    repo.write("src/lib.rs", &lines);
+    repo.commit_all("Twelve lines");
+    repo.write("src/lib.rs", &lines.replace("line 8\n", "eight\n"));
+    let daemon = AgentDaemon::with_review(&tmp.path().join("d"), &provider);
+    let paths = daemon.paths.clone();
+    let folder = repo.path().canonicalize().unwrap();
+    let mut ui = open_ui_on(folder.clone(), Backing::Agent(daemon), paths, tmp);
+
+    // A chat in the workspace.
+    ui.wait_for("the workspace", |ui| {
+        ui.cx.read(|cx| {
+            crate::workspace::Workspaces::global(cx).is_some_and(|w| w.read(cx).current().is_some())
+        })
+    });
+    let ws = ui.cx.read(|cx| {
+        crate::workspace::Workspaces::global(cx)
+            .unwrap()
+            .read(cx)
+            .current()
+            .unwrap()
+            .id
+            .clone()
+    });
+    let (cwd, ws_id) = (folder.to_string_lossy().into_owned(), ws.0.clone());
+    let session = ui.agent_daemon().with_client(async move |client| {
+        client
+            .request::<agm::Create>(CreateSessionParams {
+                provider: "fake".into(),
+                cwd,
+                workspace: Some(ws_id),
+                title: Some("Volume discount".into()),
+                mode: None,
+            })
+            .await
+            .unwrap()
+            .id
+    });
+    ui.wait_for("the chat listed", |ui| {
+        ui.cx.read(|cx| {
+            crate::chat::list::ChatList::global(cx)
+                .is_some_and(|l| l.read(cx).info(&session).is_some())
+        })
+    });
+
+    // A pending comment on the changed line.
+    let (_tab, review) = open_review(&mut ui, "src/lib.rs");
+    let range = LineRange::lines("src/lib.rs", Side::New, 8, 8);
+    ui.frame(|window, cx| {
+        review.update(cx, |s, cx| s.open_composer(&range, window, cx));
+    });
+    ui.type_into(|s| s.composer_input().cloned(), &review, "Spell it **8**.");
+    ui.click("thread-composer-add");
+    ui.wait_for("the thread", |ui| ui.threads(&review).len() == 1);
+    let id = ui.threads(&review)[0].id;
+    ui.wait_for("the send button", |ui| ui.has("review-send"));
+
+    // The popover offers the chat, chosen.
+    ui.click("review-send");
+    ui.wait_for("the popover", |ui| ui.has("review-send-popover"));
+    assert!(ui.has(("review-target", 0usize)) && ui.has("review-target-new"));
+    assert_eq!(
+        ui.cx.read(|cx| review.read(cx).send_target().cloned()),
+        Some(crate::questions::ask::AskTarget::Session(session.clone()))
+    );
+    ui.click("review-send-go");
+    ui.wait_for("the send", |ui| {
+        ui.cx
+            .read(|cx| !review.read(cx).is_sending_open() && review.read(cx).pending_count(cx) == 0)
+    });
+    ui.wait_for("the addressing state", |ui| ui.has("review-addressing"));
+    let prompt = provider
+        .calls()
+        .into_iter()
+        .find_map(|c| match c {
+            Call::Prompt(content) => Some(content),
+            _ => None,
+        })
+        .expect("the review was prompted");
+    let ContentBlock::Text { text } = &prompt[0] else {
+        panic!("{prompt:?}")
+    };
+    assert!(text.contains(&format!("## Thread {id}: ")), "{text}");
+    assert!(text.contains("src/lib.rs:8"), "{text}");
+    assert!(text.contains("> Spell it **8**."), "{text}");
+    assert!(text.contains("reply_to_review"), "{text}");
+
+    // The agent replies and resolves: the card shows it, still open.
+    let (ws_id, agent) = (ws.clone(), session.clone());
+    ui.agent_daemon().with_client(async move |client| {
+        client
+            .request::<tm::AgentReply>(tm::AgentReplyParams {
+                workspace: ws_id,
+                session: agent,
+                thread: id,
+                body: "Now `8`.".into(),
+                resolve: true,
+            })
+            .await
+            .unwrap()
+    });
+    ui.wait_for("the reply in the card", |ui| {
+        let t = ui.threads(&review);
+        t.first().is_some_and(|t| {
+            t.status == ThreadStatus::Resolved
+                && t.comments.last().is_some_and(|c| {
+                    matches!(c.author, Author::Agent { .. })
+                        && ui.has(("thread-comment-card", c.id.0 as usize))
+                })
+        })
+    });
+    let reply = ui.threads(&review)[0].comments.last().unwrap().clone();
+    let name = ui
+        .cx
+        .read(|cx| super::author_label(review.read(cx).store().read(cx), &reply.author, cx).1);
+    assert_eq!(name, "Fake agent");
+    assert!(
+        ui.has(("thread-resolve", id.0 as usize)),
+        "open while the turn runs"
+    );
+    assert!(!ui.has(("thread-show", id.0 as usize)));
+
+    // Mid-turn, another comment cannot go yet, and stays pending.
+    let store = ui.cx.read(|cx| review.read(cx).store().clone());
+    let added = ui
+        .cx
+        .update(|cx| super::reply(&store, id, "And a test.".into(), cx));
+    ui.wait_for("the new comment", |ui| {
+        ui.cx.read(|cx| review.read(cx).pending_count(cx) == 1)
+    });
+    drop(added);
+    ui.click("review-send");
+    ui.wait_for("the popover", |ui| ui.has("review-send-popover"));
+    ui.click("review-send-go");
+    ui.wait_for("the refusal", |ui| ui.has("review-send-error"));
+    let error = ui
+        .cx
+        .read(|cx| review.read(cx).send_error().map(str::to_owned))
+        .unwrap();
+    assert!(
+        error.starts_with("\"Volume discount\" is in the middle of a turn"),
+        "{error}"
+    );
+    assert_eq!(ui.cx.read(|cx| review.read(cx).pending_count(cx)), 1);
+    ui.click("review-send-cancel");
+    ui.wait_for("the popover closed", |ui| !ui.has("review-send-popover"));
+
+    // The chat shows the review as a card that opens the diff.
+    let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
+    let chat_session = session.clone();
+    ui.frame(|window, cx| crate::chat::open_session(dock.downgrade(), chat_session, window, cx));
+    let card = |ui: &mut Ui| -> Option<usize> {
+        let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
+        ui.cx.read(|cx| {
+            let dock = dock.read(cx);
+            let chat = dock
+                .tree()
+                .tabs()
+                .into_iter()
+                .find_map(|t| dock.tab(t.id)?.downcast::<crate::chat::tab::ChatTab>())?;
+            chat.read(cx).transcript().entries.iter().position(|e| {
+                matches!(e, crate::chat::transcript::Entry::User { content }
+                    if crate::chat::tab::review_link(content).is_some())
+            })
+        })
+    };
+    ui.wait_for("the review card", |ui| {
+        card(ui).is_some_and(|ix| ui.has(("chat-review", ix)))
+    });
+    let ix = card(&mut ui).unwrap();
+    ui.click(("chat-review-open", ix));
+    ui.wait_for("the diff again", |ui| {
+        let dock = ui.cx.read(|cx| ui.shell.read(cx).dock().clone());
+        ui.cx.read(|cx| {
+            let dock = dock.read(cx);
+            dock.active_tab()
+                .and_then(|t| dock.tab(t))
+                .is_some_and(|t| t.downcast::<DiffTab>().is_some())
+        })
+    });
+
+    // The turn ends: the thread folds as resolved, with the agent's reply.
+    go.notify_one();
+    ui.wait_for("the fold", |ui| {
+        !ui.has("review-addressing") && ui.has(("thread-show", id.0 as usize))
     });
 }
 
@@ -512,8 +773,9 @@ fn sample_thread(
     }
 }
 
-/// The overlay over board 4's sample, offscreen, for visual review. Needs
-/// a GPU: `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored threads_screenshots`.
+/// The overlay over board 4's sample, offscreen, for visual review: the
+/// pending review, its send popover, and the agent addressing it (#95).
+/// Needs a GPU: `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored threads_screenshots`.
 #[test]
 #[ignore = "needs a GPU; run manually"]
 fn threads_screenshots() {
@@ -541,9 +803,52 @@ fn threads_screenshots() {
         .unwrap_or_else(std::env::temp_dir);
     let k = "checkout-core/src/main/kotlin/com/acme/checkout/pricing/DiscountService.kt";
     let java = "checkout-core/src/main/java/com/acme/checkout/CheckoutService.java";
-    for (name, appearance) in [("dark", Appearance::Dark), ("light", Appearance::Light)] {
-        let image = render_offscreen(appearance, size(1440., 900.), |window, cx| {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Shot {
+        Pending,
+        Send,
+        Addressing,
+    }
+    let shots = [
+        ("dark", Appearance::Dark, Shot::Pending),
+        ("light", Appearance::Light, Shot::Pending),
+        ("send-dark", Appearance::Dark, Shot::Send),
+        ("send-light", Appearance::Light, Shot::Send),
+        ("addressing-dark", Appearance::Dark, Shot::Addressing),
+        ("addressing-light", Appearance::Light, Shot::Addressing),
+    ];
+    for (name, appearance, shot) in shots {
+        let image = render_offscreen(appearance, size(1440., 900.), move |window, cx| {
             crate::diff::init(cx);
+            let session = coqo_protocol::methods::agents::SessionId("s-1".into());
+            let list = crate::chat::list::init(cx);
+            list.update(cx, |l, cx| {
+                l.upsert(
+                    coqo_protocol::methods::agents::SessionInfo {
+                        id: session.clone(),
+                        provider: "claude-acp".into(),
+                        // The list follows the current workspace: none offscreen.
+                        workspace: None,
+                        cwd: "/work/checkout".into(),
+                        title: Some("Volume discount".into()),
+                        state: if shot == Shot::Addressing {
+                            coqo_protocol::methods::agents::AgentState::Working
+                        } else {
+                            coqo_protocol::methods::agents::AgentState::Done
+                        },
+                        state_reason: None,
+                        state_since: None,
+                        status: None,
+                        criteria: Vec::new(),
+                        tool_use: Vec::new(),
+                        mode: None,
+                        closed: false,
+                        created_at: 1,
+                        updated_at: 1,
+                    },
+                    cx,
+                );
+            });
             let source = StaticSource {
                 identity: "screenshot".into(),
                 base: "main".into(),
@@ -560,8 +865,9 @@ fn threads_screenshots() {
             let (list, diffs) = (source.list(), source.files.clone());
             let view = cx.new(|cx| DiffView::new(Rc::new(source), None, window, cx));
             let agent = Author::Agent {
-                session: coqo_protocol::methods::agents::SessionId("s-1".into()),
+                session: session.clone(),
             };
+            let addressing = shot == Shot::Addressing;
             let store = super::WorkspaceThreads::fixed(
                 WorkspaceId("ws".into()),
                 vec![
@@ -572,33 +878,66 @@ fn threads_screenshots() {
                         ThreadStatus::Resolved,
                         vec![
                             (Author::User, "Can isMember throw?", false),
-                            (agent, "Wrapped it in runCatching", false),
+                            (agent.clone(), "Wrapped it in runCatching", false),
                         ],
                     ),
                     sample_thread(
                         2,
                         k,
                         (19, 19),
-                        ThreadStatus::Open,
-                        vec![(
-                            Author::User,
-                            "Round with `RoundingMode.HALF_EVEN` to 2 decimals before the cap. \
-                             Finance requires banker's rounding on discounts. Please also add a \
-                             test with a 3-decimal result.",
-                            true,
-                        )],
+                        if addressing {
+                            ThreadStatus::Resolved
+                        } else {
+                            ThreadStatus::Open
+                        },
+                        {
+                            let mut c = vec![(
+                                Author::User,
+                                "Round with `RoundingMode.HALF_EVEN` to 2 decimals before the \
+                                 cap. Finance requires banker's rounding on discounts. Please \
+                                 also add a test with a 3-decimal result.",
+                                !addressing,
+                            )];
+                            if addressing {
+                                c.push((
+                                    agent.clone(),
+                                    "Rounded with `HALF_EVEN` to 2 decimals before the cap, and \
+                                     added `rounds_a_three_decimal_discount`.",
+                                    false,
+                                ));
+                            }
+                            c
+                        },
                     ),
                     sample_thread(
                         3,
                         java,
                         (3, 3),
                         ThreadStatus::Open,
-                        vec![(Author::User, "Null-safe?", true)],
+                        vec![(Author::User, "Null-safe?", !addressing)],
                     ),
                 ],
                 cx,
             );
-            ThreadsOverlay::attach_to(&view, store, window, cx);
+            let review = ThreadsOverlay::attach_to(&view, store.clone(), window, cx);
+            match shot {
+                Shot::Pending => {}
+                Shot::Send => review.update(cx, |r, cx| {
+                    r.open_send_with(vec![session.clone()], Some(session.clone()), cx)
+                }),
+                Shot::Addressing => store.update(cx, |s, cx| {
+                    s.track(
+                        super::SentReview {
+                            session: session.clone(),
+                            diff: Some("screenshot".into()),
+                            count: 2,
+                            threads: vec![ThreadId(2), ThreadId(3)],
+                            at: i64::MAX,
+                        },
+                        cx,
+                    )
+                }),
+            }
             view.update(cx, |v, cx| {
                 v.loaded(list, diffs.into_iter().map(Ok).collect(), cx);
                 let paths: Vec<String> = v.files().iter().map(|f| f.path.clone()).collect();

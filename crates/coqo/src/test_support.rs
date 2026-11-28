@@ -243,6 +243,16 @@ pub struct AgentDaemon {
 impl AgentDaemon {
     /// Serve `provider` as the "fake" agent, with state under `dir`.
     pub fn start(dir: &Path, provider: &ScriptedProvider) -> Self {
+        Self::serve(dir, provider, false)
+    }
+
+    /// [`Self::start`], plus the git mod and the review threads
+    /// (`git/*`, `threads/*`, `review/*`), for sending a review (#95).
+    pub fn with_review(dir: &Path, provider: &ScriptedProvider) -> Self {
+        Self::serve(dir, provider, true)
+    }
+
+    fn serve(dir: &Path, provider: &ScriptedProvider, review: bool) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -295,7 +305,31 @@ impl AgentDaemon {
             Some(questions.clone()),
         )
         .spawn(stop.clone());
-        let router = coqod::workspace::register(Router::new(), workspaces);
+        let router = if review {
+            let mods = coqod::mods::Mods::load(
+                coqo_kernel::mods::BuiltinMods::new()
+                    .with(coqo_mod_git::MANIFEST, coqo_mod_git::GitMod::default()),
+            );
+            runtime.block_on(mods.start());
+            let (started, stop_mods) = (mods.clone(), stop.clone());
+            runtime.spawn(async move {
+                stop_mods.cancelled().await;
+                started.shutdown().await;
+            });
+            let git = coqod::git::GitService::new(Arc::clone(&workspaces), mods);
+            let threads = coqod::threads::ThreadService::open(
+                &db,
+                Arc::clone(&workspaces),
+                Arc::clone(&git),
+                Some(manager.clone()),
+            )
+            .unwrap();
+            let router = coqod::git::register(Router::new(), git);
+            coqod::threads::register(router, threads)
+        } else {
+            Router::new()
+        };
+        let router = coqod::workspace::register(router, workspaces);
         let router = coqo_agents::rpc::register(router, manager);
         let router = coqod::questions::register(router, questions);
         let router = coqod::walkthroughs::register(router, walkthroughs);

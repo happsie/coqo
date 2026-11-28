@@ -18,9 +18,16 @@
 //!   Resolve / Reopen, and Discard for the user's pending comments. A
 //!   resolved thread folds to one line; "Show" opens it.
 //! - **The review.** The header counts the pending comments of threads
-//!   started in this diff and holds "Send N comments to Claude", disabled
-//!   until #95 sends them; each file row shows its pending count; a note
-//!   under the file list says what the pending review is.
+//!   started in this diff and holds "Send N comments to <agent>" (#95). It
+//!   opens a popover with the chats to send to, as pills: the one whose
+//!   agent changed these files first (from the open chats' transcripts),
+//!   then the chats shown in the workbench, then the rest by activity, and
+//!   "New chat". A chat in a turn is refused with what to do; nothing is
+//!   lost. While the agent's turn runs the header says "Claude is
+//!   addressing N comments", its replies appear in the cards as they land,
+//!   and threads it resolves stay open until the turn ends, then fold.
+//!   Each file row shows its pending count; a note under the file list
+//!   says what the pending review is.
 //! - **Gutter.** A marker on each thread's first line (sand while it has
 //!   pending comments, sage once resolved, blue otherwise); pending threads'
 //!   lines are tinted sand.
@@ -32,6 +39,7 @@ use std::{
 };
 
 use coqo_protocol::methods::{
+    agents::SessionId,
     git::FileDiff,
     threads::{
         Author, Comment, CommentId, CreateParams, Thread, ThreadId, ThreadLines, ThreadSide,
@@ -44,22 +52,53 @@ use coqo_ui::{
     gpui::Focusable as _,
     gpui::{
         AnyElement, App, AppContext as _, Context, ElementId, Entity, FontWeight,
-        InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-        StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+        InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+        StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, deferred, div,
+        px, relative,
     },
     input::{PromptInput, PromptInputEvent},
     text::markdown,
-    widgets::{FluentBuilder as _, Icon, TestSupportExt as _, icon, primary, raised},
+    widgets::{FluentBuilder as _, Icon, TestSupportExt as _, icon, popover, primary, raised},
 };
 
-use super::{WorkspaceThreads, threads_for};
+use super::{WorkspaceThreads, author_label, in_turn, threads_for};
 use crate::{
     chat::list::ChatList,
     diff::{DiffOverlay, DiffSource, DiffView, DiffViewEvent, source::SourceVersions},
+    questions::ask::{self, AskTarget},
+    workspace::Workspaces,
 };
 
-/// The tooltip of the disabled send button.
-pub const SEND_LATER: &str = "Sending to the agent comes in #95";
+/// The provider a new chat prefers (as the ask popover's).
+const PREFERRED_PROVIDER: &str = "claude-acp";
+
+/// The send popover: where the review goes.
+struct SendState {
+    /// The chats offered, the default first.
+    sessions: Vec<SessionId>,
+    /// The chat whose agent changed these files, if one is open.
+    origin: Option<SessionId>,
+    target: AskTarget,
+    sending: bool,
+    error: Option<String>,
+    _task: Option<Task<()>>,
+}
+
+/// What a send to a chat in a turn says (as the daemon's refusal).
+pub fn busy_message(title: Option<&str>, count: usize) -> String {
+    let chat = title
+        .filter(|t| !t.is_empty())
+        .map_or_else(|| "That chat".to_owned(), |t| format!("\"{t}\""));
+    let comments = if count == 1 {
+        "comment stays"
+    } else {
+        "comments stay"
+    };
+    format!(
+        "{chat} is in the middle of a turn. Wait for it to finish or pick another chat; your \
+         {count} {comments} pending."
+    )
+}
 
 /// What a slot of this overlay holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +176,8 @@ pub struct ReviewState {
     expanded: HashSet<ThreadId>,
     error: Option<(Option<ThreadId>, String)>,
     sending: bool,
+    /// The send popover, while open.
+    send: Option<SendState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -179,10 +220,217 @@ impl ReviewState {
             expanded: HashSet::new(),
             error: None,
             sending: false,
+            send: None,
             _subscriptions: subscriptions,
         };
+        if let Some(list) = ChatList::global(cx) {
+            this._subscriptions
+                .push(cx.observe(&list, |_, _, cx| cx.notify()));
+        }
         this.sync_inputs(window, cx);
         this
+    }
+
+    // ---- sending (#95) ---------------------------------------------------------
+
+    /// The chats to send this diff's review to, the default first, and the
+    /// one whose agent made the change, if open.
+    fn send_choices(&self, cx: &App) -> (Vec<SessionId>, Option<SessionId>) {
+        let Some(v) = self.versions(cx) else {
+            return (Vec::new(), None);
+        };
+        let identity = self.source.identity();
+        let root = Workspaces::global(cx).and_then(|w| {
+            let ws = w.read(cx).current().filter(|ws| ws.id == v.workspace)?;
+            ws.roots
+                .iter()
+                .find(|r| r.id == v.root)
+                .map(|r| r.path.trim_end_matches('/').to_owned())
+        });
+        let mut files = Vec::new();
+        for t in self.store.read(cx).all() {
+            if t.diff.as_deref() != Some(identity.as_str()) || t.pending().next().is_none() {
+                continue;
+            }
+            if let Some(root) = &root {
+                files.push(format!("{root}/{}", t.anchor.path));
+            }
+            files.push(t.anchor.path.clone());
+        }
+        let open: Vec<SessionId> = ChatList::global(cx)
+            .map(|l| {
+                l.read(cx)
+                    .sessions()
+                    .iter()
+                    .filter(|s| !s.closed && s.workspace.as_deref() == Some(v.workspace.0.as_str()))
+                    .map(|s| s.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let origin = crate::shell::chats_that_changed(&v.workspace, &files, cx)
+            .into_iter()
+            .find(|s| open.contains(s));
+        let shown = crate::shell::shown_chats(&v.workspace, cx);
+        let mut sessions = ask::choices(&v.workspace, &shown, cx);
+        if let Some(origin) = &origin {
+            sessions.retain(|s| s != origin);
+            sessions.insert(0, origin.clone());
+        }
+        (sessions, origin)
+    }
+
+    /// The default chat's agent, for the send button ("Claude").
+    fn send_to_name(&self, cx: &App) -> String {
+        let store = self.store.read(cx);
+        let target = match &self.send {
+            Some(send) => send.target.clone(),
+            None => self
+                .send_choices(cx)
+                .0
+                .first()
+                .cloned()
+                .map_or(AskTarget::New, AskTarget::Session),
+        };
+        match target {
+            AskTarget::Session(id) => store.agent_name(&id, cx),
+            AskTarget::New => store.provider_label(Some(PREFERRED_PROVIDER)),
+        }
+    }
+
+    /// Whether the send popover is open.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn is_sending_open(&self) -> bool {
+        self.send.is_some()
+    }
+
+    /// Where the popover sends to.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn send_target(&self) -> Option<&AskTarget> {
+        self.send.as_ref().map(|s| &s.target)
+    }
+
+    /// The popover's error, if it shows one.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn send_error(&self) -> Option<&str> {
+        self.send.as_ref().and_then(|s| s.error.as_deref())
+    }
+
+    /// Open the send popover (or close it).
+    pub fn toggle_send(&mut self, cx: &mut Context<Self>) {
+        if self.send.take().is_none() {
+            let (sessions, origin) = self.send_choices(cx);
+            self.open_send_with(sessions, origin, cx);
+        }
+        cx.notify();
+    }
+
+    /// Open the send popover offering `sessions` (the first is the default).
+    pub fn open_send_with(
+        &mut self,
+        sessions: Vec<SessionId>,
+        origin: Option<SessionId>,
+        cx: &mut Context<Self>,
+    ) {
+        let target = sessions
+            .first()
+            .cloned()
+            .map_or(AskTarget::New, AskTarget::Session);
+        self.send = Some(SendState {
+            sessions,
+            origin,
+            target,
+            sending: false,
+            error: None,
+            _task: None,
+        });
+        cx.notify();
+    }
+
+    pub fn close_send(&mut self, cx: &mut Context<Self>) {
+        if self.send.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Send to `target` instead.
+    pub fn set_send_target(&mut self, target: AskTarget, cx: &mut Context<Self>) {
+        if let Some(send) = &mut self.send {
+            send.target = target;
+            send.error = None;
+            cx.notify();
+        }
+    }
+
+    /// Send this diff's pending review to the chosen chat (starting one
+    /// first for a new chat). A chat in a turn is refused, and nothing is
+    /// lost.
+    pub fn send_review(&mut self, cx: &mut Context<Self>) {
+        let count = self.pending_count(cx);
+        let Some(send) = &self.send else {
+            return;
+        };
+        if send.sending || count == 0 {
+            return;
+        }
+        let target = send.target.clone();
+        if let AskTarget::Session(id) = &target {
+            let busy = ChatList::global(cx)
+                .and_then(|l| l.read(cx).info(id).cloned())
+                .filter(in_turn);
+            if let Some(info) = busy {
+                if let Some(send) = &mut self.send {
+                    send.error = Some(busy_message(info.title.as_deref(), count));
+                }
+                cx.notify();
+                return;
+            }
+        }
+        let Some(v) = self.versions(cx) else {
+            return;
+        };
+        let new_chat = matches!(target, AskTarget::New).then(|| ask::start_chat(&v.workspace, cx));
+        let (store, diff) = (self.store.clone(), self.source.identity());
+        let task = cx.spawn(async move |this, cx| {
+            let session = match (target, new_chat) {
+                (AskTarget::Session(id), _) => Ok(id),
+                (AskTarget::New, Some(task)) => task.await,
+                (AskTarget::New, None) => Err("Couldn't start a chat".to_owned()),
+            };
+            let result = match session {
+                Ok(session) => {
+                    let sent = cx.update(|cx| super::send_review(&store, Some(diff), session, cx));
+                    sent.await.map(|_| ()).map_err(|e| e.to_string())
+                }
+                Err(e) => Err(e),
+            };
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => this.send = None,
+                    Err(e) => {
+                        if let Some(send) = &mut this.send {
+                            send.sending = false;
+                            send.error = Some(e);
+                        }
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        if let Some(send) = &mut self.send {
+            send.sending = true;
+            send.error = None;
+            send._task = Some(task);
+        }
+        cx.notify();
+    }
+
+    /// The review of this diff whose turn runs: who, and how many comments.
+    fn addressing(&self, cx: &App) -> Option<(String, u32)> {
+        let store = self.store.read(cx);
+        let identity = self.source.identity();
+        let sent = store.sent_for(Some(&identity))?;
+        Some((store.agent_name(&sent.session, cx), sent.count))
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -608,30 +856,6 @@ fn first_line(body: &str) -> String {
     out
 }
 
-/// Who wrote a comment, as shown: the avatar's letter and the name.
-fn author_label(author: &Author, cx: &App) -> (String, String) {
-    match author {
-        Author::User => ("Y".into(), "You".into()),
-        Author::Agent { session } => {
-            let name = ChatList::global(cx)
-                .and_then(|l| l.read(cx).info(session).map(|i| i.provider.clone()))
-                .map(|p| {
-                    let mut c = p.chars();
-                    c.next()
-                        .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
-                        .unwrap_or_default()
-                })
-                .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| "Agent".into());
-            (name.chars().next().unwrap_or('A').to_string(), name)
-        }
-        Author::Github { login } => (
-            login.chars().next().unwrap_or('?').to_uppercase().collect(),
-            login.clone(),
-        ),
-    }
-}
-
 /// A small flat button.
 fn flat(
     id: impl Into<ElementId>,
@@ -685,7 +909,7 @@ impl ThreadsOverlay {
     ) -> AnyElement {
         let tk = cx.tokens();
         let (p, m) = (&tk.palette, &tk.metrics);
-        let (letter, name) = author_label(&c.author, cx);
+        let (letter, name) = author_label(state.store.read(cx), &c.author, cx);
         let avatar_color = match c.author {
             Author::User => p.sage,
             Author::Agent { .. } => p.lavender,
@@ -767,6 +991,7 @@ impl ThreadsOverlay {
         };
         div()
             .id(("thread-comment-card", c.id.0 as usize))
+            .test_support()
             .flex()
             .flex_col()
             .gap(px(6.))
@@ -838,7 +1063,10 @@ impl ThreadsOverlay {
         let id = t.id;
         let ix = id.0 as usize;
         let resolved = t.status == ThreadStatus::Resolved;
-        if resolved && !state.expanded.contains(&id) {
+        let store = state.store.read(cx);
+        // A thread the agent is still addressing stays open, so its reply
+        // shows; it folds when the turn ends.
+        if resolved && !state.expanded.contains(&id) && !store.addressing(id) {
             let first = t
                 .comments
                 .first()
@@ -848,7 +1076,14 @@ impl ThreadsOverlay {
                 .comments
                 .last()
                 .filter(|_| t.comments.len() > 1)
-                .map(|c| format!(" · {}", first_line(&c.body)))
+                .map(|c| match &c.author {
+                    Author::User => format!(" · {}", first_line(&c.body)),
+                    author => format!(
+                        " · {}: {}",
+                        author_label(store, author, cx).1,
+                        first_line(&c.body)
+                    ),
+                })
                 .unwrap_or_default();
             let weak = self.state.downgrade();
             return div()
@@ -1131,18 +1366,193 @@ impl ThreadsOverlay {
     }
 }
 
-/// A plain tooltip.
-struct Tip(SharedString);
-
-impl Render for Tip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.tokens();
-        coqo_ui::widgets::popover(cx)
-            .px(px(10.))
-            .py(px(6.))
-            .text_size(t.metrics.text_xs)
-            .text_color(t.palette.text.hsla())
-            .child(self.0.clone())
+impl ThreadsOverlay {
+    /// The send popover under the send button: the chats as pills, a note,
+    /// the error, Cancel and Send.
+    fn render_send(&self, n: usize, cx: &App) -> AnyElement {
+        let state = self.state.read(cx);
+        let Some(send) = &state.send else {
+            return div().into_any_element();
+        };
+        let tk = cx.tokens();
+        let (p, m) = (tk.palette.clone(), tk.metrics.clone());
+        let store = state.store.read(cx);
+        let label = |id: &SessionId| {
+            let info = ChatList::global(cx).and_then(|l| l.read(cx).info(id).cloned());
+            let agent = store.agent_name(id, cx);
+            match info.and_then(|i| i.title).filter(|t| !t.is_empty()) {
+                Some(title) => format!("{agent} · {title}"),
+                None => agent,
+            }
+        };
+        let pill = |id: ElementId, text: String, on: bool| {
+            let d = div()
+                .id(id)
+                .test_support()
+                .px(px(10.))
+                .py(px(4.))
+                .rounded(px(999.))
+                .text_size(m.text_sm)
+                .cursor_pointer()
+                .border_1();
+            let d = if on {
+                d.bg(p.blue.alpha(0.16))
+                    .border_color(p.blue.hsla())
+                    .text_color(p.text.hsla())
+            } else {
+                d.border_color(p.border.hsla())
+                    .text_color(p.text_muted.hsla())
+            };
+            d.child(text)
+        };
+        let mut row = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(6.))
+            .px(px(18.))
+            .pt(px(10.))
+            .child(
+                div()
+                    .text_size(m.text_sm)
+                    .text_color(p.text_subtle.hsla())
+                    .child("To"),
+            );
+        for (ix, id) in send.sessions.iter().enumerate() {
+            let on = send.target == AskTarget::Session(id.clone());
+            let weak = self.state.downgrade();
+            let target = AskTarget::Session(id.clone());
+            row = row.child(pill(("review-target", ix).into(), label(id), on).on_click(
+                move |_, _, cx| {
+                    weak.update(cx, |s, cx| s.set_send_target(target.clone(), cx))
+                        .ok();
+                },
+            ));
+        }
+        let weak = self.state.downgrade();
+        row = row.child(
+            pill(
+                "review-target-new".into(),
+                "New chat".into(),
+                send.target == AskTarget::New,
+            )
+            .on_click(move |_, _, cx| {
+                weak.update(cx, |s, cx| s.set_send_target(AskTarget::New, cx))
+                    .ok();
+            }),
+        );
+        let origin = send.origin.as_ref().map(|id| {
+            let title = ChatList::global(cx)
+                .and_then(|l| l.read(cx).info(id).and_then(|i| i.title.clone()))
+                .filter(|t| !t.is_empty())
+                .map_or_else(|| "This chat".to_owned(), |t| format!("\"{t}\""));
+            format!("{title} made this change. ")
+        });
+        let note = format!(
+            "{}Each comment goes with its lines, the code and the thread so far; the replies \
+             land in these threads.",
+            origin.unwrap_or_default()
+        );
+        let error = send.error.clone().map(|e| {
+            div()
+                .id("review-send-error")
+                .test_support()
+                .px(px(18.))
+                .pt(px(10.))
+                .text_size(m.text_sm)
+                .text_color(p.rose.hsla())
+                .child(SharedString::from(e))
+        });
+        let comments = if n == 1 { "comment" } else { "comments" };
+        let (cancel, go, out) = (
+            self.state.downgrade(),
+            self.state.downgrade(),
+            self.state.downgrade(),
+        );
+        let card = popover(cx)
+            .id("review-send-popover")
+            .test_support()
+            .w(px(440.))
+            .rounded(px(18.))
+            .font_family(m.font_ui.clone())
+            .text_size(m.text_md)
+            .text_color(p.text.hsla())
+            .on_mouse_down_out(move |_, _, cx| {
+                out.update(cx, |s, cx| s.close_send(cx)).ok();
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .px(px(18.))
+                    .pt(px(16.))
+                    .child(icon(Icon::MessageCircle, px(14.), p.sage.hsla()))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("Send {n} {comments} to the agent")),
+                    ),
+            )
+            .child(row)
+            .child(
+                div()
+                    .px(px(18.))
+                    .pt(px(10.))
+                    .text_size(m.text_sm)
+                    .text_color(p.text_muted.hsla())
+                    .child(note),
+            )
+            .children(error)
+            .child(
+                div()
+                    .px(px(18.))
+                    .pt(px(14.))
+                    .pb(px(16.))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(div().flex_1())
+                    .child(
+                        raised(div(), cx)
+                            .id("review-send-cancel")
+                            .test_support()
+                            .px(px(14.))
+                            .py(px(8.))
+                            .rounded(px(10.))
+                            .text_size(m.text_sm)
+                            .cursor_pointer()
+                            .child("Cancel")
+                            .on_click(move |_, _, cx| {
+                                cancel.update(cx, |s, cx| s.close_send(cx)).ok();
+                            }),
+                    )
+                    .child(
+                        primary(div(), cx)
+                            .id("review-send-go")
+                            .test_support()
+                            .px(px(18.))
+                            .py(px(8.))
+                            .rounded(px(10.))
+                            .text_size(m.text_sm)
+                            .cursor_pointer()
+                            .when(send.sending, |d| d.opacity(0.55))
+                            .child(if send.sending { "Sending…" } else { "Send" })
+                            .on_click(move |_, _, cx| {
+                                go.update(cx, |s, cx| s.send_review(cx)).ok();
+                            }),
+                    ),
+            );
+        deferred(
+            div()
+                .absolute()
+                .right_0()
+                .top(relative(1.))
+                .pt(px(8.))
+                .child(card),
+        )
+        .with_priority(1)
+        .into_any_element()
     }
 }
 
@@ -1303,17 +1713,39 @@ impl DiffOverlay for ThreadsOverlay {
     }
 
     fn header(&self, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
-        let n = self.state.read(cx).pending_count(cx);
-        if n == 0 {
+        let state = self.state.read(cx);
+        let n = state.pending_count(cx);
+        let addressing = state.addressing(cx);
+        if n == 0 && addressing.is_none() {
             return None;
         }
         let p = cx.tokens().palette.clone();
         let comments = if n == 1 { "comment" } else { "comments" };
-        let discard = self.state.downgrade();
-        Some(
+        let name = state.send_to_name(cx);
+        let open = state.send.is_some();
+        let (discard, toggle) = (self.state.downgrade(), self.state.downgrade());
+        let chip = addressing.map(|(agent, count)| {
+            div()
+                .id("review-addressing")
+                .test_support()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(12.))
+                .py(px(6.))
+                .rounded(px(999.))
+                .bg(p.lavender.alpha(0.14))
+                .text_size(px(12.))
+                .text_color(p.lavender.hsla())
+                .child(div().size(px(7.)).rounded(px(99.)).bg(p.lavender.hsla()))
+                .child(format!(
+                    "{agent} is addressing {count} {}",
+                    if count == 1 { "comment" } else { "comments" }
+                ))
+        });
+        let controls = (n > 0).then(|| {
             div()
                 .flex()
-                .flex_none()
                 .items_center()
                 .gap(px(10.))
                 .child(
@@ -1333,21 +1765,37 @@ impl DiffOverlay for ThreadsOverlay {
                         }),
                 )
                 .child(
-                    primary(div(), cx)
-                        .id("review-send")
-                        .test_support()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .px(px(16.))
-                        .py(px(8.))
-                        .rounded(px(10.))
-                        .text_size(px(12.5))
-                        .opacity(0.5)
-                        .child(format!("Send {n} {comments} to Claude"))
-                        .child(icon(Icon::ArrowUp, px(14.), p.ground.hsla()))
-                        .tooltip(|_, cx| cx.new(|_| Tip(SEND_LATER.into())).into()),
+                    div()
+                        .relative()
+                        .child(
+                            primary(div(), cx)
+                                .id("review-send")
+                                .test_support()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .px(px(16.))
+                                .py(px(8.))
+                                .rounded(px(10.))
+                                .text_size(px(12.5))
+                                .cursor_pointer()
+                                .child(format!("Send {n} {comments} to {name}"))
+                                .child(icon(Icon::ArrowUp, px(14.), p.ground.hsla()))
+                                .on_click(move |_, _, cx| {
+                                    toggle.update(cx, |s, cx| s.toggle_send(cx)).ok();
+                                }),
+                        )
+                        .when(open, |d| d.child(self.render_send(n, cx))),
                 )
+        });
+        Some(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(10.))
+                .children(chip)
+                .children(controls)
                 .into_any_element(),
         )
     }

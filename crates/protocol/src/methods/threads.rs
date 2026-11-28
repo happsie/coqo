@@ -29,9 +29,15 @@
 //!    change (`git/changes`).
 //! 3. [`Create`], [`Reply`], [`EditComment`], [`DeleteComment`],
 //!    [`Resolve`], [`Reopen`]; [`Pending`] and [`Discard`] for the review.
+//! 4. [`SendReview`] (`review/send`, #95) sends the pending review to an
+//!    agent session in one prompt and clears `pending`; the agent answers
+//!    each thread with the `coqo-editor` tool [`REPLY_TOOL`], which calls
+//!    [`AgentReply`] (`review/reply`). The prompt carries a
+//!    [`ReviewLink`], so a chat shows it as a "Review sent" card.
 //!
-//! **Access:** every route takes the daemon token. Agents reply through a
-//! session route of their own (#95).
+//! **Access:** every route takes the daemon token, except [`AgentReply`]:
+//! a session token may reply as its own session, to threads of its own
+//! workspace.
 
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +51,8 @@ use crate::method::{Method, Topic};
 pub const MAX_COMMENT: usize = 64 * 1024;
 /// Longest commented range, in lines.
 pub const MAX_THREAD_LINES: u32 = 2000;
+/// The `coqo-editor` tool an agent answers a review thread with (#95).
+pub const REPLY_TOOL: &str = "reply_to_review";
 
 /// Identifies a thread. Assigned by the daemon, never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -438,6 +446,151 @@ pub struct DiscardResult {
     pub discarded: u32,
 }
 
+/// Params of [`SendReview`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct SendReviewParams {
+    /// The workspace.
+    pub workspace: WorkspaceId,
+    /// Only comments on threads started in this diff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    /// The agent session to send them to: one of the workspace's, not in a
+    /// turn.
+    pub session: SessionId,
+}
+
+/// Result of [`SendReview`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct SentReview {
+    /// The session it went to.
+    pub session: SessionId,
+    /// The turn it started.
+    pub turn: u64,
+    /// How many comments were sent (no longer pending).
+    pub count: u32,
+    /// Their threads, oldest first.
+    pub threads: Vec<ThreadId>,
+}
+
+/// Params of [`AgentReply`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+pub struct AgentReplyParams {
+    /// The workspace: the thread's.
+    pub workspace: WorkspaceId,
+    /// The agent session replying.
+    pub session: SessionId,
+    /// The thread.
+    pub thread: ThreadId,
+    /// The reply, in markdown.
+    pub body: String,
+    /// Also resolve the thread (its request is done).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resolve: bool,
+}
+
+/// What a review prompt links to, so a chat can show it as a card and open
+/// the diff: `coqo://review?workspace=…&comments=N&threads=1,2&diff=…`.
+/// The prompt's [`ResourceLink`](super::agents::ContentBlock::ResourceLink)
+/// has it as its `uri`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewLink {
+    /// The workspace.
+    pub workspace: WorkspaceId,
+    /// The diff the comments were made in, if one.
+    pub diff: Option<String>,
+    /// How many comments were sent.
+    pub comments: u32,
+    /// Their threads.
+    pub threads: Vec<ThreadId>,
+}
+
+impl ReviewLink {
+    /// The scheme and path every review link starts with.
+    pub const PREFIX: &'static str = "coqo://review?";
+    /// The link's display name.
+    pub const NAME: &'static str = "Coqo review";
+
+    /// As a URI.
+    pub fn to_uri(&self) -> String {
+        let threads: Vec<String> = self.threads.iter().map(ToString::to_string).collect();
+        let mut uri = format!(
+            "{}workspace={}&comments={}&threads={}",
+            Self::PREFIX,
+            encode(&self.workspace.0),
+            self.comments,
+            threads.join(",")
+        );
+        if let Some(diff) = &self.diff {
+            uri.push_str("&diff=");
+            uri.push_str(&encode(diff));
+        }
+        uri
+    }
+
+    /// The link `uri` is, if it is one.
+    pub fn parse(uri: &str) -> Option<Self> {
+        let query = uri.strip_prefix(Self::PREFIX)?;
+        let mut link = Self {
+            workspace: WorkspaceId(String::new()),
+            diff: None,
+            comments: 0,
+            threads: Vec::new(),
+        };
+        for pair in query.split('&') {
+            let (key, value) = pair.split_once('=')?;
+            let value = decode(value)?;
+            match key {
+                "workspace" => link.workspace = WorkspaceId(value),
+                "diff" => link.diff = Some(value),
+                "comments" => link.comments = value.parse().ok()?,
+                "threads" => {
+                    link.threads = value
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.parse().map(ThreadId))
+                        .collect::<Result<_, _>>()
+                        .ok()?;
+                }
+                _ => {}
+            }
+        }
+        (!link.workspace.0.is_empty()).then_some(link)
+    }
+}
+
+/// Percent-encode all but unreserved characters.
+fn encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn decode(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 // ---- methods ---------------------------------------------------------------------
 
 /// `threads/list`: a workspace's threads, anchors resolved now.
@@ -533,6 +686,30 @@ impl Method for Discard {
     const NAME: &'static str = "review/discard";
     type Params = ReviewParams;
     type Result = DiscardResult;
+}
+
+/// `review/send`: send the pending review (of one diff) to an agent session
+/// in one prompt, then clear `pending`. Refused with
+/// [`SESSION_BUSY`](super::codes::SESSION_BUSY) while the session is in a
+/// turn, and as invalid params with nothing pending; either way nothing
+/// changes.
+#[derive(Debug)]
+pub enum SendReview {}
+impl Method for SendReview {
+    const NAME: &'static str = "review/send";
+    type Params = SendReviewParams;
+    type Result = SentReview;
+}
+
+/// `review/reply`: an agent session's reply in a thread of its workspace,
+/// optionally resolving it (the `reply_to_review` tool). A session token
+/// may call it as its own session.
+#[derive(Debug)]
+pub enum AgentReply {}
+impl Method for AgentReply {
+    const NAME: &'static str = "review/reply";
+    type Params = AgentReplyParams;
+    type Result = Thread;
 }
 
 /// `threads/changes`: threads whose state changed, as their latest state,
@@ -660,6 +837,31 @@ mod tests {
         .unwrap();
         assert_eq!(changed["type"], json!("changed"));
         assert_eq!(changed["thread"]["id"], json!(3));
+    }
+
+    #[test]
+    fn review_links_round_trip() {
+        let link = ReviewLink {
+            workspace: WorkspaceId("ws 1".into()),
+            diff: Some("git:0:index..worktree".into()),
+            comments: 3,
+            threads: vec![ThreadId(4), ThreadId(9)],
+        };
+        let uri = link.to_uri();
+        assert_eq!(
+            uri,
+            "coqo://review?workspace=ws%201&comments=3&threads=4,9&diff=git%3A0%3Aindex..worktree"
+        );
+        assert_eq!(ReviewLink::parse(&uri), Some(link));
+        let bare = ReviewLink {
+            workspace: WorkspaceId("w".into()),
+            diff: None,
+            comments: 1,
+            threads: vec![ThreadId(1)],
+        };
+        assert_eq!(ReviewLink::parse(&bare.to_uri()), Some(bare));
+        assert_eq!(ReviewLink::parse("file:///a.rs"), None);
+        assert_eq!(ReviewLink::parse("coqo://review?comments=x"), None);
     }
 
     #[test]

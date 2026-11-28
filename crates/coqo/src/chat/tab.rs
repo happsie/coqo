@@ -36,6 +36,7 @@ use coqo_protocol::{
         SessionParams, SessionSnapshot, SessionUpdate, ToolCallContent, ToolCallStatus, ToolGroup,
         ToolKind, ToolUse, Updates,
     },
+    methods::threads::ReviewLink,
 };
 use coqo_ui::{
     ActiveTokens as _,
@@ -49,7 +50,7 @@ use coqo_ui::{
     input::{PromptInput, PromptInputEvent},
     serde_json::{Value, json},
     text::markdown,
-    widgets::{Icon, TestSupportExt as _, icon, primary, section_label},
+    widgets::{Icon, TestSupportExt as _, icon, primary, raised, section_label},
 };
 
 use super::{
@@ -481,6 +482,14 @@ fn drain(
     (batch, None)
 }
 
+/// The review a user message sent from the diff view, if it is one (#95).
+pub fn review_link(content: &[ContentBlock]) -> Option<ReviewLink> {
+    content.iter().find_map(|b| match b {
+        ContentBlock::ResourceLink { uri, .. } => ReviewLink::parse(uri),
+        _ => None,
+    })
+}
+
 /// The chat's title: the session's, or its first prompt, or "New chat".
 pub fn title_of(info: Option<&SessionInfo>, transcript: &Transcript) -> SharedString {
     if let Some(title) = info
@@ -620,7 +629,10 @@ impl ChatTab {
             return div().into_any_element();
         };
         let body = match entry {
-            Entry::User { content } => self.render_user(ix, &content, cx),
+            Entry::User { content } => match review_link(&content) {
+                Some(link) => self.render_review(ix, &link, &content, cx),
+                None => self.render_user(ix, &content, cx),
+            },
             Entry::TurnStart { .. } => self.render_turn_start(ix, cx),
             Entry::Agent { text } => div()
                 .id(("chat-agent", ix))
@@ -648,6 +660,152 @@ impl ChatTab {
         };
         let top = if ix == 0 { px(18.) } else { px(0.) };
         column(body).pt(top).pb(px(14.)).into_any_element()
+    }
+
+    /// A review sent from the diff view (#95): "Review sent: N comments",
+    /// a link back to the diff, and the message itself behind "Show".
+    fn render_review(
+        &self,
+        ix: usize,
+        link: &ReviewLink,
+        content: &[ContentBlock],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let open = self.expanded.contains(&ix);
+        let n = link.comments;
+        let threads = link.threads.len();
+        let place = match link.diff.as_deref() {
+            Some(d) if d.ends_with(":index..worktree") => "unstaged changes",
+            Some(d) if d.ends_with(":HEAD..index") => "staged changes",
+            _ => "the diff",
+        };
+        let summary = format!(
+            "{threads} {} · {place} · replies land in the threads",
+            if threads == 1 { "thread" } else { "threads" }
+        );
+        let text: String = content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let opener = link
+            .diff
+            .clone()
+            .map(|diff| crate::threads::OpenReviewDiff {
+                workspace: link.workspace.0.clone(),
+                diff,
+            });
+        let focus = self.focus.clone();
+        div()
+            .flex()
+            .justify_end()
+            .child(
+                div()
+                    .id(("chat-review", ix))
+                    .test_support()
+                    .w(px(COLUMN * 0.8))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .px(px(16.))
+                    .py(px(14.))
+                    .rounded(px(18.))
+                    .bg(p.panel_raised.hsla())
+                    .border_1()
+                    .border_color(p.sage.alpha(0.35))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .child(
+                                div()
+                                    .size(px(26.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(9.))
+                                    .bg(p.sage.alpha(0.18))
+                                    .child(icon(Icon::MessageCircle, px(13.), p.sage.hsla())),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(p.text.hsla())
+                                            .child(format!(
+                                                "Review sent: {n} {}",
+                                                if n == 1 { "comment" } else { "comments" }
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(m.text_sm)
+                                            .text_color(p.text_muted.hsla())
+                                            .child(summary),
+                                    ),
+                            )
+                            .when_some(opener, |d, action| {
+                                d.child(
+                                    raised(div(), cx)
+                                        .id(("chat-review-open", ix))
+                                        .test_support()
+                                        .px(px(12.))
+                                        .py(px(6.))
+                                        .rounded(px(9.))
+                                        .text_size(m.text_sm)
+                                        .cursor_pointer()
+                                        .child("Open diff")
+                                        .on_click(move |_, window, cx| {
+                                            window.focus(&focus, cx);
+                                            window.dispatch_action(Box::new(action.clone()), cx);
+                                        }),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .id(("chat-review-show", ix))
+                                    .test_support()
+                                    .px(px(10.))
+                                    .py(px(6.))
+                                    .rounded(px(9.))
+                                    .border_1()
+                                    .border_color(p.border.hsla())
+                                    .text_size(m.text_sm)
+                                    .text_color(p.text_muted.hsla())
+                                    .cursor_pointer()
+                                    .child(if open { "Hide" } else { "Show" })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if !this.expanded.remove(&ix) {
+                                            this.expanded.insert(ix);
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .when(open, |d| {
+                        d.child(
+                            div()
+                                .pt(px(4.))
+                                .border_t_1()
+                                .border_color(p.border.hsla())
+                                .text_size(m.text_sm)
+                                .child(markdown(("chat-review-md", ix), text)),
+                        )
+                    }),
+            )
+            .into_any_element()
     }
 
     fn render_user(&self, ix: usize, content: &[ContentBlock], cx: &App) -> AnyElement {

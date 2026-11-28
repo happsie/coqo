@@ -33,6 +33,10 @@ pub struct Scenario {
     pub change: Option<&'static str>,
     /// The editor's tabs, the first active; empty for no editor context.
     pub tabs: &'static [Tab],
+    /// Review comments on the `change` (#95): with any, the scenario adds
+    /// them to the pending review of the unstaged diff and sends that
+    /// (`review/send`) instead of typing `prompt`.
+    pub review: &'static [ReviewComment],
     /// What the user types.
     pub prompt: &'static str,
     /// The answer to any question the agent asks.
@@ -63,6 +67,25 @@ pub struct Outcome {
     pub walkthrough: Option<Coverage>,
     /// The change's hunks (with a `change`): `git diff -U0` after the turn.
     pub hunks: Vec<Hunk>,
+    /// The sent review's threads after the turn: the agent's replies in
+    /// each, and whether it is resolved.
+    pub threads: Vec<(u32, bool)>,
+}
+
+/// A comment of a scenario's review: a file of the change, its lines
+/// (1-based, inclusive, in the changed file) and what it asks.
+#[derive(Debug, Clone, Copy)]
+pub struct ReviewComment {
+    pub path: &'static str,
+    pub lines: (u32, u32),
+    pub body: &'static str,
+}
+
+impl Outcome {
+    /// Whether the agent replied in every thread of the review.
+    pub fn replied_everywhere(&self) -> bool {
+        !self.threads.is_empty() && self.threads.iter().all(|(replies, _)| *replies >= 1)
+    }
 }
 
 /// A changed hunk: its lines in the new file.
@@ -256,6 +279,7 @@ pub const SCENARIOS: &[Scenario] = &[
             path: PRICING,
             selection: Some((6, 12)),
         }],
+        review: &[],
         prompt: "Explain the selected function in two or three sentences.",
         answer: "Just explain it.",
         expects: "editor_context",
@@ -278,6 +302,7 @@ pub const SCENARIOS: &[Scenario] = &[
         // A product choice the code gives no hint about, which the user
         // keeps for themselves (#238): the #216 wording ("give it a
         // sensible default") delegated it.
+        review: &[],
         prompt: "Turn on free shipping in the config. I haven't decided on the threshold \
                  yet, and that's my call, not yours.",
         answer: "Use 50.0 EUR.",
@@ -295,6 +320,7 @@ pub const SCENARIOS: &[Scenario] = &[
         change: None,
         tabs: &[],
         // Separate phases over four files (#238), not one quick edit.
+        review: &[],
         prompt: "Add sales tax to the shop, in three phases: first a TAX_RATE setting \
                  (default 0.0) in shop/config.py; then apply it in total() in \
                  shop/pricing.py, after shipping; last, tests for it in test_pricing.py \
@@ -311,6 +337,7 @@ pub const SCENARIOS: &[Scenario] = &[
             path: "README.md",
             selection: None,
         }],
+        review: &[],
         prompt: "Show me where refunds are handled.",
         answer: "Yes.",
         expects: "editor_reveal orders.py",
@@ -323,6 +350,7 @@ pub const SCENARIOS: &[Scenario] = &[
         fixture: "shop",
         change: None,
         tabs: &[],
+        review: &[],
         prompt: "In general, what is the difference between a list and a tuple in Python? \
                  Two sentences, no code.",
         answer: "Just answer.",
@@ -334,10 +362,35 @@ pub const SCENARIOS: &[Scenario] = &[
         fixture: "shop",
         change: Some("shop-tax-rate.patch"),
         tabs: &[],
+        review: &[],
         prompt: "Walk me through this change.",
         answer: "Go ahead.",
         expects: "publish_walkthrough covering every hunk",
         check: |o| o.calls("publish_walkthrough") >= 1 && o.covers_the_change(),
+    },
+    Scenario {
+        name: "address-review",
+        fixture: "shop",
+        change: Some("shop-tax-rate.patch"),
+        tabs: &[],
+        // Two pending comments on the change, sent from the diff view (#95).
+        review: &[
+            ReviewComment {
+                path: PRICING,
+                lines: (22, 26),
+                body: "Round to cents here: `apply_tax` should return the amount rounded to \
+                       2 decimals, so no caller sees fractions of a cent.",
+            },
+            ReviewComment {
+                path: "test_pricing.py",
+                lines: (16, 17),
+                body: "Also test a zero tax rate: the total must equal the untaxed one.",
+            },
+        ],
+        prompt: "(the review is sent with review/send)",
+        answer: "Go ahead.",
+        expects: "reply_to_review in every thread",
+        check: |o| o.calls("reply_to_review") >= 2 && o.replied_everywhere(),
     },
 ];
 
@@ -382,6 +435,22 @@ mod tests {
             .position(|l| l.starts_with("FREE_SHIPPING_THRESHOLD"))
             .unwrap();
         assert!((6..=10).contains(&(line as u32 + 1)));
+    }
+
+    #[test]
+    fn a_review_passes_with_a_reply_in_every_thread() {
+        let review = scenario("address-review");
+        assert!(review.change.is_some() && review.review.len() == 2);
+        let mut o = Outcome {
+            tool_use: vec![tool("reply_to_review", ToolGroup::Coqo, 2)],
+            threads: vec![(1, true), (0, false)],
+            ..Outcome::default()
+        };
+        assert!(!(review.check)(&o), "a thread without a reply");
+        o.threads[1] = (1, false);
+        assert!((review.check)(&o));
+        o.threads.clear();
+        assert!(!(review.check)(&o), "no threads read back");
     }
 
     #[test]

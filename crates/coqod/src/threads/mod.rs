@@ -20,15 +20,17 @@
 //!   the UI lists again when `git/changes` says the files changed.
 //! - **Comments.** By the user, an agent session or (M8) a GitHub login.
 //!   The user's comments may be *pending*: the pending review, sent to the
-//!   agent in #95. An agent's reply is a comment by
-//!   [`Author::Agent`]; [`ThreadService::reply`] takes the author, so #95's
-//!   session route is a thin wrapper.
+//!   agent in one prompt by `review/send` ([`review`], #95). An agent's
+//!   reply is a comment by [`Author::Agent`], added by `review/reply` (the
+//!   `reply_to_review` tool), which may also resolve the thread.
 //! - **Backends** ([`backend`]): every thread is in the store; its backend
 //!   mirrors changes elsewhere. Only [`LocalBackend`] exists now.
 //!
-//! **Access:** every route takes the daemon token.
+//! **Access:** every route takes the daemon token, except `review/reply`:
+//! a session token may reply as its own session in its own workspace.
 
 pub(crate) mod backend;
+pub(crate) mod review;
 pub(crate) mod store;
 
 #[cfg(test)]
@@ -37,6 +39,7 @@ mod tests;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
+use coqo_agents::SessionManager;
 use coqo_anchors::Anchor;
 use coqo_protocol::methods::codes;
 use coqo_protocol::methods::fs::{MAX_READ_LIMIT, ReadParams};
@@ -132,17 +135,20 @@ pub struct ThreadService {
     changes: broadcast::Sender<Sequenced<ThreadEvent>>,
     workspaces: Arc<WorkspaceService>,
     git: Arc<GitService>,
+    /// The agent sessions a review is sent to.
+    sessions: Option<SessionManager>,
     backends: Vec<Arc<dyn ThreadBackend>>,
 }
 
 impl ThreadService {
     /// The service over the threads in the global database at `db`,
     /// reading file versions from `workspaces` (the work tree) and `git`
-    /// (the index and revisions).
+    /// (the index and revisions), sending reviews to `sessions`.
     pub fn open(
         db: &std::path::Path,
         workspaces: Arc<WorkspaceService>,
         git: Arc<GitService>,
+        sessions: Option<SessionManager>,
     ) -> Result<Arc<Self>, StoreError> {
         let store = Store::open(db)?;
         let head = store.head()?;
@@ -151,6 +157,7 @@ impl ThreadService {
             changes: broadcast::channel(CHANGE_CHANNEL).0,
             workspaces,
             git,
+            sessions,
             backends: vec![Arc::new(LocalBackend)],
         }))
     }
@@ -462,8 +469,8 @@ impl ThreadService {
         Ok(thread)
     }
 
-    /// `threads/reply`, by `author`: the user from the route; an agent
-    /// session from #95's session route.
+    /// `threads/reply`, by `author` (the user, from the route; agents reply
+    /// with [`Self::agent_reply`]).
     pub async fn reply(&self, p: ReplyParams, author: Author) -> Result<Thread, ErrorObject> {
         let body = check_body(&p.body)?;
         // Only the user's comments wait in a review.
@@ -836,6 +843,8 @@ pub fn register(router: Router, svc: Arc<ThreadService>) -> Router {
     let reopen = Arc::clone(&svc);
     let pending = Arc::clone(&svc);
     let discard = Arc::clone(&svc);
+    let send = Arc::clone(&svc);
+    let agent_reply = Arc::clone(&svc);
     let changes = svc;
     router
         .method_with::<tm::List, _, _>(Access::daemon(), move |_ctx, p| {
@@ -878,6 +887,20 @@ pub fn register(router: Router, svc: Arc<ThreadService>) -> Router {
             let s = Arc::clone(&discard);
             async move { s.discard(p).await }
         })
+        .method_with::<tm::SendReview, _, _>(Access::daemon(), move |_ctx, p| {
+            let s = Arc::clone(&send);
+            async move { s.send(p).await }
+        })
+        .method_with::<tm::AgentReply, _, _>(
+            Access::check(|scope, p: &tm::AgentReplyParams| {
+                scope.require_workspace(&p.workspace.0)?;
+                scope.require_session(&p.session.0)
+            }),
+            move |_ctx, p| {
+                let s = Arc::clone(&agent_reply);
+                async move { s.agent_reply(p).await }
+            },
+        )
         .topic_with::<tm::Changes, _, _>(Access::daemon(), move |_ctx, p, since| {
             std::future::ready(changes.changes(p, since))
         })

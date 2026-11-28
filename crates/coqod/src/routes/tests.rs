@@ -17,6 +17,8 @@ use coqo_mod_api::{BoxFuture, Mod, ModContext, ModError};
 use coqo_protocol::methods::buffer::{
     self as bufm, BufferId, ChangesParams, EditParams, OpenResult, ReplicaId, TextEdit,
 };
+use coqo_protocol::methods::git::DiffSide;
+use coqo_protocol::methods::threads::{self as tm, ThreadSide};
 use coqo_protocol::methods::workspace::{self as wsm, WorkspaceInfo};
 use coqo_protocol::{
     AccessKind, Client, ClientConfig, Method as _, NotificationMethod as _, Notifications,
@@ -57,6 +59,7 @@ const SESSION_ROUTES: &[(&str, AccessKind)] = &[
     ("mcp/toolsChanged", AccessKind::Workspace),
     ("questions/create", AccessKind::Check),
     ("questions/watch", AccessKind::Check),
+    ("review/reply", AccessKind::Check),
     ("sessions/setCriteria", AccessKind::Session),
     ("sessions/setStatus", AccessKind::Session),
     ("syntax/folding", AccessKind::Check),
@@ -230,6 +233,26 @@ async fn workspace(admin: &Client, file: &str) -> (TempDir, WorkspaceInfo) {
     (dir, info)
 }
 
+/// A thread on the whole of `file`, by the daemon token; its id.
+async fn file_thread(admin: &Client, ws: &WorkspaceInfo, file: &str) -> u64 {
+    admin
+        .request::<tm::Create>(tm::CreateParams {
+            workspace: ws.id.clone(),
+            root: ws.roots[0].id,
+            path: file.to_owned(),
+            side: ThreadSide::New,
+            version: DiffSide::Worktree,
+            lines: None,
+            diff: None,
+            body: "Probe this.".into(),
+            pending: true,
+        })
+        .await
+        .unwrap()
+        .id
+        .0
+}
+
 async fn open_buffer(client: &Client, ws: &WorkspaceInfo, file: &str) -> OpenResult {
     reopen_buffer(client, ws, file, None).await.unwrap()
 }
@@ -259,6 +282,7 @@ fn probes(
     replica: &ReplicaId,
     session: &SessionId,
     question: u64,
+    thread: u64,
 ) -> Vec<(&'static str, RouteKind, Value)> {
     let id = json!({ "id": ws.id });
     let path = |p: &str| json!({ "workspace": ws.id, "root": ws.roots[0].id, "path": p });
@@ -311,6 +335,12 @@ fn probes(
             "questions/watch",
             RouteKind::Topic,
             json!({ "workspace": ws.id, "session": session, "id": question }),
+        ),
+        // A thread of this workspace: the agent may reply in it.
+        (
+            tm::AgentReply::NAME,
+            RouteKind::Method,
+            json!({ "workspace": ws.id, "session": session, "thread": thread, "body": "Probed." }),
         ),
         (
             agm::SetStatus::NAME,
@@ -450,6 +480,10 @@ async fn a_session_token_reaches_only_its_own_workspace() {
     let b_buffer = open_buffer(&admin, &b, "b.txt").await;
     let a_buffer = open_buffer(&agent, &a, "a.txt").await;
     // Questions: the agent's own in A is 1; the daemon token's in B is 2.
+    // Threads: A's is 1, B's is 2.
+    let a_thread = file_thread(&admin, &a, "a.txt").await;
+    let b_thread = file_thread(&admin, &b, "b.txt").await;
+    assert_eq!((a_thread, b_thread), (1, 2));
     let b_probes = probes(
         &b,
         "b.txt",
@@ -457,6 +491,7 @@ async fn a_session_token_reaches_only_its_own_workspace() {
         &b_buffer.replica,
         &b_session,
         2,
+        b_thread,
     );
     let mut covered: Vec<_> = b_probes.iter().map(|(name, ..)| *name).collect();
     covered.push(bufm::Edit::NAME);
@@ -499,6 +534,21 @@ async fn a_session_token_reaches_only_its_own_workspace() {
         )
         .await;
     assert_eq!(code(&other), Some(codes::FORBIDDEN), "{other:?}");
+    // B's thread named as A's: not found, so nothing about it shows.
+    let other = agent
+        .request::<tm::AgentReply>(tm::AgentReplyParams {
+            workspace: a.id.clone(),
+            session: a_session.clone(),
+            thread: tm::ThreadId(b_thread),
+            body: "Not mine".into(),
+            resolve: true,
+        })
+        .await;
+    assert_eq!(
+        code(&other),
+        Some(coqo_protocol::methods::codes::UNKNOWN_THREAD),
+        "{other:?}"
+    );
     // An unfiltered workspace feed covers every workspace.
     let result = subscribe_raw(&agent, wsm::Events::NAME, json!({})).await;
     assert_eq!(code(&result), Some(codes::FORBIDDEN), "{result:?}");
@@ -539,6 +589,7 @@ async fn a_session_token_reaches_only_its_own_workspace() {
         &a_buffer.replica,
         &a_session,
         1,
+        a_thread,
     ) {
         let result = call(&agent, kind, name, params).await;
         assert!(result.is_ok(), "{name} on A: {result:?}");
