@@ -6,6 +6,13 @@
 //! which beat `.git/info/exclude`, which beats the user's global excludes. A
 //! path inside an ignored directory is ignored. `.git` is always ignored.
 //!
+//! A folder below a root that [stands apart](stands_apart) is ignored too,
+//! whatever the ignore files say: a nested git repository or worktree (it
+//! holds a `.git` file or folder) is its own project, and a cache folder
+//! marked with `CACHEDIR.TAG` (Cargo's `target/`, for one) is build output.
+//! The tree shows them dimmed; the watcher and the file index (`fs/find`)
+//! leave them out.
+//!
 //! Matchers are cached per directory and revalidated against the
 //! `.gitignore` file's size and mtime on each use, so edits are picked up
 //! without a watcher.
@@ -53,7 +60,20 @@ impl IgnoreChain {
         self.dir_ignored
             || path.file_name().is_some_and(|n| n == ".git")
             || eval(&self.matchers, path, is_dir)
+            || (is_dir && stands_apart(path))
     }
+}
+
+/// Whether the folder `dir` (below a root) is a world of its own: a nested
+/// git repository or worktree (a `.git` file or folder in it), or a cache
+/// folder tagged with `CACHEDIR.TAG` (<https://bford.info/cachedir/>).
+/// Costs two `stat`s; callers ask only about folders the ignore files keep.
+pub(crate) fn stands_apart(dir: &Path) -> bool {
+    dir.join(".git").symlink_metadata().is_ok()
+        || dir
+            .join("CACHEDIR.TAG")
+            .symlink_metadata()
+            .is_ok_and(|m| m.is_file())
 }
 
 fn eval(matchers: &[Arc<Gitignore>], path: &Path, is_dir: bool) -> bool {
@@ -139,7 +159,8 @@ impl IgnoreCache {
         for comp in comps {
             let comp = comp.as_ref();
             dir.push(comp);
-            dir_ignored = dir_ignored || comp == ".git" || eval(&matchers, &dir, true);
+            dir_ignored =
+                dir_ignored || comp == ".git" || eval(&matchers, &dir, true) || stands_apart(&dir);
             if dir_ignored {
                 // Nothing below an ignored directory can be re-included.
                 break;
@@ -231,6 +252,42 @@ mod tests {
         assert!(cache.parent_ignored(root, &comps("build/x")));
         assert!(!cache.parent_ignored(root, &comps("build")));
         assert!(!cache.parent_ignored(root, &comps("sub/x")));
+    }
+
+    #[test]
+    fn nested_repositories_and_caches_stand_apart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, ".git/HEAD", "ref: refs/heads/main\n");
+        write(root, "src/lib.rs", "");
+        // A worktree (a `.git` file), a nested clone, a tagged cache.
+        write(
+            root,
+            ".claude/worktrees/agent/.git",
+            "gitdir: ../../../.git/worktrees/agent\n",
+        );
+        write(root, ".claude/worktrees/agent/src/lib.rs", "");
+        write(root, "vendor/dep/.git/HEAD", "ref: refs/heads/main\n");
+        write(root, "vendor/dep/x.rs", "");
+        write(
+            root,
+            "out/CACHEDIR.TAG",
+            "Signature: 8a477f597d28d172789f06886806bc55\n",
+        );
+        write(root, "out/debug/x.o", "");
+        let cache = IgnoreCache::default();
+        let ig = |rel: &str, dir: bool| cache.is_ignored(root, &comps(rel), dir);
+
+        assert!(!ig("src", true), "the root's own repository");
+        assert!(!ig(".claude", true));
+        assert!(ig(".claude/worktrees/agent", true), "a worktree");
+        assert!(ig(".claude/worktrees/agent/src/lib.rs", false));
+        assert!(!ig("vendor", true));
+        assert!(ig("vendor/dep", true), "a nested clone");
+        assert!(ig("vendor/dep/x.rs", false));
+        assert!(ig("out", true), "a tagged cache");
+        assert!(cache.parent_ignored(root, &comps("out/debug/x.o")));
+        assert!(!ig("out", false), "only folders stand apart");
     }
 
     #[test]

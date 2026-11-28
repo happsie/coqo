@@ -4,7 +4,8 @@
 //!
 //! It holds the root-relative paths of every file in a workspace's roots
 //! that the ignore rules keep, by the same rules the file tree shows
-//! (`.gitignore`, `.git/info/exclude`, the global excludes, never `.git`;
+//! (`.gitignore`, `.git/info/exclude`, the global excludes, never `.git`,
+//! nested repositories, worktrees and `CACHEDIR.TAG` caches;
 //! [`IgnoreCache`]). Symlinks to files are files; symlinked folders are not
 //! followed.
 //!
@@ -396,6 +397,10 @@ mod tests {
             ".git/HEAD",
             "sub/local.txt",
             "sub/other.txt",
+            "worktrees/agent/.git",
+            "worktrees/agent/src/main.rs",
+            "build/CACHEDIR.TAG",
+            "build/debug/out",
         ] {
             write(root, f);
         }
@@ -421,6 +426,11 @@ mod tests {
         );
         assert_eq!(walk(root, "src/deep", &ignores), ["src/deep/er/x.rs"]);
         assert!(walk(root, "target", &ignores).is_empty());
+        assert!(
+            walk(root, "worktrees/agent", &ignores).is_empty(),
+            "a worktree"
+        );
+        assert!(walk(root, "build", &ignores).is_empty(), "a tagged cache");
     }
 
     #[test]

@@ -56,7 +56,7 @@ commands::palette::register_provider(cx, Rc::new(FilesProvider::default())); // 
 
 ![The finder with no query: a recently opened file first, then the files nearest the root](screenshots/finder-dark.png)
 
-The palette's default mode finds a file by its path (`crates/coqo/src/files/finder.rs`). The daemon does the searching (`fs/find`): it keeps an index of the workspace's files that the ignore rules keep, built when the workspace opens and kept current from the watcher, and returns the best 60 matches with their matched positions. A 200k-file repository is ready about 1.5 s after it opens, and answers in 3–23 ms.
+The palette's default mode finds a file by its path (`crates/coqo/src/files/finder.rs`). The daemon does the searching (`fs/find`): it keeps an index of the workspace's files that the ignore rules keep, built when the workspace opens and kept current from the watcher, and returns the best 60 matches with their matched positions. A 200k-file repository is ready 0.4–1.5 s after it opens, and answers in 2–23 ms.
 
 - **Rows:** the file's glyph (the tree's, `files/glyph.rs`), then the file name in `text` with the matched characters semibold in `sage`, then its folder at `text_sm` in `text_subtle`. In a multi-root workspace the folder starts with the root's name (`api · src/handlers`; just `api` for a file at the root).
 - **No query:** the workspace's recently opened files first, up to 20, labelled "recently opened", then the files nearest the roots. Every file tab opened counts (from the tree, the finder, an agent's link or a restored layout). The last 100 are kept in `<data dir>/ui/recent-files.json`, and they follow the tree's renames and deletes.
