@@ -54,6 +54,12 @@ impl FileEditor {
     /// shown here.
     pub fn set_walkthrough_host(&mut self, cx: &mut Context<Self>) {
         self.walkthrough_host = true;
+        if self.questions.is_some()
+            && let Some(editor) = self.editor().cloned()
+        {
+            let tip = self.ask_tip();
+            editor.update(cx, |editor, cx| editor.set_ask_tip(Some(tip.into()), cx));
+        }
         self.file_steps.clear();
         if self.file_step.take().is_some() {
             self.clear_step(cx);

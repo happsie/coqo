@@ -817,7 +817,7 @@ impl FileEditor {
                     &editor,
                     window,
                     |this, _, clicked: &AskClicked, window, cx| {
-                        if clicked.alt && this.threads.is_some() {
+                        if clicked.alt && this.comments_here() {
                             this.comment_on(clicked.lines.clone(), window, cx);
                         } else {
                             this.ask_about(clicked.lines.clone(), window, cx);
@@ -825,7 +825,11 @@ impl FileEditor {
                     },
                 );
                 if self.questions.is_some() {
-                    editor.update(cx, |editor, cx| editor.set_ask_enabled(true, cx));
+                    let tip = self.ask_tip();
+                    editor.update(cx, |editor, cx| {
+                        editor.set_ask_enabled(true, cx);
+                        editor.set_ask_tip(Some(tip.into()), cx);
+                    });
                 }
                 if self.focus.is_focused(window) {
                     editor.update(cx, |editor, cx| editor.focus(window, cx));
@@ -1155,6 +1159,7 @@ impl FileEditor {
     // ---- local edits, undo ------------------------------------------------
 
     fn editor_edited(&mut self, event: &EditorEdits, window: &mut Window, cx: &mut Context<Self>) {
+        self.follow_ask(cx);
         if event.origin != EditOrigin::Local {
             return;
         }
@@ -1720,7 +1725,8 @@ impl FileEditor {
         self.ask = Some((ask.clone(), events));
         let view = ask.clone();
         editor.update(cx, |editor, cx| {
-            let anchor = OverlayAnchor::Lines {
+            // Edits above or in the lines before it is sent move them (#248).
+            let anchor = OverlayAnchor::Tracked {
                 start: lines.start,
                 end: lines.end,
             };
@@ -1728,6 +1734,32 @@ impl FileEditor {
         });
         ask.update(cx, |ask, cx| ask.focus(window, cx));
         cx.notify();
+    }
+
+    /// Keep the ask popover's lines where edits took them (its overlay
+    /// follows them).
+    fn follow_ask(&mut self, cx: &mut Context<Self>) {
+        let (Some((ask, _)), Some(editor)) = (&self.ask, self.editor()) else {
+            return;
+        };
+        if let Some(OverlayAnchor::Tracked { start, end }) = editor.read(cx).overlay_anchor() {
+            ask.update(cx, |ask, cx| ask.set_lines(start..end, cx));
+        }
+    }
+
+    /// Whether the ask button's Alt-click starts a review comment here
+    /// (#311): not in a walkthrough player's own tab.
+    fn comments_here(&self) -> bool {
+        self.threads.is_some() && !self.walkthrough_host
+    }
+
+    /// The ask button's tooltip: what a click and an Alt-click do (#248).
+    pub(super) fn ask_tip(&self) -> &'static str {
+        match (self.comments_here(), cfg!(target_os = "macos")) {
+            (true, true) => "Ask an agent (Option-click: add review comment)",
+            (true, false) => "Ask an agent (Alt-click: add review comment)",
+            (false, _) => "Ask an agent",
+        }
     }
 
     /// Ask about the selected lines ([`AskAboutCode`]).

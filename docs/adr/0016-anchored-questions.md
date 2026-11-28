@@ -41,6 +41,7 @@ PLAN §7.5 lets an agent ask the user a question pinned to code and get the answ
 
 - `questions/ask {workspace, session, body, anchors}` pins a `clarification` with `author: user` and prompts the session (`SessionManager::prompt`) with the message, where it is pinned and the thread id, and one `resource` block per anchor (`file://…#Lstart-Lend` with the anchored text), asking it to answer in the chat and, if useful, `annotate` the lines. If the prompt fails (`SESSION_BUSY`, a closed session, …) the thread is dismissed and the error returned, so nothing is left pinned.
 - `questions/reply {id, body}` prompts the same session with a follow-up ("Follow-up on thread #id about …", without the code again) and appends it to the thread. Replying to an agent's question is `INVALID_PARAMS`; to a closed thread `QUESTION_CLOSED`.
+- Both prompts' text is a `ThreadPrompt` (`coqo-protocol`), so a chat can parse it back and show the message in short (#248).
 
 The agent's replies are not stored on the question: they are the agent messages of each message's `turn` in the session's updates, which are persisted, so the popover streams them from `sessions/updates` and they survive a restart. A user's thread never makes the session `needs_input`, never shows as `waiting`, is not counted by `open_count` or the alerts, and cannot be answered (`questions/answer` is `INVALID_PARAMS`); closing it is `questions/dismiss` ("Resolve"). It is recorded in the transcript like a question, once with its first message and again as it grows or closes.
 

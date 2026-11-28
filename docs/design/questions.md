@@ -114,23 +114,25 @@ The chat card shows a `SessionUpdate::Question` in the asking chat's transcript.
 
 ## Asking about code (#229)
 
-The user can ask too. Board 2 has no frame for it, so it reuses the question's markers, popover and pane in blue, the colour of a note (the user's own words, nothing waits on them).
+The user can ask too. Board 2 still has no frame for it (checked again for #248), so it reuses the question's markers, popover and pane in blue, the colour of a note (the user's own words, nothing waits on them). This blue variant is the confirmed design.
 
 ![The ask popover under the selected lines](screenshots/ask-dark.png)
 
 ![The pinned thread with the agent's reply](screenshots/thread-dark.png)
 
-Light: [ask](screenshots/ask-light.png), [thread](screenshots/thread-light.png).
+![The question in short in the chat, next to the thread's card](screenshots/asked-chat-dark.png)
 
-1. **Ask.** A blue speech-bubble button sits in the diamond's gap on the line under the mouse and, while the editor has the keyboard, on the first selected line (not on a line with a marker). A click on it, or `Ctrl Shift /` (`Cmd Shift /` on macOS; also `Ctrl ?` / `Cmd ?`) in a file tab, opens the **ask popover** under the selected lines (the cursor's line with no selection; a selection ending at the start of a line leaves that line out). Alt-click (`Option`-click) on the button starts a review comment instead (#311, [diff.md](diff.md#starting-a-thread-in-a-file-tab-311)).
+Light: [ask](screenshots/ask-light.png), [thread](screenshots/thread-light.png), [chat](screenshots/asked-chat-light.png).
+
+1. **Ask.** A blue speech-bubble button sits in the diamond's gap on the line under the mouse and, while the editor has the keyboard, on the first selected line (not on a line with a marker). A click on it, or `Ctrl Shift /` (`Cmd Shift /` on macOS; also `Ctrl ?` / `Cmd ?`) in a file tab, opens the **ask popover** under the selected lines (the cursor's line with no selection; a selection ending at the start of a line leaves that line out). Alt-click (`Option`-click) on the button starts a review comment instead (#311, [diff.md](diff.md#starting-a-thread-in-a-file-tab-311)); the button's tooltip says so: "Ask an agent (Alt-click: add review comment)" ("Option-click" on macOS; just "Ask an agent" where there are no review comments, as in a walkthrough player's tab). While the ask popover is open its lines follow edits, as a marker does (#248): a line typed, or written by an agent, above them moves the popover, its "src/cart.rs:7–8" and the lines it sends down with them.
 2. **Choose the chat.** A row of pills: up to four of the workspace's open chats, the default first, and **New chat**. The default is the chat shown in the workbench (the active tab, then the other groups' visible tabs, then any open chat tab), else the workspace's most recently active chat, else **New chat**. A new chat uses Claude when it is available, else the first available provider, and is listed under CHATS.
 3. **Send** (`Enter`, or **Ask**; `Esc` or **Cancel** closes it). `questions/ask` pins the thread and prompts the chat with the question and the code. The ask popover gives way to the **thread popover** at the same lines, with a blue marker.
-4. **The thread.** A "YOU ASKED" badge and "You → Claude · <chat> · <age>", then each of the user's messages and, under it, the agent's reply to it streamed from that turn of the chat ("Thinking…" until it starts). The conversation scrolls past 240 px. The field below sends a follow-up (`questions/reply`), which empties it once sent. **Open in chat**, **Resolve** (closes the thread, `questions/dismiss`), **Later** (closes the popover).
-5. **Afterwards.** The marker stays on the lines and follows edits and restarts like a question's; a click on it reopens the thread. F8 skips threads (they need nothing from the user) and badges do not count them. In the chat the thread is a card, "YOU ASKED about src/cart.rs:42–48", with "Pinned to the code" or "Resolved"; the prompt and the agent's answer are ordinary turns of the chat.
+4. **The thread.** A "YOU ASKED" badge and "You → Claude · <chat> · <age>", then each of the user's messages and, under it, the agent's reply to it streamed from that turn of the chat ("Thinking…" until it starts). The conversation scrolls past 240 px and stays at its end while a reply streams in or a message is added, unless the user scrolled up to read; scrolling back to the end follows it again, and sending a follow-up jumps there. The field below sends a follow-up (`questions/reply`), which empties it once sent. **Open in chat**, **Resolve** (closes the thread, `questions/dismiss`), **Later** (closes the popover).
+5. **Afterwards.** The marker stays on the lines and follows edits and restarts like a question's; a click on it reopens the thread. F8 skips threads (they need nothing from the user) and badges do not count them. In the chat the thread is a card, "YOU ASKED about src/cart.rs:42–48", with "Pinned to the code" or "Resolved"; the agent's answer is an ordinary turn of the chat. The prompt shows in short (#248), in the user's bubble with a blue speech bubble: "You asked about src/cart.rs:16–17: <the question's first line>…" ("Follow-up on …" for a follow-up). **Show** / **Hide** opens the whole prompt with the attached code, as the "Review sent" card does. The chat recognises these prompts by their text (`ThreadPrompt` in the protocol, which the daemon writes them with).
 
 The Questions pane lists threads with the questions. Under the Open / Answered tabs a filter shows **All**, **Agents** (questions and notes) or **Yours** (threads).
 
-To regenerate these screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored ask_screenshots` and downscale to 1440×900 as `ask-<appearance>.png` and `thread-<appearance>.png`.
+To regenerate these screenshots, run `COQO_SHOT_DIR=<dir> cargo test -p coqo -- --ignored ask_screenshots` and downscale to 1440×900 as `ask-<appearance>.png`, `thread-<appearance>.png` and `asked-chat-<appearance>.png`.
 
 ## For other parts of the UI
 

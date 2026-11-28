@@ -23,11 +23,13 @@
 //!   line of the selection while the editor has the keyboard. A click emits
 //!   [`AskClicked`] with the lines to ask about, and whether Alt (Option)
 //!   was held: the owner's second action there (a review comment, #311).
+//!   [`CodeEditor::set_ask_tip`] gives it a tooltip that says so (#248).
 //! - **The overlay** ([`CodeEditor::set_overlay`]): one view (the question
 //!   popover) drawn over the code, below the lines of a marker with a caret
 //!   pointing at them, or above them when there is more room there; or at the
 //!   top of the editor. It moves with scrolling and edits, and blocks the
-//!   mouse from the code under it.
+//!   mouse from the code under it. At [`OverlayAnchor::Tracked`] lines it
+//!   follows edits like a marker (the ask popover, #248).
 //!
 //! Positions come from the editor's last layout and the current scroll
 //! offset (the `overlay_geometry` patch of gpui-base, ADR 0008).
@@ -35,13 +37,14 @@
 use std::{cell::Cell, ops::Range, rc::Rc};
 
 use gpui_kit::component::input::{
-    GutterDecoration, GutterDecorationCollection, Rope, RopeExt as _,
+    GutterDecoration, GutterDecorationCollection, RangeDecoration, RangeDecorationCollection,
+    RangeDecorationStyle, Rope, RopeExt as _,
 };
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, AnyView, App, Bounds, ClickEvent, Context, ElementId,
     FontWeight, Hsla, InteractiveElement as _, IntoElement as _, ParentElement as _, Pixels,
     SharedString, Size, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
-    pulsating_between, px,
+    prelude::FluentBuilder as _, pulsating_between, px,
 };
 
 use super::{CODE_LINE_HEIGHT, CodeEditor, GUTTER_GAP, REVEAL_FRAMES};
@@ -132,6 +135,10 @@ pub enum OverlayAnchor {
     Marker(u64),
     /// At these lines (0-based, `end` exclusive), as they are now.
     Lines { start: usize, end: usize },
+    /// At these lines (0-based, `end` exclusive), following the edits made
+    /// since, as a marker does: [`CodeEditor::overlay_anchor`] reports where
+    /// they are now.
+    Tracked { start: usize, end: usize },
     /// At the top of the editor.
     Top,
 }
@@ -146,6 +153,9 @@ struct Overlay {
     view: AnyView,
     /// The overlay's size in the last frame.
     size: Rc<Cell<Option<Size<Pixels>>>>,
+    /// For [`OverlayAnchor::Tracked`]: the lines' text, following edits (an
+    /// invisible decoration, as a marker's range is a gutter decoration).
+    tracked: Option<RangeDecorationCollection>,
 }
 
 /// The markers and the overlay of one editor.
@@ -157,6 +167,8 @@ pub(super) struct Overlays {
     frame: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Whether the ask button shows.
     ask: bool,
+    /// The ask button's tooltip.
+    ask_tip: Option<SharedString>,
     /// The line under the mouse.
     hovered: Option<usize>,
     /// A marker to scroll near the top once laid out, and the frames left
@@ -304,16 +316,66 @@ impl CodeEditor {
             .as_ref()
             .is_some_and(|o| o.view.entity_id() == view.entity_id());
         let size = match self.overlays.overlay.take() {
-            Some(o) if same => o.size,
-            _ => Rc::default(),
+            Some(o) => {
+                if let Some(tracked) = o.tracked {
+                    tracked.dispose(cx);
+                }
+                if same { o.size } else { Rc::default() }
+            }
+            None => Rc::default(),
         };
-        self.overlays.overlay = Some(Overlay { anchor, view, size });
+        let tracked = match anchor {
+            OverlayAnchor::Tracked { start, end } => {
+                let range = self.line_start(start, cx)..self.line_start(end.max(start + 1), cx);
+                let mark = RangeDecoration::new(range)
+                    .with_style(RangeDecorationStyle::Fill)
+                    .with_color(Hsla::transparent_black());
+                Some(self.state.update(cx, |state, cx| {
+                    state.create_range_decorations_collection(vec![mark], cx)
+                }))
+            }
+            _ => None,
+        };
+        self.overlays.overlay = Some(Overlay {
+            anchor,
+            view,
+            size,
+            tracked,
+        });
         cx.notify();
     }
 
     /// Remove the overlay.
     pub fn clear_overlay(&mut self, cx: &mut Context<Self>) {
-        if self.overlays.overlay.take().is_some() {
+        if let Some(overlay) = self.overlays.overlay.take() {
+            if let Some(tracked) = overlay.tracked {
+                tracked.dispose(cx);
+            }
+            cx.notify();
+        }
+    }
+
+    /// Move an [`OverlayAnchor::Tracked`] overlay to where edits took its
+    /// lines (after every edit, before it is reported). An overlay whose
+    /// text was deleted stays where it was.
+    pub(super) fn follow_edits(&mut self, cx: &mut Context<Self>) {
+        let Some(overlay) = self.overlays.overlay.as_mut() else {
+            return;
+        };
+        let Some(range) = overlay
+            .tracked
+            .as_ref()
+            .and_then(|t| t.get_ranges(cx).into_iter().next())
+        else {
+            return;
+        };
+        let lines = lines_of(self.state.read(cx).text(), &range);
+        let anchor = OverlayAnchor::Tracked {
+            start: lines.start,
+            end: lines.end,
+        };
+        if overlay.anchor != anchor {
+            overlay.anchor = anchor;
             cx.notify();
         }
     }
@@ -347,6 +409,19 @@ impl CodeEditor {
             self.overlays.ask = enabled;
             cx.notify();
         }
+    }
+
+    /// The ask button's tooltip (none by default).
+    pub fn set_ask_tip(&mut self, tip: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.overlays.ask_tip != tip {
+            self.overlays.ask_tip = tip;
+            cx.notify();
+        }
+    }
+
+    /// The ask button's tooltip.
+    pub fn ask_tip(&self) -> Option<&SharedString> {
+        self.overlays.ask_tip.as_ref()
     }
 
     /// The lines of the primary selection (0-based, `end` exclusive): what
@@ -623,6 +698,7 @@ impl CodeEditor {
                     line..line + 1
                 };
                 let p = &cx.tokens().palette;
+                let tip = self.overlays.ask_tip.clone();
                 elements.push(
                     div()
                         .id("code-ask")
@@ -638,6 +714,9 @@ impl CodeEditor {
                         .cursor_pointer()
                         .occlude()
                         .child(icon(Icon::MessageCircle, px(13.), p.blue.hsla()))
+                        .when_some(tip, |d, tip| {
+                            d.tooltip(move |_, cx| crate::widgets::tooltip(tip.clone(), cx))
+                        })
                         .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
                             cx.emit(AskClicked {
                                 lines: lines.clone(),
@@ -656,13 +735,15 @@ impl CodeEditor {
                     .iter()
                     .find(|(m, ..)| m.id == id)
                     .map(|(_, _, top, bottom)| (*top, *bottom)),
-                OverlayAnchor::Lines { start, end } => state.line_top(start).map(|t| {
-                    let top = dy + t;
-                    let bottom = state
-                        .line_top(end.max(start + 1) - 1)
-                        .map_or(top + line_height, |t| dy + t + line_height);
-                    (top, bottom.max(top + line_height))
-                }),
+                OverlayAnchor::Lines { start, end } | OverlayAnchor::Tracked { start, end } => {
+                    state.line_top(start).map(|t| {
+                        let top = dy + t;
+                        let bottom = state
+                            .line_top(end.max(start + 1) - 1)
+                            .map_or(top + line_height, |t| dy + t + line_height);
+                        (top, bottom.max(top + line_height))
+                    })
+                }
                 OverlayAnchor::Top => None,
             };
             let left = (dx + gutter).min(frame.size.width - px(OVERLAY_MARGIN + 200.));

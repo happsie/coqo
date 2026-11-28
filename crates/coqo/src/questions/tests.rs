@@ -954,7 +954,7 @@ fn asking_about_selected_lines_pins_a_thread_with_the_agents_reply() {
     ui.wait_for("the ask popover", |ui| ask_popover(ui).is_some());
     assert_eq!(
         ui.overlay(&tab),
-        Some(OverlayAnchor::Lines { start: 5, end: 7 })
+        Some(OverlayAnchor::Tracked { start: 5, end: 7 })
     );
     ui.press("escape");
     ui.wait_for("the ask popover closed", |ui| ask_popover(ui).is_none());
@@ -1075,13 +1075,228 @@ fn asking_about_selected_lines_pins_a_thread_with_the_agents_reply() {
             })
         })
     });
+
+    // The question in short, the prompt and the code behind Show (#248).
+    let chat = chat(&mut ui).unwrap();
+    let asked: Vec<(usize, String)> = ui.cx.read(|cx| {
+        chat.read(cx)
+            .transcript()
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, e)| match e {
+                Entry::User { content } => {
+                    let text = content.iter().find_map(|b| match b {
+                        agm::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })?;
+                    let prompt = qm::ThreadPrompt::parse(text)?;
+                    Some((ix, crate::chat::tab::asked_summary(&prompt)))
+                }
+                _ => None,
+            })
+            .collect()
+    });
+    assert_eq!(
+        asked.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>(),
+        [
+            "You asked about src/cart.rs:6–7: Why cap the total at 500?",
+            "Follow-up on src/cart.rs:6–7: Should it stay?",
+        ]
+    );
+    let ix = asked[0].0;
+    ui.wait_for("the short question", |ui| ui.exists(("chat-asked", ix)));
+    assert!(!ui.exists(("chat-user", ix)));
+    assert!(!ui.exists(("chat-asked-prompt", ix)));
+    ui.click(("chat-asked-show", ix));
+    ui.wait_for("the whole prompt", |ui| {
+        ui.exists(("chat-asked-prompt", ix))
+    });
+    ui.click(("chat-asked-show", ix));
+    ui.wait_for("it hidden", |ui| !ui.exists(("chat-asked-prompt", ix)));
+    drop(daemon);
+}
+
+/// #248: the ask popover's lines follow an edit above them before it is
+/// sent; the thread stays at the end of a reply as it streams in, until the
+/// user scrolls up; and the ask button says what Alt-click does.
+#[test]
+fn an_asked_thread_tracks_its_lines_and_follows_the_streaming_reply() {
+    use std::sync::Arc;
+
+    use coqo_agents::{
+        AgentUpdate,
+        model::{ContentBlock as Block, CreateSessionParams, StopReason},
+        testing::{Call, ScriptedProvider, Step},
+    };
+    use coqo_protocol::methods::agents as agm;
+    use coqo_ui::gpui::{ScrollDelta, point};
+    use tokio::sync::Notify;
+
+    use crate::test_support::AgentDaemon;
+
+    let chunk = |text: &str| Step::Update(AgentUpdate::AgentMessageChunk(Block::text(text)));
+    let (more, done) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let long: String = (1..=24)
+        .map(|i| format!("Point {i} of the answer.\n\n"))
+        .collect();
+    let provider = ScriptedProvider::new().turn([
+        chunk(&long),
+        Step::Wait(more.clone()),
+        chunk("Another point, while you read.\n\n"),
+        Step::Wait(done.clone()),
+        chunk("The end."),
+        Step::Stop(StopReason::EndTurn),
+    ]);
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("demo-project");
+    write(&project, "src/main.rs", "fn main() {}\n");
+    let project = project.canonicalize().unwrap();
+    let daemon = AgentDaemon::start(tmp.path(), &provider);
+    let mut ui = open_ui_at(&project, &daemon.paths, &daemon.runtime);
+    let (ws, _) = ui.place().unwrap();
+    let cwd = project.to_string_lossy().into_owned();
+    let ws_id = ws.0.clone();
+    let session = daemon.with_client(async move |client| {
+        client
+            .request::<agm::Create>(CreateSessionParams {
+                provider: "fake".into(),
+                cwd,
+                workspace: Some(ws_id),
+                title: Some("Cart work".into()),
+                mode: None,
+                from: None,
+            })
+            .await
+            .unwrap()
+            .id
+    });
+    ui.wait_for("the chat listed", |ui| {
+        ui.cx.read(|cx| {
+            crate::chat::list::ChatList::global(cx)
+                .is_some_and(|l| l.read(cx).info(&session).is_some())
+        })
+    });
+
+    let tab = ui.open_file("src/cart.rs");
+    let code = ui.code(&tab).unwrap();
+    // The button's tooltip names Alt-click (Option on macOS).
+    let tip = ui.cx.read(|cx| code.read(cx).ask_tip().cloned()).unwrap();
+    assert!(tip.starts_with("Ask an agent ("), "{tip}");
+    assert!(tip.ends_with("-click: add review comment)"), "{tip}");
+
+    // Ask about `let sum = …` and `sum.min(500)`, then type a line above
+    // them before sending: the popover and its lines move with them.
+    ui.frame(|window, cx| tab.update(cx, |tab, cx| tab.ask_about(5..7, window, cx)));
+    ui.wait_for("the ask popover", |ui| {
+        ui.cx.read(|cx| tab.read(cx).ask_popover().is_some())
+    });
+    let ask = ui
+        .cx
+        .read(|cx| tab.read(cx).ask_popover().cloned())
+        .unwrap();
+    ui.frame(|window, cx| {
+        code.update(cx, |code, cx| {
+            code.set_selections(std::slice::from_ref(&(0..0)), cx);
+            code.type_text("// Carts.\n", window, cx);
+        })
+    });
+    ui.wait_for("the popover moved", |ui| {
+        ui.overlay(&tab) == Some(OverlayAnchor::Tracked { start: 6, end: 8 })
+    });
+    assert_eq!(ui.cx.read(|cx| ask.read(cx).lines().clone()), 6..8);
+    let input = ui.cx.read(|cx| ask.read(cx).input().clone());
+    ui.frame(|window, cx| {
+        input.update(cx, |i, cx| {
+            i.set_text("Why cap the total at 500?", window, cx)
+        })
+    });
+    ui.click("ask-send");
+    ui.wait_for("the thread's popover", |ui| ui.popover(&tab).is_some());
+    let prompt = provider
+        .calls()
+        .into_iter()
+        .find_map(|c| match c {
+            Call::Prompt(content) => Some(content),
+            _ => None,
+        })
+        .expect("the chat was prompted");
+    let Block::Text { text } = &prompt[0] else {
+        panic!("{prompt:?}")
+    };
+    assert!(text.contains("src/cart.rs:7-8"), "{text}");
+    let Block::Resource { text, .. } = &prompt[1] else {
+        panic!("{prompt:?}")
+    };
+    assert!(
+        text.contains("let sum") && text.contains("sum.min(500)"),
+        "{text}"
+    );
+    let store = ui.store();
+    let id = ui.cx.read(|cx| tab.read(cx).popover_question(cx)).unwrap();
+    let q = ui.cx.read(|cx| store.read(cx).get(id).cloned()).unwrap();
+    assert_eq!(ui.marker_lines(&tab), vec![(marker_of(&q), 6..8)]);
+
+    // The first part of the reply overflows the thread: it shows its end.
+    let popover = ui.popover(&tab).unwrap();
+    let reply = |ui: &mut Ui| -> String {
+        let turn = ui.cx.read(|cx| {
+            store
+                .read(cx)
+                .get(id)
+                .and_then(|q| q.thread.first().map(|m| m.turn))
+        });
+        ui.cx.read(|cx| {
+            turn.and_then(|turn| {
+                let replies = popover.read(cx).replies()?.read(cx);
+                replies.reply(turn).map(|r| r.text.clone())
+            })
+            .unwrap_or_default()
+        })
+    };
+    let scroll = ui.cx.read(|cx| popover.read(cx).thread_scroll().clone());
+    let at_end = |ui: &mut Ui| {
+        ui.frame(|_, _| ());
+        let (offset, max) = (scroll.offset().y, scroll.max_offset().y);
+        max > px(0.) && (offset + max).abs() < px(2.)
+    };
+    ui.wait_for("the first part, at its end", |ui| {
+        reply(ui).contains("Point 24") && at_end(ui)
+    });
+
+    // More of it keeps it at the end.
+    let before = scroll.max_offset().y;
+    more.notify_one();
+    ui.wait_for("more of the reply, at its end", |ui| {
+        reply(ui).contains("Another point") && scroll.max_offset().y > before && at_end(ui)
+    });
+
+    // Scrolled up, it stays where the user is as the rest comes in.
+    ui.frame(|window, cx| {
+        window.scroll("thread", ScrollDelta::Pixels(point(px(0.), px(120.))), cx)
+    });
+    ui.frame(|_, _| ());
+    let read_at = scroll.offset().y;
+    assert!(read_at > -scroll.max_offset().y + px(2.), "scrolled up");
+    let before = scroll.max_offset().y;
+    done.notify_one();
+    ui.wait_for("the rest of the reply", |ui| {
+        reply(ui).ends_with("The end.") && scroll.max_offset().y > before
+    });
+    ui.frame(|_, _| ());
+    assert_eq!(
+        scroll.offset().y,
+        read_at,
+        "still where the user scrolled to"
+    );
     drop(daemon);
 }
 
 /// Offscreen screenshots of asking about code (#229): the ask popover, then
-/// the pinned thread with the agent's reply, as `coqo-ask-{dark,light}.png`
-/// and `coqo-thread-{dark,light}.png` in `$COQO_SHOT_DIR` (default: the
-/// system temp dir).
+/// the pinned thread with the agent's reply, then the chat with the
+/// question in short (#248), as `coqo-ask-{dark,light}.png`,
+/// `coqo-thread-{dark,light}.png` and `coqo-asked-chat-{dark,light}.png` in
+/// `$COQO_SHOT_DIR` (default: the system temp dir).
 #[test]
 #[ignore = "needs a GPU; run manually"]
 fn ask_screenshots() {
@@ -1292,5 +1507,25 @@ If the cap should hold for what they pay, subtract the bonus first and cap \
             })
         });
         shoot(&mut cx, format!("coqo-thread-{name}.png"));
+
+        // The chat: the question in short, next to the thread's card (#248).
+        let q = cx.update(|cx| tab.read(cx).popover_question(cx)).unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_action(Box::new(popover::OpenQuestionChat { id: q.0 }), cx)
+        })
+        .unwrap();
+        let chat = |cx: &App| {
+            let dock = dock.read(cx);
+            let active = dock.active_tab()?;
+            dock.tab(active)?.downcast::<ChatTab>()
+        };
+        settle(&mut cx, &|cx| {
+            chat(cx).is_some_and(|chat| {
+                chat.read(cx).transcript().entries.iter().any(|e| {
+                    matches!(e, crate::chat::transcript::Entry::Agent { text } if text == REPLY)
+                })
+            })
+        });
+        shoot(&mut cx, format!("coqo-asked-chat-{name}.png"));
     }
 }

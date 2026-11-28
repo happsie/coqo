@@ -36,7 +36,7 @@ use coqo_protocol::{
         SessionParams, SessionSnapshot, SessionUpdate, ToolCallContent, ToolCallStatus, ToolGroup,
         ToolKind, ToolUse, Updates,
     },
-    methods::threads::ReviewLink,
+    methods::{questions::ThreadPrompt, threads::ReviewLink},
 };
 use coqo_ui::{
     ActiveTokens as _,
@@ -491,6 +491,34 @@ pub fn review_link(content: &[ContentBlock]) -> Option<ReviewLink> {
     })
 }
 
+/// Longest question shown in a thread message's summary, in characters.
+const ASKED_CHARS: usize = 120;
+
+/// "You asked about src/cart.rs:16–17: Why cap it?" (a follow-up: "Follow-up
+/// on …"): the first line of the user's message, with "…" when there is more.
+pub fn asked_summary(asked: &ThreadPrompt) -> String {
+    let places: Vec<String> = asked
+        .places
+        .iter()
+        .map(|place| match place.rsplit_once(':') {
+            Some((path, lines)) => format!("{path}:{}", lines.replace('-', "–")),
+            None => place.clone(),
+        })
+        .collect();
+    let lead = if asked.first {
+        "You asked about"
+    } else {
+        "Follow-up on"
+    };
+    let body = asked.body.trim();
+    let line = body.lines().next().unwrap_or_default().trim();
+    let mut first: String = line.chars().take(ASKED_CHARS).collect();
+    if first.len() < body.len() {
+        first.push('…');
+    }
+    format!("{lead} {}: {first}", places.join(", "))
+}
+
 /// The chat's title: the session's, or its first prompt, or "New chat".
 pub fn title_of(info: Option<&SessionInfo>, transcript: &Transcript) -> SharedString {
     if let Some(title) = info
@@ -836,7 +864,12 @@ impl ChatTab {
             .into_any_element()
     }
 
-    fn render_user(&self, ix: usize, content: &[ContentBlock], cx: &App) -> AnyElement {
+    fn render_user(
+        &self,
+        ix: usize,
+        content: &[ContentBlock],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let t = cx.tokens();
         let (p, m) = (&t.palette, &t.metrics);
         let mut text = String::new();
@@ -886,35 +919,29 @@ impl ChatTab {
                     );
                 })
         });
-        div()
-            .group("chat-user")
-            .flex()
-            .flex_col()
-            .items_end()
-            .gap(px(4.))
-            .child(
-                div()
-                    .id(("chat-user", ix))
-                    .test_support()
-                    .max_w(px(COLUMN * 0.8))
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .px(px(16.))
-                    .py(px(12.))
-                    .rounded_tl(px(18.))
-                    .rounded_tr(px(18.))
-                    .rounded_bl(px(18.))
-                    .rounded_br(px(4.))
-                    .bg(p.sage.alpha(0.16))
-                    .line_height(px(21.))
-                    .when(!chips.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .gap_1()
-                                .children(chips.into_iter().map(|c| {
+        let asked = ThreadPrompt::parse(&text);
+        let bubble =
+            match &asked {
+                Some(asked) => self.render_asked(ix, asked, &text, chips, cx),
+                None => {
+                    div()
+                        .id(("chat-user", ix))
+                        .test_support()
+                        .max_w(px(COLUMN * 0.8))
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .px(px(16.))
+                        .py(px(12.))
+                        .rounded_tl(px(18.))
+                        .rounded_tr(px(18.))
+                        .rounded_bl(px(18.))
+                        .rounded_br(px(4.))
+                        .bg(p.sage.alpha(0.16))
+                        .line_height(px(21.))
+                        .when(!chips.is_empty(), |d| {
+                            d.child(div().flex().flex_wrap().gap_1().children(
+                                chips.into_iter().map(|c| {
                                     div()
                                         .px(px(6.))
                                         .py(px(1.))
@@ -923,12 +950,121 @@ impl ChatTab {
                                         .font_family(m.font_mono.clone())
                                         .text_size(m.text_sm)
                                         .child(c)
-                                })),
-                        )
-                    })
-                    .child(text),
-            )
+                                }),
+                            ))
+                        })
+                        .child(text)
+                        .into_any_element()
+                }
+            };
+        div()
+            .group("chat-user")
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap(px(4.))
+            .child(bubble)
             .children(fork)
+            .into_any_element()
+    }
+
+    /// A message of a thread the user started from the code (#229): "You
+    /// asked about src/cart.rs:16–17: <the first line>…", and the whole
+    /// prompt with the attached code behind Show (#248).
+    fn render_asked(
+        &self,
+        ix: usize,
+        asked: &ThreadPrompt,
+        prompt: &str,
+        chips: Vec<String>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        let open = self.expanded.contains(&ix);
+        div()
+            .id(("chat-asked", ix))
+            .test_support()
+            .max_w(px(COLUMN * 0.8))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px(px(16.))
+            .py(px(12.))
+            .rounded_tl(px(18.))
+            .rounded_tr(px(18.))
+            .rounded_bl(px(18.))
+            .rounded_br(px(4.))
+            .bg(p.sage.alpha(0.16))
+            .line_height(px(21.))
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(10.))
+                    .child(div().flex_none().pt(px(4.)).child(icon(
+                        Icon::MessageCircle,
+                        px(13.),
+                        p.blue.hsla(),
+                    )))
+                    .child(
+                        div()
+                            .id(("chat-asked-summary", ix))
+                            .test_support()
+                            .flex_1()
+                            .min_w_0()
+                            .child(asked_summary(asked)),
+                    )
+                    .child(
+                        div()
+                            .id(("chat-asked-show", ix))
+                            .test_support()
+                            .flex_none()
+                            .px(px(10.))
+                            .py(px(2.))
+                            .rounded(px(9.))
+                            .border_1()
+                            .border_color(p.border.hsla())
+                            .text_size(m.text_sm)
+                            .text_color(p.text_muted.hsla())
+                            .cursor_pointer()
+                            .child(if open { "Hide" } else { "Show" })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if !this.expanded.remove(&ix) {
+                                    this.expanded.insert(ix);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .when(open, |d| {
+                d.child(
+                    div()
+                        .id(("chat-asked-prompt", ix))
+                        .test_support()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .pt(px(8.))
+                        .border_t_1()
+                        .border_color(p.border.hsla())
+                        .text_size(m.text_sm)
+                        .when(!chips.is_empty(), |d| {
+                            d.child(div().flex().flex_wrap().gap_1().children(
+                                chips.into_iter().map(|c| {
+                                    div()
+                                        .px(px(6.))
+                                        .py(px(1.))
+                                        .rounded(px(6.))
+                                        .bg(p.sage.alpha(0.22))
+                                        .font_family(m.font_mono.clone())
+                                        .child(c)
+                                }),
+                            ))
+                        })
+                        .child(markdown(("chat-asked-md", ix), prompt.to_owned())),
+                )
+            })
             .into_any_element()
     }
 

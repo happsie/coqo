@@ -168,7 +168,7 @@ impl CodeEditor {
                 .soft_wrap(false)
                 .default_value(text)
         });
-        let edits = cx.subscribe(&state, |_, _, event: &InputEditsEvent, cx| {
+        let edits = cx.subscribe(&state, |this, _, event: &InputEditsEvent, cx| {
             let edits = event
                 .edits()
                 .iter()
@@ -177,6 +177,7 @@ impl CodeEditor {
                     (edit.start_byte..edit.old_end_byte, text)
                 })
                 .collect();
+            this.follow_edits(cx);
             cx.emit(EditorEdits {
                 origin: EditOrigin::Local,
                 edits,
@@ -302,6 +303,7 @@ impl CodeEditor {
         debug_assert!(disjoint(edits), "remote edits must not overlap: {edits:?}");
         self.state
             .update(cx, |state, cx| state.apply_remote_edits(edits, window, cx));
+        self.follow_edits(cx);
         cx.emit(EditorEdits {
             origin: EditOrigin::Remote,
             edits: edits.to_vec(),
