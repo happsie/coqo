@@ -49,6 +49,7 @@ The code lives in these places:
   - The ranges are the daemon's resolved ones (`questions/list` after `buffer/open`, then `questions/changes`). They are used as they are when the resolution matches the open buffer's revision; otherwise the editor's own tracked range is kept.
   - Typing above a question moves its marker immediately, and the daemon's next resolution agrees.
 - **Orphaned anchors** (the code is gone) have no marker. The popover then opens at the top of the editor and shows the original snippet.
+- **Sharing a line** with a walkthrough step or a review thread: the markers stack and a question wins; see [Markers on one line](walkthrough.md#markers-on-one-line).
 
 ## Popover
 

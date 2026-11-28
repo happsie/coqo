@@ -33,7 +33,10 @@
 //!   numbered step markers ([`FileEditor::set_step_marks`]) and shows its
 //!   step popover at a step's lines ([`FileEditor::show_step`]). A question
 //!   popover opened meanwhile takes the overlay; closing it brings the step
-//!   back.
+//!   back. Every other file tab shows the steps of the workspace's active
+//!   walkthroughs itself, with the step popover in place (#260, `steps`).
+//! - **Markers on one line** stack ([`coqo_ui::editor::CodeMarker`]); which
+//!   one shows is [`layer`]'s order.
 //!
 //! Binary, non-UTF-8 and very large files show a message instead.
 
@@ -82,6 +85,28 @@ use crate::{
     workspace::{Workspaces, WorkspacesEvent},
 };
 use coqo_protocol::methods::questions::{Question, QuestionId, QuestionStatus};
+
+mod steps;
+
+/// Which marker shows when several start on one line (#260): the highest
+/// [`CodeMarker::priority`]. What waits on the user comes first, then what
+/// others wrote for them, then the user's own notes.
+pub mod layer {
+    /// A question an agent is blocked on.
+    pub const WAITING: u8 = 50;
+    /// An agent's question or note.
+    pub const QUESTION: u8 = 40;
+    /// A review thread, pending or open (#258).
+    #[allow(dead_code)] // #258
+    pub const REVIEW_THREAD: u8 = 30;
+    /// A walkthrough step.
+    pub const STEP: u8 = 20;
+    /// A thread the user started by asking about code (#229).
+    pub const OWN_THREAD: u8 = 10;
+    /// A resolved review thread (#258).
+    #[allow(dead_code)] // #258
+    pub const RESOLVED_THREAD: u8 = 5;
+}
 
 #[allow(unused_imports)]
 use coqo_ui::gpui; // The action derive spells its paths `gpui::…`.
@@ -257,6 +282,13 @@ pub struct FileEditor {
     step_placed: std::collections::HashMap<u64, Range<u32>>,
     /// The walkthrough step popover.
     step: Option<StepOverlay>,
+    /// The workspace's walkthroughs (#260).
+    walkthroughs: Option<Entity<crate::walkthrough::marks::WorkspaceWalkthroughs>>,
+    /// A player's own tab: it sets the step markers (#100).
+    walkthrough_host: bool,
+    /// The active walkthroughs' steps in this file, and the popover of one.
+    file_steps: Vec<crate::walkthrough::marks::FileStep>,
+    file_step: Option<steps::FileStepPopover>,
     _opening: Option<Task<()>>,
     _changes: Option<Task<()>>,
     _saving: Option<Task<()>>,
@@ -362,6 +394,10 @@ impl FileEditor {
                 },
             ));
         }
+        let walkthroughs = crate::walkthrough::marks::walkthroughs_for(&workspace, cx);
+        if let Some(store) = &walkthroughs {
+            subscriptions.push(Self::follow_walkthroughs(store, window, cx));
+        }
         let mut this = Self {
             workspace,
             root,
@@ -385,6 +421,10 @@ impl FileEditor {
             step_marks: Vec::new(),
             step_placed: std::collections::HashMap::new(),
             step: None,
+            walkthroughs,
+            walkthrough_host: false,
+            file_steps: Vec::new(),
+            file_step: None,
             _opening: None,
             _changes: None,
             _saving: None,
@@ -394,6 +434,7 @@ impl FileEditor {
             _subscriptions: subscriptions,
         };
         this.open(window, cx);
+        this.walkthroughs_changed(window, cx);
         this
     }
 
@@ -504,6 +545,7 @@ impl FileEditor {
     /// session carries on; only the path, the title and the language change.
     fn moved(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
         self.path = path;
+        self.walkthroughs_changed(window, cx);
         if let Some(session) = &self.session {
             let language = editor::language_for(&self.path, &session.replica.text().to_string());
             session
@@ -682,6 +724,7 @@ impl FileEditor {
 
     fn opened(&mut self, open: OpenResult, window: &mut Window, cx: &mut Context<Self>) {
         let rev = open.rev;
+        let first = self.session.is_none();
         self.held.clear();
         self.resync_pending = false;
         match &mut self.session {
@@ -711,7 +754,9 @@ impl FileEditor {
                     window,
                     |this, _, clicked: &MarkerClicked, window, cx| {
                         if clicked.0 >= STEP_MARKER_BASE {
-                            cx.emit(StepMarkerClicked(clicked.0));
+                            if !this.file_step_clicked(clicked.0, window, cx) {
+                                cx.emit(StepMarkerClicked(clicked.0));
+                            }
                             return;
                         }
                         let id = QuestionId(clicked.0 / MARKERS_PER_QUESTION);
@@ -777,6 +822,13 @@ impl FileEditor {
         self.show_pending_question(window, cx);
         if self.popover.is_none() && self.ask.is_none() {
             self.place_step(window, cx);
+        }
+        // Resolve the walkthroughs' anchors against the open buffer.
+        if let Some(store) = self.walkthroughs.clone()
+            && !self.walkthrough_host
+            && first
+        {
+            store.update(cx, |store, cx| store.refresh(cx));
         }
         cx.notify();
     }
@@ -1333,12 +1385,20 @@ impl FileEditor {
                             code.line_start(lines.start as usize, cx)
                                 ..code.line_start(lines.end as usize, cx)
                         };
+                    let priority = if q.waiting {
+                        layer::WAITING
+                    } else if q.author.is_agent() {
+                        layer::QUESTION
+                    } else {
+                        layer::OWN_THREAD
+                    };
                     markers.push(CodeMarker {
                         id,
                         range,
                         color,
                         pulse: q.waiting,
-                        label: None,
+                        priority,
+                        ..CodeMarker::default()
                     });
                 }
             }
@@ -1356,8 +1416,9 @@ impl FileEditor {
                     id: mark.id,
                     range,
                     color: mark.color,
-                    pulse: false,
                     label: Some(mark.label.clone()),
+                    priority: layer::STEP,
+                    ..CodeMarker::default()
                 });
             }
         }
@@ -1419,6 +1480,9 @@ impl FileEditor {
             return; // Answered or dismissed meanwhile: nothing to ask.
         }
         self.ask = None;
+        // A file tab's step popover gives way for good (the player's comes
+        // back once the question closes).
+        self.drop_file_step(cx);
         self.sync_markers(cx);
         let reused = self
             .popover
@@ -1490,6 +1554,7 @@ impl FileEditor {
         if self.popover.is_some() {
             self.close_popover(window, cx);
         }
+        self.drop_file_step(cx);
         let shown = crate::shell::shown_chats(&self.workspace, cx);
         let sessions = questions::ask::choices(&self.workspace, &shown, cx);
         let (workspace, root, path) = (self.workspace.clone(), self.root, self.path.clone());

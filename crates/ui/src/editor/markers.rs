@@ -9,7 +9,15 @@
 //!   it) has a stronger band and a pulsing diamond. Marker ranges follow
 //!   edits like the editor's decorations ([`CodeEditor::marker_range`]).
 //!   A marker with a `label` (a walkthrough step's number, #100) shows it
-//!   on a small badge in the marker's colour instead of the diamond.
+//!   on a small badge in the marker's colour instead of the diamond, and
+//!   one with an `icon` (a review thread's speech bubble, #258) that icon.
+//! - **Stacks** (#260): markers that start on the same line share the gap.
+//!   Only one glyph is drawn there, the stack's *face*: the marker whose
+//!   overlay is open, else the one of the highest `priority` (the earliest
+//!   set among equals). A small dot in the next marker's colour says that
+//!   more are under it, and a click on the face while its overlay is open
+//!   reports the next marker of the stack, so repeated clicks cycle through
+//!   them. Bands and strips are drawn for every marker.
 //! - **The ask button** ([`CodeEditor::set_ask_enabled`], #229): a speech
 //!   bubble in the same gap, on the line under the mouse and on the first
 //!   line of the selection while the editor has the keyboard. A click emits
@@ -48,6 +56,10 @@ const BAND_PULSE: f32 = 0.2;
 const DIAMOND: f32 = 9.;
 /// The height (and least width) of a labelled marker's badge.
 const LABEL_BADGE: f32 = 16.;
+/// The size of a marker's icon.
+const ICON: f32 = 13.;
+/// The dot on a stack's face that says more markers are under it.
+const STACK_DOT: f32 = 7.;
 /// Space between the marked lines and the overlay, where its caret sits.
 const OVERLAY_GAP: f32 = 8.;
 /// The overlay keeps this far from the editor's edges.
@@ -73,6 +85,28 @@ pub struct CodeMarker {
     /// A short label (a step number) drawn on a badge instead of the
     /// diamond.
     pub label: Option<SharedString>,
+    /// An icon drawn instead of the diamond (without a `label`).
+    pub icon: Option<Icon>,
+    /// Which marker shows when several start on one line: the highest.
+    pub priority: u8,
+    /// The band's opacity, instead of the default (13 %, 20 % with
+    /// `pulse`); 0 draws none.
+    pub band: Option<f32>,
+}
+
+impl Default for CodeMarker {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            range: 0..0,
+            color: Hsla::default(),
+            pulse: false,
+            label: None,
+            icon: None,
+            priority: 0,
+            band: None,
+        }
+    }
 }
 
 /// A marker's diamond was clicked.
@@ -140,6 +174,35 @@ fn lines_of(text: &Rope, range: &Range<usize>) -> Range<usize> {
     first..last.max(first) + 1
 }
 
+/// Markers (id, first line, priority, in the order set) grouped by their
+/// first line, top to bottom; each stack in its glyphs' order: the highest
+/// priority first, then as set.
+fn stacks(markers: &[(u64, usize, u8)]) -> Vec<Vec<u64>> {
+    let mut lines: Vec<usize> = markers.iter().map(|(_, line, _)| *line).collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines
+        .into_iter()
+        .map(|line| {
+            let mut stack: Vec<(u64, u8)> = markers
+                .iter()
+                .filter(|(_, l, _)| *l == line)
+                .map(|(id, _, priority)| (*id, *priority))
+                .collect();
+            // Stable: equals keep the order they were set in.
+            stack.sort_by_key(|m| std::cmp::Reverse(m.1));
+            stack.into_iter().map(|(id, _)| id).collect()
+        })
+        .collect()
+}
+
+/// Which marker of `stack` shows: the one whose overlay is `open`, else the
+/// first.
+fn face_of(stack: &[u64], open: Option<u64>) -> usize {
+    open.and_then(|open| stack.iter().position(|id| *id == open))
+        .unwrap_or(0)
+}
+
 impl CodeEditor {
     /// Replace the markers. A marker whose id was already shown is moved to
     /// its new range (pass [`marker_range`](Self::marker_range) to keep it
@@ -192,6 +255,23 @@ impl CodeEditor {
                 Some((m.marker.id, lines_of(text, &range)))
             })
             .collect()
+    }
+
+    /// The markers grouped by the line they start on, top to bottom, each
+    /// stack in its glyphs' order (see the module docs); the first of each
+    /// shows unless another's overlay is open.
+    pub fn marker_stacks(&self, cx: &App) -> Vec<Vec<u64>> {
+        let text = self.state.read(cx).text();
+        let markers: Vec<(u64, usize, u8)> = self
+            .overlays
+            .markers
+            .iter()
+            .filter_map(|m| {
+                let range = m.gutter.get_ranges(cx).into_iter().next()?;
+                Some((m.marker.id, lines_of(text, &range).start, m.marker.priority))
+            })
+            .collect();
+        stacks(&markers)
     }
 
     /// The 0-based line of byte `offset`.
@@ -378,7 +458,7 @@ impl CodeEditor {
         let state = self.state.read(cx);
         let text = state.text();
         // Each marker's lines, as tops and bottoms in the editor.
-        let placed: Vec<(CodeMarker, Pixels, Pixels)> = self
+        let placed: Vec<(CodeMarker, usize, Pixels, Pixels)> = self
             .overlays
             .markers
             .iter()
@@ -390,27 +470,51 @@ impl CodeEditor {
                     .line_top(lines.end - 1)
                     .map_or(top + line_height, |t| dy + t + line_height)
                     .max(top + line_height);
-                Some((m.marker.clone(), top, bottom))
+                Some((m.marker.clone(), lines.start, top, bottom))
             })
             .collect();
+        let open = match self.overlays.overlay.as_ref().map(|o| o.anchor) {
+            Some(OverlayAnchor::Marker(id)) => Some(id),
+            _ => None,
+        };
+        let stacks = stacks(
+            &placed
+                .iter()
+                .map(|(m, line, ..)| (m.id, *line, m.priority))
+                .collect::<Vec<_>>(),
+        );
 
-        for (marker, top, bottom) in &placed {
+        for (marker, _, top, bottom) in &placed {
             if *bottom < px(0.) || *top > height {
                 continue;
             }
-            let band = if marker.pulse { BAND_PULSE } else { BAND };
-            elements.push(
-                div()
-                    .absolute()
-                    .left(dx)
-                    .right(px(10.))
-                    .top(*top)
-                    .h(*bottom - *top)
-                    .rounded_r(px(8.))
-                    .bg(marker.color.opacity(band))
-                    .into_any_element(),
-            );
-            let diamond = if let Some(label) = &marker.label {
+            let band = marker
+                .band
+                .unwrap_or(if marker.pulse { BAND_PULSE } else { BAND });
+            if band > 0. {
+                elements.push(
+                    div()
+                        .absolute()
+                        .left(dx)
+                        .right(px(10.))
+                        .top(*top)
+                        .h(*bottom - *top)
+                        .rounded_r(px(8.))
+                        .bg(marker.color.opacity(band))
+                        .into_any_element(),
+                );
+            }
+        }
+        for stack in &stacks {
+            let face = face_of(stack, open);
+            let Some((marker, _, top, _)) = placed.iter().find(|(m, ..)| m.id == stack[face])
+            else {
+                continue;
+            };
+            if *top + line_height < px(0.) || *top > height {
+                continue;
+            }
+            let glyph = if let Some(label) = &marker.label {
                 // A step number: a badge in the gap.
                 div()
                     .min_w(px(LABEL_BADGE))
@@ -426,6 +530,8 @@ impl CodeEditor {
                     .font_weight(FontWeight::BOLD)
                     .child(label.clone())
                     .into_any_element()
+            } else if let Some(glyph) = marker.icon {
+                icon(glyph, px(ICON), marker.color).into_any_element()
             } else if marker.pulse {
                 let diamond = icon(Icon::MarkerDiamond, px(DIAMOND), marker.color);
                 diamond
@@ -441,6 +547,29 @@ impl CodeEditor {
                 icon(Icon::MarkerDiamond, px(DIAMOND), marker.color).into_any_element()
             };
             let id = marker.id;
+            let next = stack[(face + 1) % stack.len()];
+            // With its overlay open, a click shows the next one under it.
+            let clicked = if stack.len() > 1 && open == Some(id) {
+                next
+            } else {
+                id
+            };
+            let under = placed
+                .iter()
+                .find(|(m, ..)| stack.len() > 1 && m.id == next)
+                .map(|(next, ..)| {
+                    div()
+                        .id(ElementId::NamedInteger("code-marker-more".into(), id))
+                        .test_support()
+                        .absolute()
+                        .top(px(1.))
+                        .right(px(1.))
+                        .size(px(STACK_DOT))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(cx.tokens().palette.ground.hsla())
+                        .bg(next.color.opacity(1.))
+                });
             elements.push(
                 div()
                     .id(ElementId::NamedInteger("code-marker".into(), id))
@@ -455,8 +584,9 @@ impl CodeEditor {
                     .justify_center()
                     .cursor_pointer()
                     .occlude()
-                    .child(diamond)
-                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(MarkerClicked(id))))
+                    .child(glyph)
+                    .children(under)
+                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(MarkerClicked(clicked))))
                     .into_any_element(),
             );
         }
@@ -472,7 +602,7 @@ impl CodeEditor {
             .filter(|_| self.overlays.ask && self.overlays.overlay.is_none());
         if let Some(line) = ask_line {
             let state = self.state.read(cx);
-            let marked = placed.iter().any(|(_, top, _)| {
+            let marked = placed.iter().any(|(_, _, top, _)| {
                 state
                     .line_top(line)
                     .is_some_and(|t| (dy + t - *top).abs() < px(1.))
@@ -519,7 +649,7 @@ impl CodeEditor {
                 OverlayAnchor::Marker(id) => placed
                     .iter()
                     .find(|(m, ..)| m.id == id)
-                    .map(|(_, top, bottom)| (*top, *bottom)),
+                    .map(|(_, _, top, bottom)| (*top, *bottom)),
                 OverlayAnchor::Lines { start, end } => state.line_top(start).map(|t| {
                     let top = dy + t;
                     let bottom = state
@@ -621,6 +751,27 @@ impl CodeEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stacks_order_by_priority_then_as_set() {
+        // 1 and 3 share line 4; 2 is alone; 4, 5 and 6 share line 9.
+        let markers = [
+            (1, 4, 10),
+            (2, 0, 0),
+            (3, 4, 40),
+            (4, 9, 20),
+            (5, 9, 20),
+            (6, 9, 30),
+        ];
+        assert_eq!(stacks(&markers), vec![vec![2], vec![3, 1], vec![6, 4, 5]]);
+        assert_eq!(face_of(&[3, 1], None), 0);
+        assert_eq!(
+            face_of(&[3, 1], Some(1)),
+            1,
+            "an open overlay's marker shows"
+        );
+        assert_eq!(face_of(&[3, 1], Some(9)), 0);
+    }
 
     #[test]
     fn lines_of_ranges() {

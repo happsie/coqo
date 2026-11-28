@@ -18,6 +18,12 @@
 //! It holds a copy of what it shows ([`StepData`]) and reports what the
 //! user does ([`StepEvent`]); the player does it.
 //!
+//! **In a file tab** (#260, [`StepPopover::in_file_tab`]) it shows a step of
+//! a walkthrough the player is not showing: the header names the
+//! walkthrough, and the buttons are **Open in player** (the player at this
+//! step), **Close** (`Esc`) and **Mark understood** (`u`). There is no
+//! Previous / Next and no asking: those are the player's.
+//!
 //! [`FileEditor::show_step`]: crate::files::editor::FileEditor::show_step
 
 use coqo_protocol::methods::{
@@ -40,6 +46,32 @@ use coqo_ui::{
 
 use super::{anchor_location, anchor_status, kind_label, severity_color, severity_label};
 use crate::{files::editor::FileEditor, questions::OpenQuestion};
+use coqo_protocol::methods::walkthroughs::Walkthrough;
+use coqo_ui::keys;
+
+#[allow(unused_imports)]
+use coqo_ui::gpui; // The action derive spells its paths `gpui::…`.
+
+coqo_ui::gpui::actions!(
+    step_popover,
+    [
+        /// Close the step popover of a file tab (Esc).
+        CloseStep,
+        /// Mark its step understood, or unread again (u).
+        ToggleStepUnderstood,
+    ]
+);
+
+/// Where the keys of a file tab's step popover apply.
+const KEY_CONTEXT: &str = "StepPopover";
+
+/// Bind the keys of a file tab's step popover.
+pub(super) fn init(cx: &mut App) {
+    cx.bind_keys([
+        keys::binding("escape", CloseStep, Some(KEY_CONTEXT)),
+        keys::binding("u", ToggleStepUnderstood, Some(KEY_CONTEXT)),
+    ]);
+}
 
 /// Lines of quoted code shown at most.
 const SNIPPET_LINES: usize = 8;
@@ -76,6 +108,51 @@ pub struct StepData {
     pub agent: String,
     /// The question asked about this step here, if any.
     pub asked: Option<QuestionId>,
+    /// The walkthrough's title, shown in a file tab (#260).
+    pub walkthrough: String,
+}
+
+/// What the popover shows for step `ix` of `w` at its anchor `anchor`.
+pub fn step_data(
+    w: &Walkthrough,
+    ix: usize,
+    anchor: usize,
+    agent: String,
+    asked: Option<QuestionId>,
+) -> Option<StepData> {
+    let step = w.steps.get(ix)?;
+    let criteria = step
+        .criteria_refs
+        .iter()
+        .map(|id| {
+            let known = w.acceptance_criteria.iter().find(|c| &c.id == id);
+            CriterionRef {
+                id: id.clone(),
+                text: known.map(|c| c.text.clone()).unwrap_or_default(),
+                status: known.and_then(|c| c.status),
+            }
+        })
+        .collect();
+    let depends = step
+        .depends_on
+        .iter()
+        .filter_map(|id| {
+            let ix = w.steps.iter().position(|s| &s.id == id)?;
+            Some((ix, w.steps[ix].title.clone()))
+        })
+        .collect();
+    Some(StepData {
+        ix,
+        total: w.steps.len(),
+        step: step.clone(),
+        state: super::step_state(w, step),
+        anchor: anchor.min(step.anchors.len().saturating_sub(1)),
+        criteria,
+        depends,
+        agent,
+        asked,
+        walkthrough: w.title.clone(),
+    })
 }
 
 /// What the user did in the popover.
@@ -92,6 +169,10 @@ pub enum StepEvent {
     Ask(String),
     /// Show the step in the diff.
     ViewDiff,
+    /// Open the walkthrough's player at this step (in a file tab).
+    OpenInPlayer,
+    /// Close the popover (in a file tab).
+    Close,
 }
 
 /// The popover. See the module docs.
@@ -104,6 +185,8 @@ pub struct StepPopover {
     focus: FocusHandle,
     /// The file tab it is shown in, for the room it has there.
     host: Option<WeakEntity<FileEditor>>,
+    /// Shown in an ordinary file tab, not the player (#260).
+    in_file_tab: bool,
     _question: Option<Subscription>,
 }
 
@@ -127,8 +210,17 @@ impl StepPopover {
             error: None,
             focus: cx.focus_handle(),
             host: None,
+            in_file_tab: false,
             _question: None,
         }
+    }
+
+    /// A popover for an ordinary file tab (see the module docs).
+    pub fn in_file_tab(host: WeakEntity<FileEditor>, cx: &mut Context<Self>) -> Self {
+        let mut this = Self::new(cx);
+        this.host = Some(host);
+        this.in_file_tab = true;
+        this
     }
 
     /// The file tab it is shown in (`None` in the diff).
@@ -278,9 +370,15 @@ impl StepPopover {
             )
             .child(
                 div()
+                    .id("step-of")
+                    .test_support()
                     .text_size(m.text_sm)
                     .text_color(p.text_muted.hsla())
-                    .child(format!("Step {} of {}", d.ix + 1, d.total)),
+                    .child(if self.in_file_tab {
+                        format!("{} · Step {} of {}", d.walkthrough, d.ix + 1, d.total)
+                    } else {
+                        format!("Step {} of {}", d.ix + 1, d.total)
+                    }),
             )
             .child(div().flex_1());
         if let Some(a) = d.step.anchors.get(d.anchor) {
@@ -296,7 +394,7 @@ impl StepPopover {
                     .child(anchor_location(a)),
             );
         }
-        if anchors > 1 {
+        if anchors > 1 && !self.in_file_tab {
             let arrow = |id: &'static str, glyph: &'static str| {
                 div()
                     .id(id)
@@ -684,7 +782,79 @@ impl StepPopover {
         )
     }
 
+    /// A file tab's buttons: Open in player, Close, Mark understood.
+    fn render_file_tab_footer(&self, d: &StepData, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.tokens();
+        let m = t.metrics.clone();
+        let p = t.palette.clone();
+        let understood = d.state == StepState::Understood;
+        let button = |id: &'static str, cx: &App| {
+            raised(div(), cx)
+                .id(id)
+                .test_support()
+                .px(px(14.))
+                .py(px(8.))
+                .rounded(px(10.))
+                .text_size(m.text_sm)
+                .cursor_pointer()
+        };
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(10.))
+            .child(
+                button("step-open-player", cx)
+                    .child("Open in player")
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(StepEvent::OpenInPlayer))),
+            )
+            .child(
+                div()
+                    .id("step-close")
+                    .test_support()
+                    .px(px(10.))
+                    .py(px(8.))
+                    .rounded(px(10.))
+                    .text_size(m.text_sm)
+                    .text_color(p.text_muted.hsla())
+                    .cursor_pointer()
+                    .hover(|d| d.bg(p.surface_strong.hsla()))
+                    .child("Close")
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(StepEvent::Close))),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .text_size(m.text_xs)
+                    .text_color(p.text_subtle.hsla())
+                    .child(kbd("u", cx)),
+            )
+            .child(
+                primary(div(), cx)
+                    .id("step-understood")
+                    .test_support()
+                    .px(px(18.))
+                    .py(px(8.))
+                    .rounded(px(10.))
+                    .text_size(m.text_sm)
+                    .cursor_pointer()
+                    .child(if understood {
+                        "✓ Understood"
+                    } else {
+                        "Mark understood"
+                    })
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(StepEvent::ToggleUnderstood))),
+            )
+            .into_any_element()
+    }
+
     fn render_footer(&self, d: &StepData, cx: &mut Context<Self>) -> AnyElement {
+        if self.in_file_tab {
+            return self.render_file_tab_footer(d, cx);
+        }
         let t = cx.tokens();
         let m = t.metrics.clone();
         let p = t.palette.clone();
@@ -771,6 +941,13 @@ impl Render for StepPopover {
             .id("step-popover")
             .test_support()
             .track_focus(&self.focus)
+            .when(self.in_file_tab, |d| {
+                d.key_context(KEY_CONTEXT)
+                    .on_action(cx.listener(|_, _: &CloseStep, _, cx| cx.emit(StepEvent::Close)))
+                    .on_action(cx.listener(|_, _: &ToggleStepUnderstood, _, cx| {
+                        cx.emit(StepEvent::ToggleUnderstood)
+                    }))
+            })
             .rounded(px(18.))
             .w_full()
             .px(px(20.))
