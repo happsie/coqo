@@ -6,21 +6,22 @@
 //! transcript gets a `walkthrough` update: the chat shows a card
 //! "Walkthrough published: <title> · n steps", and the session panel's
 //! "Walkthroughs" card lists every one the session published. Published
-//! again (#253, the same id), the card shows the new one and the chat adds a
-//! line "Walkthrough updated: <title> · n steps" rather than a second card. Clicking
-//! either opens the walkthrough player ([`crate::walkthrough`]) at the first
-//! unread step, with its popover (what, why, risks) at the code.
+//! again (#253, the same id), the card shows the new one and the chat adds
+//! a line "Walkthrough updated: <title> · n steps" rather than a second
+//! card. Clicking either opens the walkthrough player
+//! ([`crate::walkthrough`]) at the first unread step, with its popover
+//! (what, why, risks) at the code.
 //!
 //! **Coverage** (#99, board 3's coverage guard): the card says how many of
 //! the change's hunks the steps cover. When some are not, a rose banner
 //! lists them ("pom.xml:88-94 (+7 −1) is not explained by any step and
 //! wasn't marked trivial"), each opening its lines, with "Ask <agent> to
 //! explain it", which sends the agent the list. The panel's row has the
-//! count and the first uncovered hunks.
+//! count and the first uncovered hunks. The labels are shared with the
+//! player's banner ([`crate::walkthrough::coverage`]).
 
 use coqo_protocol::methods::walkthroughs::{
     StorageMode, UncoveredHunk, WalkthroughCoverage, WalkthroughLocation, WalkthroughSummary,
-    WholeFile,
 };
 use coqo_ui::{
     ActiveTokens as _,
@@ -33,9 +34,11 @@ use coqo_ui::{
 };
 
 use super::ChatTab;
-use crate::chat::OpenLocation;
 use crate::walkthrough::OpenWalkthrough;
-use crate::workspace::Workspaces;
+pub(crate) use crate::walkthrough::coverage::coverage_label;
+use crate::walkthrough::coverage::{
+    banner_label, explain_prompt, hunk_location, incomplete, open_location,
+};
 
 /// Uncovered hunks listed in the chat card's banner.
 const CARD_HUNKS: usize = 6;
@@ -67,101 +70,6 @@ pub(crate) fn updated_label(w: &WalkthroughSummary) -> String {
         w.title,
         steps_label(w.steps)
     )
-}
-
-/// "Coverage 12/14 hunks", for the card and the panel row.
-pub(crate) fn coverage_label(c: &WalkthroughCoverage) -> String {
-    if c.unavailable.is_some() {
-        "Coverage not checked".into()
-    } else if c.total == 0 {
-        "No changed hunks".into()
-    } else {
-        format!(
-            "Coverage {}/{} hunk{}",
-            c.covered + c.trivial,
-            c.total,
-            if c.total == 1 { "" } else { "s" }
-        )
-    }
-}
-
-/// Whether to flag `c`: some hunks are uncovered.
-fn incomplete(c: &WalkthroughCoverage) -> bool {
-    c.unavailable.is_none() && c.uncovered_count() > 0
-}
-
-/// The banner's sentence, as board 3 has it.
-pub(crate) fn banner_label(c: &WalkthroughCoverage) -> (String, String) {
-    let head = format!(
-        "{} of {} changed hunks covered.",
-        c.covered + c.trivial,
-        c.total
-    );
-    let n = c.uncovered_count();
-    let body = match (n, c.uncovered.first()) {
-        (1, Some(h)) => format!(
-            "{} ({}) is not explained by any step and wasn't marked trivial.",
-            h.location(),
-            h.change()
-        ),
-        _ => format!("{n} hunks are not explained by any step and weren't marked trivial."),
-    };
-    (head, body)
-}
-
-/// What "Ask the agent to explain it" sends.
-pub(crate) fn explain_prompt(w: &WalkthroughSummary, c: &WalkthroughCoverage) -> String {
-    let n = c.uncovered_count();
-    let mut text = format!(
-        "Your walkthrough \"{}\" ({}) doesn't cover {} changed hunk{}:",
-        w.title,
-        w.id,
-        n,
-        if n == 1 { "" } else { "s" }
-    );
-    for h in &c.uncovered {
-        text.push_str(&format!("\n- {} ({})", h.location(), h.change()));
-    }
-    if (n as usize) > c.uncovered.len() {
-        text.push_str(&format!(
-            "\n- … and {} more",
-            n as usize - c.uncovered.len()
-        ));
-    }
-    text.push_str(
-        "\nExplain each: add it to a step's anchors, or to trivial_hunks with a reason if it needs no explanation, and publish the walkthrough again.",
-    );
-    text
-}
-
-/// Where to open an uncovered hunk; a deleted file has nowhere.
-fn hunk_location(h: &UncoveredHunk) -> Option<WalkthroughLocation> {
-    (h.whole_file != Some(WholeFile::Deleted)).then(|| WalkthroughLocation {
-        root: h.root,
-        path: h.path.clone(),
-        lines: h.new_range,
-    })
-}
-
-/// Open `start` (root-relative) in the window's workspace.
-fn open_location(start: &WalkthroughLocation, window: &mut Window, cx: &mut App) {
-    let workspaces = Workspaces::for_window(window, cx).or_else(|| Workspaces::global(cx));
-    let Some(root) = workspaces.as_ref().and_then(|w| {
-        w.read(cx)
-            .current()?
-            .roots
-            .iter()
-            .find(|r| r.id == start.root)
-            .map(|r| r.path.clone())
-    }) else {
-        return;
-    };
-    let action = OpenLocation {
-        path: format!("{}/{}", root.trim_end_matches('/'), start.path),
-        line: Some(start.lines.start),
-        end: Some(start.lines.end),
-    };
-    window.dispatch_action(Box::new(action), cx);
 }
 
 /// Opens `w` in the player.
@@ -206,10 +114,18 @@ impl ChatTab {
         let Some(c) = &w.coverage else {
             return;
         };
-        let prompt = explain_prompt(w, c);
+        let prompt = explain_prompt(&w.title, &w.id, c);
+        self.ask_agent(prompt, window, cx);
+    }
+
+    /// Put `prompt` in the composer and send it, unless a turn is running
+    /// or the transcript is not loaded yet (then it waits there for the
+    /// user to send). The player's "Ask <agent> to explain it" (#264) comes
+    /// here too.
+    pub fn ask_agent(&mut self, prompt: String, window: &mut Window, cx: &mut Context<Self>) {
         self.composer
             .update(cx, |c, cx| c.set_text(prompt, window, cx));
-        if self.transcript.running {
+        if self.transcript.running || self.transcript.head == 0 {
             cx.notify();
             return;
         }
@@ -638,58 +554,11 @@ fn hunk_link(
 
 #[cfg(test)]
 mod tests {
-    use coqo_protocol::methods::editor::LineRange;
-    use coqo_protocol::methods::workspace::RootId;
-
     use super::*;
-
-    fn hunk(path: &str, start: u32, end: u32, added: u32, removed: u32) -> UncoveredHunk {
-        UncoveredHunk {
-            root: RootId(0),
-            path: path.into(),
-            new_range: LineRange { start, end },
-            old_range: None,
-            added,
-            removed,
-            whole_file: None,
-            renamed_from: None,
-            excerpt: String::new(),
-        }
-    }
 
     #[test]
     fn labels() {
         assert_eq!(steps_label(1), "1 step");
         assert_eq!(steps_label(7), "7 steps");
-        let mut c = WalkthroughCoverage {
-            total: 15,
-            covered: 12,
-            trivial: 2,
-            uncovered: vec![hunk("pom.xml", 87, 93, 7, 1)],
-            unavailable: None,
-        };
-        assert_eq!(coverage_label(&c), "Coverage 14/15 hunks");
-        assert_eq!(
-            banner_label(&c),
-            (
-                "14 of 15 changed hunks covered.".to_owned(),
-                "pom.xml:88-94 (+7 \u{2212}1) is not explained by any step and wasn't marked trivial."
-                    .to_owned()
-            )
-        );
-        c.covered = 11;
-        c.uncovered.push(hunk("src/a.rs", 3, 3, 0, 2));
-        assert_eq!(
-            banner_label(&c).1,
-            "2 hunks are not explained by any step and weren't marked trivial."
-        );
-        assert_eq!(
-            coverage_label(&WalkthroughCoverage::default()),
-            "No changed hunks"
-        );
-        assert_eq!(
-            coverage_label(&WalkthroughCoverage::unavailable("no git")),
-            "Coverage not checked"
-        );
     }
 }

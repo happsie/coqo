@@ -254,7 +254,8 @@ impl AgentDaemon {
     }
 
     /// [`Self::start`], plus the git mod and the review threads
-    /// (`git/*`, `threads/*`, `review/*`), for sending a review (#95).
+    /// (`git/*`, `threads/*`, `review/*`), for sending a review (#95); the
+    /// walkthroughs' coverage is checked with it too (#264).
     pub fn with_review(dir: &Path, provider: &ScriptedProvider) -> Self {
         Self::serve(dir, provider, true)
     }
@@ -296,23 +297,9 @@ impl AgentDaemon {
             Some(manager.clone()),
         )
         .unwrap();
-        let walkthroughs = coqod::walkthroughs::WalkthroughService::open(
-            &db,
-            Arc::clone(&workspaces),
-            Arc::clone(&buffers),
-            Some(manager.clone()),
-            // No git mod here: coverage says so.
-            None,
-        )
-        .unwrap();
-        let alerts = coqod::alerts::AlertService::open(&db, None).unwrap();
-        coqod::alerts::agents::AgentSource::new(
-            Arc::clone(&alerts),
-            manager.clone(),
-            Some(questions.clone()),
-        )
-        .spawn(stop.clone());
-        let router = if review {
+        // With `review`, the git mod: for the review threads and the
+        // walkthroughs' coverage (#264).
+        let git = review.then(|| {
             let mods = coqod::mods::Mods::load(
                 coqo_kernel::mods::BuiltinMods::new()
                     .with(coqo_mod_git::MANIFEST, coqo_mod_git::GitMod::default()),
@@ -323,18 +310,37 @@ impl AgentDaemon {
                 stop_mods.cancelled().await;
                 started.shutdown().await;
             });
-            let git = coqod::git::GitService::new(Arc::clone(&workspaces), mods);
-            let threads = coqod::threads::ThreadService::open(
-                &db,
-                Arc::clone(&workspaces),
-                Arc::clone(&git),
-                Some(manager.clone()),
-            )
-            .unwrap();
-            let router = coqod::git::register(Router::new(), git);
-            coqod::threads::register(router, threads)
-        } else {
-            Router::new()
+            coqod::git::GitService::new(Arc::clone(&workspaces), mods)
+        });
+        let walkthroughs = coqod::walkthroughs::WalkthroughService::open(
+            &db,
+            Arc::clone(&workspaces),
+            Arc::clone(&buffers),
+            Some(manager.clone()),
+            // Without the git mod, coverage says it is not checked.
+            git.clone(),
+        )
+        .unwrap();
+        let alerts = coqod::alerts::AlertService::open(&db, None).unwrap();
+        coqod::alerts::agents::AgentSource::new(
+            Arc::clone(&alerts),
+            manager.clone(),
+            Some(questions.clone()),
+        )
+        .spawn(stop.clone());
+        let router = match git {
+            Some(git) => {
+                let threads = coqod::threads::ThreadService::open(
+                    &db,
+                    Arc::clone(&workspaces),
+                    Arc::clone(&git),
+                    Some(manager.clone()),
+                )
+                .unwrap();
+                let router = coqod::git::register(Router::new(), git);
+                coqod::threads::register(router, threads)
+            }
+            None => Router::new(),
         };
         let router = coqod::workspace::register(router, workspaces);
         let router = coqo_agents::rpc::register(router, manager);

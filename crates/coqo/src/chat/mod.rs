@@ -107,6 +107,17 @@ pub struct OpenTerminal {
     pub id: u64,
 }
 
+/// Send `prompt` to agent session `session` from outside its chat (the
+/// walkthrough player's "Ask <agent> to explain it", #264): its chat tab is
+/// opened (or shown) with the prompt in the composer, and sent unless a
+/// turn is running there.
+#[derive(Clone, Debug, PartialEq, Eq, Action)]
+#[action(namespace = chat, no_json)]
+pub struct AskAgent {
+    pub session: String,
+    pub prompt: String,
+}
+
 /// Run a provider's sign-in program (such as `claude`, to `/login` there) in
 /// a terminal tab in the workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Action)]
@@ -225,6 +236,22 @@ pub fn open_session(dock: WeakEntity<Dock>, session: SessionId, window: &mut Win
     dock.update(cx, |dock, cx| {
         dock.open_tab(AnyTab::new(tab), window, cx);
     });
+}
+
+/// [`AskAgent`]: show the session's chat and ask there.
+pub fn ask_agent(dock: &Entity<Dock>, action: &AskAgent, window: &mut Window, cx: &mut App) {
+    let session = SessionId(action.session.clone());
+    open_session(dock.downgrade(), session.clone(), window, cx);
+    let tab = {
+        let dock = dock.read(cx);
+        dock.find_tab(KIND, &session.0, cx)
+            .and_then(|id| dock.tab(id))
+            .and_then(AnyTab::downcast::<tab::ChatTab>)
+    };
+    if let Some(tab) = tab {
+        let prompt = action.prompt.clone();
+        tab.update(cx, |t, cx| t.ask_agent(prompt, window, cx));
+    }
 }
 
 fn list_error(error: Option<String>, cx: &mut App) {

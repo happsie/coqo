@@ -7,6 +7,13 @@
 //! (the file's live buffer, editable, with its questions) or, in diff mode,
 //! in a [`DiffView`] over the walkthrough's change. The step popover is
 //! anchored at the step's lines in either.
+//!
+//! Under the header, board 3's **coverage banner** (#264) flags the changed
+//! hunks no step explains, from `walkthroughs/get`'s `coverage` (checked
+//! again on every load for a worktree scope): "14 of 15 changed hunks
+//! covered.", each uncovered hunk as a link (into the diff in diff mode,
+//! else a file tab), and "Ask <agent> to explain it", which asks the
+//! publishing session in its chat as the chat card's button does.
 
 use std::{collections::HashMap, rc::Rc};
 
@@ -15,7 +22,8 @@ use coqo_protocol::methods::{
     questions::{AnchorStatus, AskParams, NewAnchor, QuestionId},
     walkthroughs::{
         self as wtm, ChangeKind, ChangesParams, SetStepStateParams, StepState, StorageMode,
-        Walkthrough, WalkthroughId, WalkthroughParams,
+        UncoveredHunk, Walkthrough, WalkthroughCoverage, WalkthroughId, WalkthroughParams,
+        WholeFile,
     },
     workspace::{RootId, WorkspaceId},
 };
@@ -35,12 +43,12 @@ use coqo_ui::{
 };
 
 use super::{
-    NextStep, PreviousStep, ToggleDiff, ToggleUnderstood,
+    NextStep, PreviousStep, ToggleDiff, ToggleUnderstood, coverage,
     diff::{DiffMark, StepOverlay, WalkthroughDiffSource},
     popover::{CriterionRef, StepData, StepEvent, StepPopover},
 };
 use crate::{
-    chat::OpenLocation,
+    chat::{AskAgent, OpenLocation},
     daemon::{Daemon, DaemonError, DaemonEvent},
     diff::DiffView,
     files::editor::{FileEditor, STEP_MARKER_BASE, StepMark, StepMarkerClicked},
@@ -53,6 +61,8 @@ pub const KIND: &str = "walkthrough";
 
 /// Markers per step: one per anchor.
 const MARKERS_PER_STEP: u64 = 16;
+/// Uncovered hunks listed in the coverage banner.
+const BANNER_HUNKS: usize = 8;
 
 /// The de-duplication key of a player tab.
 pub fn key(id: &WalkthroughId) -> String {
@@ -867,6 +877,44 @@ impl WalkthroughPlayer {
         }));
     }
 
+    /// Show uncovered hunk `h`: in the diff in diff mode (and for a deleted
+    /// file, which only the diff shows), else in a file tab.
+    fn open_hunk(&mut self, h: &UncoveredHunk, window: &mut Window, cx: &mut Context<Self>) {
+        let deleted = h.whole_file == Some(WholeFile::Deleted);
+        if self.mode == Mode::Editor
+            && let Some(at) = coverage::hunk_location(h)
+        {
+            coverage::open_location(&at, window, cx);
+            return;
+        }
+        if deleted && self.mode == Mode::Editor {
+            self.set_mode(Mode::Diff, window, cx);
+        }
+        let (view, _) = self.diff_view(window, cx);
+        let at = match (deleted, h.old_range) {
+            (true, Some(old)) => LineRef::new(h.path.clone(), Side::Old, old.start + 1),
+            _ => LineRef::new(h.path.clone(), Side::New, h.new_range.start + 1),
+        };
+        view.update(cx, |v, cx| v.scroll_to(&at, cx));
+        cx.notify();
+    }
+
+    /// "Ask <agent> to explain it": the uncovered hunks to the session that
+    /// published the walkthrough, in its chat.
+    fn ask_to_explain(&self, window: &mut Window, cx: &mut App) {
+        let Some(w) = &self.walkthrough else {
+            return;
+        };
+        let Some(c) = &w.coverage else {
+            return;
+        };
+        let action = AskAgent {
+            session: w.created_by.session.0.clone(),
+            prompt: coverage::explain_prompt(&w.title, &w.id, c),
+        };
+        window.dispatch_action(Box::new(action), cx);
+    }
+
     /// Open the current anchor in a file tab of its own.
     fn open_file(&self, window: &mut Window, cx: &mut App) {
         let Some(a) = self
@@ -923,6 +971,31 @@ impl WalkthroughPlayer {
             self.agent_name(cx),
         );
         let bar_width = 140.;
+        // Not a repository, no git: say so quietly, with why on hover.
+        let unchecked = w
+            .coverage
+            .as_ref()
+            .and_then(|c| c.unavailable.clone())
+            .map(|why| {
+                div()
+                    .id("walkthrough-coverage")
+                    .test_support()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(10.))
+                    .py(px(5.))
+                    .rounded(px(10.))
+                    .bg(p.surface.hsla())
+                    .text_size(m.text_sm)
+                    .text_color(p.text_muted.hsla())
+                    .child(icon(Icon::CircleAlert, px(12.), p.text_subtle.hsla()))
+                    .child("Coverage not checked")
+                    .tooltip(move |_, cx| {
+                        let why = SharedString::from(format!("{why}."));
+                        cx.new(|_| Tip(why)).into()
+                    })
+            });
         div()
             .id("walkthrough-header")
             .test_support()
@@ -965,6 +1038,7 @@ impl WalkthroughPlayer {
                                     .child(subtitle),
                             ),
                     )
+                    .children(unchecked)
                     .child(
                         div()
                             .px(px(10.))
@@ -1020,6 +1094,127 @@ impl WalkthroughPlayer {
                 )
             })
             .into_any_element()
+    }
+
+    /// Board 3's coverage banner, under the header, while hunks are
+    /// uncovered. Coverage that could not be checked is a chip in the
+    /// header; complete coverage shows nothing.
+    fn render_coverage(&self, w: &Walkthrough, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let c: &WalkthroughCoverage = w.coverage.as_ref()?;
+        let t = cx.tokens();
+        let (p, m) = (t.palette.clone(), t.metrics.clone());
+        if !coverage::incomplete(c) {
+            return None;
+        }
+        let (head, body) = coverage::banner_label(c);
+        let ask = div()
+            .id("walkthrough-coverage-ask")
+            .test_support()
+            .flex_none()
+            .px(px(12.))
+            .py(px(6.))
+            .rounded(px(10.))
+            .bg(p.rose.alpha(0.18))
+            .border_1()
+            .border_color(p.rose.alpha(0.35))
+            .text_size(m.text_sm)
+            .text_color(p.text.hsla())
+            .cursor_pointer()
+            .child(SharedString::from(format!(
+                "Ask {} to explain it",
+                self.agent_name(cx)
+            )))
+            .on_click(cx.listener(|this, _, window, cx| this.ask_to_explain(window, cx)));
+        let mut links = div()
+            .flex()
+            .flex_wrap()
+            .gap_x(px(16.))
+            .gap_y(px(4.))
+            .pl(px(28.));
+        for (k, h) in c.uncovered.iter().take(BANNER_HUNKS).enumerate() {
+            let hunk = h.clone();
+            links = links.child(
+                div()
+                    .id(("walkthrough-coverage-hunk", k))
+                    .test_support()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .cursor_pointer()
+                    .text_size(m.text_label)
+                    .child(
+                        div()
+                            .font_family(m.font_mono.clone())
+                            .text_color(p.blue.hsla())
+                            .child(SharedString::from(h.location())),
+                    )
+                    .child(
+                        div()
+                            .text_color(p.text_subtle.hsla())
+                            .child(SharedString::from(h.change())),
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.open_hunk(&hunk, window, cx)),
+                    ),
+            );
+        }
+        let listed = c.uncovered.len().min(BANNER_HUNKS);
+        if c.uncovered_count() as usize > listed {
+            links = links.child(
+                div()
+                    .text_size(m.text_label)
+                    .text_color(p.text_subtle.hsla())
+                    .child(SharedString::from(format!(
+                        "and {} more",
+                        c.uncovered_count() as usize - listed
+                    ))),
+            );
+        }
+        Some(
+            div()
+                .id("walkthrough-coverage")
+                .test_support()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .px(px(16.))
+                .py(px(10.))
+                .rounded(px(14.))
+                .bg(p.rose.alpha(0.12))
+                .border_1()
+                .border_color(p.rose.alpha(0.3))
+                .text_size(m.text_sm)
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(icon(Icon::CircleAlert, px(16.), p.rose.hsla()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(300.))
+                                .flex()
+                                .flex_wrap()
+                                .gap_x(px(4.))
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(p.rose.hsla())
+                                        .child(SharedString::from(head)),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(p.text_muted.hsla())
+                                        .child(SharedString::from(body)),
+                                ),
+                        )
+                        .child(ask),
+                )
+                .child(links)
+                .into_any_element(),
+        )
     }
 
     fn render_steps(&self, w: &Walkthrough, cx: &mut Context<Self>) -> AnyElement {
@@ -1404,6 +1599,22 @@ impl TabItem for WalkthroughPlayer {
     }
 }
 
+/// The tooltip of the "Coverage not checked" chip: why.
+struct Tip(SharedString);
+
+impl Render for Tip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.tokens();
+        coqo_ui::widgets::popover(cx)
+            .px(px(10.))
+            .py(px(6.))
+            .text_size(t.metrics.text_sm)
+            .text_color(t.palette.text.hsla())
+            .font_family(t.metrics.font_ui.clone())
+            .child(self.0.clone())
+    }
+}
+
 impl Render for WalkthroughPlayer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.tokens();
@@ -1455,7 +1666,9 @@ impl Render for WalkthroughPlayer {
                 .text_color(p.rose.hsla())
                 .child(SharedString::from(e))
         });
+        let coverage = self.render_coverage(&w, cx);
         root.child(self.render_header(&w, cx))
+            .children(coverage)
             .children(error)
             .child(
                 div()
