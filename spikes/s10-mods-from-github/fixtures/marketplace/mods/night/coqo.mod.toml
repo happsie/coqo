@@ -1,0 +1,10 @@
+id = "acme.night"
+version = "1.0.0"
+engine = "^0.0"
+tier = "content"
+
+[[contributes.themes]]
+id = "acme.night"
+name = "Acme Night"
+appearance = "dark"
+path = "night.toml"

@@ -156,21 +156,35 @@ Honest notes:
 
 Everything registers through one **contribution registry** with typed, versioned **services** (`coqo.editor@1`, `coqo.git@1`, `coqo.annotations@1`, `coqo.agents@1`, …). Mods `provide` and `consume` services, so any of them can be disabled or replaced.
 
-There are three tiers, all using the same manifest and contribution model:
+There are four tiers, all using the same manifest and contribution model:
 
 | Tier | What | Runs in | Use for |
 |---|---|---|---|
 | **Core mods** | Rust crates in the repo, implementing `coqo_mod_api::Mod` | daemon and/or UI | Built-ins that need native speed: editor, diff, LSP client, git, trace |
 | **WASM mods** | WASM components (wasmtime, WIT world `coqo:mod@1`), written in Rust or TS/JS (`jco`/componentize-js) | daemon, sandboxed (WASI p2 capabilities) | Third-party mods: languages, commands, MCP tools, alert sources, views, themes |
 | **Process mods** | Any executable speaking the **Coqo Mod Protocol** (JSON-RPC over stdio) | separate process, supervised by daemon | Heavy or ecosystem-bound mods, e.g. one written in Kotlin or TS/Node |
+| **Content mods** | A manifest and data files, no code (`tier = "content"`, [ADR 0033](adr/0033-mods-from-github.md)) | nothing runs | Themes, keybindings, settings sections, static views, languages without servers, and agent plugins (skills, commands, agents in Claude Code plugin format) |
 
 Rules:
 - Core mods may only depend on `coqo-mod-api`, never on kernel internals. `cargo-deny` plus a CI dependency-graph check enforce this, so the public API is dogfooded.
 - **UI contributions are declarative**: a mod returns a view tree (list, tree, table, form, markdown, code snippet, button, badge, split, tabs, progress) that the UI renders natively, plus *editor contributions*: decorations, gutter markers, inline hints, popovers, code lenses. That keeps mods fast and sandboxable. A webview escape hatch is not in v1.
 - **Manifest** `coqo.mod.toml`: id, version, engine range, tier and entry, activation events, provides/consumes, **permissions** (fs scope, network hosts, process spawn, secrets), contributes.
 - **Contribution points:** commands, keybindings, menus, settings schema, views (sidebar / panel / editor tab / status bar / rail), languages (tree-sitter grammar + LSP server definition), debug adapters, trace probe planners, agent providers, **MCP tools** (exposed to agents through `coqod mcp`), chat slash commands, context providers (@-mentions), annotation renderers, walkthrough sources, alert sources, git hosting providers, themes, icon packs.
-- **Agent contributions:** a mod can bundle skills, MCP tools, and slash commands, which become available to every agent provider.
-- Mods install from a local folder, a git URL, or an OCI/HTTP tarball. Hot reload in dev mode. `coqo mod new --tier wasm|process` scaffolds one.
+- **Agent contributions:** a mod can bundle skills, MCP tools, and slash commands, which become available to every agent provider. Skills, commands and agents ship as an agent plugin in Claude Code plugin format (`[[contributes.agent_plugins]]`).
+  - Coqo's Claude sessions get these plugins per session, as they get Coqo's own plugin, and nothing is written to the user's Claude Code configuration.
+  - Hooks and MCP servers in them run inside Claude Code with the user's rights, so their install asks for the "runs programs as you" consent.
+- **Installing** ([ADR 0033](adr/0033-mods-from-github.md)): from a local folder, or from GitHub as `owner/repo[@ref][#subdir]`. The source can be a mod, a Coqo marketplace (`coqo.marketplace.toml`), or a Claude Code plugin or marketplace.
+  - Coqo pins the ref to a commit SHA and shows a dry-run plan before anything is downloaded beyond text files. The plan lists the files, the permissions, the contributions, a trust level and every command that would run.
+  - Nothing runs before the user approves, and nothing is built on install: WASM and process binaries come prebuilt, with sha256 checks and an optional minisign key pinned on first use.
+  - Updates are offered, never applied silently.
+  - Core mods can't be installed. They are compiled in.
+  - A repository can recommend mods in `.coqo/mods.toml`, which never installs anything by itself.
+  - Hot reload in dev mode. `coqo mod new --tier wasm|process` scaffolds one.
+- **UI by tier:**
+  - core mods contribute native GPUI views (the UI-side API is #353's);
+  - WASM and process mods contribute declarative view trees;
+  - content mods contribute settings sections and static view trees.
+  - All of them go through the same contribution points.
 
 ---
 
@@ -439,17 +453,19 @@ Decision { id, question, options[], element_refs[] }
 
 | Location | Contents |
 |---|---|
-| Daemon data (`~/Library/Application Support/Coqo`, `$XDG_DATA_HOME/coqo`) | `coqo.db` (workspaces and their projects, sessions, transcripts, **event log**, alerts, anchored questions and notes, skeletons, walkthroughs, review threads), per-workspace: `traces.db`, PR worktrees; installed mods |
+| Daemon data (`~/Library/Application Support/Coqo`, `$XDG_DATA_HOME/coqo`) | `coqo.db` (workspaces and their projects, sessions, transcripts, **event log**, alerts, anchored questions and notes, skeletons, walkthroughs, review threads), per-workspace: `traces.db`, PR worktrees; installed mods in `mods/<id>/<version>-<sha12>/` (read-only) with the lock `mods/installed.toml`, and each mod's private data in `mod-data/<id>/` ([ADR 0033](adr/0033-mods-from-github.md)) |
 | UI data (`<data dir>/ui/`) | Workbench layouts saved while `coqod` was unreachable, and a window's no-workspace layout; the daemon keeps each workspace's layout in its state (`ui.layout`, [ADR 0004](adr/0004-workbench-layout.md)) |
 | Config (`~/.config/coqo`, macOS equivalent) | `settings.toml`, `keybindings.toml` (key overrides by command id, [ADR 0023](adr/0023-commands-and-keybindings.md)), themes |
 | OS keychain | API keys, GitHub token |
-| Repo `.coqo/` | `settings.toml` (workspace settings incl. review skill), `run.toml` (launch/trace configs), `walkthroughs/` (only if opted in) |
+| Repo `.coqo/` | `settings.toml` (workspace settings incl. review skill), `run.toml` (launch/trace configs), `mods.toml` (recommended mods, pinned), `walkthroughs/` (only if opted in) |
 
 ## 9. Security and privacy
 - No telemetry by default. Crash reports are opt-in.
 - Secrets live only in the keychain and never in files or logs.
 - **Daemon socket:** a user-only directory (verified, never adopted: no symlinks, no other owner, no group or other access), 0600 permissions, a peer credential check (`SO_PEERCRED` / `LOCAL_PEERCRED`), a per-start daemon token in `coqod.token` (0600) that every `coqo/hello` must present, and per-session MCP tokens scoped to a workspace (one-time, since agent adapters may put an MCP server's environment on a command line; [ADR 0012](adr/0012-editor-mcp-bridge.md)). The daemon token is an ephemeral capability in a user-only runtime file, not a long-lived secret, so it does not go in the keychain. See [ADR 0007](adr/0007-daemon-lifecycle.md).
-- WASM mods are sandboxed through WASI capabilities. Process mods and core mods are trusted and declare their permissions. Every mod install shows its permission list.
+- WASM mods are sandboxed through WASI capabilities. Process mods and core mods are trusted and declare their permissions.
+- Every mod install shows its permission list and one of four trust levels: content only, prompts for Claude, sandboxed code, or runs programs as you.
+- Installs from GitHub are pinned to a commit, never auto-updated, and re-approved when their permissions or trust level grow ([ADR 0033](adr/0033-mods-from-github.md)).
 - Trace redaction runs before writing, and tracing is never used against production.
 - Agent permission prompts are always shown, and auto-approve rules can be set per workspace. Rules are an allowlist kept by the daemon: they only match simple commands (word-wise prefix) and files inside the workspace's roots (glob), never shell operators, paths outside the workspace or programs such as `rm`, `sudo` or `curl`; everything else is asked ([chat design](design/chat.md#permissions)).
 - Claude credential rules as in §7.3.
@@ -491,6 +507,7 @@ docs/                    PLAN.md, ADRs, protocol docs
 | **S7** | WASM mod API ergonomics | WIT world for commands + MCP tool + declarative view; author one mod in Rust and one in TS via `jco` | Process mods as the primary third-party tier |
 | **S8** | The skeleton as plan mode on a provider's read-only mode (§7.11; runs before the skeleton epic, not with M1) | Claude Code over ACP in `plan` mode: can it call `propose_skeleton`, can the skeleton's approval and Claude Code's own plan exit be one approval, does the turn continue after `session/set_mode`. In `auto`: does Claude stop at the proposal instead of writing code (measured with `coqo-evals`). Signatures from tree-sitter queries for Rust, TypeScript, Java and Kotlin. Proposed stubs as a diff source or as unsaved buffers | The agent writes the stubs into the worktree in a normal mode and stops (guide and skill), and Coqo restores the files when the skeleton is sent back; where signatures can't be extracted the drift guard compares files and symbol names only |
 | **S9** | Third-party skills' questions and findings shown the Coqo way, without changing the skills (#340) | Pin `AskUserQuestion`, elicitations and permission options with an explicit `path:line`, an option preview or the selection (100 % precise on the samples), and answer through the original request with the labels unchanged; detect `file:line` findings in a message and check them against the workspace (34/35 on samples, 0 false positives; a syntax-only detector shows 18 % bogus references on 156 real reviews); never pin plain-text endings automatically; no hook for ACP. **Go** ([ADR 0030](adr/0030-skill-questions-in-code.md)) | Everything else stays a chat card with "Pin to code". A session-only plugin `PreToolUse` hook is policy-safe, and is kept for terminal mode only |
+| **S10** | Installing mods from GitHub repositories, like Claude Code plugin marketplaces, without running code before the user approves (#355) | Resolve `owner/repo[@ref][#subdir]` to a pinned SHA through the public API (2 calls), validate `coqo.mod.toml` with the real parser, read Claude `marketplace.json` and plugins, and print a dry-run plan with the files, the permissions and what would run. The official Claude marketplace reads cleanly: 22 of its 55 in-repository plugins are prompts only, and 33 have hooks or MCP or LSP servers. **Go** ([ADR 0033](adr/0033-mods-from-github.md)): content mods and Claude plugins first, WASM and process mods after their hosts, core mods never | Content mods and plugins whose plan is "prompts" only; process mods only as scripts pinned by the commit |
 
 Other risks:
 - **GPUI churn:** pin the exact `gpui-kit` release (which pins its `gpui-pre` snapshot), keep the `coqo-ui` facade, and keep the vendored `gpui-base` patch additive (ADR 0008).

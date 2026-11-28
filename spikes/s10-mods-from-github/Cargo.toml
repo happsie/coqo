@@ -1,0 +1,18 @@
+[package]
+name = "spike-s10-mods-from-github"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Throwaway prototype for spike S10 (issue #355): resolving mods on GitHub to a pinned commit and a dry-run install plan."
+
+# Standalone: not a member of the Coqo workspace, so CI does not build it.
+[workspace]
+
+[dependencies]
+# The real manifest parser and validator, so the plan checks what Coqo would.
+coqo-mod-api = { path = "../../crates/mod-api" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+ureq = "3"
