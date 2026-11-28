@@ -31,14 +31,14 @@ use coqo_protocol::methods::{
     },
     workspace::RootId,
 };
+use coqo_ui::keys;
 use coqo_ui::{
     ActiveTokens as _,
     gpui::{
         Action, Animation, AnimationExt as _, AnyElement, App, AppContext as _, Context, Entity,
         EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement,
-        KeyBinding, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-        Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
-        pulsating_between, px,
+        ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+        Subscription, Task, Window, div, prelude::FluentBuilder as _, pulsating_between, px,
     },
     input::{PromptInput, PromptInputEvent},
     text::markdown,
@@ -79,8 +79,8 @@ const SNIPPET_LINES: usize = 6;
 
 pub(super) fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("enter", SendAnswer, Some(KEY_CONTEXT)),
-        KeyBinding::new("escape", Later, Some(KEY_CONTEXT)),
+        keys::binding("enter", SendAnswer, Some(KEY_CONTEXT)),
+        keys::binding("escape", Later, Some(KEY_CONTEXT)),
     ]);
 }
 

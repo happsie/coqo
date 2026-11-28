@@ -46,10 +46,11 @@ use coqo_protocol::methods::{
     },
     workspace::WorkspaceId,
 };
+use coqo_ui::keys;
 use coqo_ui::{
     ActiveTokens as _, Rgb,
     dock::{AnyTab, Dock, register_tab_kind},
-    gpui::{Action, App, AppContext as _, Entity, KeyBinding, Window},
+    gpui::{Action, App, AppContext as _, Entity, Window},
 };
 
 use crate::workspace::Workspaces;
@@ -86,12 +87,12 @@ pub const KEY_CONTEXT: &str = "WalkthroughPlayer";
 /// Register the `walkthrough` tab kind and bind the player's keys.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("n", NextStep, Some(KEY_CONTEXT)),
-        KeyBinding::new("right", NextStep, Some(KEY_CONTEXT)),
-        KeyBinding::new("p", PreviousStep, Some(KEY_CONTEXT)),
-        KeyBinding::new("left", PreviousStep, Some(KEY_CONTEXT)),
-        KeyBinding::new("u", ToggleUnderstood, Some(KEY_CONTEXT)),
-        KeyBinding::new("d", ToggleDiff, Some(KEY_CONTEXT)),
+        keys::binding("n", NextStep, Some(KEY_CONTEXT)),
+        keys::binding("right", NextStep, Some(KEY_CONTEXT)),
+        keys::binding("p", PreviousStep, Some(KEY_CONTEXT)),
+        keys::binding("left", PreviousStep, Some(KEY_CONTEXT)),
+        keys::binding("u", ToggleUnderstood, Some(KEY_CONTEXT)),
+        keys::binding("d", ToggleDiff, Some(KEY_CONTEXT)),
     ]);
     register_tab_kind(cx, player::KIND, |state, window, cx| {
         player::restore(state, window, cx)

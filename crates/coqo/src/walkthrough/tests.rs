@@ -30,8 +30,8 @@ use coqo_ui::{
     dock::store::MemoryLayoutStore,
     editor::OverlayAnchor,
     gpui::{
-        AnyWindowHandle, App, Bounds, ElementId, Entity, Keystroke, Point, Window, WindowBounds,
-        WindowOptions, px, size,
+        AnyWindowHandle, App, Bounds, ElementId, Entity, Focusable as _, Keystroke, Point, Window,
+        WindowBounds, WindowOptions, px, size,
     },
     test::{TestAppContext, TestWindowExt as _},
 };
@@ -45,7 +45,9 @@ use crate::{
     daemon::{self, DaemonConfig},
     files::editor::{FileEditor, STEP_MARKER_BASE},
     shell::{DEFAULT_WORKSPACE, Shell},
-    test_support::{AgentDaemon, TIMEOUT, TestDaemon, write},
+    test_support::{
+        AgentDaemon, TIMEOUT, TYPED_KEYS, TYPED_TEXT, TestDaemon, record_key_actions, write,
+    },
     workspace::{self, Workspaces},
 };
 
@@ -544,6 +546,73 @@ fn the_session_panel_row_opens_the_player_at_the_first_unread_step() {
     ui.click(("walkthrough-step", 2usize));
     ui.wait_for("step 3", |ui| {
         ui.overlay(&player, "src/tests.rs") == Some(OverlayAnchor::Marker(marker(2, 0)))
+    });
+    drop(ui);
+    drop(daemon);
+}
+
+#[test]
+fn typing_a_question_never_fires_the_player_keys() {
+    let provider = ScriptedProvider::new();
+    let (_tmp, project, daemon) = agent_fixture(&provider);
+    let mut ui = open_ui(&project, &daemon.paths, Appearance::Dark);
+    let (_, id) = published(&mut ui, &daemon, &project);
+    ui.wait_for("the row", |ui| ui.exists(("chat-walkthrough-row", 0usize)));
+    ui.click(("chat-walkthrough-row", 0usize));
+    ui.wait_for("the player", |ui| ui.player(&id).is_some());
+    let player = ui.player(&id).unwrap();
+    ui.wait_for("step 1's popover", |ui| {
+        ui.overlay(&player, "src/discount.rs") == Some(OverlayAnchor::Marker(marker(0, 0)))
+    });
+    let state = |ui: &mut Ui| {
+        let progress = ui.progress(&player);
+        ui.cx.read(|cx| {
+            let p = player.read(cx);
+            (p.current(), p.anchor(), p.mode(), progress)
+        })
+    };
+    let before = state(&mut ui);
+    let (actions, _keys) = record_key_actions(&mut ui.cx);
+
+    // "Ask about this step": the text arrives intact; the step, its
+    // understood mark and the mode stay.
+    ui.click("step-ask");
+    ui.wait_for("the question field", |ui| {
+        ui.cx
+            .read(|cx| player.read(cx).popover().read(cx).question().is_some())
+    });
+    let field = ui
+        .cx
+        .read(|cx| player.read(cx).popover().read(cx).question().cloned())
+        .unwrap();
+    ui.frame(|window, cx| {
+        let handle = field.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+    });
+    let window = ui.window;
+    ui.cx.simulate_keystrokes(window, TYPED_KEYS);
+    ui.cx.simulate_keystrokes(window, "left right");
+    ui.frame(|_, _| ());
+    assert_eq!(ui.cx.read(|cx| field.read(cx).text(cx)), TYPED_TEXT);
+    assert_eq!(state(&mut ui), before);
+    let fired: Vec<String> = actions
+        .borrow()
+        .iter()
+        .filter(|a| a.starts_with("walkthrough::"))
+        .cloned()
+        .collect();
+    assert!(fired.is_empty(), "fired while typing: {fired:?}");
+
+    // With the popover focused, they are the player's keys again.
+    ui.frame(|window, cx| {
+        let handle = player.read(cx).popover().read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+    });
+    ui.cx.simulate_keystrokes(window, "u");
+    ui.wait_for("the understood mark", |ui| ui.progress(&player) == 1);
+    ui.cx.simulate_keystrokes(window, "n");
+    ui.wait_for("step 2", |ui| {
+        ui.cx.read(|cx| player.read(cx).current()) == 1
     });
     drop(ui);
     drop(daemon);

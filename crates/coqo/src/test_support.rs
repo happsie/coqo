@@ -325,3 +325,29 @@ impl AgentDaemon {
         })
     }
 }
+
+/// Every diff and walkthrough shortcut letter, typed one key at a time into
+/// a text field (#266).
+pub const TYPED_KEYS: &str = "j k v m J K space n p u d";
+/// What [`TYPED_KEYS`] types.
+pub const TYPED_TEXT: &str = "jkvmJK npud";
+
+/// The names of the actions key presses resolve to, from now on, for as
+/// long as the subscription lives.
+pub fn record_key_actions(
+    cx: &mut coqo_ui::test::TestAppContext,
+) -> (
+    std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    coqo_ui::gpui::Subscription,
+) {
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    let subscription = cx.update(|cx| {
+        cx.observe_keystrokes(move |event, _, _| {
+            if let Some(action) = &event.action {
+                sink.borrow_mut().push(action.name().to_owned());
+            }
+        })
+    });
+    (seen, subscription)
+}

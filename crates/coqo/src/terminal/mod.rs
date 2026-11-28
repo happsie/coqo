@@ -19,12 +19,13 @@ pub mod view;
 #[cfg(test)]
 mod tests;
 
+use coqo_ui::keys::binding;
 use std::rc::Rc;
 
 use coqo_protocol::methods::terminal::{SpawnParams, TerminalId};
 use coqo_ui::{
     dock::{AnyTab, Dock, register_tab_kind},
-    gpui::{App, AppContext as _, Entity, Global, KeyBinding, Window},
+    gpui::{App, AppContext as _, Entity, Global, Window},
 };
 
 pub use backend::{DaemonBackend, TerminalBackend};
@@ -76,19 +77,19 @@ pub fn init(backend: Rc<dyn TerminalBackend>, cx: &mut App) {
     });
     let context = Some("Terminal");
     let mut bindings = vec![
-        KeyBinding::new("ctrl-`", NewTerminal, None),
-        KeyBinding::new(COPY_PASTE[0], CopyText, context),
-        KeyBinding::new(COPY_PASTE[1], PasteText, context),
+        binding("ctrl-`", NewTerminal, None),
+        binding(COPY_PASTE[0], CopyText, context),
+        binding(COPY_PASTE[1], PasteText, context),
         // Not focus navigation: completion and vi need them.
-        KeyBinding::new("tab", gpui::NoAction, context),
-        KeyBinding::new("shift-tab", gpui::NoAction, context),
-        KeyBinding::new("escape", gpui::NoAction, context),
+        binding("tab", gpui::NoAction, context),
+        binding("shift-tab", gpui::NoAction, context),
+        binding("escape", gpui::NoAction, context),
     ];
     if cfg!(not(target_os = "macos")) {
         // These are the dock's on Linux, but a shell needs them (delete
         // word, SIGQUIT).
-        bindings.push(KeyBinding::new("ctrl-w", gpui::NoAction, context));
-        bindings.push(KeyBinding::new("ctrl-\\", gpui::NoAction, context));
+        bindings.push(binding("ctrl-w", gpui::NoAction, context));
+        bindings.push(binding("ctrl-\\", gpui::NoAction, context));
     }
     cx.bind_keys(bindings);
 }

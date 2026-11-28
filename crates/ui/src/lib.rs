@@ -13,6 +13,7 @@ pub mod diff;
 pub mod dock;
 pub mod editor;
 pub mod input;
+pub mod keys;
 pub mod slots;
 pub mod text;
 pub mod theme;
@@ -93,6 +94,7 @@ pub fn application() -> Application {
 /// Call once, before opening windows.
 pub fn init(appearance: Appearance, cx: &mut App) {
     gpui_kit::init(cx);
+    keys::mark_library_bindings(cx);
     fonts::register(cx);
     theme::apply(appearance, None, cx);
     dock::init(cx);
