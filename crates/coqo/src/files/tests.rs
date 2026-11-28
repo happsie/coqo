@@ -1495,7 +1495,29 @@ impl Ui {
     /// Wait until the undo toast says `text` (the step is done in the UI,
     /// not only on disk).
     fn wait_for_toast(&mut self, text: &str) {
-        self.wait_for(text, |ui| ui.toast().as_deref() == Some(text));
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            self.cx.run_until_parked();
+            self.frame(|_, _| ());
+            if self.toast().as_deref() == Some(text) {
+                return;
+            }
+            if Instant::now() >= deadline {
+                let tree = self.tree();
+                let (error, undo) = self.cx.read(|cx| {
+                    let tree = tree.read(cx);
+                    (
+                        tree.op_error().map(str::to_owned),
+                        tree.history().read(cx).next_undo().cloned(),
+                    )
+                });
+                panic!(
+                    "timed out waiting for {text}: toast {:?}, error {error:?}, next undo {undo:?}",
+                    self.toast()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn next_undo(&mut self) -> Option<super::history::FileOp> {
