@@ -558,12 +558,12 @@ fn the_overlay_sits_below_its_marker_or_at_the_top() {
 #[test]
 fn the_ask_button_asks_about_the_selected_lines() {
     let mut h = open(TEXT);
-    let asked: Rc<RefCell<Vec<Range<usize>>>> = Rc::default();
+    let asked: Rc<RefCell<Vec<AskClicked>>> = Rc::default();
     let sink = asked.clone();
     let editor = h.editor.clone();
     let _sub = h.cx.update(|cx| {
         cx.subscribe(&editor, move |_, event: &AskClicked, _| {
-            sink.borrow_mut().push(event.lines.clone())
+            sink.borrow_mut().push(event.clone())
         })
     });
     // Off until enabled.
@@ -588,7 +588,18 @@ fn the_ask_button_asks_about_the_selected_lines() {
     h.frame();
     h.cx.update_window(h.window, |_, window, cx| window.click("code-ask", cx))
         .unwrap();
-    assert_eq!(*asked.borrow(), vec![1..4]);
+    let clicked = |lines: Range<usize>, alt: bool| AskClicked { lines, alt };
+    assert_eq!(*asked.borrow(), vec![clicked(1..4, false)]);
+    // Alt-click: the owner's second action (#311).
+    h.cx.update_window(h.window, |_, window, cx| {
+        let alt = gpui_kit::Modifiers {
+            alt: true,
+            ..Default::default()
+        };
+        window.click_with_modifiers("code-ask", alt, cx)
+    })
+    .unwrap();
+    assert_eq!(asked.borrow().last(), Some(&clicked(1..4, true)));
     assert_eq!(h.cx.read(|cx| h.editor.read(cx).selected_lines(cx)), 1..4);
 
     // An overlay at those lines hides it, and sits below them.

@@ -94,6 +94,7 @@ commands::register(cx, [
 | `terminal.new` | New terminal | `Ctrl` + backtick (all platforms) | anywhere |
 | `questions.next` / `questions.previous` | Next / Previous question | `F8` / `Shift F8` | anywhere |
 | `questions.ask_about_code` | Ask an agent about the selection | `Ctrl Shift /`, `Ctrl ?` | `FileEditor` |
+| `threads.add_review_comment` | Add review comment | `Ctrl Shift M` | `FileEditor` |
 | `file.save` | Save | `Ctrl S` | `FileEditor` |
 | `files.new_file` / `files.new_folder` | New file… / New folder… | | `FileTree`, `FileEditor` |
 | `files.rename` / `files.delete` | Rename… / Delete… | `F2` / `Delete` (also `Cmd Backspace` on macOS) | `FileTree` |

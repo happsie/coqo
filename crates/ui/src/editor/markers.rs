@@ -21,7 +21,8 @@
 //! - **The ask button** ([`CodeEditor::set_ask_enabled`], #229): a speech
 //!   bubble in the same gap, on the line under the mouse and on the first
 //!   line of the selection while the editor has the keyboard. A click emits
-//!   [`AskClicked`] with the lines to ask about.
+//!   [`AskClicked`] with the lines to ask about, and whether Alt (Option)
+//!   was held: the owner's second action there (a review comment, #311).
 //! - **The overlay** ([`CodeEditor::set_overlay`]): one view (the question
 //!   popover) drawn over the code, below the lines of a marker with a caret
 //!   pointing at them, or above them when there is more room there; or at the
@@ -37,9 +38,10 @@ use gpui_kit::component::input::{
     GutterDecoration, GutterDecorationCollection, Rope, RopeExt as _,
 };
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, AnyView, App, Bounds, Context, ElementId, FontWeight,
-    Hsla, InteractiveElement as _, IntoElement as _, ParentElement as _, Pixels, SharedString,
-    Size, StatefulInteractiveElement as _, Styled as _, Window, canvas, div, pulsating_between, px,
+    Animation, AnimationExt as _, AnyElement, AnyView, App, Bounds, ClickEvent, Context, ElementId,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement as _, ParentElement as _, Pixels,
+    SharedString, Size, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
+    pulsating_between, px,
 };
 
 use super::{CODE_LINE_HEIGHT, CodeEditor, GUTTER_GAP, REVEAL_FRAMES};
@@ -118,6 +120,9 @@ pub struct MarkerClicked(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AskClicked {
     pub lines: Range<usize>,
+    /// Alt (Option on macOS) was held: the owner's second action on the
+    /// lines, if it has one (a file tab's review comment, #311).
+    pub alt: bool,
 }
 
 /// Where [`CodeEditor::set_overlay`] puts its view.
@@ -633,9 +638,10 @@ impl CodeEditor {
                         .cursor_pointer()
                         .occlude()
                         .child(icon(Icon::MessageCircle, px(13.), p.blue.hsla()))
-                        .on_click(cx.listener(move |_, _, _, cx| {
+                        .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
                             cx.emit(AskClicked {
                                 lines: lines.clone(),
+                                alt: event.modifiers().alt,
                             })
                         }))
                         .into_any_element(),

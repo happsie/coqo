@@ -37,7 +37,9 @@
 //!   walkthroughs itself, with the step popover in place (#260, `steps`).
 //! - **Review threads** (#258, [`threads`]): a marker on each thread pinned
 //!   to the work tree's version of the file, and the diff's thread card in
-//!   place on a click, with "Open in diff".
+//!   place on a click, with "Open in diff". "Add review comment"
+//!   (`Ctrl/Cmd+Shift+M`, or Alt-click on the ask button) opens the diff's
+//!   composer under the selected lines (#311).
 //! - **Markers on one line** stack ([`coqo_ui::editor::CodeMarker`]); which
 //!   one shows is [`layer`]'s order.
 //!
@@ -223,11 +225,14 @@ pub struct StepMark {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StepMarkerClicked(pub u64);
 
-/// The walkthrough player's popover, shown at a step's marker.
+/// The walkthrough player's popover, shown at a step's marker; also a
+/// review thread's card (#258) and composer (#311).
 struct StepOverlay {
     view: AnyView,
-    /// The marker it points at; at the top if `None` or gone.
+    /// The marker it points at; else at `lines`, else at the top.
     marker: Option<u64>,
+    /// The lines it points at without a marker (0-based, `end` exclusive).
+    lines: Option<Range<usize>>,
     /// Scroll the marker near the top and put the cursor there once placed.
     reveal: bool,
     /// Put the keyboard here once placed.
@@ -298,6 +303,10 @@ pub struct FileEditor {
     thread_placed: std::collections::HashMap<u64, Range<u32>>,
     thread_card: Option<threads::OpenCard>,
     thread_review: Option<Entity<crate::threads::overlay::ReviewState>>,
+    /// The composer of a new review thread (#311), and a thread just added
+    /// there whose card opens once it is marked.
+    thread_composer: Option<threads::OpenComposer>,
+    card_pending: Option<coqo_protocol::methods::threads::ThreadId>,
     _opening: Option<Task<()>>,
     _changes: Option<Task<()>>,
     _saving: Option<Task<()>>,
@@ -445,6 +454,8 @@ impl FileEditor {
             thread_placed: std::collections::HashMap::new(),
             thread_card: None,
             thread_review: None,
+            thread_composer: None,
+            card_pending: None,
             _opening: None,
             _changes: None,
             _saving: None,
@@ -806,7 +817,11 @@ impl FileEditor {
                     &editor,
                     window,
                     |this, _, clicked: &AskClicked, window, cx| {
-                        this.ask_about(clicked.lines.clone(), window, cx);
+                        if clicked.alt && this.threads.is_some() {
+                            this.comment_on(clicked.lines.clone(), window, cx);
+                        } else {
+                            this.ask_about(clicked.lines.clone(), window, cx);
+                        }
                     },
                 );
                 if self.questions.is_some() {
@@ -1075,6 +1090,11 @@ impl FileEditor {
         };
         match session.replica.receive(&change) {
             Ok(incoming) => {
+                // A save, or another window's edit, may have changed it.
+                self.sync_composer_blocked(cx);
+                let Some(session) = self.session.as_mut() else {
+                    return false;
+                };
                 if !incoming.edits.is_empty() {
                     let edits = to_editor(&incoming.edits);
                     let editor = session.editor.clone();
@@ -1173,6 +1193,7 @@ impl FileEditor {
             }
             self.last_typed = Some((now, range.start + text.len()));
         }
+        self.sync_composer_blocked(cx);
         cx.notify();
         // A composition that just ended may have held changes back.
         self.flush_held(window, cx);
@@ -1197,6 +1218,7 @@ impl FileEditor {
             Self::send(out, cx);
         }
         self.last_typed = None;
+        self.sync_composer_blocked(cx);
         cx.notify();
         Some(applied.edits)
     }
@@ -1271,6 +1293,7 @@ impl FileEditor {
             Err(e) => Some(Notice::SaveFailed(e.to_string())),
         };
         self.maybe_save(cx);
+        self.sync_composer_blocked(cx);
         cx.notify();
     }
 
@@ -1606,6 +1629,7 @@ impl FileEditor {
         // back once the question closes).
         self.drop_file_step(cx);
         self.drop_thread_card(cx);
+        self.drop_thread_composer(cx);
         self.sync_markers(cx);
         let reused = self
             .popover
@@ -1679,6 +1703,7 @@ impl FileEditor {
         }
         self.drop_file_step(cx);
         self.drop_thread_card(cx);
+        self.drop_thread_composer(cx);
         let shown = crate::shell::shown_chats(&self.workspace, cx);
         let sessions = questions::ask::choices(&self.workspace, &shown, cx);
         let (workspace, root, path) = (self.workspace.clone(), self.root, self.path.clone());
@@ -1778,9 +1803,11 @@ impl FileEditor {
     ) {
         self.ask = None;
         self.popover = None;
+        self.drop_thread_composer(cx);
         self.step = Some(StepOverlay {
             view,
             marker,
+            lines: None,
             reveal,
             focus,
             placed: false,
@@ -1817,7 +1844,7 @@ impl FileEditor {
         let marker = step
             .marker
             .filter(|id| editor.read(cx).markers().iter().any(|m| m.id == *id));
-        let anchor = marker.map_or(OverlayAnchor::Top, OverlayAnchor::Marker);
+        let anchor = overlay_anchor(marker, step.lines.clone());
         let view = step.view.clone();
         let reveal = std::mem::take(&mut step.reveal);
         let focus = step.focus.take();
@@ -1846,7 +1873,7 @@ impl FileEditor {
         let marker = step
             .marker
             .filter(|id| editor.read(cx).markers().iter().any(|m| m.id == *id));
-        let anchor = marker.map_or(OverlayAnchor::Top, OverlayAnchor::Marker);
+        let anchor = overlay_anchor(marker, step.lines.clone());
         let view = step.view.clone();
         editor.update(cx, |editor, cx| editor.set_overlay(anchor, view, cx));
     }
@@ -1929,6 +1956,19 @@ impl FileEditor {
             );
         }
         bar.into_any_element()
+    }
+}
+
+/// Where a step overlay goes: at its marker if placed, else at its lines,
+/// else at the top.
+fn overlay_anchor(marker: Option<u64>, lines: Option<Range<usize>>) -> OverlayAnchor {
+    match (marker, lines) {
+        (Some(marker), _) => OverlayAnchor::Marker(marker),
+        (None, Some(lines)) => OverlayAnchor::Lines {
+            start: lines.start,
+            end: lines.end,
+        },
+        (None, None) => OverlayAnchor::Top,
     }
 }
 
@@ -2150,6 +2190,11 @@ impl Render for FileEditor {
             .on_action(cx.listener(|this, _: &AskAboutCode, window, cx| {
                 this.ask_about_selection(window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &crate::threads::AddReviewComment, window, cx| {
+                    this.comment_on_selection(window, cx)
+                }),
+            )
             .size_full()
             .flex()
             .flex_col()

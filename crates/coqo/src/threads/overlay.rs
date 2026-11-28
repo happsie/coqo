@@ -33,7 +33,10 @@
 //!   lines are tinted sand.
 //! - **In a file tab** (#258, [`ThreadCard`]): the same card, drawn over the
 //!   code under the thread's lines, with **Open in diff** and **Close**
-//!   (`Esc`), over a [`ReviewState::standalone`].
+//!   (`Esc`), over a [`ReviewState::standalone`]. The same composer starts
+//!   a thread there too (#311, [`ThreadComposer`],
+//!   [`ReviewState::open_file_composer`]): on the work tree's version of the
+//!   file, listed in the root's unstaged diff.
 
 use std::{
     cell::RefCell,
@@ -43,11 +46,12 @@ use std::{
 
 use coqo_protocol::methods::{
     agents::SessionId,
-    git::FileDiff,
+    git::{DiffSide, FileDiff},
     threads::{
         Author, Comment, CommentId, CreateParams, Thread, ThreadId, ThreadLines, ThreadSide,
         ThreadStatus,
     },
+    workspace::RootId,
 };
 use coqo_ui::{
     ActiveTokens as _,
@@ -154,9 +158,65 @@ impl ThreadsOverlay {
 
 /// The composer of a new thread.
 struct Composer {
-    range: LineRange,
+    target: ComposerTarget,
     input: Entity<PromptInput>,
     _events: Subscription,
+}
+
+/// What a composer comments on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ComposerTarget {
+    /// Lines of the diff (diff coordinates).
+    Diff(LineRange),
+    /// Lines of a file tab's work-tree file (#311).
+    File(FileLines),
+}
+
+/// Lines of a file in the work tree, for a thread started in its tab.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileLines {
+    pub root: RootId,
+    /// Root-relative.
+    pub path: String,
+    /// 1-based, inclusive.
+    pub lines: ThreadLines,
+}
+
+impl Composer {
+    /// The diff lines it is under, in the diff view.
+    fn diff_range(&self) -> Option<&LineRange> {
+        match &self.target {
+            ComposerTarget::Diff(range) => Some(range),
+            ComposerTarget::File(_) => None,
+        }
+    }
+
+    /// The lines the thread will be on, as its card labels them.
+    fn lines(&self) -> ThreadLines {
+        match &self.target {
+            ComposerTarget::Diff(r) => {
+                let start = if r.start.0 == r.end.0 {
+                    r.start.1.min(r.end.1)
+                } else {
+                    r.end.1
+                };
+                ThreadLines {
+                    start,
+                    end: r.end.1.max(start),
+                }
+            }
+            ComposerTarget::File(f) => f.lines,
+        }
+    }
+}
+
+/// What the composer did, for a file tab (#311).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComposerEvent {
+    /// "Add to review" started this thread; the composer closed.
+    Added(ThreadId),
+    /// The composer closed without a thread (Cancel, `Esc`).
+    Closed,
 }
 
 /// A thread placed in the shown file.
@@ -174,6 +234,8 @@ pub struct ReviewState {
     /// The diff; `None` for a file tab's card (#258).
     source: Option<Rc<dyn DiffSource>>,
     composer: Option<Composer>,
+    /// Why "Add to review" can't be done now (a file tab's unsaved edits).
+    composer_blocked: Option<String>,
     replies: HashMap<ThreadId, (Entity<PromptInput>, Subscription)>,
     editing: Option<(ThreadId, CommentId, Entity<PromptInput>, Subscription)>,
     /// Resolved threads shown open.
@@ -188,7 +250,7 @@ pub struct ReviewState {
 impl std::fmt::Debug for ReviewState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReviewState")
-            .field("composer", &self.composer.as_ref().map(|c| &c.range))
+            .field("composer", &self.composer.as_ref().map(|c| &c.target))
             .field("replies", &self.replies.len())
             .field("error", &self.error)
             .finish_non_exhaustive()
@@ -219,6 +281,7 @@ impl ReviewState {
             store,
             source: Some(source),
             composer: None,
+            composer_blocked: None,
             replies: HashMap::new(),
             editing: None,
             expanded: HashSet::new(),
@@ -235,8 +298,8 @@ impl ReviewState {
         this
     }
 
-    /// The state of a file tab's thread cards (#258): no diff, so no
-    /// composer, counts or sending.
+    /// The state of a file tab's thread cards (#258) and composer (#311):
+    /// no diff, so no counts or sending.
     pub fn standalone(
         store: Entity<WorkspaceThreads>,
         window: &mut Window,
@@ -250,6 +313,7 @@ impl ReviewState {
             store,
             source: None,
             composer: None,
+            composer_blocked: None,
             replies: HashMap::new(),
             editing: None,
             expanded: HashSet::new(),
@@ -470,7 +534,6 @@ impl ReviewState {
     }
 
     /// The new thread's text field, while the composer is open.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn composer_input(&self) -> Option<&Entity<PromptInput>> {
         self.composer.as_ref().map(|c| &c.input)
     }
@@ -581,6 +644,41 @@ impl ReviewState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_composer_on(ComposerTarget::Diff(range.clone()), window, cx);
+    }
+
+    /// Open the composer for lines of a file tab's file (#311) and focus
+    /// it.
+    pub fn open_file_composer(
+        &mut self,
+        lines: FileLines,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_composer_on(ComposerTarget::File(lines), window, cx);
+    }
+
+    /// Refuse "Add to review" with `reason` (shown in the composer), or
+    /// allow it again with `None`.
+    pub fn set_composer_blocked(&mut self, reason: Option<String>, cx: &mut Context<Self>) {
+        if self.composer_blocked != reason {
+            self.composer_blocked = reason;
+            cx.notify();
+        }
+    }
+
+    /// Why "Add to review" is refused now, if it is.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn composer_blocked(&self) -> Option<&str> {
+        self.composer_blocked.as_deref()
+    }
+
+    fn open_composer_on(
+        &mut self,
+        target: ComposerTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let input = cx.new(|cx| PromptInput::new("Leave a comment", 2, 8, window, cx));
         let events = cx.subscribe_in(
             &input,
@@ -594,7 +692,7 @@ impl ReviewState {
         let handle = input.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
         self.composer = Some(Composer {
-            range: range.clone(),
+            target,
             input,
             _events: events,
         });
@@ -604,6 +702,7 @@ impl ReviewState {
 
     pub fn close_composer(&mut self, cx: &mut Context<Self>) {
         if self.composer.take().is_some() {
+            cx.emit(ComposerEvent::Closed);
             cx.notify();
         }
     }
@@ -614,10 +713,10 @@ impl ReviewState {
             return;
         };
         let body = composer.input.read(cx).text(cx);
-        if body.trim().is_empty() || self.sending {
+        if body.trim().is_empty() || self.sending || self.composer_blocked.is_some() {
             return;
         }
-        let Some(params) = self.create_params(&composer.range, body, cx) else {
+        let Some(params) = self.create_params(&composer.target, body, cx) else {
             self.error = Some((None, "This file is outside the workspace root".into()));
             cx.notify();
             return;
@@ -629,7 +728,10 @@ impl ReviewState {
             this.update(cx, |this, cx| {
                 this.sending = false;
                 match result {
-                    Ok(_) => this.composer = None,
+                    Ok(t) => {
+                        this.composer = None;
+                        cx.emit(ComposerEvent::Added(t.id));
+                    }
                     Err(e) => this.error = Some((None, e.to_string())),
                 }
                 cx.notify();
@@ -639,7 +741,30 @@ impl ReviewState {
         .detach();
     }
 
-    fn create_params(&self, range: &LineRange, body: String, cx: &App) -> Option<CreateParams> {
+    fn create_params(
+        &self,
+        target: &ComposerTarget,
+        body: String,
+        cx: &App,
+    ) -> Option<CreateParams> {
+        let range = match target {
+            ComposerTarget::Diff(range) => range,
+            // The tab edits the work tree: the new side of the unstaged
+            // diff, where the thread is listed.
+            ComposerTarget::File(f) => {
+                return Some(CreateParams {
+                    workspace: self.store.read(cx).workspace().clone(),
+                    root: f.root,
+                    path: f.path.clone(),
+                    side: ThreadSide::New,
+                    version: DiffSide::Worktree,
+                    lines: Some(f.lines),
+                    diff: Some(super::unstaged_diff(f.root)),
+                    body,
+                    pending: true,
+                });
+            }
+        };
         let v = self.versions(cx)?;
         let path = v.root_path(&range.path)?;
         // A unified selection can run from an old line to a new one; a
@@ -1337,16 +1462,8 @@ impl ThreadsOverlay {
         };
         let tk = cx.tokens();
         let p = &tk.palette;
-        let r = &composer.range;
-        let start = if r.start.0 == r.end.0 {
-            r.start.1.min(r.end.1)
-        } else {
-            r.end.1
-        };
-        let lines = Some(ThreadLines {
-            start,
-            end: r.end.1.max(start),
-        });
+        let lines = Some(composer.lines());
+        let blocked = state.composer_blocked.clone();
         let error = state
             .error
             .as_ref()
@@ -1408,6 +1525,18 @@ impl ThreadsOverlay {
                     .py(px(6.))
                     .child(composer.input.clone()),
             )
+            .children(blocked.map(|b| {
+                div()
+                    .id("thread-composer-blocked")
+                    .test_support()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(12.))
+                    .text_color(p.text_muted.hsla())
+                    .child(icon(Icon::CircleAlert, px(13.), p.sand.hsla()))
+                    .child(b)
+            }))
             .children(error.map(|e| div().text_size(px(12.)).text_color(p.rose.hsla()).child(e)))
             .child(
                 div()
@@ -1702,12 +1831,17 @@ impl DiffOverlay for ThreadsOverlay {
                 }
             })
             .collect();
-        if let Some(c) = state.composer.as_ref().filter(|c| c.range.path == path) {
+        if let Some(range) = state
+            .composer
+            .as_ref()
+            .and_then(Composer::diff_range)
+            .filter(|r| r.path == path)
+        {
             let id: ElementId = "thread-composer-slot".into();
             kinds.insert(id.clone(), SlotKind::Composer);
             slots.push(Slot {
                 id,
-                at: SlotTarget::Line(c.range.last()),
+                at: SlotTarget::Line(range.last()),
             });
         }
         slots
@@ -2033,5 +2167,52 @@ impl Render for ThreadCard {
             .on_action(cx.listener(|_, _: &CloseThreadCard, _, cx| cx.emit(CardEvent::Close)))
             .w_full()
             .children(card)
+    }
+}
+
+impl EventEmitter<ComposerEvent> for ReviewState {}
+
+impl ThreadCard {
+    /// The card's own focus: `Esc` closes it from there.
+    pub fn card_focus(&self) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+/// The diff's composer of a new thread in a file tab (#311), drawn over the
+/// code under the lines, over a [`ReviewState::standalone`] whose composer
+/// [`ReviewState::open_file_composer`] opened.
+pub struct ThreadComposer {
+    overlay: ThreadsOverlay,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl std::fmt::Debug for ThreadComposer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThreadComposer").finish_non_exhaustive()
+    }
+}
+
+impl ThreadComposer {
+    pub fn new(state: Entity<ReviewState>, cx: &mut Context<Self>) -> Self {
+        let subscriptions = vec![cx.observe(&state, |_, _, cx| cx.notify())];
+        Self {
+            overlay: ThreadsOverlay {
+                state,
+                slots: RefCell::default(),
+                card: None,
+            },
+            _subscriptions: subscriptions,
+        }
+    }
+}
+
+impl Render for ThreadComposer {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("thread-file-composer")
+            .test_support()
+            .w_full()
+            .child(self.overlay.render_composer(cx))
     }
 }

@@ -86,6 +86,7 @@ What the popover contains, top to bottom:
 | `Enter` | in the popover | Sends the answer. In the reply field, `Shift Enter` is a new line. |
 | `Esc` | in the popover | Closes it without answering. The keyboard goes back to the code. |
 | `Ctrl Shift /` (`Cmd Shift /` on macOS) | in a file tab | Asks about the selected lines (see "Asking about code"). |
+| `Ctrl Shift M` (`Cmd Shift M` on macOS) | in a file tab | Starts a review comment on the selected lines (see [diff.md](diff.md#starting-a-thread-in-a-file-tab-311)). |
 
 ## Questions pane
 
@@ -121,7 +122,7 @@ The user can ask too. Board 2 has no frame for it, so it reuses the question's m
 
 Light: [ask](screenshots/ask-light.png), [thread](screenshots/thread-light.png).
 
-1. **Ask.** A blue speech-bubble button sits in the diamond's gap on the line under the mouse and, while the editor has the keyboard, on the first selected line (not on a line with a marker). A click on it, or `Ctrl Shift /` (`Cmd Shift /` on macOS; also `Ctrl ?` / `Cmd ?`) in a file tab, opens the **ask popover** under the selected lines (the cursor's line with no selection; a selection ending at the start of a line leaves that line out).
+1. **Ask.** A blue speech-bubble button sits in the diamond's gap on the line under the mouse and, while the editor has the keyboard, on the first selected line (not on a line with a marker). A click on it, or `Ctrl Shift /` (`Cmd Shift /` on macOS; also `Ctrl ?` / `Cmd ?`) in a file tab, opens the **ask popover** under the selected lines (the cursor's line with no selection; a selection ending at the start of a line leaves that line out). Alt-click (`Option`-click) on the button starts a review comment instead (#311, [diff.md](diff.md#starting-a-thread-in-a-file-tab-311)).
 2. **Choose the chat.** A row of pills: up to four of the workspace's open chats, the default first, and **New chat**. The default is the chat shown in the workbench (the active tab, then the other groups' visible tabs, then any open chat tab), else the workspace's most recently active chat, else **New chat**. A new chat uses Claude when it is available, else the first available provider, and is listed under CHATS.
 3. **Send** (`Enter`, or **Ask**; `Esc` or **Cancel** closes it). `questions/ask` pins the thread and prompts the chat with the question and the code. The ask popover gives way to the **thread popover** at the same lines, with a blue marker.
 4. **The thread.** A "YOU ASKED" badge and "You → Claude · <chat> · <age>", then each of the user's messages and, under it, the agent's reply to it streamed from that turn of the chat ("Thinking…" until it starts). The conversation scrolls past 240 px. The field below sends a follow-up (`questions/reply`), which empties it once sent. **Open in chat**, **Resolve** (closes the thread, `questions/dismiss`), **Later** (closes the popover).
