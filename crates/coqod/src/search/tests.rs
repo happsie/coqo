@@ -420,7 +420,10 @@ async fn dropping_the_subscription_cancels_the_walk() {
         .collect();
     let h = Harness::new(&refs).await;
     // Each walk waits after every file it finds until it is cancelled, so it
-    // can't finish before the unsubscribe arrives, however fast it is.
+    // can't finish before the unsubscribe arrives, however fast it is, and
+    // every file matches, so each walk reaches the gate. Each half checks
+    // that its walk still runs when it is cancelled, so a failure says which
+    // step broke (#327).
     h.search
         .hold_until_cancelled
         .store(true, std::sync::atomic::Ordering::Release);
@@ -432,7 +435,7 @@ async fn dropping_the_subscription_cancels_the_walk() {
                 if let Some(s) = search.walks.lock().unwrap().get(n).copied() {
                     break s;
                 }
-                assert!(Instant::now() < deadline, "the walk ends");
+                assert!(Instant::now() < deadline, "walk {n} ends");
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         }
@@ -444,19 +447,24 @@ async fn dropping_the_subscription_cancels_the_walk() {
         .unwrap();
     // The first file comes at once, before the walk is done.
     let first = sub.next().await.unwrap().unwrap();
-    assert!(matches!(first.event, SearchEvent::Files { .. }));
-    assert!(h.search.walks.lock().unwrap().is_empty(), "still walking");
+    assert!(
+        matches!(first.event, SearchEvent::Files { .. }),
+        "{first:?}"
+    );
+    assert_eq!(h.search.walks.lock().unwrap().len(), 0, "walk 0 still runs");
     assert!(sub.unsubscribe().await.unwrap());
     let summary = ended(0).await;
-    assert!(summary.cancelled, "{summary:?}");
+    assert!(summary.cancelled, "walk 0: {summary:?}");
     // At most one file per walker thread got through before the cancel.
-    assert!(summary.files < 200, "{summary:?}");
+    assert!(summary.files < 200, "walk 0: {summary:?}");
 
     // A feed dropped before anything is read stops the walk too.
     let feed = h.search.run(h.params(h.query("needle"))).await.unwrap();
+    assert_eq!(h.search.walks.lock().unwrap().len(), 1, "walk 1 still runs");
     drop(feed);
     let summary = ended(1).await;
-    assert!(summary.cancelled, "{summary:?}");
+    assert!(summary.cancelled, "walk 1: {summary:?}");
+    assert!(summary.files < 200, "walk 1: {summary:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
