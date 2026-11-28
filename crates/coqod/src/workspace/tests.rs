@@ -895,6 +895,165 @@ async fn watcher_follows_added_roots() {
     assert!(last.rescan || last.root == two.roots[1].id);
 }
 
+/// The folders below the workspace's first root with a watch of their own,
+/// root-relative (on Linux; elsewhere the roots are watched recursively).
+fn watches(h: &Harness, ws: &WorkspaceInfo) -> Vec<String> {
+    let root = Path::new(&ws.roots[0].path);
+    let watcher = h.svc.watchers().get(&ws.id).cloned().expect("watched");
+    watcher
+        .watched()
+        .iter()
+        .filter_map(|d| d.strip_prefix(root).ok()?.to_str().map(str::to_owned))
+        .collect()
+}
+
+async fn subscribe_changes(h: &Harness, ws: &WorkspaceInfo) -> Subscription<fsm::Changes> {
+    h.client
+        .subscribe::<fsm::Changes>(
+            ChangesParams {
+                workspace: ws.id.clone(),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+}
+
+const CACHEDIR_TAG: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55\n";
+
+/// Issue #308: nothing inside an ignored folder, a nested repository or
+/// worktree, a `CACHEDIR.TAG` cache or `node_modules` is watched, and a
+/// build writing there makes no events at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn watcher_puts_no_watches_inside_ignored_folders() {
+    let h = Harness::new().await;
+    let folder = tempfile::tempdir().unwrap();
+    let root = &fs::canonicalize(folder.path()).unwrap();
+    write(root, ".git/HEAD", b"ref: refs/heads/main\n");
+    write(root, ".gitignore", b"gen/\n");
+    write(root, "src/lib.rs", b"");
+    write(root, "gen/out.rs", b"");
+    write(root, "target/CACHEDIR.TAG", CACHEDIR_TAG);
+    write(root, "target/debug/build/x.o", b"");
+    write(root, "web/node_modules/left-pad/index.js", b"");
+    write(root, ".claude/worktrees/agent/.git", b"gitdir: elsewhere\n");
+    write(root, ".claude/worktrees/agent/target/debug/y.o", b"");
+    write(root, "vendor/dep/.git/HEAD", b"ref: refs/heads/main\n");
+    write(root, "vendor/dep/src/x.rs", b"");
+    let ws = h.open(root).await;
+    let mut sub = subscribe_changes(&h, &ws).await;
+    if cfg!(target_os = "linux") {
+        assert_eq!(
+            watches(&h, &ws),
+            ["", ".claude", ".claude/worktrees", "src", "vendor", "web"]
+        );
+    }
+
+    // A rebuild: many writes in every kind of ignored folder.
+    let watcher = h.svc.watchers().get(&ws.id).cloned().unwrap();
+    let before = watcher.events_seen();
+    for i in 0..100 {
+        for dir in [
+            "target/debug/build",
+            "web/node_modules/left-pad",
+            ".claude/worktrees/agent/target/debug",
+            "vendor/dep/src",
+            "gen",
+        ] {
+            write(root, &format!("{dir}/f{i}.o"), b"x");
+        }
+    }
+    write(root, "src/new.rs", b"fn f() {}");
+    let seen = changes_until(&mut sub, "src/new.rs").await;
+    let all: Vec<&String> = seen.iter().flat_map(|b| &b.paths).collect();
+    assert!(
+        all.iter().all(|p| !p.ends_with(".o")),
+        "nothing from inside ignored folders: {all:?}"
+    );
+    if cfg!(target_os = "linux") {
+        let events = watcher.events_seen() - before;
+        assert!(events < 20, "{events} OS events for 500 ignored writes");
+    }
+}
+
+/// New folders are watched (and what was written in them before their watch
+/// is reported), moved ones follow, and a folder that becomes a cache or a
+/// repository stops being watched. Renames are still paired (issue #288).
+#[tokio::test(flavor = "multi_thread")]
+async fn watcher_follows_new_moved_and_newly_ignored_folders() {
+    let h = Harness::new().await;
+    let folder = tempfile::tempdir().unwrap();
+    let root = &fs::canonicalize(folder.path()).unwrap();
+    write(root, "src/lib.rs", b"");
+    let ws = h.open(root).await;
+    let mut renames = h.svc.renames_seen();
+    let mut sub = subscribe_changes(&h, &ws).await;
+
+    // Written right after the folders were made, before any watch on them.
+    write(root, "src/a/b/x.rs", b"x");
+    changes_until(&mut sub, "src/a/b/x.rs").await;
+    write(root, "src/a/b/later.rs", b"x");
+    changes_until(&mut sub, "src/a/b/later.rs").await;
+
+    // A folder renamed outside Coqo: paired (not on macOS, whose FSEvents
+    // reports the halves unpaired), and its files still watched.
+    let paired = !cfg!(target_os = "macos");
+    fs::rename(root.join("src/a"), root.join("src/c")).unwrap();
+    if paired {
+        let mv = tokio::time::timeout(TIMEOUT, renames.recv())
+            .await
+            .expect("rename in time")
+            .unwrap();
+        assert_eq!((mv.from.as_str(), mv.to.as_str()), ("src/a", "src/c"));
+    }
+    write(root, "src/c/b/y.rs", b"y");
+    changes_until(&mut sub, "src/c/b/y.rs").await;
+    // A file renamed outside Coqo, in the moved folder.
+    fs::rename(root.join("src/c/b/y.rs"), root.join("src/c/b/z.rs")).unwrap();
+    if paired {
+        let mv = tokio::time::timeout(TIMEOUT, renames.recv())
+            .await
+            .expect("rename in time")
+            .unwrap();
+        assert_eq!(
+            (mv.from.as_str(), mv.to.as_str()),
+            ("src/c/b/y.rs", "src/c/b/z.rs")
+        );
+    } else {
+        changes_until(&mut sub, "src/c/b/z.rs").await;
+    }
+
+    // Cargo makes its target folder, then tags it.
+    write(root, "out/debug/a.o", b"");
+    write(root, "out/CACHEDIR.TAG", CACHEDIR_TAG);
+    write(root, "src/sentinel.rs", b"");
+    changes_until(&mut sub, "src/sentinel.rs").await;
+    // A worktree added below the root.
+    write(root, "src/c/.git", b"gitdir: elsewhere\n");
+    write(root, "src/sentinel2.rs", b"");
+    changes_until(&mut sub, "src/sentinel2.rs").await;
+    if cfg!(target_os = "linux") {
+        let watched = watches(&h, &ws);
+        assert!(
+            !watched
+                .iter()
+                .any(|d| d.starts_with("out") || d.starts_with("src/c")),
+            "{watched:?}"
+        );
+        assert!(watched.contains(&"src".to_owned()));
+    }
+    write(root, "out/debug/b.o", b"");
+    write(root, "src/c/b/w.rs", b"");
+    write(root, "src/sentinel3.rs", b"");
+    let seen = changes_until(&mut sub, "src/sentinel3.rs").await;
+    let all: Vec<&String> = seen.iter().flat_map(|b| &b.paths).collect();
+    assert!(
+        !all.iter()
+            .any(|p| p.starts_with("out/") || p.starts_with("src/c/")),
+        "{all:?}"
+    );
+}
+
 /// Acceptance benchmark for #22: a 200k-file tree. Run with
 /// `cargo test -p coqod --release -- --ignored --nocapture watcher_200k`.
 ///

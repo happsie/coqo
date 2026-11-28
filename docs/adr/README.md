@@ -30,3 +30,4 @@ Architecture decisions for Coqo, one file per decision. See [ADR 0001](0001-reco
 | [0024](0024-agent-drafted-commit-messages.md) | Agent-drafted commit messages: a short-lived session, the staged diff, no tools | Accepted |
 | [0025](0025-search-mod.md) | Project search and replace: the search mod and `search/*` | Accepted |
 | [0026](0026-session-resume-and-forks.md) | Session resume: ended sessions, new chats with context, forks, retry and reopen | Accepted |
+| [0027](0027-watcher-ignored-folders.md) | The file watcher skips ignored folders, nested repositories and build caches | Accepted |

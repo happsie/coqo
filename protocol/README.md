@@ -227,7 +227,7 @@ Topic **`workspace/events`** (`{workspace?}`) carries `opened`, `closed`, `chang
 
 ### Files (`fs/*`)
 
-Access for the file tree. Paths are `{workspace, root, path}` with a `/`-separated `path` relative to the root (`""` is the root). Absolute paths, `..` and paths that resolve through a symlink to outside the workspace's roots fail with `PATH_OUTSIDE_WORKSPACE`. Entries carry an `ignored` flag from `.gitignore` files, `.git/info/exclude` and the global git excludes; `.git` is always ignored, and so is a folder below a root that holds a `.git` file or folder (a nested repository or worktree) or a `CACHEDIR.TAG` (a build cache such as Cargo's `target/`).
+Access for the file tree. Paths are `{workspace, root, path}` with a `/`-separated `path` relative to the root (`""` is the root). Absolute paths, `..` and paths that resolve through a symlink to outside the workspace's roots fail with `PATH_OUTSIDE_WORKSPACE`. Entries carry an `ignored` flag from `.gitignore` files, `.git/info/exclude` and the global git excludes; `.git` is always ignored, and so is a folder below a root that holds a `.git` file or folder (a nested repository or worktree) or a `CACHEDIR.TAG` file, or is named `node_modules` ([ADR 0027](../docs/adr/0027-watcher-ignored-folders.md)).
 
 | Method | Params → result |
 |---|---|
@@ -244,7 +244,7 @@ The file operations act on the entry itself: its parent folder is resolved and c
 
 The **file index** behind `fs/find` holds every file the ignore rules keep (the same rules as `ignored` above, `.git` never), symlinks to files included and symlinked folders not followed. It is built in the background when the workspace opens and follows the workspace's watcher: each `fs/changes` batch is re-checked on disk, a changed folder or `.gitignore` is walked again, and a `rescan` walks the root again. On a generated 200k-file tree it is ready 0.4–1.5 s after `workspace/open`, and a query takes 2–23 ms (median, release build, through a client, on a loaded 12-core machine).
 
-Topic **`fs/changes`** (`{workspace}`, which must be open) carries `{root, paths, rescan}` batches, debounced (about 100 ms), with paths sorted and deduplicated. Changes inside `.git` and inside ignored directories are left out, but an ignored entry appearing directly in a visible directory is reported. `rescan: true` means too much changed (or the watcher lost events): re-list what you show. The stream is live only; after a reconnect, re-list and subscribe again. Closing the workspace ends it.
+Topic **`fs/changes`** (`{workspace}`, which must be open) carries `{root, paths, rescan}` batches, debounced (about 100 ms), with paths sorted and deduplicated. Changes inside `.git` and inside ignored directories are left out (on Linux they aren't even watched), but an ignored entry appearing directly in a visible directory is reported. `rescan: true` means too much changed (or the watcher lost events): re-list what you show. The stream is live only; after a reconnect, re-list and subscribe again. Closing the workspace ends it.
 
 ### Agent sessions (`agents/*`, `sessions/*`)
 
