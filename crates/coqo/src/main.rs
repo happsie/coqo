@@ -20,6 +20,7 @@ mod layout;
 mod questions;
 mod resume;
 mod search;
+mod settings;
 mod shell;
 mod terminal;
 mod threads;
@@ -129,6 +130,7 @@ fn run(folder: Option<PathBuf>) {
         let last_seen = agents::away::FileLastSeen::new(ui_dir().join("presence.json"));
         agents::away::init(Rc::new(last_seen), cx);
         workspace::init(folder, cx);
+        settings::load(&settings::path(), cx);
         shell::init(cx);
         commands::use_files(
             commands::CommandFiles {

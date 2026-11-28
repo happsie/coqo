@@ -293,7 +293,7 @@ impl GitModel {
     /// The status letter of `path` (root-relative, `/`-separated) for a
     /// file tree: `M`, `A`, `D`, `T`, `?` or `U` (see
     /// [`StatusEntry::letter`]). `None` when unchanged or unknown.
-    #[allow(dead_code)] // For the file tree's letters (#163).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn letter(&self, root: RootId, path: &str) -> Option<char> {
         let status = self.root(root)?.status.as_ref()?;
         let git_path = if status.repo.prefix.is_empty() {

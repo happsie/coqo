@@ -2,7 +2,8 @@
 
 //! The file commands in the command palette (issue #287): New file, New
 //! folder, Rename, Delete, Copy path, Copy relative path, Reveal in the file
-//! manager, and Reveal active file in tree.
+//! manager, Reveal active file in tree, and Toggle auto-reveal (the tree
+//! then follows the active file tab, `files.auto_reveal`).
 //!
 //! With the focus in the tree they act on its selection: the tree handles
 //! the actions itself, as its context menu and keys do. From a file tab
@@ -24,7 +25,7 @@ use coqo_ui::gpui::{
 
 use super::{
     CopyPath, CopyRelativePath, DeleteEntry, NewFile, NewFolder, RenameEntry, RevealInFileManager,
-    RevealInTree,
+    RevealInTree, ToggleAutoReveal,
     editor::FileEditor,
     tree::{FileTree, REVEAL_LABEL, Target},
 };
@@ -86,8 +87,17 @@ pub fn init(cx: &mut App) {
                 RevealInTree,
             )
             .context(EDITOR),
+            Command::new(
+                "files.toggle_auto_reveal",
+                "Toggle auto-reveal active file in tree",
+                CATEGORY,
+                ToggleAutoReveal,
+            ),
         ],
     );
+    cx.on_action(|_: &ToggleAutoReveal, cx| {
+        crate::settings::update(cx, |s| s.files.auto_reveal = !s.files.auto_reveal);
+    });
 }
 
 /// What a file command does to the active file.

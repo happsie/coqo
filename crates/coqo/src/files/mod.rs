@@ -18,9 +18,14 @@
 //! tab's file ([`actions`]). In a file tab: `Ctrl S`
 //! (`Cmd S`) saves, `Ctrl F` finds, `Ctrl Z` / `Ctrl Y` undo and redo this
 //! tab's own edits. `Ctrl P` (`Cmd P`) finds a file by name ([`finder`]).
+//!
+//! Rows carry what other features say about them, such as git's status
+//! letters, through [`decorations`]; with `files.auto_reveal` on, the tree
+//! follows the active file tab.
 
 pub mod actions;
 pub mod context;
+pub mod decorations;
 pub mod editor;
 pub mod finder;
 pub mod glyph;
@@ -74,6 +79,9 @@ coqo_ui::gpui::actions!(
         RevealInFileManager,
         /// Show the active file tab's file in the tree.
         RevealInTree,
+        /// Turn revealing the active file tab's file in the tree on or off,
+        /// for the running app (`files.auto_reveal` in `settings.toml`).
+        ToggleAutoReveal,
     ]
 );
 
@@ -130,5 +138,7 @@ pub fn init(cx: &mut App) {
 mod actions_tests;
 #[cfg(test)]
 mod finder_tests;
+#[cfg(test)]
+mod status_tests;
 #[cfg(test)]
 mod tests;

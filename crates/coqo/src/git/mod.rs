@@ -9,6 +9,7 @@
 //! view that needs it.
 
 pub mod chrome;
+pub mod decorations;
 pub mod diff;
 pub mod draft;
 pub mod model;
@@ -36,8 +37,10 @@ coqo_ui::gpui::actions!(
 pub const PANE: &str = "git";
 
 /// Register the Git pane (with its tab's badge), the status bar's branch,
-/// the `git-diff` tab kind and the git commands.
+/// the `git-diff` tab kind, the git commands and the file tree's status
+/// letters.
 pub fn init(cx: &mut App) {
+    decorations::init(cx);
     register_tab_kind(cx, diff::KIND, |state, window, cx| {
         diff::restore(state, window, cx)
     });

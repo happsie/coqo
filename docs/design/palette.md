@@ -102,6 +102,7 @@ commands::register(cx, [
 | `files.copy_path` / `files.copy_relative_path` | Copy path / Copy relative path | | `FileTree`, `FileEditor` |
 | `files.reveal` | Reveal in File Manager (Finder on macOS) | | `FileTree`, `FileEditor` |
 | `files.reveal_in_tree` | Reveal active file in tree | | `FileEditor` |
+| `files.toggle_auto_reveal` | Toggle auto-reveal active file in tree | | anywhere |
 | `dock.split_right` / `dock.split_down` | Split right / down | `Ctrl \` / `Ctrl Alt \` | `Dock` |
 | `dock.close_tab` / `dock.close_group` | Close tab / group | `Ctrl W` / `Ctrl Alt W` | `Dock` |
 | `diff.next_hunk` / `diff.previous_hunk` | Next / Previous change | `J` / `K` | `DiffReview` |
