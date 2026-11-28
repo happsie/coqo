@@ -1307,8 +1307,8 @@ fn creates_renames_moves_and_deletes_from_the_tree() {
         names.contains(&"  app.rs".to_owned())
             && !names.contains(&"  main.rs".to_owned())
             && ui.cx.read(|cx| main.read(cx).path() == "src/app.rs")
+            && ui.selected_path().as_deref() == Some("src/app.rs")
     });
-    assert_eq!(ui.selected_path().as_deref(), Some("src/app.rs"));
     assert!(fixture.project.join("src/app.rs").is_file());
     assert!(!fixture.project.join("src/main.rs").exists());
     assert!(ui.dirty(&main), "the unsaved edit is still there");
@@ -1414,12 +1414,14 @@ fn creates_renames_moves_and_deletes_from_the_tree() {
     ui.right_click_row("src");
     ui.click("file-menu-new-folder");
     ui.enter_name("docs/guides");
-    ui.wait_for("the new folders, open", |ui| {
+    // The selection lands when the tree lists the new folder's row, after
+    // the folders exist on disk and after `docs` shows.
+    ui.wait_for("the new folders, open and selected", |ui| {
         let names = ui.names();
-        names.contains(&"    docs".to_owned()) || names.contains(&"  docs".to_owned())
+        (names.contains(&"    docs".to_owned()) || names.contains(&"  docs".to_owned()))
+            && ui.selected_path().as_deref() == Some("src/docs/guides")
     });
     assert!(fixture.project.join("src/docs/guides").is_dir());
-    assert_eq!(ui.selected_path().as_deref(), Some("src/docs/guides"));
 }
 
 /// An agent's question on a file stays on it when the tree renames the
@@ -1753,8 +1755,9 @@ fn copies_pastes_and_duplicates_in_the_tree() {
     // it, selected, with its name in a field.
     ui.right_click_row("README.md");
     ui.click("file-menu-duplicate");
-    ui.wait_for("README copy.md, being renamed", |ui| {
+    ui.wait_for("README copy.md, selected and being renamed", |ui| {
         ui.rows().iter().any(|r| r.editing)
+            && ui.selected_path().as_deref() == Some("README copy.md")
     });
     assert_eq!(
         std::fs::read_to_string(project.join("README copy.md")).unwrap(),
@@ -1789,10 +1792,11 @@ fn copies_pastes_and_duplicates_in_the_tree() {
     ui.wait_for("src/README.md", |_| project.join("src/README.md").is_file());
     ui.right_click_row("src");
     ui.click("file-menu-paste");
-    ui.wait_for("src/README copy.md", |_| {
+    // The file lands on disk before the tree lists it and selects it.
+    ui.wait_for("src/README copy.md, on disk and selected", |ui| {
         project.join("src/README copy.md").is_file()
+            && ui.selected_path().as_deref() == Some("src/README copy.md")
     });
-    assert_eq!(ui.selected_path().as_deref(), Some("src/README copy.md"));
 
     ui.right_click_row("src");
     ui.click("file-menu-copy");
@@ -1801,10 +1805,10 @@ fn copies_pastes_and_duplicates_in_the_tree() {
     ui.wait_for("src copy", |_| project.join("src copy/lib.rs").is_file());
     assert!(project.join("src copy/README copy.md").is_file());
     assert!(project.join("src/lib.rs").is_file(), "the source is kept");
-    ui.wait_for("src copy in the tree", |ui| {
+    ui.wait_for("src copy in the tree, selected", |ui| {
         ui.names().contains(&"src copy".to_owned())
+            && ui.selected_path().as_deref() == Some("src copy")
     });
-    assert_eq!(ui.selected_path().as_deref(), Some("src copy"));
 
     // Undo takes the folder copy to the trash; redo copies it again.
     ui.press(UNDO);
