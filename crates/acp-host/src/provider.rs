@@ -551,6 +551,11 @@ impl ProviderSession for AcpSession {
                 content.into_iter().map(convert::to_acp_content).collect(),
             );
             let result = conn.cx.send_request(prompt).block_task().await;
+            if let Err(e) = &result {
+                // Before the turn ends: the next prompt must not get this
+                // connection if the agent died.
+                conn.failed(e);
+            }
             let cancelled = self.cancelled.load(Ordering::SeqCst);
             match result {
                 _ if cancelled => Ok(StopReason::Cancelled),

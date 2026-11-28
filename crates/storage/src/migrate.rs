@@ -10,7 +10,7 @@
 //!
 //! Migrations are append-only: never edit one that has shipped, add a new one.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 
 use crate::error::{Result, StorageError};
 
@@ -64,7 +64,16 @@ pub fn migrate(conn: &mut Connection, migrations: &[Migration]) -> Result<Vec<u3
 
     let mut applied = Vec::new();
     for m in migrations.iter().filter(|m| m.version > current) {
-        let tx = conn.transaction()?;
+        // Immediate, and the version read again inside: another connection
+        // may be migrating the same file right now (the daemon's services
+        // open a new workspace's database at once). Taking the write lock
+        // first waits for it (the busy timeout) instead of failing with
+        // "database is locked" when upgrading a read, and a migration it
+        // already applied is skipped rather than run twice.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if schema_version(&tx)? >= m.version {
+            continue;
+        }
         tx.execute_batch(m.sql)?;
         tx.pragma_update(None, "user_version", m.version)?;
         tx.commit()?;

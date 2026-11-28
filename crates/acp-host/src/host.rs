@@ -19,7 +19,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -533,6 +533,30 @@ pub(crate) struct Conn {
     pub cx: ConnectionTo<Agent>,
     pub generation: u64,
     pub caps: AgentCaps,
+    /// Set once a request found the connection gone, or it closed.
+    closed: AtomicBool,
+}
+
+impl Conn {
+    /// Note that a request on this connection failed with `e`: if the
+    /// agent is gone, the connection is not handed out again.
+    ///
+    /// A crashed agent fails its pending requests and closes the
+    /// connection's incoming side at about the same time, in no fixed
+    /// order. Without this, a caller that saw its request fail could ask
+    /// for the connection again before the supervisor noticed, and get the
+    /// dead one instead of waiting for the restarted agent.
+    pub(crate) fn failed(&self, e: &agent_client_protocol::Error) {
+        if agent_client_protocol::is_connection_terminated(e)
+            || agent_client_protocol::is_incoming_transport_closed(e)
+        {
+            self.closed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
 }
 
 #[derive(Clone)]
@@ -603,9 +627,15 @@ impl AgentProcess {
     /// The live connection, waiting up to `timeout` for one.
     async fn connection(&self, timeout: Duration) -> Result<Arc<Conn>, ProviderError> {
         let mut state = self.state.clone();
+        // A connection known to be gone counts as starting: the next
+        // instance's comes once the supervisor has seen it go.
         let ready = tokio::time::timeout(
             timeout,
-            state.wait_for(|s| !matches!(s, ConnState::Starting)),
+            state.wait_for(|s| match s {
+                ConnState::Starting => false,
+                ConnState::Ready(conn) => !conn.is_closed(),
+                ConnState::Down(_) => true,
+            }),
         )
         .await;
         match ready {
@@ -881,10 +911,12 @@ async fn connect(
                     close: caps.session_capabilities.close.is_some(),
                     system_prompt: caps.session_capabilities.system_prompt.is_some(),
                 },
+                closed: AtomicBool::new(false),
             });
             tracing::debug!(generation, caps = ?conn.caps, "agent initialized");
-            state.send_replace(ConnState::Ready(conn));
+            state.send_replace(ConnState::Ready(Arc::clone(&conn)));
             cx.incoming_closed().await;
+            conn.closed.store(true, Ordering::SeqCst);
             Ok(())
         })
         .await
@@ -972,7 +1004,7 @@ impl Host {
     pub(crate) fn live(&self) -> Option<Arc<Conn>> {
         let state = lock(&self.state);
         match &*state.as_ref()?.borrow() {
-            ConnState::Ready(conn) => Some(Arc::clone(conn)),
+            ConnState::Ready(conn) if !conn.is_closed() => Some(Arc::clone(conn)),
             _ => None,
         }
     }

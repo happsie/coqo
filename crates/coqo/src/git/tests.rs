@@ -257,13 +257,15 @@ fn branches_and_stashes_from_the_git_pane() {
     ui.click("sidebar-git");
     let pane = ui.pane();
     let model = ui.cx.read(|cx| pane.read(cx).model().clone());
-    ui.wait_for("the branches", |ui| {
+    // The branch button shows once the status is in too; the branches and
+    // the status arrive separately.
+    ui.wait_for("the branches and the status", |ui| {
         ui.cx.read(|cx| {
             model
                 .read(cx)
                 .roots()
                 .first()
-                .is_some_and(|r| r.branches.len() == 2)
+                .is_some_and(|r| r.branches.len() == 2 && r.status.is_some())
         })
     });
 
@@ -286,11 +288,12 @@ fn branches_and_stashes_from_the_git_pane() {
     repo.write("README.md", "changed\n");
     ui.wait_for("the change", |ui| ui.rows(Group::Unstaged).len() == 1);
     ui.click("git-stash-push");
-    ui.wait_for("the stash", |ui| {
+    // The stash list and the status refresh arrive separately.
+    ui.wait_for("the stash and the clean tree", |ui| {
         ui.cx
             .read(|cx| model.read(cx).roots()[0].stashes.len() == 1)
+            && ui.rows(Group::Unstaged).is_empty()
     });
-    assert!(ui.rows(Group::Unstaged).is_empty());
     ui.click(("git-stash-pop", 0usize));
     ui.wait_for("the pop", |ui| ui.rows(Group::Unstaged).len() == 1);
     assert_eq!(repo.read("README.md"), "changed\n");
