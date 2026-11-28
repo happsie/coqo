@@ -149,7 +149,16 @@ impl Global for WindowWorkspaces {}
 /// restores the most recently opened workspace. Call after
 /// [`daemon::init`](crate::daemon::init).
 pub fn init(path: Option<PathBuf>, cx: &mut App) -> Entity<KnownWorkspaces> {
-    cx.bind_keys([keys::binding(OPEN_FOLDER_KEY, OpenFolder, None)]);
+    crate::commands::register(
+        cx,
+        [crate::commands::Command::new(
+            "workspace.open_folder",
+            "Open folder…",
+            "Workspace",
+            OpenFolder,
+        )
+        .key(OPEN_FOLDER_KEY)],
+    );
     cx.bind_keys(
         SWITCH_KEYS
             .iter()

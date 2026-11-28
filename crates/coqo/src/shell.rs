@@ -50,6 +50,10 @@ use crate::{
     },
     alerts::{self, AlertCenter, Raised, TOAST_FOR},
     chat,
+    commands::{
+        self,
+        palette::{Palette, PaletteEvent, PaletteScope},
+    },
     daemon::{self, Daemon, DaemonEvent},
     files::{
         self,
@@ -58,7 +62,7 @@ use crate::{
     },
     layout::{DaemonLayoutStore, LAYOUT_KEY},
     questions::{self, QuestionsEvent, navigate, popover::OpenQuestionChat},
-    welcome::{self, shortcut},
+    welcome,
     workspace::{
         KnownWorkspaces, OpenFolder, SwitchToWorkspace, Workspaces, WorkspacesEvent,
         prompt_open_folder_in,
@@ -79,6 +83,7 @@ const SIDEBAR_MAX: Pixels = px(520.);
 /// Register the built-in tab kinds, chrome items and sidebar panes. Call once
 /// after `coqo_ui::init`.
 pub fn init(cx: &mut App) {
+    crate::commands::init(cx);
     welcome::register(cx);
     register_builtin_slots(cx);
     daemon::register_status_slot(cx);
@@ -117,6 +122,8 @@ pub struct Shell {
     window: AnyWindowHandle,
     /// Publishes the window's editor context for agents (`editor/context`).
     context: ContextPublisher,
+    /// The command palette, while open.
+    palette: Option<(Entity<Palette>, Subscription)>,
     /// The alert shown as a toast, if any.
     toast: Option<Alert>,
     _toast_timer: Option<Task<()>>,
@@ -259,6 +266,7 @@ impl Shell {
             sidebar_pane: sidebar.and_then(|s| s.pane).map(Into::into),
             pane_views: HashMap::new(),
             pending_save: None,
+            palette: None,
             toast: None,
             _toast_timer: None,
             pending_alert: None,
@@ -513,6 +521,44 @@ impl Shell {
             .iter()
             .find(|(h, _)| *h == handle)
             .and_then(|(_, s)| s.upgrade())
+    }
+
+    /// The command palette, while open.
+    #[cfg(test)]
+    pub fn palette(&self) -> Option<&Entity<Palette>> {
+        self.palette.as_ref().map(|(p, _)| p)
+    }
+
+    /// Open the command palette with `text` in its field (`>` for the
+    /// commands, `""` for the default mode). Asked again for the mode it
+    /// shows, it closes; for another mode, it switches.
+    pub fn toggle_palette(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((palette, _)) = &self.palette {
+            let palette = palette.clone();
+            let same = palette.read(cx).text(cx).trim() == text;
+            palette.update(cx, |palette, cx| {
+                if same {
+                    palette.close(window, cx);
+                } else {
+                    palette.set_text(text, window, cx);
+                    palette.focus(window, cx);
+                }
+            });
+            return;
+        }
+        let fallback = Some(self.dock.read(cx).focus_handle(cx));
+        let workspace = self.workspaces.read(cx).current().map(|c| c.id.clone());
+        let scope = PaletteScope::capture(fallback, self.dock.downgrade(), workspace, window, cx);
+        let palette = cx.new(|cx| Palette::new(scope, text, window, cx));
+        let closed = cx.subscribe(&palette, |this, _, event, cx| match event {
+            PaletteEvent::Closed => {
+                this.palette = None;
+                cx.notify();
+            }
+        });
+        palette.update(cx, |palette, cx| palette.focus(window, cx));
+        self.palette = Some((palette, closed));
+        cx.notify();
     }
 
     /// Show the agents overview: bring its tab forward, or open it.
@@ -849,7 +895,8 @@ impl Render for Shell {
             .read(cx)
             .current()
             .map(|c| c.name.clone().into());
-        let top = top_bar(workspace_name, window, cx);
+        let palette = self.palette.as_ref().map(|(palette, _)| palette.clone());
+        let top = top_bar(workspace_name, palette, window, cx);
         let sidebar = self.render_sidebar(window, cx);
         let status = status_bar(window, cx);
         let rail = self.rail.clone();
@@ -878,6 +925,12 @@ impl Render for Shell {
                     this.show_agents(window, cx)
                 }),
             )
+            .on_action(cx.listener(|this, _: &commands::OpenCommands, window, cx| {
+                this.toggle_palette(commands::COMMANDS_PREFIX, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &commands::OpenSearch, window, cx| {
+                this.toggle_palette("", window, cx)
+            }))
             .on_action(cx.listener(|this, _: &chat::NewChat, window, cx| {
                 chat::new_chat(this.dock.downgrade(), window, cx)
             }))
@@ -1117,7 +1170,12 @@ fn new_dock(layout: Option<&WorkbenchLayout>, window: &mut Window, cx: &mut App)
     })
 }
 
-fn top_bar(workspace_name: Option<SharedString>, window: &mut Window, cx: &mut App) -> AnyElement {
+fn top_bar(
+    workspace_name: Option<SharedString>,
+    palette: Option<Entity<Palette>>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let start = Slots::render(Slot::TopBarStart, window, cx);
     let end = Slots::render(Slot::TopBarEnd, window, cx);
     let t = cx.tokens();
@@ -1150,12 +1208,17 @@ fn top_bar(workspace_name: Option<SharedString>, window: &mut Window, cx: &mut A
     }
     .children(start);
 
+    let search_keys = commands::keys_label(commands::OPEN_SEARCH, cx);
     let search = div()
         .id("command-search")
         .test_support()
-        .flex_1()
-        .max_w(px(520.))
-        .mx_auto()
+        .cursor_pointer()
+        .on_click(|_, window, cx| {
+            if let Some(shell) = Shell::of_window(window.window_handle(), cx) {
+                shell.update(cx, |shell, cx| shell.toggle_palette("", window, cx));
+            }
+        })
+        .w_full()
         .flex()
         .items_center()
         .gap(px(10.))
@@ -1180,7 +1243,24 @@ fn top_bar(workspace_name: Option<SharedString>, window: &mut Window, cx: &mut A
                 .flex_1()
                 .child("Search files, symbols, commands, agents"),
         )
-        .child(kbd(shortcut("Ctrl K"), cx));
+        .children(search_keys.map(|keys| kbd(keys, cx)));
+    // The command palette opens right under the search, as wide.
+    let search = div()
+        .relative()
+        .flex_1()
+        .max_w(px(520.))
+        .mx_auto()
+        .child(search)
+        .children(palette.map(|palette| {
+            div()
+                .absolute()
+                .top(px(44.))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(deferred(palette).with_priority(2))
+        }));
 
     region(
         "top-bar",
@@ -1311,7 +1391,7 @@ fn empty_state(_: &mut Window, cx: &mut App) -> AnyElement {
                 .text_size(m.text_sm)
                 .text_color(p.text_subtle.hsla())
                 .child("Command palette")
-                .child(kbd(shortcut("Ctrl K"), cx)),
+                .children(commands::keys_label(commands::OPEN_COMMANDS, cx).map(|k| kbd(k, cx))),
         )
         .into_any_element()
 }

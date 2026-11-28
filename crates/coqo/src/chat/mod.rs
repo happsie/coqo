@@ -124,9 +124,17 @@ const NEW_CHAT_KEY: &str = "ctrl-shift-n";
 /// Register the `chat` tab kind, the chat list and the keys. Call after the
 /// daemon and workspaces are initialised.
 pub fn init(cx: &mut App) {
+    crate::commands::register(
+        cx,
+        [
+            crate::commands::Command::new("chat.new", "New chat", "Chat", NewChat)
+                .key(NEW_CHAT_KEY),
+            crate::commands::Command::new("chat.cancel_turn", "Stop the agent", "Chat", CancelTurn)
+                .key("escape")
+                .context("ChatTab"),
+        ],
+    );
     cx.bind_keys([
-        keys::binding(NEW_CHAT_KEY, NewChat, None),
-        keys::binding("escape", CancelTurn, Some("ChatTab")),
         keys::binding("enter", AllowPermission, Some("ChatPermission")),
         keys::binding("escape", RejectPermission, Some("ChatPermission")),
     ]);

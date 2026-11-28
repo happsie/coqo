@@ -25,6 +25,8 @@
 //!   (`threads/*`, `review/*`), anchored to the file version a diff shows.
 //! - [`terminal`]: daemon-owned PTYs (`terminal/*`).
 //! - [`cli`]: command-line arguments.
+//! - [`commands`]: the commands mods contribute (`commands/*`), for the
+//!   UI's command palette and keybindings.
 //! - [`git`]: `git/*`, everyday git on a root's repository, from the
 //!   `coqo.git` mod, and `git/changes`.
 //! - [`buffers`]: replicated text buffers (`buffer/*`): open, edit, save,
@@ -43,6 +45,7 @@ pub mod alerts;
 pub mod auth;
 pub mod buffers;
 pub mod cli;
+pub mod commands;
 pub mod daemon;
 pub mod editor;
 pub mod editor_mcp;

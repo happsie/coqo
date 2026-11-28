@@ -70,8 +70,14 @@ pub const KEY_CONTEXT: &str = "AgentsOverview";
 
 /// Register the `agents` tab kind and the keys.
 pub fn init(cx: &mut App) {
+    crate::commands::register(
+        cx,
+        [
+            crate::commands::Command::new("agents.show", "Show agents", "Agents", ShowAgents)
+                .key(SHOW_AGENTS_KEY),
+        ],
+    );
     cx.bind_keys([
-        keys::binding(SHOW_AGENTS_KEY, ShowAgents, None),
         keys::binding("down", SelectNext, Some(KEY_CONTEXT)),
         keys::binding("up", SelectPrev, Some(KEY_CONTEXT)),
         keys::binding("enter", Confirm, Some(KEY_CONTEXT)),

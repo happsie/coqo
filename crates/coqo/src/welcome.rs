@@ -111,7 +111,23 @@ impl Render for WelcomeTab {
                             // Ctrl on every platform, like other editors.
                             .child(kbd(crate::terminal::NEW_TERMINAL_KEYS, cx)),
                     )
-                    .child(row("Command palette", "Ctrl K")),
+                    .children(
+                        crate::commands::keys_label(crate::commands::OPEN_COMMANDS, cx).map(
+                            |keys| {
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .w(px(180.))
+                                            .text_color(p.text_muted.hsla())
+                                            .child("Command palette"),
+                                    )
+                                    .child(kbd(keys, cx))
+                            },
+                        ),
+                    ),
             )
     }
 }

@@ -28,7 +28,6 @@ pub mod patch;
 pub mod source;
 pub mod viewed;
 
-use coqo_ui::keys;
 use std::{collections::HashMap, rc::Rc};
 
 use coqo_protocol::methods::git::{FileChange, FileDiff};
@@ -77,14 +76,46 @@ const KEY_CONTEXT: &str = "DiffReview";
 /// Bind the review keys. Plain letters: the diff is read-only, and
 /// [`keys::binding`] keeps them out of a text field inside it (a comment).
 pub fn init(cx: &mut App) {
-    cx.bind_keys([
-        keys::binding("j", NextHunk, Some(KEY_CONTEXT)),
-        keys::binding("k", PreviousHunk, Some(KEY_CONTEXT)),
-        keys::binding("shift-j", NextFile, Some(KEY_CONTEXT)),
-        keys::binding("shift-k", PreviousFile, Some(KEY_CONTEXT)),
-        keys::binding("v", ToggleViewed, Some(KEY_CONTEXT)),
-        keys::binding("m", ToggleMode, Some(KEY_CONTEXT)),
-    ]);
+    use crate::commands::Command;
+    let command = |id: &'static str,
+                   title: &'static str,
+                   key: &'static str,
+                   action: Box<dyn coqo_ui::gpui::Action>| {
+        Command::new_boxed(id, title, "Diff", action)
+            .key(key)
+            .context(KEY_CONTEXT)
+    };
+    crate::commands::register(
+        cx,
+        [
+            command("diff.next_hunk", "Next change", "j", Box::new(NextHunk)),
+            command(
+                "diff.previous_hunk",
+                "Previous change",
+                "k",
+                Box::new(PreviousHunk),
+            ),
+            command("diff.next_file", "Next file", "shift-j", Box::new(NextFile)),
+            command(
+                "diff.previous_file",
+                "Previous file",
+                "shift-k",
+                Box::new(PreviousFile),
+            ),
+            command(
+                "diff.toggle_viewed",
+                "Mark file viewed",
+                "v",
+                Box::new(ToggleViewed),
+            ),
+            command(
+                "diff.toggle_mode",
+                "Toggle side by side / unified",
+                "m",
+                Box::new(ToggleMode),
+            ),
+        ],
+    );
 }
 
 /// Extra content for a [`DiffView`]'s body, for the file shown. Comment

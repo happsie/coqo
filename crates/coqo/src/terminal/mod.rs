@@ -75,9 +75,15 @@ pub fn init(backend: Rc<dyn TerminalBackend>, cx: &mut App) {
         let id = state.get("id")?.as_u64()?;
         tab(TerminalId(id), cx)
     });
+    crate::commands::register(
+        cx,
+        [
+            crate::commands::Command::new("terminal.new", "New terminal", "Terminal", NewTerminal)
+                .key("ctrl-`"),
+        ],
+    );
     let context = Some("Terminal");
     let mut bindings = vec![
-        binding("ctrl-`", NewTerminal, None),
         binding(COPY_PASTE[0], CopyText, context),
         binding(COPY_PASTE[1], PasteText, context),
         // Not focus navigation: completion and vi need them.

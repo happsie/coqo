@@ -436,7 +436,7 @@ Decision { id, question, options[], element_refs[] }
 |---|---|
 | Daemon data (`~/Library/Application Support/Coqo`, `$XDG_DATA_HOME/coqo`) | `coqo.db` (workspaces, sessions, transcripts, **event log**, alerts, anchored questions and notes, skeletons, walkthroughs, review threads), per-workspace: `traces.db`, PR worktrees; installed mods |
 | UI data (`<data dir>/ui/`) | Workbench layouts saved while `coqod` was unreachable, and a window's no-workspace layout; the daemon keeps each workspace's layout in its state (`ui.layout`, [ADR 0004](adr/0004-workbench-layout.md)) |
-| Config (`~/.config/coqo`, macOS equivalent) | `settings.toml`, keymaps, themes |
+| Config (`~/.config/coqo`, macOS equivalent) | `settings.toml`, `keybindings.toml` (key overrides by command id, [ADR 0023](adr/0023-commands-and-keybindings.md)), themes |
 | OS keychain | API keys, GitHub token |
 | Repo `.coqo/` | `settings.toml` (workspace settings incl. review skill), `run.toml` (launch/trace configs), `walkthroughs/` (only if opted in) |
 

@@ -26,3 +26,4 @@ Architecture decisions for Coqo, one file per decision. See [ADR 0001](0001-reco
 | [0020](0020-walkthroughs.md) | Walkthroughs: the schema, `publish_walkthrough` and where they are kept | Accepted |
 | [0021](0021-diff-view.md) | The diff view: one review surface over any diff source | Accepted |
 | [0022](0022-review-threads.md) | Review threads: comments on diff lines, the pending review, and backends | Accepted |
+| [0023](0023-commands-and-keybindings.md) | Commands, the command palette and keybindings (`keybindings.toml`, `commands/*`) | Accepted |

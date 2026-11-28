@@ -8,6 +8,7 @@ export const PROTOCOL_VERSION = { major: 0, minor: 1 } as const;
 export const ErrorCodes = {
   ALREADY_EXISTS: 1010,
   AUTH_REQUIRED: 1107,
+  COMMAND_FAILED: 1902,
   FILE_TOO_LARGE: 1005,
   FORBIDDEN: -32007,
   GIT_FAILED: 1603,
@@ -42,6 +43,7 @@ export const ErrorCodes = {
   TRASH_FAILED: 1012,
   UNAUTHORIZED: -32006,
   UNKNOWN_BUFFER: 1201,
+  UNKNOWN_COMMAND: 1901,
   UNKNOWN_COMMENT: 1802,
   UNKNOWN_PERMISSION_REQUEST: 1105,
   UNKNOWN_PROVIDER: 1102,
@@ -553,6 +555,30 @@ export type Color = "default" | {
   indexed: number;
 } | {
   rgb: [number, number, number];
+};
+
+/** A mod-contributed command. */
+export type CommandInfo = {
+  /** The palette group, such as `Git`. */
+  category?: string | null;
+  /** The command id, such as `hello.greet`. Unique across mods. */
+  id: string;
+  /** The keys the mod binds to it. */
+  keybindings?: Array<CommandKeybinding>;
+  /** The mod that contributes it. */
+  mod: string;
+  /** The title shown in the palette. */
+  title: string;
+  /** When the command is available, as the mod declared it. */
+  when?: string | null;
+};
+
+/** A key sequence a mod binds to its command (point `keybindings`), in the mod manifest's syntax: chords separated by spaces, each chord modifiers and a key joined by `+` (`mod+shift+h`, `mod+k mod+s`). */
+export type CommandKeybinding = {
+  /** The keys on every platform, unless `mac` overrides them. */
+  key: string;
+  /** The keys on macOS. */
+  mac?: string | null;
 };
 
 /** One comment of a thread. */
@@ -1339,6 +1365,12 @@ export type ListResult = {
   workspaces: Array<WorkspaceInfo>;
 };
 
+/** Result of [`List`]. */
+export type ListResult2 = {
+  /** The commands, by id. */
+  commands: Array<CommandInfo>;
+};
+
 /** Params of `sessions/list`. */
 export type ListSessionsParams = {
   /** Include closed sessions. */
@@ -2046,6 +2078,20 @@ export type RunActionParams = {
   action: string;
   /** Provider id. */
   provider: string;
+};
+
+/** Params of [`Run`]. */
+export type RunParams = {
+  /** Its arguments (`null` when none). */
+  args?: unknown;
+  /** The command id. */
+  id: string;
+};
+
+/** Result of [`Run`]: what the handler returned. */
+export type RunResult = {
+  /** The handler's result (`null` when it has none). */
+  value?: unknown;
 };
 
 /** Params of [`Save`]. */
@@ -3432,6 +3478,10 @@ export interface Requests {
   "editor/getContext": { params: GetContextParams; result: EditorContext };
   /** Ask the UI to open a file and select a range. (client→server) */
   "editor/reveal": { params: RevealParams; result: RevealResult };
+  /** The commands mods contribute, for the command palette and keybindings. (client→server) */
+  "commands/list": { params: null; result: ListResult2 };
+  /** Run a mod-contributed command. (client→server) */
+  "commands/run": { params: RunParams; result: RunResult };
   /** The MCP tools mods contribute, as the coqo-editor bridge offers them. (client→server) */
   "mcp/tools": { params: ToolsParams; result: ToolsResult };
   /** Call a mod-contributed MCP tool for an agent session. (client→server) */

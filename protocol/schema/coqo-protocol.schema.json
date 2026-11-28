@@ -1546,6 +1546,70 @@
         }
       ]
     },
+    "CommandInfo": {
+      "description": "A mod-contributed command.",
+      "properties": {
+        "category": {
+          "description": "The palette group, such as `Git`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "The command id, such as `hello.greet`. Unique across mods.",
+          "type": "string"
+        },
+        "keybindings": {
+          "description": "The keys the mod binds to it.",
+          "items": {
+            "$ref": "#/$defs/CommandKeybinding"
+          },
+          "type": "array"
+        },
+        "mod": {
+          "description": "The mod that contributes it.",
+          "type": "string"
+        },
+        "title": {
+          "description": "The title shown in the palette.",
+          "type": "string"
+        },
+        "when": {
+          "description": "When the command is available, as the mod declared it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "mod"
+      ],
+      "type": "object"
+    },
+    "CommandKeybinding": {
+      "description": "A key sequence a mod binds to its command (point `keybindings`), in the\nmod manifest's syntax: chords separated by spaces, each chord modifiers\nand a key joined by `+` (`mod+shift+h`, `mod+k mod+s`).",
+      "properties": {
+        "key": {
+          "description": "The keys on every platform, unless `mac` overrides them.",
+          "type": "string"
+        },
+        "mac": {
+          "description": "The keys on macOS.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
     "Comment": {
       "description": "One comment of a thread.",
       "properties": {
@@ -3921,6 +3985,22 @@
       ],
       "type": "object"
     },
+    "ListResult2": {
+      "description": "Result of [`List`].",
+      "properties": {
+        "commands": {
+          "description": "The commands, by id.",
+          "items": {
+            "$ref": "#/$defs/CommandInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "commands"
+      ],
+      "type": "object"
+    },
     "ListSessionsParams": {
       "description": "Params of `sessions/list`.",
       "properties": {
@@ -5937,6 +6017,33 @@
         "provider",
         "action"
       ],
+      "type": "object"
+    },
+    "RunParams": {
+      "description": "Params of [`Run`].",
+      "properties": {
+        "args": {
+          "default": null,
+          "description": "Its arguments (`null` when none)."
+        },
+        "id": {
+          "description": "The command id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "RunResult": {
+      "description": "Result of [`Run`]: what the handler returned.",
+      "properties": {
+        "value": {
+          "default": null,
+          "description": "The handler's result (`null` when it has none)."
+        }
+      },
       "type": "object"
     },
     "SaveParams": {
@@ -10236,6 +10343,7 @@
   "x-error-codes": {
     "ALREADY_EXISTS": 1010,
     "AUTH_REQUIRED": 1107,
+    "COMMAND_FAILED": 1902,
     "FILE_TOO_LARGE": 1005,
     "FORBIDDEN": -32007,
     "GIT_FAILED": 1603,
@@ -10270,6 +10378,7 @@
     "TRASH_FAILED": 1012,
     "UNAUTHORIZED": -32006,
     "UNKNOWN_BUFFER": 1201,
+    "UNKNOWN_COMMAND": 1901,
     "UNKNOWN_COMMENT": 1802,
     "UNKNOWN_PERMISSION_REQUEST": 1105,
     "UNKNOWN_PROVIDER": 1102,
@@ -10482,6 +10591,28 @@
       },
       "result": {
         "$ref": "#/$defs/SaveResult"
+      }
+    },
+    "commands/list": {
+      "description": "The commands mods contribute, for the command palette and keybindings.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "type": "null"
+      },
+      "result": {
+        "$ref": "#/$defs/ListResult2"
+      }
+    },
+    "commands/run": {
+      "description": "Run a mod-contributed command.",
+      "direction": "client→server",
+      "kind": "request",
+      "params": {
+        "$ref": "#/$defs/RunParams"
+      },
+      "result": {
+        "$ref": "#/$defs/RunResult"
       }
     },
     "coqo/event": {
