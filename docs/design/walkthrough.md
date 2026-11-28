@@ -65,7 +65,7 @@ A file opened on its own (Files, Open file, a link) shows the steps too, so the 
   - `Esc` closes it and `u` marks the step understood (key context `StepPopover`).
   Understood calls `walkthroughs/setStepState`: the player, the session panel and other windows follow through `walkthroughs/changes`.
 - **Toggle:** **Toggle walkthrough markers** in the command palette (Walkthrough category, no default key) hides or shows them in the current workspace's file tabs. Hidden is kept in the workspace's state (`ui.walkthrough.markers: false`).
-- **Renames:** a tab that follows its file to a new path asks for that path's steps; anchors themselves follow renames with #288.
+- **Renames:** the daemon moves the steps' anchors with a renamed or moved file (#288) and publishes the change; the tab follows its file and shows the steps at the new path.
 
 ## Markers on one line
 

@@ -1235,6 +1235,64 @@ fn the_toggle_hides_the_markers_and_stacked_markers_cycle() {
     assert_eq!(saved, Some(Value::Bool(false)), "kept with the workspace");
     toggle(&mut ui);
     ui.wait_for("shown", |ui| ui.file_steps(&tab).len() == 2);
+
+    drop(ui);
+    drop(daemon);
+}
+
+/// Renamed (#288), a file keeps its steps: the daemon moves the anchors
+/// and the tab follows the file.
+#[test]
+fn a_file_tabs_steps_follow_a_rename() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("shop");
+    write(&project, "src/discount.rs", DISCOUNT);
+    write(&project, "src/tests.rs", TESTS);
+    let project = project.canonicalize().unwrap();
+    let daemon = TestDaemon::start(tmp.path().join("run"), tmp.path().join("data"));
+    let mut ui = open_ui(&project, &daemon.paths, Appearance::Dark);
+    let (ws, root) = ui.place().unwrap();
+    let params = CreateParams {
+        workspace: ws.clone(),
+        session: "s-rename".into(),
+        walkthrough: draft(),
+    };
+    daemon.with_client(async move |client| {
+        client.request::<wtm::Create>(params).await.unwrap();
+    });
+    let tab = ui.open_file("src/discount.rs");
+    ui.wait_for("the step badges", |ui| ui.file_steps(&tab).len() == 2);
+    let step = ui.file_steps(&tab)[0].1;
+
+    let rename = coqo_protocol::methods::fs::RenameParams {
+        workspace: ws.clone(),
+        root,
+        from: "src/discount.rs".into(),
+        to: "src/pricing.rs".into(),
+    };
+    daemon.with_client(async move |client| {
+        client
+            .request::<coqo_protocol::methods::fs::Rename>(rename)
+            .await
+            .unwrap();
+    });
+    // What the tree does after a rename.
+    let moved = crate::files::ops::FileEvent::Moved {
+        workspace: ws.clone(),
+        root,
+        from: "src/discount.rs".into(),
+        to: "src/pricing.rs".into(),
+    };
+    ui.cx
+        .update(|cx| crate::files::ops::FileEvents::announce(moved, cx));
+    ui.wait_for("the steps on the renamed file", |ui| {
+        ui.cx.read(|cx| tab.read(cx).path() == "src/pricing.rs")
+            && ui.file_steps(&tab).len() == 2
+            && ui
+                .file_markers(&tab)
+                .iter()
+                .any(|(id, lines)| *id == step && *lines == (0..4))
+    });
     drop(ui);
     drop(daemon);
 }
