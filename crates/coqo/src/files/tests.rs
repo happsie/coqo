@@ -1489,6 +1489,12 @@ impl Ui {
         self.cx.read(|cx| tree.read(cx).toast().map(str::to_owned))
     }
 
+    /// Wait until the undo toast says `text` (the step is done in the UI,
+    /// not only on disk).
+    fn wait_for_toast(&mut self, text: &str) {
+        self.wait_for(text, |ui| ui.toast().as_deref() == Some(text));
+    }
+
     fn next_undo(&mut self) -> Option<super::history::FileOp> {
         let tree = self.tree();
         self.cx
@@ -1607,13 +1613,8 @@ fn undoes_and_redoes_file_operations_in_the_tree() {
         ui.names().contains(&"  logo.png".to_owned())
     });
     ui.press(UNDO);
-    ui.wait_for("logo.png back", |_| {
-        fixture.project.join("logo.png").is_file()
-    });
-    assert_eq!(
-        ui.toast().as_deref(),
-        Some("Undid move of “logo.png” to “src”")
-    );
+    ui.wait_for_toast("Undid move of “logo.png” to “src”");
+    assert!(fixture.project.join("logo.png").is_file());
 
     // A delete, restored from the trash; redo deletes it again.
     ui.right_click_row("README.md");
@@ -1636,10 +1637,12 @@ fn undoes_and_redoes_file_operations_in_the_tree() {
     assert!(!fixture.daemon.trash().join("README.md").exists());
     assert_eq!(ui.toast().as_deref(), Some("Undid delete of “README.md”"));
     ui.press(REDO);
+    ui.wait_for_toast("Redid delete of “README.md”");
     ui.wait_for("README.md deleted again", |_| {
         !fixture.project.join("README.md").exists()
     });
     ui.press(UNDO);
+    ui.wait_for_toast("Undid delete of “README.md”");
     ui.wait_for("README.md restored again", |_| {
         fixture.project.join("README.md").is_file()
     });
@@ -1664,6 +1667,7 @@ fn undoes_and_redoes_file_operations_in_the_tree() {
     );
     assert_eq!(ui.toast().as_deref(), Some("Undid creation of “notes.md”"));
     ui.press(REDO);
+    ui.wait_for_toast("Redid creation of “notes.md”");
     ui.wait_for("notes.md again", |_| {
         fixture.project.join("src/notes.md").is_file()
     });
@@ -1683,6 +1687,7 @@ fn undoes_and_redoes_file_operations_in_the_tree() {
     ui.press(UNDO);
     ui.wait_for("the question again", |ui| ui.shows("file-delete-confirm"));
     ui.press("enter");
+    ui.wait_for_toast("Undid creation of “notes.md”");
     ui.wait_for("notes.md in the trash", |_| {
         !fixture.project.join("src/notes.md").exists()
             && fixture.daemon.trash().join("notes.md").is_file()
